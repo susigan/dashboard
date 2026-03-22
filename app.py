@@ -934,6 +934,34 @@ def main():
 
     st.success(f"✅ {len(df_well)} registros wellness  |  {len(df_act_filt)} atividades carregadas")
 
+    # ── DIAGNÓSTICO (expander)
+    with st.expander("🔍 Diagnóstico de dados (clica para ver)", expanded=False):
+        col_d1, col_d2 = st.columns(2)
+        with col_d1:
+            st.markdown("**📋 Atividades (RAW — antes de filtrar)**")
+            st.write(f"Total de linhas: {len(df_act_raw)}")
+            if len(df_act_raw) > 0:
+                df_act_raw2 = df_act_raw.copy()
+                df_act_raw2['Data'] = pd.to_datetime(df_act_raw2['Data'])
+                st.write(f"Data mínima: {df_act_raw2['Data'].min().date()}")
+                st.write(f"Data máxima: {df_act_raw2['Data'].max().date()}")
+                st.write(f"Colunas detectadas: {list(df_act_raw2.columns[:15])}")
+                st.write("Últimas 5 linhas:")
+                cols_show = [c for c in ['Data','type','name','power_avg','rpe','icu_eftp'] if c in df_act_raw2.columns]
+                st.dataframe(df_act_raw2[cols_show].tail(5))
+        with col_d2:
+            st.markdown("**📋 Wellness (RAW — antes de filtrar)**")
+            st.write(f"Total de linhas: {len(df_well_raw)}")
+            if len(df_well_raw) > 0:
+                df_well_raw2 = df_well_raw.copy()
+                df_well_raw2['Data'] = pd.to_datetime(df_well_raw2['Data'])
+                st.write(f"Data mínima: {df_well_raw2['Data'].min().date()}")
+                st.write(f"Data máxima: {df_well_raw2['Data'].max().date()}")
+                st.write(f"Colunas detectadas: {list(df_well_raw2.columns[:15])}")
+                st.write("Últimas 5 linhas:")
+                cols_w = [c for c in ['Data','hrv','rhr','sleep_quality','fatiga','stress'] if c in df_well_raw2.columns]
+                st.dataframe(df_well_raw2[cols_w].tail(5))
+
     # Tabs
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📊 Visão Geral",
