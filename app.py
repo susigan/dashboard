@@ -1,6 +1,6 @@
 # ════════════════════════════════════════════════════════════════════════════════
-# ATHELTICA DASHBOARD — Streamlit App
-# Lê dados do Google Sheets, preprocessa e exibe gráficos interativos.
+# ATHELTICA DASHBOARD — Streamlit App (Versão Completa)
+# Tabs: Visão Geral | PMC | Volume | eFTP | HR+RPE Zones | Correlações | Recovery | Wellness
 # ════════════════════════════════════════════════════════════════════════════════
 
 import streamlit as st
@@ -9,1106 +9,1075 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.lines import Line2D
+from matplotlib.colors import LinearSegmentedColormap
 import seaborn as sns
 import gspread
 from gspread_dataframe import get_as_dataframe
 from google.oauth2.service_account import Credentials
+from scipy import stats as scipy_stats
+from scipy.stats import pearsonr
 from datetime import datetime, timedelta
-import json
 import re
 import warnings
 warnings.filterwarnings('ignore')
-
 plt.style.use('seaborn-v0_8-whitegrid')
 
 # ════════════════════════════════════════════════════════════════════════════════
-# CONFIGURAÇÃO DA PÁGINA
+# PÁGINA
 # ════════════════════════════════════════════════════════════════════════════════
-
-st.set_page_config(
-    page_title="ATHELTICA Dashboard",
-    page_icon="🏃",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="ATHELTICA", page_icon="🏃", layout="wide",
+                   initial_sidebar_state="expanded")
 
 # ════════════════════════════════════════════════════════════════════════════════
 # CONSTANTES
 # ════════════════════════════════════════════════════════════════════════════════
-
-WELLNESS_URL  = "https://docs.google.com/spreadsheets/d/10pefcY6VI4Z45M8Y69D6JxIoqOkjzSlSpV1PMLXoYlI/edit#gid=286320937"
-TRAINING_URL  = "https://docs.google.com/spreadsheets/d/1RE4SISd53WmAgQo8J-k2SE_OG0w5m4dbgLHvZHPxKvw/edit?usp=sharing"
-SCOPES        = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+WELLNESS_URL = "https://docs.google.com/spreadsheets/d/10pefcY6VI4Z45M8Y69D6JxIoqOkjzSlSpV1PMLXoYlI/edit#gid=286320937"
+TRAINING_URL = "https://docs.google.com/spreadsheets/d/1RE4SISd53WmAgQo8J-k2SE_OG0w5m4dbgLHvZHPxKvw/edit?usp=sharing"
+SCOPES = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
 CORES = {
-    'verde': '#2ECC71', 'verde_escuro': '#1D8348',
-    'azul': '#3498DB',  'azul_escuro': '#2471A3',
-    'laranja': '#F39C12','amarelo': '#F4D03F',
-    'vermelho': '#E74C3C','vermelho_escuro': '#C0392B',
-    'roxo': '#9B59B6',  'cinza': '#7F8C8D',
-    'preto': '#2C3E50', 'branco': '#FFFFFF',
+    'verde': '#2ECC71', 'verde_escuro': '#1D8348', 'azul': '#3498DB', 'azul_escuro': '#2471A3',
+    'laranja': '#F39C12', 'amarelo': '#F4D03F', 'vermelho': '#E74C3C', 'vermelho_escuro': '#C0392B',
+    'roxo': '#9B59B6', 'cinza': '#7F8C8D', 'preto': '#2C3E50', 'branco': '#FFFFFF',
 }
-CORES_ATIVIDADE = {
+CORES_ATIV = {
     'Bike': '#E74C3C', 'Run': '#2ECC71', 'Row': '#3498DB',
-    'Ski': '#9B59B6',  'WeightTraining': '#F39C12', 'Other': '#7F8C8D'
+    'Ski': '#9B59B6', 'WeightTraining': '#F39C12', 'Other': '#7F8C8D'
 }
 
 MAPA_WELLNESS = {
-    'hrv':          ['HRV', 'hrv', 'Heart Rate Variability'],
-    'rhr':          ['HRR', 'RHR', 'rhr', 'RestingHR', 'Resting HR'],
-    'sleep_hours':  ['Horas de Sono', 'Sleep', 'sleep', 'Hours Sleep'],
-    'sleep_quality':['Sono Qualidade', 'Sono_Qualidade', 'Sleep Quality'],
-    'stress':       ['Stress Do dia', 'Stress', 'stress'],
-    'fatiga':       ['Cansaço/Vontade de Treinar', 'Fatiga', 'Fadiga'],
-    'humor':        ['Humor', 'humor', 'Mood'],
-    'soreness':     ['Cansaço Muscular Geral', 'Muscle Soreness', 'Soreness'],
-    'peso':         ['Peso', 'Weight'],
-    'fat':          ['FAT', 'Fat', 'Gordura'],
+    'hrv': ['HRV', 'hrv', 'Heart Rate Variability'],
+    'rhr': ['HRR', 'RHR', 'rhr', 'RestingHR', 'Resting HR'],
+    'sleep_hours': ['Horas de Sono', 'Sleep', 'sleep', 'Hours Sleep'],
+    'sleep_quality': ['Sono Qualidade', 'Sono_Qualidade', 'Sleep Quality'],
+    'stress': ['Stress Do dia', 'Stress', 'stress'],
+    'fatiga': ['Cansaço/Vontade de Treinar', 'Fatiga', 'Fadiga'],
+    'humor': ['Humor', 'humor', 'Mood'],
+    'soreness': ['Cansaço Muscular Geral', 'Muscle Soreness', 'Soreness'],
+    'peso': ['Peso', 'Weight'], 'fat': ['FAT', 'Fat', 'Gordura'],
 }
 MAPA_TRAINING = {
-    'date':             ['start_date_local', 'date', 'Date', 'data'],
+    'date': ['start_date_local', 'date', 'Date', 'data'],
     'start_date_local': ['start_date_local'],
-    'moving_time':      ['moving_time', 'duration', 'Duration'],
-    'distance':         ['distance', 'Distance'],
-    'power_avg':        ['icu_average_watts', 'average_watts', 'AvgPower'],
-    'power_max':        ['MaxPwr', 'max_power', 'Peak5m'],
-    'hr_avg':           ['average_heartrate', 'avg_hr'],
-    'hr_max':           ['max_heartrate', 'max_hr'],
-    'rpe':              ['icu_rpe', 'RPE', 'rpe'],
-    'elevation':        ['total_elevation_gain', 'elevation'],
-    'type':             ['type', 'sport'],
-    'name':             ['name', 'Name'],
-    'xss':              ['SS', 'XSS', 'xss', 'strain_score'],
-    'pmax':             ['Pmax', 'pmax', 'p_max_usage'],
-    'p_max':            ['p_max', 'P_max'],
-    'icu_pm_p_max':     ['icu_pm_p_max'],
-    'icu_pm_cp':        ['icu_pm_cp', 'cp'],
-    'icu_training_load':['icu_training_load'],
-    'glycolytic':       ['Glycolytic', 'glycolytic', 'glycolytic_usage'],
-    'aerobic':          ['Aerobic', 'aerobic', 'cp_usage'],
-    'cadence_avg':      ['average_cadence', 'cadence'],
-    'decoupling':       ['CardiacDrift', 'decoupling'],
-    'icu_ftp':          ['icu_ftp', 'FTP', 'ftp'],
-    'icu_eftp':         ['icu_eftp', 'eFTP', 'estimated_cp', 'est_cp'],
-    'z1_secs':          ['z1_secs', 'zone1_seconds'],
-    'z2_secs':          ['z2_secs', 'zone2_seconds'],
-    'z3_secs':          ['z3_secs', 'zone3_seconds'],
-    'z4_secs':          ['z4_secs', 'zone4_seconds'],
-    'z5_secs':          ['z5_secs', 'zone5_seconds'],
-    'z6_secs':          ['z6_secs', 'zone6_seconds'],
-    'hr_z1_secs':       ['hr_z1_secs', 'hr_zone1_seconds'],
-    'hr_z2_secs':       ['hr_z2_secs', 'hr_zone2_seconds'],
-    'hr_z3_secs':       ['hr_z3_secs', 'hr_zone3_seconds'],
-    'hr_z4_secs':       ['hr_z4_secs', 'hr_zone4_seconds'],
-    'hr_z5_secs':       ['hr_z5_secs', 'hr_zone5_seconds'],
-    'hr_z6_secs':       ['hr_z6_secs', 'hr_zone6_seconds'],
-    'hr_z7_secs':       ['hr_z7_secs', 'hr_zone7_seconds'],
-    'icu_joules':       ['icu_joules'],
-    'icu_weight':       ['icu_weight'],
-    'AllWorkFTP':       ['AllWorkFTP'],
-    'WorkHourKgoverCP': ['WorkHourKgoverCP'],
-    'WorkHour':         ['WorkHour'],
+    'moving_time': ['moving_time', 'duration', 'Duration'],
+    'distance': ['distance', 'Distance'],
+    'power_avg': ['icu_average_watts', 'average_watts', 'AvgPower'],
+    'power_max': ['MaxPwr', 'max_power', 'Peak5m'],
+    'hr_avg': ['average_heartrate', 'avg_hr'],
+    'hr_max': ['max_heartrate', 'max_hr'],
+    'rpe': ['icu_rpe', 'RPE', 'rpe'],
+    'elevation': ['total_elevation_gain', 'elevation'],
+    'type': ['type', 'sport'], 'name': ['name', 'Name'],
+    'xss': ['SS', 'XSS', 'xss', 'strain_score'],
+    'pmax': ['Pmax', 'pmax', 'p_max_usage'], 'p_max': ['p_max', 'P_max'],
+    'icu_pm_p_max': ['icu_pm_p_max'], 'icu_pm_cp': ['icu_pm_cp', 'cp'],
+    'icu_training_load': ['icu_training_load'],
+    'glycolytic': ['Glycolytic', 'glycolytic', 'glycolytic_usage'],
+    'aerobic': ['Aerobic', 'aerobic', 'cp_usage'],
+    'cadence_avg': ['average_cadence', 'cadence'],
+    'decoupling': ['CardiacDrift', 'decoupling'],
+    'icu_ftp': ['icu_ftp', 'FTP', 'ftp'],
+    'icu_eftp': ['icu_eftp', 'eFTP', 'estimated_cp', 'est_cp', 'EFTP'],
+    'z1_secs': ['z1_secs', 'zone1_seconds'], 'z2_secs': ['z2_secs', 'zone2_seconds'],
+    'z3_secs': ['z3_secs', 'zone3_seconds'], 'z4_secs': ['z4_secs', 'zone4_seconds'],
+    'z5_secs': ['z5_secs', 'zone5_seconds'], 'z6_secs': ['z6_secs', 'zone6_seconds'],
+    'hr_z1_secs': ['hr_z1_secs', 'hr_zone1_seconds'], 'hr_z2_secs': ['hr_z2_secs', 'hr_zone2_seconds'],
+    'hr_z3_secs': ['hr_z3_secs', 'hr_zone3_seconds'], 'hr_z4_secs': ['hr_z4_secs', 'hr_zone4_seconds'],
+    'hr_z5_secs': ['hr_z5_secs', 'hr_zone5_seconds'], 'hr_z6_secs': ['hr_z6_secs', 'hr_zone6_seconds'],
+    'hr_z7_secs': ['hr_z7_secs', 'hr_zone7_seconds'],
+    'icu_joules': ['icu_joules'], 'icu_weight': ['icu_weight'],
+    'AllWorkFTP': ['AllWorkFTP'], 'WorkHourKgoverCP': ['WorkHourKgoverCP'], 'WorkHour': ['WorkHour'],
 }
 TYPE_MAP = {
     'VirtualSki': 'Ski', 'AlpineSki': 'Ski', 'Ski': 'Ski', 'NordicSki': 'Ski',
     'VirtualRow': 'Row', 'Rowing': 'Row', 'Row': 'Row',
-    'VirtualRide': 'Bike', 'Cycling': 'Bike', 'Ride': 'Bike',
-    'Bike': 'Bike', 'MountainBike': 'Bike', 'GravelRide': 'Bike',
+    'VirtualRide': 'Bike', 'Cycling': 'Bike', 'Ride': 'Bike', 'Bike': 'Bike',
+    'MountainBike': 'Bike', 'GravelRide': 'Bike',
     'VirtualRun': 'Run', 'Running': 'Run', 'Run': 'Run', 'TrailRun': 'Run',
     'WeightTraining': 'WeightTraining',
 }
-
-WELLNESS_DESCRICOES = {
-    'sleep_quality': {1:'Muito ruim',2:'Ruim',3:'Regular',4:'Bom',5:'Excelente'},
-    'fatiga':        {1:'Muito cansado',2:'Cansado',3:'Regular',4:'Bem',5:'Fresco'},
-    'stress':        {1:'Muito estressado',2:'Estressado',3:'Normal',4:'Calmo',5:'Relaxado'},
-    'humor':         {1:'Muito ruim',2:'Ruim',3:'Normal',4:'Bom',5:'Excelente'},
-    'soreness':      {1:'Muita dor',2:'Bastante',3:'Moderada',4:'Leve',5:'Nenhuma'},
-}
-
-# ════════════════════════════════════════════════════════════════════════════════
-# PREPROCESSING — mesma lógica do DataPreprocessor original
-# ════════════════════════════════════════════════════════════════════════════════
-
-from scipy import stats as scipy_stats
-
 VALID_TYPES = ['Bike', 'Row', 'Run', 'Ski', 'WeightTraining']
 
-def remover_picos_zscore(series, threshold=3.0):
-    """Remove outliers com Z-score > threshold, substituindo por NaN."""
-    valores = pd.to_numeric(series, errors='coerce')
-    validos = valores[valores.notna()]
-    if len(validos) < 4:
-        return valores
-    z = np.abs(scipy_stats.zscore(validos))
-    picos = validos.index[z > threshold]
-    valores.loc[picos] = np.nan
-    return valores
-
-def remover_zeros_invalidos(df, colunas):
-    """Substitui zeros por NaN em colunas onde zero é inválido."""
-    df = df.copy()
-    for col in colunas:
-        if col in df.columns:
-            df.loc[df[col] == 0, col] = np.nan
-    return df
-
-def preencher_faltantes(df, coluna, janela=7):
-    """Preenche NaN com média rolling, fallback para média global."""
-    if coluna not in df.columns:
-        return df
-    df = df.copy()
-    df[coluna] = pd.to_numeric(df[coluna], errors='coerce')
-    mask = df[coluna].isna()
-    if mask.any():
-        roll = df[coluna].rolling(window=janela, min_periods=2, center=True).mean()
-        df.loc[mask, coluna] = roll[mask]
-        # segundo passo: janela maior
-        mask2 = df[coluna].isna()
-        if mask2.any():
-            roll2 = df[coluna].rolling(window=14, min_periods=2, center=True).mean()
-            df.loc[mask2, coluna] = roll2[mask2]
-        # fallback: média global
-        mask3 = df[coluna].isna()
-        if mask3.any():
-            df.loc[mask3, coluna] = df[coluna].mean()
-    return df
-
-def preprocessar_wellness(df_well):
-    """
-    Limpa e normaliza o DataFrame de wellness:
-    - Remove picos Z-score > 3
-    - Remove zeros inválidos (hrv, rhr, sleep_hours)
-    - Preenche faltantes com rolling mean
-    - Remove duplicatas de data
-    """
-    if len(df_well) == 0:
-        return df_well
-
-    df = df_well.copy().sort_values('Data')
-
-    # Remover duplicatas de data (manter primeiro registo do dia)
-    df = df.drop_duplicates(subset=['Data'], keep='first')
-
-    # Colunas numéricas wellness
-    cols_num = [c for c in ['hrv','rhr','sleep_hours','sleep_quality',
-                             'stress','fatiga','humor','soreness','peso','fat']
-                if c in df.columns]
-
-    # Remover picos Z-score
-    for col in cols_num:
-        df[col] = remover_picos_zscore(df[col], threshold=3.0)
-
-    # Remover zeros inválidos
-    df = remover_zeros_invalidos(df, ['hrv','rhr','sleep_hours'])
-
-    # Preencher faltantes
-    for col in cols_num:
-        df = preencher_faltantes(df, col, janela=7)
-
-    return df.reset_index(drop=True)
-
-def preprocessar_atividades(df_act):
-    """
-    Limpa e normaliza o DataFrame de atividades:
-    - Filtra tipos válidos
-    - Remove picos Z-score no eFTP
-    - Remove zeros inválidos
-    - Remove atividades com moving_time < 60s
-    - Remove duplicatas
-    """
-    if len(df_act) == 0:
-        return df_act
-
-    df = df_act.copy().sort_values('Data')
-
-    # Remover duplicatas
-    subset_dup = [c for c in ['Data','type','moving_time'] if c in df.columns]
-    if len(subset_dup) >= 2:
-        df = df.drop_duplicates(subset=subset_dup, keep='first')
-
-    # Filtrar tipos válidos
-    if 'type' in df.columns:
-        df = df[df['type'].isin(VALID_TYPES)]
-
-    # Remover moving_time < 60s
-    if 'moving_time' in df.columns:
-        df = df[pd.to_numeric(df['moving_time'], errors='coerce') > 60]
-
-    # Remover picos eFTP
-    if 'icu_eftp' in df.columns:
-        df['icu_eftp'] = remover_picos_zscore(df['icu_eftp'], threshold=3.5)
-
-    # Remover zeros inválidos
-    df = remover_zeros_invalidos(df, ['moving_time','icu_eftp'])
-
-    return df.reset_index(drop=True)
-
 # ════════════════════════════════════════════════════════════════════════════════
-# AUTENTICAÇÃO GOOGLE SHEETS
+# AUTENTICAÇÃO
 # ════════════════════════════════════════════════════════════════════════════════
-
 @st.cache_resource
-def get_gspread_client():
-    """Autentica no Google Sheets usando Service Account em st.secrets."""
+def get_gc():
     try:
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+        creds = Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]), scopes=SCOPES)
         return gspread.authorize(creds)
     except Exception as e:
-        st.error(f"❌ Erro de autenticação Google: {e}")
-        st.info("Configura as credenciais em Settings → Secrets do Streamlit Cloud.")
+        st.error(f"❌ Erro autenticação: {e}")
         return None
 
 # ════════════════════════════════════════════════════════════════════════════════
 # FUNÇÕES AUXILIARES
 # ════════════════════════════════════════════════════════════════════════════════
-
-def detectar_coluna(df, possiveis):
-    for n in possiveis:
+def detectar_col(df, lst):
+    for n in lst:
         if n in df.columns: return n
     return None
 
-def br_to_float(val):
-    if pd.isna(val) or val == '': return None
-    if isinstance(val, (int, float)): return float(val)
-    if isinstance(val, str):
-        try: return float(val.replace(',', '.').strip())
-        except: return None
-    return None
+def br_float(v):
+    if pd.isna(v) or v == '': return None
+    if isinstance(v, (int, float)): return float(v)
+    try: return float(str(v).replace(',', '.').strip())
+    except: return None
 
-def robust_date_parser(v):
+def parse_date(v):
     if pd.isna(v): return None
     if isinstance(v, (pd.Timestamp, datetime)): return v
     s = str(v).strip()
     for fmt in ["%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"]:
         try: return datetime.strptime(s, fmt)
-        except: continue
+        except: pass
     return None
 
-def normalizar_tipo(t):
+def norm_tipo(t):
     if not isinstance(t, str): return 'Other'
     return TYPE_MAP.get(t.strip(), 'Other')
 
-def get_cor_atividade(tipo):
-    return CORES_ATIVIDADE.get(tipo, CORES_ATIVIDADE['Other'])
+def get_cor(tipo): return CORES_ATIV.get(tipo, CORES_ATIV['Other'])
 
-def normalizar_serie(serie, min_val=0, max_val=100):
-    s_min, s_max = serie.min(), serie.max()
-    if s_max == s_min: return pd.Series([50]*len(serie), index=serie.index)
-    return ((serie - s_min) / (s_max - s_min)) * (max_val - min_val) + min_val
+def norm_serie(s, lo=0, hi=100):
+    mn, mx = s.min(), s.max()
+    if mx == mn: return pd.Series([50] * len(s), index=s.index)
+    return (s - mn) / (mx - mn) * (hi - lo) + lo
 
-def filtrar_atividades_principais(df):
+def filtrar_principais(df):
     if len(df) == 0: return df
     df = df.copy()
-    df['_tipo'] = df['type'].apply(normalizar_tipo)
-    df['_dia']  = pd.to_datetime(df['Data']).dt.date
-    por_dia = df.groupby('_dia')['_tipo'].apply(list).to_dict()
-    df['_manter'] = df.apply(
-        lambda r: not (r['_tipo'] == 'WeightTraining' and len(por_dia.get(r['_dia'], [])) > 1), axis=1)
-    return df[df['_manter']].drop(columns=['_tipo','_dia','_manter'])
+    df['_t'] = df['type'].apply(norm_tipo)
+    df['_d'] = pd.to_datetime(df['Data']).dt.date
+    por_dia = df.groupby('_d')['_t'].apply(list).to_dict()
+    df['_ok'] = df.apply(lambda r: not (r['_t'] == 'WeightTraining' and len(por_dia.get(r['_d'], [])) > 1), axis=1)
+    return df[df['_ok']].drop(columns=['_t', '_d', '_ok'])
 
-def calcular_cv_rolling(series, window=7):
-    m = series.rolling(window=window, min_periods=3).mean()
-    s = series.rolling(window=window, min_periods=3).std()
-    return (s / m) * 100
+def add_tempo(df):
+    if len(df) > 0 and 'Data' in df.columns:
+        df = df.copy()
+        df['mes'] = pd.to_datetime(df['Data']).dt.strftime('%Y-%m')
+        df['ano'] = pd.to_datetime(df['Data']).dt.year
+        df['trimestre'] = pd.to_datetime(df['Data']).dt.to_period('Q').astype(str)
+    return df
 
-def converter_1_5_para_0_100(v):
+def cvr(s, w=7):
+    m = s.rolling(w, min_periods=3).mean()
+    sd = s.rolling(w, min_periods=3).std()
+    return (sd / m) * 100
+
+def conv_15(v):
     if pd.isna(v): return 50
     return max(0, min(100, (float(v) - 1) * 25))
 
-def calcular_normal_range(baseline, cv_pct):
-    if pd.isna(baseline) or pd.isna(cv_pct) or baseline <= 0: return None, None
-    m = 0.5 * (cv_pct / 100) * baseline
-    return baseline - m, baseline + m
+def norm_range(base, cv):
+    if pd.isna(base) or pd.isna(cv) or base <= 0: return None, None
+    m = 0.5 * (cv / 100) * base
+    return base - m, base + m
+
+def remove_zscore(s, thr=3.0):
+    v = pd.to_numeric(s, errors='coerce')
+    ok = v[v.notna()]
+    if len(ok) < 4: return v
+    z = np.abs(scipy_stats.zscore(ok))
+    v.loc[ok.index[z > thr]] = np.nan
+    return v
+
+def remove_zeros(df, cols):
+    df = df.copy()
+    for c in cols:
+        if c in df.columns: df.loc[df[c] == 0, c] = np.nan
+    return df
+
+def fill_missing(df, col, w=7):
+    if col not in df.columns: return df
+    df = df.copy()
+    df[col] = pd.to_numeric(df[col], errors='coerce')
+    mask = df[col].isna()
+    if mask.any():
+        r = df[col].rolling(w, min_periods=2, center=True).mean()
+        df.loc[mask, col] = r[mask]
+        mask2 = df[col].isna()
+        if mask2.any():
+            r2 = df[col].rolling(14, min_periods=2, center=True).mean()
+            df.loc[mask2, col] = r2[mask2]
+        mask3 = df[col].isna()
+        if mask3.any(): df.loc[mask3, col] = df[col].mean()
+    return df
+
+def classificar_rpe(v):
+    if pd.isna(v): return None
+    v = float(v)
+    if 1 <= v <= 4.9: return 'Leve'
+    if 5 <= v <= 6.9: return 'Moderado'
+    if 7 <= v <= 10: return 'Pesado'
+    return None
+
+def calcular_swc(base, cv):
+    if pd.isna(base) or pd.isna(cv) or base <= 0 or cv <= 0: return None
+    return 0.5 * (cv / 100) * base
 
 # ════════════════════════════════════════════════════════════════════════════════
-# CARREGAMENTO DE DADOS (com cache 1h)
+# PREPROCESSING
 # ════════════════════════════════════════════════════════════════════════════════
+def preproc_wellness(df):
+    if len(df) == 0: return df
+    df = df.copy().sort_values('Data')
+    df = df.drop_duplicates(subset=['Data'], keep='first')
+    for c in [c for c in ['hrv', 'rhr', 'sleep_hours', 'sleep_quality', 'stress', 'fatiga', 'humor', 'soreness', 'peso', 'fat'] if c in df.columns]:
+        df[c] = remove_zscore(df[c], 3.0)
+    df = remove_zeros(df, ['hrv', 'rhr', 'sleep_hours'])
+    for c in [c for c in ['hrv', 'rhr', 'sleep_quality', 'fatiga', 'stress', 'humor', 'soreness'] if c in df.columns]:
+        df = fill_missing(df, c, 7)
+    return df.reset_index(drop=True)
 
-@st.cache_data(ttl=3600, show_spinner="A carregar dados do Google Sheets...")
+def preproc_ativ(df):
+    if len(df) == 0: return df
+    df = df.copy().sort_values('Data')
+    sub = [c for c in ['Data', 'type', 'moving_time'] if c in df.columns]
+    if len(sub) >= 2: df = df.drop_duplicates(subset=sub, keep='first')
+    if 'type' in df.columns: df = df[df['type'].isin(VALID_TYPES)]
+    if 'moving_time' in df.columns: df = df[pd.to_numeric(df['moving_time'], errors='coerce') > 60]
+    if 'icu_eftp' in df.columns: df['icu_eftp'] = remove_zscore(df['icu_eftp'], 3.5)
+    df = remove_zeros(df, ['moving_time', 'icu_eftp'])
+    return df.reset_index(drop=True)
+
+# ════════════════════════════════════════════════════════════════════════════════
+# CARREGAMENTO DE DADOS
+# ════════════════════════════════════════════════════════════════════════════════
+@st.cache_data(ttl=3600, show_spinner="A carregar wellness...")
 def carregar_wellness(days_back):
-    gc = get_gspread_client()
+    gc = get_gc()
     if gc is None: return pd.DataFrame()
     try:
         ws = gc.open_by_url(WELLNESS_URL).worksheet("Respostas ao formulário 1")
         df = get_as_dataframe(ws, evaluate_formulas=True, header=0)
-        if df.columns.duplicated().any():
-            df = df.loc[:, ~df.columns.duplicated()]
-        col_data = detectar_coluna(df, ['Data','data','Date','Carimbo de data/hora'])
-        if col_data:
-            df['Data'] = df[col_data].apply(robust_date_parser)
+        if df.columns.duplicated().any(): df = df.loc[:, ~df.columns.duplicated()]
+        cd = detectar_col(df, ['Data', 'data', 'Date', 'Carimbo de data/hora'])
+        if cd:
+            df['Data'] = df[cd].apply(parse_date)
             df = df.dropna(subset=['Data']).sort_values('Data')
-        for var, possiveis in MAPA_WELLNESS.items():
-            col = detectar_coluna(df, possiveis)
-            if col: df[var] = df[col].apply(br_to_float)
-        data_min = datetime.now() - timedelta(days=days_back)
-        return df[df['Data'] >= data_min].reset_index(drop=True)
+        for var, lst in MAPA_WELLNESS.items():
+            col = detectar_col(df, lst)
+            if col: df[var] = df[col].apply(br_float)
+        dm = datetime.now() - timedelta(days=days_back)
+        return df[df['Data'] >= dm].reset_index(drop=True)
     except Exception as e:
-        st.error(f"Erro ao carregar wellness: {e}")
+        st.error(f"Erro wellness: {e}")
         return pd.DataFrame()
 
-@st.cache_data(ttl=3600, show_spinner="A carregar atividades do Google Sheets...")
+@st.cache_data(ttl=3600, show_spinner="A carregar atividades...")
 def carregar_atividades(days_back):
-    gc = get_gspread_client()
+    gc = get_gc()
     if gc is None: return pd.DataFrame()
     try:
         ws = gc.open_by_url(TRAINING_URL).worksheet("intervals.icu_activities-export")
         df = get_as_dataframe(ws, evaluate_formulas=True, header=0)
-        if df.columns.duplicated().any():
-            df = df.loc[:, ~df.columns.duplicated()]
-        # Detectar coluna de data — testa nomes comuns
-        col_data = detectar_coluna(df, ['Date','start_date_local','date','data','Data'])
-        if col_data:
-            df['Data'] = df[col_data].apply(lambda x: robust_date_parser(str(x)[:10]))
+        if df.columns.duplicated().any(): df = df.loc[:, ~df.columns.duplicated()]
+        cd = detectar_col(df, ['Date', 'start_date_local', 'date', 'data', 'Data'])
+        if cd:
+            df['Data'] = df[cd].apply(lambda x: parse_date(str(x)[:10]))
             df = df.dropna(subset=['Data']).sort_values('Data')
-
-        # Mapear colunas padronizadas
-        TEXTO_COLS = ['type','name','date','start_date_local']
-        for var, possiveis in MAPA_TRAINING.items():
-            col = detectar_coluna(df, possiveis)
-            if col:
-                df[var] = df[col] if var in TEXTO_COLS else df[col].apply(br_to_float)
-
-        # Normalizar tipo de actividade
-        if 'type' in df.columns:
-            df['type'] = df['type'].apply(normalizar_tipo)
-
-        # Filtrar por período
-        data_min = datetime.now() - timedelta(days=days_back)
-        df = df[df['Data'] >= data_min].reset_index(drop=True)
-        return df
+        TEXTO = ['type', 'name', 'date', 'start_date_local']
+        for var, lst in MAPA_TRAINING.items():
+            col = detectar_col(df, lst)
+            if col: df[var] = df[col] if var in TEXTO else df[col].apply(br_float)
+        if 'type' in df.columns: df['type'] = df['type'].apply(norm_tipo)
+        dm = datetime.now() - timedelta(days=days_back)
+        return df[df['Data'] >= dm].reset_index(drop=True)
     except Exception as e:
-        st.error(f"Erro ao carregar atividades: {e}")
+        st.error(f"Erro atividades: {e}")
         return pd.DataFrame()
 
-def filtrar_por_datas(df, data_ini, data_fim):
+def filtrar_datas(df, di, df_):
     if len(df) == 0: return df
     df = df.copy()
     df['Data'] = pd.to_datetime(df['Data'])
-    mask = (df['Data'].dt.date >= data_ini) & (df['Data'].dt.date <= data_fim)
-    return df[mask].reset_index(drop=True)
+    return df[(df['Data'].dt.date >= di) & (df['Data'].dt.date <= df_)].reset_index(drop=True)
 
 # ════════════════════════════════════════════════════════════════════════════════
-# SIDEBAR — FILTROS GLOBAIS
+# SIDEBAR
 # ════════════════════════════════════════════════════════════════════════════════
-
 def render_sidebar():
-    st.sidebar.image("https://img.icons8.com/emoji/96/runner-emoji.png", width=60)
-    st.sidebar.title("ATHELTICA")
+    st.sidebar.title("🏃 ATHELTICA")
     st.sidebar.markdown("---")
-
-    st.sidebar.header("⚙️ Filtros Globais")
-
-    # Período
-    dias_opcoes = {"30 dias": 30, "60 dias": 60, "90 dias": 90,
-                   "180 dias": 180, "1 ano": 365, "2 anos": 730}
-    periodo_label = st.sidebar.selectbox("📅 Período de análise", list(dias_opcoes.keys()), index=2)
-    days_back = dias_opcoes[periodo_label]
-
-    # Datas customizadas
-    usar_datas_custom = st.sidebar.checkbox("Definir datas manualmente")
-    if usar_datas_custom:
-        data_ini = st.sidebar.date_input("Data início", value=datetime.now().date() - timedelta(days=days_back))
-        data_fim = st.sidebar.date_input("Data fim",   value=datetime.now().date())
+    st.sidebar.header("⚙️ Filtros")
+    dias_op = {"30 dias": 30, "60 dias": 60, "90 dias": 90, "180 dias": 180, "1 ano": 365, "2 anos": 730}
+    per_lbl = st.sidebar.selectbox("Período", list(dias_op.keys()), index=2)
+    days_back = dias_op[per_lbl]
+    custom = st.sidebar.checkbox("Datas manuais")
+    if custom:
+        di = st.sidebar.date_input("Início", value=datetime.now().date() - timedelta(days=days_back))
+        df_ = st.sidebar.date_input("Fim", value=datetime.now().date())
     else:
-        data_fim = datetime.now().date()
-        data_ini = data_fim - timedelta(days=days_back)
-
+        df_ = datetime.now().date()
+        di = df_ - timedelta(days=days_back)
     st.sidebar.markdown("---")
-
-    # Modalidades
-    st.sidebar.header("🏃 Modalidades")
-    modalidades_disp = ['Bike', 'Row', 'Run', 'Ski']
-    modalidades_sel  = st.sidebar.multiselect(
-        "Mostrar modalidades", modalidades_disp, default=modalidades_disp)
-
+    mods_sel = st.sidebar.multiselect("Modalidades", ['Bike', 'Row', 'Run', 'Ski'], default=['Bike', 'Row', 'Run', 'Ski'])
     st.sidebar.markdown("---")
-
-    # Botão reload
     if st.sidebar.button("🔄 Recarregar dados"):
-        st.cache_data.clear()
-        st.rerun()
-
-    st.sidebar.markdown("---")
-    st.sidebar.caption(f"Dados de {data_ini.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}")
-    st.sidebar.caption(f"Carregado: {datetime.now().strftime('%H:%M')}")
-
-    return days_back, data_ini, data_fim, modalidades_sel
+        st.cache_data.clear(); st.rerun()
+    st.sidebar.caption(f"{di.strftime('%d/%m/%Y')} → {df_.strftime('%d/%m/%Y')}")
+    st.sidebar.caption(f"Atualizado: {datetime.now().strftime('%H:%M')}")
+    return days_back, di, df_, mods_sel
 
 # ════════════════════════════════════════════════════════════════════════════════
-# TAB 1 — KPIs + VISÃO GERAL
+# TAB 1 — VISÃO GERAL
 # ════════════════════════════════════════════════════════════════════════════════
-
-def tab_visao_geral(df_well, df_act, data_ini, data_fim):
+def tab_visao_geral(dw, da, di, df_):
     st.header("📊 Visão Geral")
-
-    # KPIs
-    col1, col2, col3, col4 = st.columns(4)
-    n_sess   = len(df_act)
-    hrv_med  = df_well['hrv'].dropna().tail(7).mean()  if 'hrv'  in df_well.columns else None
-    rhr_ult  = df_well['rhr'].dropna().iloc[-1]        if 'rhr'  in df_well.columns and len(df_well) > 0 else None
-    horas    = (df_act['moving_time'].sum() / 3600)    if 'moving_time' in df_act.columns else None
-
-    with col1:
-        st.metric("🏋️ Sessões", f"{n_sess}")
-    with col2:
-        st.metric("⏱️ Horas totais", f"{horas:.1f}h" if horas else "—")
-    with col3:
-        st.metric("💚 HRV médio (7d)", f"{hrv_med:.0f} ms" if hrv_med else "—")
-    with col4:
-        st.metric("❤️ RHR último", f"{rhr_ult:.0f} bpm" if rhr_ult else "—")
-
+    c1, c2, c3, c4 = st.columns(4)
+    horas = (da['moving_time'].sum() / 3600) if 'moving_time' in da.columns and len(da) > 0 else None
+    hrv_m = dw['hrv'].dropna().tail(7).mean() if 'hrv' in dw.columns and len(dw) > 0 else None
+    rhr_u = dw['rhr'].dropna().iloc[-1] if 'rhr' in dw.columns and len(dw) > 0 and dw['rhr'].notna().any() else None
+    c1.metric("🏋️ Sessões", f"{len(da)}")
+    c2.metric("⏱️ Horas", f"{horas:.1f}h" if horas else "—")
+    c3.metric("💚 HRV (7d)", f"{hrv_m:.0f} ms" if hrv_m else "—")
+    c4.metric("❤️ RHR", f"{rhr_u:.0f} bpm" if rhr_u else "—")
     st.markdown("---")
-
-    # Performance Overview (CTL/ATL/HRV/Readiness normalizados)
-    st.subheader("📈 Performance Overview")
-    fig, ax = plt.subplots(figsize=(14, 5))
-    tem = False
-    if 'moving_time' in df_act.columns and 'rpe' in df_act.columns:
-        df_load = df_act.copy()
-        df_load['Data'] = pd.to_datetime(df_load['Data'])
-        df_load['load'] = (df_load['moving_time'] / 60) * df_load['rpe'].fillna(0)
-        load_daily = df_load.groupby('Data')['load'].sum().reset_index()
-        load_norm  = normalizar_serie(load_daily['load'])
-        ax.bar(load_daily['Data'], load_norm, color=CORES['cinza'], alpha=0.3, label='Load (norm)')
-        tem = True
-    if 'hrv' in df_well.columns:
-        dw = df_well.dropna(subset=['hrv']).copy()
-        dw['Data'] = pd.to_datetime(dw['Data'])
-        ax.plot(dw['Data'], normalizar_serie(dw['hrv']), color=CORES['verde'],
-                linewidth=2, linestyle='--', label='HRV (norm)')
-        tem = True
-    if not tem:
-        ax.text(0.5, 0.5, 'Dados insuficientes', ha='center', va='center', transform=ax.transAxes)
-    ax.set_title('Performance Overview', fontsize=13, fontweight='bold')
-    ax.legend(loc='upper left', fontsize=9)
-    ax.tick_params(axis='x', rotation=45)
-    ax.grid(True, alpha=0.3)
-    plt.tight_layout()
-    st.pyplot(fig)
-    plt.close()
-
-    # Tabela atividades recentes
+    col_l, col_r = st.columns([2, 1])
+    with col_l:
+        st.subheader("📈 Performance Overview")
+        fig, ax = plt.subplots(figsize=(13, 4))
+        if 'moving_time' in da.columns and 'rpe' in da.columns and len(da) > 0:
+            dl = da.copy(); dl['Data'] = pd.to_datetime(dl['Data'])
+            dl['load'] = (dl['moving_time'] / 60) * dl['rpe'].fillna(0)
+            ld = dl.groupby('Data')['load'].sum().reset_index().sort_values('Data')
+            ax.bar(ld['Data'], norm_serie(ld['load']), color=CORES['cinza'], alpha=0.3, label='Load (norm)', width=0.8)
+        if 'hrv' in dw.columns and len(dw) > 0:
+            dw2 = dw.dropna(subset=['hrv']).copy(); dw2['Data'] = pd.to_datetime(dw2['Data'])
+            ax.plot(dw2['Data'], norm_serie(dw2['hrv']), color=CORES['verde'], linewidth=2, linestyle='--', label='HRV (norm)')
+        ax.set_title('Performance Overview', fontsize=12, fontweight='bold')
+        ax.legend(loc='upper left', fontsize=9); ax.tick_params(axis='x', rotation=45); ax.grid(True, alpha=0.3)
+        plt.tight_layout(); st.pyplot(fig); plt.close()
+    with col_r:
+        st.subheader("🎯 Distribuição")
+        df_d = filtrar_principais(da).copy()
+        if len(df_d) > 0:
+            cnt = df_d['type'].apply(norm_tipo).value_counts()
+            fig2, ax2 = plt.subplots(figsize=(5, 5))
+            ax2.pie(cnt.values, labels=cnt.index, autopct='%1.0f%%',
+                    colors=[get_cor(t) for t in cnt.index], startangle=90,
+                    pctdistance=0.75, wedgeprops=dict(width=0.5, edgecolor='white', linewidth=2))
+            ax2.text(0, 0, f'{cnt.sum()}', fontsize=28, fontweight='bold', ha='center', va='center')
+            plt.tight_layout(); st.pyplot(fig2); plt.close()
+    st.markdown("---")
     st.subheader("📋 Atividades Recentes")
-    df_tab = filtrar_atividades_principais(df_act).sort_values('Data', ascending=False).head(10).copy()
+    df_tab = filtrar_principais(da).sort_values('Data', ascending=False).head(10)
     if len(df_tab) > 0:
-        cols_show = [c for c in ['Data','type','name','moving_time','rpe','power_avg','icu_eftp'] if c in df_tab.columns]
-        df_show = df_tab[cols_show].copy()
-        if 'moving_time' in df_show.columns:
-            df_show['moving_time'] = df_show['moving_time'].apply(
-                lambda x: f"{int(x/3600)}h{int((x%3600)/60):02d}m" if pd.notna(x) else '—')
-        df_show.columns = [c.replace('_',' ').title() for c in df_show.columns]
-        st.dataframe(df_show, use_container_width=True)
-    else:
-        st.info("Sem atividades no período.")
-
-    # Distribuição donut
-    st.subheader("🎯 Distribuição por Modalidade")
-    df_dist = filtrar_atividades_principais(df_act).copy()
-    if len(df_dist) > 0:
-        df_dist['type'] = df_dist['type'].apply(normalizar_tipo)
-        contagem = df_dist['type'].value_counts()
-        fig2, ax2 = plt.subplots(figsize=(6, 6))
-        ax2.pie(contagem.values, labels=contagem.index, autopct='%1.1f%%',
-                colors=[get_cor_atividade(t) for t in contagem.index],
-                startangle=90, pctdistance=0.75,
-                wedgeprops=dict(width=0.5, edgecolor='white', linewidth=2))
-        ax2.text(0, 0, f'{contagem.sum()}', fontsize=36, fontweight='bold', ha='center', va='center')
-        plt.tight_layout()
-        st.pyplot(fig2)
-        plt.close()
+        cs = [c for c in ['Data', 'type', 'name', 'moving_time', 'rpe', 'power_avg', 'icu_eftp'] if c in df_tab.columns]
+        ds = df_tab[cs].copy()
+        if 'moving_time' in ds.columns:
+            ds['moving_time'] = ds['moving_time'].apply(lambda x: f"{int(x/3600)}h{int((x%3600)/60):02d}m" if pd.notna(x) else '—')
+        ds.columns = [c.replace('_', ' ').title() for c in ds.columns]
+        st.dataframe(ds, use_container_width=True, hide_index=True)
+    st.markdown("---")
+    st.subheader("📋 Resumo Semanal")
+    col1, col2, col3 = st.columns(3)
+    if len(da) > 0:
+        dw7 = da[pd.to_datetime(da['Data']).dt.date >= (datetime.now().date() - timedelta(days=7))]
+        col1.metric("Sessões (7d)", len(dw7))
+        if 'moving_time' in dw7.columns: col2.metric("Horas (7d)", f"{dw7['moving_time'].sum()/3600:.1f}h")
+        if 'rpe' in dw7.columns and dw7['rpe'].notna().any(): col3.metric("RPE médio (7d)", f"{dw7['rpe'].mean():.1f}")
+    df_rank = filtrar_principais(da).copy()
+    if 'power_avg' in df_rank.columns and df_rank['power_avg'].notna().any():
+        st.subheader("🏆 Top 10 por Potência")
+        top = df_rank.nlargest(10, 'power_avg')[['Data', 'type', 'name', 'power_avg', 'rpe']].copy()
+        top['Data'] = pd.to_datetime(top['Data']).dt.strftime('%Y-%m-%d')
+        top.columns = ['Data', 'Tipo', 'Nome', 'Power (W)', 'RPE']
+        st.dataframe(top, use_container_width=True, hide_index=True)
 
 # ════════════════════════════════════════════════════════════════════════════════
-# TAB 2 — PMC (CTL/ATL/TSB + Training Load)
+# TAB 2 — PMC + FTLM
 # ════════════════════════════════════════════════════════════════════════════════
-
-def tab_pmc(df_act):
+def tab_pmc(da):
     st.header("📈 PMC — Performance Management Chart")
-
-    if len(df_act) == 0:
-        st.warning("Sem dados de atividades no período.")
-        return
-
-    # Calcular CTL/ATL/TSB a partir do training load diário
-    df = filtrar_atividades_principais(df_act).copy()
-    df['Data'] = pd.to_datetime(df['Data'])
-
-    if 'moving_time' not in df.columns or 'rpe' not in df.columns:
-        st.warning("Colunas moving_time ou rpe não disponíveis.")
-        return
-
-    df['load'] = (df['moving_time'] / 60) * df['rpe'].fillna(0)
-
-    # Usar icu_training_load se disponível, senão session_rpe
+    if len(da) == 0: st.warning("Sem dados de atividades."); return
+    df = filtrar_principais(da).copy(); df['Data'] = pd.to_datetime(df['Data'])
     if 'icu_training_load' in df.columns and df['icu_training_load'].notna().sum() > 10:
-        load_col = 'icu_training_load'
+        df['load_val'] = pd.to_numeric(df['icu_training_load'], errors='coerce').fillna(0)
+    elif 'moving_time' in df.columns and 'rpe' in df.columns:
+        df['load_val'] = (df['moving_time'] / 60) * df['rpe'].fillna(0)
     else:
-        load_col = 'load'
+        st.warning("Sem dados de load."); return
+    ld = df.groupby('Data')['load_val'].sum().reset_index().sort_values('Data')
+    idx = pd.date_range(ld['Data'].min(), ld['Data'].max())
+    ld = ld.set_index('Data').reindex(idx, fill_value=0).reset_index(); ld.columns = ['Data', 'load_val']
+    ld['CTL'] = ld['load_val'].ewm(span=42, adjust=False).mean()
+    ld['ATL'] = ld['load_val'].ewm(span=7, adjust=False).mean()
+    ld['TSB'] = ld['CTL'] - ld['ATL']
+    # FTLM — gamma otimizado
+    best_g, best_r = 0.30, -1
+    for g in np.arange(0.25, 0.36, 0.01):
+        ema = ld['load_val'].ewm(alpha=g, adjust=False).mean()
+        if ema.std() > 0:
+            r = abs(np.corrcoef(ld['load_val'].values, ema.values)[0, 1])
+            if r > best_r: best_r, best_g = r, g
+    ld['FTLM'] = ld['load_val'].ewm(alpha=best_g, adjust=False).mean()
 
-    load_daily = df.groupby('Data')[load_col].sum().reset_index()
-    load_daily.columns = ['Data', 'load_val']
-
-    # Preencher datas sem treino com 0
-    idx = pd.date_range(load_daily['Data'].min(), load_daily['Data'].max())
-    load_daily = load_daily.set_index('Data').reindex(idx, fill_value=0).reset_index()
-    load_daily.columns = ['Data', 'load_val']
-
-    # CTL (42d EMA) / ATL (7d EMA)
-    load_daily['CTL'] = load_daily['load_val'].ewm(span=42, adjust=False).mean()
-    load_daily['ATL'] = load_daily['load_val'].ewm(span=7,  adjust=False).mean()
-    load_daily['TSB'] = load_daily['CTL'] - load_daily['ATL']
-
-    # Filtro de período
-    col_f1, col_f2 = st.columns(2)
-    with col_f1:
-        smooth = st.checkbox("Suavizar CTL/ATL (rolling 3d)", value=False)
-
+    col1, col2 = st.columns(2)
+    smooth = col1.checkbox("Suavizar CTL/ATL (3d)", value=False)
+    show_ftlm = col2.checkbox("Mostrar FTLM", value=True)
     if smooth:
-        load_daily['CTL'] = load_daily['CTL'].rolling(3, min_periods=1).mean()
-        load_daily['ATL'] = load_daily['ATL'].rolling(3, min_periods=1).mean()
+        ld['CTL'] = ld['CTL'].rolling(3, min_periods=1).mean()
+        ld['ATL'] = ld['ATL'].rolling(3, min_periods=1).mean()
 
-    # Gráfico PMC
-    fig, (ax_pmc, ax_load) = plt.subplots(2, 1, figsize=(16, 9),
-                                            gridspec_kw={'height_ratios': [2.5, 1]},
-                                            sharex=True)
+    fig, (ax_pmc, ax_load) = plt.subplots(2, 1, figsize=(16, 9), gridspec_kw={'height_ratios': [2.5, 1]}, sharex=True)
     fig.subplots_adjust(hspace=0.05)
-
-    ax_pmc.plot(load_daily['Data'], load_daily['CTL'], label='CTL', color=CORES['azul'], linewidth=2.5)
-    ax_pmc.plot(load_daily['Data'], load_daily['ATL'], label='ATL', color=CORES['vermelho'], linewidth=2.5)
-    ax_pmc.fill_between(load_daily['Data'], 0, load_daily['TSB'],
-                         where=(load_daily['TSB'] >= 0), color=CORES['verde'], alpha=0.25, label='TSB+')
-    ax_pmc.fill_between(load_daily['Data'], 0, load_daily['TSB'],
-                         where=(load_daily['TSB'] < 0),  color=CORES['vermelho'], alpha=0.20, label='TSB-')
+    ax_pmc.plot(ld['Data'], ld['CTL'], label='CTL', color=CORES['azul'], linewidth=2.5)
+    ax_pmc.plot(ld['Data'], ld['ATL'], label='ATL', color=CORES['vermelho'], linewidth=2.5)
+    ax_pmc.fill_between(ld['Data'], 0, ld['TSB'], where=(ld['TSB'] >= 0), color=CORES['verde'], alpha=0.25, label='TSB+')
+    ax_pmc.fill_between(ld['Data'], 0, ld['TSB'], where=(ld['TSB'] < 0), color=CORES['vermelho'], alpha=0.20, label='TSB-')
     ax_pmc.axhline(0, color=CORES['cinza'], linestyle='--', linewidth=0.8)
-    ax_pmc.set_ylabel('CTL / ATL / TSB', fontweight='bold')
-    ax_pmc.legend(loc='upper left', fontsize=9)
-    ax_pmc.grid(True, alpha=0.3)
-
-    ult = load_daily.iloc[-1]
-    ax_pmc.text(0.99, 0.97,
-                f"CTL: {ult['CTL']:.0f}  |  ATL: {ult['ATL']:.0f}  |  TSB: {ult['TSB']:+.0f}",
-                transform=ax_pmc.transAxes, ha='right', va='top', fontsize=9,
-                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.85))
-    ax_pmc.set_title('PMC — CTL / ATL / TSB / Training Load', fontsize=14, fontweight='bold')
-
-    ax_load.bar(load_daily['Data'], load_daily['load_val'],
-                color=CORES['roxo'], alpha=0.65, width=0.8, label='Training Load')
-    ax_load.set_ylabel('Load', fontweight='bold', fontsize=9)
-    ax_load.legend(loc='upper left', fontsize=8)
-    ax_load.grid(True, alpha=0.2, axis='y')
+    ax_pmc.set_ylabel('CTL / ATL / TSB', fontweight='bold'); ax_pmc.grid(True, alpha=0.3)
+    if show_ftlm:
+        ax2 = ax_pmc.twinx()
+        ax2.plot(ld['Data'], ld['FTLM'], label=f'FTLM (γ={best_g:.2f})', color=CORES['laranja'], linewidth=2, linestyle='--', alpha=0.85)
+        ax2.set_ylabel('FTLM', color=CORES['laranja'], fontweight='bold')
+        ax2.tick_params(axis='y', labelcolor=CORES['laranja'])
+        l1, lb1 = ax_pmc.get_legend_handles_labels(); l2, lb2 = ax2.get_legend_handles_labels()
+        ax_pmc.legend(l1 + l2, lb1 + lb2, loc='upper left', fontsize=9)
+    else:
+        ax_pmc.legend(loc='upper left', fontsize=9)
+    u = ld.iloc[-1]
+    ax_pmc.text(0.99, 0.97, f"CTL: {u['CTL']:.0f}  |  ATL: {u['ATL']:.0f}  |  TSB: {u['TSB']:+.0f}",
+                transform=ax_pmc.transAxes, ha='right', va='top', fontsize=9, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.85))
+    ax_pmc.set_title('PMC — CTL / ATL / TSB / FTLM / Training Load', fontsize=14, fontweight='bold')
+    if 'type' in df.columns:
+        for tipo in df['type'].unique():
+            dt = df[df['type'] == tipo].groupby('Data')['load_val'].sum().reset_index()
+            dt = dt.set_index('Data').reindex(idx, fill_value=0).reset_index(); dt.columns = ['Data', 'lv']
+            ax_load.bar(dt['Data'], dt['lv'], color=get_cor(tipo), alpha=0.7, width=0.8, label=tipo)
+        ax_load.legend(loc='upper left', fontsize=8, ncol=4)
+    else:
+        ax_load.bar(ld['Data'], ld['load_val'], color=CORES['roxo'], alpha=0.65, width=0.8, label='Training Load')
+        ax_load.legend(loc='upper left', fontsize=8)
+    ax_load.set_ylabel('Load', fontweight='bold', fontsize=9); ax_load.grid(True, alpha=0.2, axis='y')
     ax_load.tick_params(axis='x', rotation=45)
-
-    plt.tight_layout()
-    st.pyplot(fig)
-    plt.close()
-
-    # Tabela resumo PMC
+    plt.tight_layout(); st.pyplot(fig); plt.close()
     st.subheader("📋 Resumo PMC")
-    resumo = pd.DataFrame({
-        'Métrica': ['CTL (atual)', 'ATL (atual)', 'TSB (atual)', 'CTL (máx)', 'ATL (máx)'],
-        'Valor':   [f"{ult['CTL']:.1f}", f"{ult['ATL']:.1f}", f"{ult['TSB']:+.1f}",
-                    f"{load_daily['CTL'].max():.1f}", f"{load_daily['ATL'].max():.1f}"]
-    })
-    st.dataframe(resumo, use_container_width=True, hide_index=True)
+    res = pd.DataFrame({'Métrica': ['CTL (atual)', 'ATL (atual)', 'TSB (atual)', 'CTL (máx)', 'ATL (máx)', 'FTLM (atual)', f'FTLM gamma ótimo'],
+                        'Valor': [f"{u['CTL']:.1f}", f"{u['ATL']:.1f}", f"{u['TSB']:+.1f}",
+                                  f"{ld['CTL'].max():.1f}", f"{ld['ATL'].max():.1f}", f"{u['FTLM']:.1f}", f"{best_g:.3f}"]})
+    st.dataframe(res, use_container_width=True, hide_index=True)
 
 # ════════════════════════════════════════════════════════════════════════════════
-# TAB 3 — eFTP EVOLUÇÃO
+# TAB 3 — VOLUME & CARGA
 # ════════════════════════════════════════════════════════════════════════════════
+def tab_volume(da, dw):
+    st.header("📦 Volume & Carga")
+    if len(da) == 0: st.warning("Sem dados de atividades."); return
+    df = filtrar_principais(da).copy()
+    df = add_tempo(df); df['Data'] = pd.to_datetime(df['Data'])
+    df['horas'] = (pd.to_numeric(df['moving_time'], errors='coerce') / 3600).fillna(0)
+    ciclicos = ['Bike', 'Run', 'Row', 'Ski']
+    CORES_MOD = {'Bike': CORES['vermelho'], 'Run': CORES['verde'], 'Row': CORES['azul'], 'Ski': CORES['roxo'], 'WeightTraining': CORES['laranja']}
 
-def tab_eftp(df_act, modalidades_sel):
+    st.subheader("🚴 Volume Mensal — Atividades Cíclicas (horas)")
+    df_cic = df[df['type'].isin(ciclicos)].copy()
+    if len(df_cic) > 0:
+        pivot = df_cic.pivot_table(index='mes', columns='type', values='horas', aggfunc='sum', fill_value=0).sort_index()
+        fig, ax = plt.subplots(figsize=(14, 6))
+        bottom = np.zeros(len(pivot))
+        for tipo in [t for t in ciclicos if t in pivot.columns]:
+            vals = pivot[tipo].values
+            ax.bar(range(len(pivot)), vals, bottom=bottom, label=tipo, color=CORES_MOD.get(tipo, 'gray'), alpha=0.85, edgecolor='white')
+            bottom += vals
+        totais = pivot.sum(axis=1).values
+        for i, t in enumerate(totais):
+            if t > 0: ax.text(i, t + 0.1, f'{t:.1f}h', ha='center', va='bottom', fontsize=9, fontweight='bold')
+        ax.set_xticks(range(len(pivot))); ax.set_xticklabels(pivot.index, rotation=45, ha='right')
+        media = totais.mean(); ax.axhline(media, color='black', linestyle='--', alpha=0.5, label=f'Média: {media:.1f}h')
+        ax.set_ylabel('Horas', fontweight='bold'); ax.legend(loc='upper left'); ax.grid(True, alpha=0.3, axis='y')
+        plt.tight_layout(); st.pyplot(fig); plt.close()
+        c1, c2 = st.columns(2)
+        c1.metric("Total horas cíclicos", f"{pivot.values.sum():.1f}h")
+        c2.metric("Média mensal", f"{media:.1f}h")
+
+    st.subheader("🏋️ Volume Mensal — WeightTraining (horas)")
+    df_wt = da[da['type'] == 'WeightTraining'].copy()
+    if len(df_wt) > 0:
+        df_wt = add_tempo(df_wt); df_wt['horas'] = (pd.to_numeric(df_wt['moving_time'], errors='coerce') / 3600).fillna(0)
+        mensal = df_wt.groupby('mes').agg(horas=('horas', 'sum'), sessoes=('Data', 'count')).reset_index().sort_values('mes')
+        fig, ax = plt.subplots(figsize=(12, 5))
+        ax.bar(range(len(mensal)), mensal['horas'], color=CORES['laranja'], alpha=0.8, edgecolor='white')
+        for i, (h, s) in enumerate(zip(mensal['horas'], mensal['sessoes'])):
+            if h > 0: ax.text(i, h + 0.05, f'{h:.1f}h\n({s}x)', ha='center', va='bottom', fontsize=8)
+        ax.set_xticks(range(len(mensal))); ax.set_xticklabels(mensal['mes'], rotation=45, ha='right')
+        media_wt = mensal['horas'].mean()
+        ax.axhline(media_wt, color='red', linestyle='--', alpha=0.7, label=f'Média: {media_wt:.1f}h')
+        ax.set_ylabel('Horas', fontweight='bold'); ax.legend(); ax.grid(True, alpha=0.3, axis='y')
+        plt.tight_layout(); st.pyplot(fig); plt.close()
+    else:
+        st.info("Sem sessões de WeightTraining no período.")
+
+    st.subheader("💥 Strain Score (XSS)")
+    xss_col = next((c for c in ['xss', 'SS', 'XSS'] if c in df.columns and df[c].notna().any()), None)
+    if xss_col:
+        df_xss = df[df['type'].isin(ciclicos)].dropna(subset=[xss_col]).copy()
+        if len(df_xss) > 3:
+            df_xss = df_xss.sort_values('Data'); df_xss['xss_s'] = pd.to_numeric(df_xss[xss_col], errors='coerce').rolling(7, min_periods=1).mean()
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+            ax1.plot(df_xss['Data'], pd.to_numeric(df_xss[xss_col], errors='coerce'), alpha=0.4, label='XSS')
+            ax1.plot(df_xss['Data'], df_xss['xss_s'], linewidth=2.5, label='XSS 7d')
+            ax1.set_title('Evolução XSS', fontweight='bold'); ax1.legend(); ax1.tick_params(axis='x', rotation=45)
+            comp = [c for c in ['glycolytic', 'aerobic', 'pmax'] if c in df_xss.columns]
+            if comp:
+                med = df_xss.groupby('type')[comp].mean().fillna(0)
+                med.plot(kind='bar', stacked=True, ax=ax2, color=[CORES['vermelho'], CORES['verde'], CORES['laranja']][:len(comp)])
+                ax2.set_title('Componentes por Tipo', fontweight='bold'); ax2.tick_params(axis='x', rotation=45)
+            plt.tight_layout(); st.pyplot(fig); plt.close()
+
+    st.subheader("📊 Volume de Horas por Intensidade (Trimestral)")
+    if 'rpe' in df.columns and 'moving_time' in df.columns:
+        df_rpe = df[df['type'].isin(ciclicos)].copy()
+        df_rpe['rpe_cat'] = df_rpe['rpe'].apply(classificar_rpe); df_rpe = df_rpe.dropna(subset=['rpe_cat'])
+        if len(df_rpe) > 0:
+            piv = df_rpe.pivot_table(index='trimestre', columns='rpe_cat', values='horas', aggfunc='sum', fill_value=0).sort_index()
+            CORES_RPE = {'Leve': CORES['verde'], 'Moderado': CORES['laranja'], 'Pesado': CORES['vermelho']}
+            fig, ax = plt.subplots(figsize=(13, 5))
+            bottom = np.zeros(len(piv))
+            for cat in ['Leve', 'Moderado', 'Pesado']:
+                if cat in piv.columns:
+                    vals = piv[cat].values
+                    ax.bar(range(len(piv)), vals, bottom=bottom, label=cat, color=CORES_RPE.get(cat, 'gray'), alpha=0.85, edgecolor='white')
+                    for i, (v, b) in enumerate(zip(vals, bottom)):
+                        if v > 0.5: ax.text(i, b + v / 2, f'{v:.1f}h', ha='center', va='center', fontsize=8, fontweight='bold', color='white')
+                    bottom += vals
+            ax.set_xticks(range(len(piv))); ax.set_xticklabels(piv.index, rotation=45, ha='right')
+            ax.set_ylabel('Horas', fontweight='bold'); ax.legend(loc='upper left'); ax.grid(True, alpha=0.3, axis='y')
+            ax.set_title('Volume de Horas por Intensidade RPE (Trimestral)', fontsize=12, fontweight='bold')
+            plt.tight_layout(); st.pyplot(fig); plt.close()
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 4 — eFTP
+# ════════════════════════════════════════════════════════════════════════════════
+def tab_eftp(da, mods_sel):
     st.header("⚡ Evolução do eFTP por Modalidade")
-
-    eftp_col = next((c for c in ['icu_eftp','eFTP','eftp'] if c in df_act.columns), None)
-    if eftp_col is None:
-        st.warning("Coluna eFTP não encontrada nos dados.")
-        return
-
-    df = filtrar_atividades_principais(df_act).copy()
-    df['Data'] = pd.to_datetime(df['Data'])
-    df['type'] = df['type'].apply(normalizar_tipo)
-    df['ano']  = df['Data'].dt.year
-    df[eftp_col] = pd.to_numeric(df[eftp_col], errors='coerce')
-    df = df[df['type'].isin(modalidades_sel)].dropna(subset=[eftp_col])
-    df = df[df[eftp_col] > 50]
-
-    if len(df) == 0:
-        st.warning("Sem dados de eFTP no período.")
-        return
-
-    modalidades = [m for m in modalidades_sel if m in df['type'].values]
-    anos = sorted(df['ano'].unique())
-    CORES_ANO = ['#3498DB','#E74C3C','#2ECC71','#9B59B6','#F39C12']
-    mapa_cor  = {a: CORES_ANO[i % len(CORES_ANO)] for i, a in enumerate(anos)}
-
-    # Filtro de anos
-    anos_sel = st.multiselect("Filtrar anos", anos, default=list(anos))
-    df = df[df['ano'].isin(anos_sel)]
-
-    n_mod = len(modalidades)
-    if n_mod == 0:
-        st.info("Nenhuma modalidade com dados eFTP.")
-        return
-
-    fig, axes = plt.subplots(1, n_mod, figsize=(7*n_mod, 6))
-    if n_mod == 1: axes = [axes]
-
-    for ax, mod in zip(axes, modalidades):
-        df_mod = df[df['type'] == mod].sort_values('Data')
-        cor_mod = get_cor_atividade(mod)
-
+    ecol = next((c for c in ['icu_eftp', 'eFTP', 'eftp', 'EFTP'] if c in da.columns), None)
+    if ecol is None: st.warning("Coluna eFTP não encontrada."); return
+    df = filtrar_principais(da).copy(); df['Data'] = pd.to_datetime(df['Data']); df['ano'] = df['Data'].dt.year
+    df[ecol] = pd.to_numeric(df[ecol], errors='coerce'); df = df[df['type'].isin(mods_sel)].dropna(subset=[ecol]); df = df[df[ecol] > 50]
+    if len(df) == 0: st.warning("Sem dados de eFTP."); return
+    anos = sorted(df['ano'].unique()); CANO = ['#3498DB', '#E74C3C', '#2ECC71', '#9B59B6', '#F39C12']
+    mapa_cor = {a: CANO[i % len(CANO)] for i, a in enumerate(anos)}
+    anos_sel = st.multiselect("Filtrar anos", anos, default=list(anos)); df = df[df['ano'].isin(anos_sel)]
+    mods = [m for m in mods_sel if m in df['type'].values]
+    if not mods: st.info("Nenhuma modalidade com eFTP."); return
+    fig, axes = plt.subplots(1, len(mods), figsize=(7 * len(mods), 6))
+    if len(mods) == 1: axes = [axes]
+    for ax, mod in zip(axes, mods):
+        dm = df[df['type'] == mod].sort_values('Data'); cm = get_cor(mod)
         for ano in anos_sel:
-            df_ano = df_mod[df_mod['ano'] == ano]
-            if len(df_ano) == 0: continue
-            ax.scatter(df_ano['Data'], df_ano[eftp_col],
-                       color=mapa_cor[ano], alpha=0.65, s=35, label=str(ano))
-            if len(df_ano) >= 3:
-                x_n = (df_ano['Data'] - df_ano['Data'].min()).dt.days.values
-                coef = np.polyfit(x_n, df_ano[eftp_col].values, 1)
-                x_p  = np.array([x_n.min(), x_n.max()])
-                y_p  = np.poly1d(coef)(x_p)
-                datas_p = [df_ano['Data'].min() + pd.Timedelta(days=int(x)) for x in x_p]
-                ax.plot(datas_p, y_p, color=mapa_cor[ano], linewidth=2, linestyle='--', alpha=0.9)
-                slope_mes = coef[0] * 30
-                ax.annotate(f'{slope_mes:+.1f}W/mês', xy=(datas_p[1], y_p[1]),
-                            xytext=(5, 2), textcoords='offset points',
-                            fontsize=7.5, color=mapa_cor[ano], fontweight='bold')
+            da_ = dm[dm['ano'] == ano]
+            if len(da_) == 0: continue
+            ax.scatter(da_['Data'], da_[ecol], color=mapa_cor[ano], alpha=0.65, s=35, label=str(ano))
+            if len(da_) >= 3:
+                xn = (da_['Data'] - da_['Data'].min()).dt.days.values; coef = np.polyfit(xn, da_[ecol].values, 1)
+                xp = np.array([xn.min(), xn.max()]); yp = np.poly1d(coef)(xp)
+                dp = [da_['Data'].min() + pd.Timedelta(days=int(x)) for x in xp]
+                ax.plot(dp, yp, color=mapa_cor[ano], linewidth=2, linestyle='--', alpha=0.9)
+                sm = coef[0] * 30
+                ax.annotate(f'{sm:+.1f}W/mês', xy=(dp[1], yp[1]), xytext=(5, 2), textcoords='offset points', fontsize=7.5, color=mapa_cor[ano], fontweight='bold')
+        if len(dm) >= 5:
+            roll = dm.set_index('Data')[ecol].resample('7D').mean().interpolate()
+            ax.plot(roll.index, roll.values, color=cm, linewidth=2, alpha=0.4, label='Média 7d')
+        if len(dm) > 0:
+            mx = dm[ecol].max()
+            ax.axhline(mx, color=cm, linestyle=':', linewidth=1.2, alpha=0.6)
+            ax.annotate(f'Máx: {mx:.0f}W', xy=(dm.loc[dm[ecol].idxmax(), 'Data'], mx), xytext=(0, 6), textcoords='offset points', fontsize=8, color=cm, fontweight='bold', ha='center')
+        ax.set_title(f'eFTP — {mod}', fontsize=13, fontweight='bold', color=cm)
+        ax.set_xlabel('Data'); ax.set_ylabel('eFTP (W)'); ax.tick_params(axis='x', rotation=45); ax.legend(fontsize=8); ax.grid(True, alpha=0.25)
+    plt.suptitle('Evolução eFTP por Modalidade', fontsize=14, fontweight='bold', y=1.02)
+    plt.tight_layout(); st.pyplot(fig); plt.close()
 
-        if len(df_mod) >= 5:
-            roll = df_mod.set_index('Data')[eftp_col].resample('7D').mean().interpolate()
-            ax.plot(roll.index, roll.values, color=cor_mod, linewidth=2, alpha=0.4, label='Média 7d')
-
-        if len(df_mod) > 0:
-            eftp_max = df_mod[eftp_col].max()
-            ax.axhline(eftp_max, color=cor_mod, linestyle=':', linewidth=1.2, alpha=0.6)
-            ax.annotate(f'Máx: {eftp_max:.0f}W',
-                        xy=(df_mod.loc[df_mod[eftp_col].idxmax(), 'Data'], eftp_max),
-                        xytext=(0, 6), textcoords='offset points',
-                        fontsize=8, color=cor_mod, fontweight='bold', ha='center')
-
-        ax.set_title(f'eFTP — {mod}', fontsize=13, fontweight='bold', color=cor_mod)
-        ax.set_xlabel('Data'); ax.set_ylabel('eFTP (W)')
-        ax.tick_params(axis='x', rotation=45)
-        ax.legend(fontsize=8); ax.grid(True, alpha=0.25)
-
-    plt.suptitle('Evolução do eFTP por Modalidade', fontsize=14, fontweight='bold', y=1.02)
-    plt.tight_layout()
-    st.pyplot(fig)
-    plt.close()
+    st.subheader("📦 RPE por Modalidade")
+    if 'rpe' in da.columns:
+        df_r = filtrar_principais(da).copy(); df_r = add_tempo(df_r); df_r = df_r[df_r['type'].isin(mods_sel)].dropna(subset=['rpe'])
+        if len(df_r) > 0:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+            tipos = [t for t in mods_sel if t in df_r['type'].values]
+            sns.boxplot(data=df_r, x='type', y='rpe', order=tipos, palette={t: get_cor(t) for t in tipos}, ax=ax1)
+            ax1.set_title('RPE por Modalidade', fontweight='bold'); ax1.tick_params(axis='x', rotation=45)
+            if 'mes' in df_r.columns:
+                meses = sorted(df_r['mes'].unique())[-12:]; df_rm = df_r[df_r['mes'].isin(meses)]
+                sns.violinplot(data=df_rm, x='mes', y='rpe', palette='Set2', ax=ax2)
+                ax2.set_title('RPE por Mês', fontweight='bold'); ax2.tick_params(axis='x', rotation=45)
+            plt.tight_layout(); st.pyplot(fig); plt.close()
 
 # ════════════════════════════════════════════════════════════════════════════════
-# TAB 4 — HR ZONES + RPE ZONES
+# TAB 5 — HR ZONES + RPE ZONES + CORRELAÇÃO
 # ════════════════════════════════════════════════════════════════════════════════
+def _zonas_bp(ax_bar, ax_pie, por_tipo, total_seg, cores_zona, tit_bar, tit_pie):
+    zonas = list(cores_zona.keys()); bottom = np.zeros(len(por_tipo))
+    for zona in zonas:
+        if zona not in por_tipo.columns: continue
+        vals = por_tipo[zona].values
+        ax_bar.bar(por_tipo.index, vals, bottom=bottom, color=cores_zona[zona], label=zona, edgecolor='white', linewidth=0.5)
+        for i, (v, b) in enumerate(zip(vals, bottom)):
+            if v > 5: ax_bar.text(i, b + v / 2, f'{v:.0f}%', ha='center', va='center', fontsize=9, fontweight='bold', color='white')
+        bottom += vals
+    ax_bar.set_ylim(0, 100); ax_bar.set_ylabel('% sessões', fontweight='bold')
+    ax_bar.set_title(tit_bar, fontweight='bold'); ax_bar.legend(loc='upper right', fontsize=8); ax_bar.grid(True, alpha=0.2, axis='y')
+    lp = [l for l, v in total_seg.items() if v > 0]; sp = [v for v in total_seg.values() if v > 0]
+    if sum(sp) > 0:
+        _, _, ats = ax_pie.pie(sp, labels=lp, autopct='%1.1f%%', colors=[cores_zona[l] for l in lp], startangle=90, wedgeprops=dict(edgecolor='white', linewidth=2), pctdistance=0.75)
+        for at in ats: at.set_fontweight('bold'); at.set_fontsize(10)
+    ax_pie.set_title(tit_pie, fontweight='bold')
 
-def tab_zones(df_act, modalidades_sel):
+def tab_zones(da, mods_sel):
     st.header("❤️ HR Zones & RPE Zones")
+    df = filtrar_principais(da).copy(); df['Data'] = pd.to_datetime(df['Data']); df['ano'] = df['Data'].dt.year
+    df = df[df['type'].isin(mods_sel)]
+    if len(df) == 0: st.warning("Sem dados."); return
+    anos = sorted(df['ano'].unique()); ano_sel = st.selectbox("Ano", anos, index=len(anos) - 1)
+    df_ano = df[df['ano'] == ano_sel].copy()
+    zonas_hr = [c for c in df.columns if c.lower().startswith('hr_z') and c.lower().endswith('_secs')]
+    rpe_col = next((c for c in ['rpe', 'RPE', 'icu_rpe'] if c in df.columns), None)
+    def gzn(col): m = re.search(r'hr_z(\d+)_secs', col.lower()); return int(m.group(1)) if m else 0
+    CORES_HR = {'Baixa (Z1+Z2)': '#2ECC71', 'Moderada (Z3+Z4)': '#F39C12', 'Alta (Z5+Z6+Z7)': '#E74C3C'}
+    CORES_RPE = {'Leve (1–4)': '#3498DB', 'Moderado (5–6)': '#F39C12', 'Forte (7–10)': '#E74C3C'}
+    fig, axes = plt.subplots(1, 4, figsize=(22, 6))
+    if zonas_hr:
+        dh = df_ano.copy()
+        bc = [c for c in zonas_hr if gzn(c) in (1, 2)]; mc = [c for c in zonas_hr if gzn(c) in (3, 4)]; ac = [c for c in zonas_hr if gzn(c) in (5, 6, 7)]
+        for cols in [bc, mc, ac]:
+            for c in cols: dh[c] = pd.to_numeric(dh[c], errors='coerce').fillna(0)
+        dh['zb'] = dh[bc].sum(axis=1) if bc else 0; dh['zm'] = dh[mc].sum(axis=1) if mc else 0; dh['za'] = dh[ac].sum(axis=1) if ac else 0
+        dh['zt'] = dh['zb'] + dh['zm'] + dh['za']; dh = dh[dh['zt'] > 0]
+        if len(dh) > 0:
+            for z, p in [('zb', 'pb'), ('zm', 'pm'), ('za', 'pa')]: dh[p] = dh[z] / dh['zt'] * 100
+            pt = dh.groupby('type')[['pb', 'pm', 'pa']].mean(); pt.columns = list(CORES_HR.keys())
+            ts = {'Baixa (Z1+Z2)': dh['zb'].sum(), 'Moderada (Z3+Z4)': dh['zm'].sum(), 'Alta (Z5+Z6+Z7)': dh['za'].sum()}
+            _zonas_bp(axes[0], axes[1], pt, ts, CORES_HR, f'❤️ HR Zones — {ano_sel}', f'❤️ HR Geral — {ano_sel}')
+    if rpe_col:
+        dr = df_ano.dropna(subset=[rpe_col]).copy(); dr[rpe_col] = pd.to_numeric(dr[rpe_col], errors='coerce')
+        dr['rz'] = pd.cut(dr[rpe_col], bins=[0, 4.9, 6.9, 10], labels=list(CORES_RPE.keys()), right=True); dr = dr.dropna(subset=['rz'])
+        if len(dr) > 0:
+            piv = dr.groupby(['type', 'rz'], observed=True).size().unstack(fill_value=0)
+            for z in CORES_RPE.keys():
+                if z not in piv.columns: piv[z] = 0
+            piv = piv[list(CORES_RPE.keys())]; pct = piv.div(piv.sum(axis=1), axis=0) * 100
+            tr = {z: piv[z].sum() for z in CORES_RPE.keys()}
+            _zonas_bp(axes[2], axes[3], pct, tr, CORES_RPE, f'🎯 RPE Zones — {ano_sel}', f'🎯 RPE Geral — {ano_sel}')
+    plt.suptitle(f'HR Zones · RPE Zones — {ano_sel}', fontsize=13, fontweight='bold', y=1.02)
+    plt.tight_layout(); st.pyplot(fig); plt.close()
 
-    df = filtrar_atividades_principais(df_act).copy()
-    df['Data'] = pd.to_datetime(df['Data'])
-    df['type'] = df['type'].apply(normalizar_tipo)
-    df['ano']  = df['Data'].dt.year
-    df = df[df['type'].isin(modalidades_sel)]
-
-    if len(df) == 0:
-        st.warning("Sem dados no período.")
-        return
-
-    anos = sorted(df['ano'].unique())
-    ano_sel = st.selectbox("Selecionar ano", anos, index=len(anos)-1)
-    df_ano  = df[df['ano'] == ano_sel].copy()
-
-    zonas_hr_raw = [c for c in df.columns if c.lower().startswith('hr_z') and c.lower().endswith('_secs')]
-    rpe_col      = next((c for c in ['rpe','RPE','icu_rpe'] if c in df.columns), None)
-
-    CORES_HR  = {'Baixa (Z1+Z2)':'#2ECC71','Moderada (Z3+Z4)':'#F39C12','Alta (Z5+Z6+Z7)':'#E74C3C'}
-    CORES_RPE = {'Leve (1–4)':'#3498DB','Moderado (5–6)':'#F39C12','Forte (7–10)':'#E74C3C'}
-
-    def get_zona_num(col):
-        m = re.search(r'hr_z(\d+)_secs', col.lower())
-        return int(m.group(1)) if m else 0
-
-    col_hr, col_rpe = st.columns(2)
-
-    # ── HR Zones
-    with col_hr:
-        st.subheader(f"❤️ HR Zones — {ano_sel}")
-        if zonas_hr_raw:
-            df_hr = df_ano.copy()
-            baixa    = [c for c in zonas_hr_raw if get_zona_num(c) in (1,2)]
-            moderada = [c for c in zonas_hr_raw if get_zona_num(c) in (3,4)]
-            alta     = [c for c in zonas_hr_raw if get_zona_num(c) in (5,6,7)]
-            for cols in [baixa, moderada, alta]:
-                for c in cols: df_hr[c] = pd.to_numeric(df_hr[c], errors='coerce').fillna(0)
-            df_hr['z_b'] = df_hr[baixa].sum(axis=1)    if baixa    else 0
-            df_hr['z_m'] = df_hr[moderada].sum(axis=1) if moderada else 0
-            df_hr['z_a'] = df_hr[alta].sum(axis=1)     if alta     else 0
-            df_hr['z_t'] = df_hr['z_b'] + df_hr['z_m'] + df_hr['z_a']
-            df_hr = df_hr[df_hr['z_t'] > 0]
-            if len(df_hr) > 0:
-                for z, col in zip(['z_b','z_m','z_a'],['pct_b','pct_m','pct_a']):
-                    df_hr[col] = df_hr[z] / df_hr['z_t'] * 100
-                por_tipo = df_hr.groupby('type')[['pct_b','pct_m','pct_a']].mean()
-                por_tipo.columns = list(CORES_HR.keys())
-                fig, ax = plt.subplots(figsize=(6, 5))
-                bottom = np.zeros(len(por_tipo))
-                for zona, cor in CORES_HR.items():
-                    vals = por_tipo[zona].values
-                    ax.bar(por_tipo.index, vals, bottom=bottom, color=cor, label=zona,
-                           edgecolor='white', linewidth=0.5)
-                    for i,(v,b) in enumerate(zip(vals,bottom)):
-                        if v > 5: ax.text(i, b+v/2, f'{v:.0f}%', ha='center', va='center',
-                                          fontsize=9, fontweight='bold', color='white')
-                    bottom += vals
-                ax.set_ylim(0,100); ax.set_ylabel('% do tempo')
-                ax.legend(loc='upper right', fontsize=8); ax.grid(True, alpha=0.2, axis='y')
-                plt.tight_layout()
-                st.pyplot(fig); plt.close()
-        else:
-            st.info("Sem colunas de HR zones nos dados.")
-
-    # ── RPE Zones
-    with col_rpe:
-        st.subheader(f"🎯 RPE Zones — {ano_sel}")
-        if rpe_col:
-            df_rpe = df_ano.dropna(subset=[rpe_col]).copy()
-            df_rpe[rpe_col] = pd.to_numeric(df_rpe[rpe_col], errors='coerce')
-            df_rpe['rpe_zona'] = pd.cut(df_rpe[rpe_col], bins=[0,4.9,6.9,10],
-                                         labels=list(CORES_RPE.keys()), right=True)
-            df_rpe = df_rpe.dropna(subset=['rpe_zona'])
-            if len(df_rpe) > 0:
-                pivot = df_rpe.groupby(['type','rpe_zona'], observed=True).size().unstack(fill_value=0)
-                for z in CORES_RPE.keys():
-                    if z not in pivot.columns: pivot[z] = 0
-                pivot = pivot[list(CORES_RPE.keys())]
-                pct = pivot.div(pivot.sum(axis=1), axis=0) * 100
-                fig, ax = plt.subplots(figsize=(6,5))
-                bottom = np.zeros(len(pct))
-                for zona, cor in CORES_RPE.items():
-                    vals = pct[zona].values
-                    ax.bar(pct.index, vals, bottom=bottom, color=cor, label=zona,
-                           edgecolor='white', linewidth=0.5)
-                    for i,(v,b) in enumerate(zip(vals,bottom)):
-                        if v > 5: ax.text(i, b+v/2, f'{v:.0f}%', ha='center', va='center',
-                                          fontsize=9, fontweight='bold', color='white')
-                    bottom += vals
-                ax.set_ylim(0,100); ax.set_ylabel('% de sessões')
-                ax.legend(loc='upper right', fontsize=8); ax.grid(True, alpha=0.2, axis='y')
-                plt.tight_layout()
-                st.pyplot(fig); plt.close()
-        else:
-            st.info("Sem coluna RPE nos dados.")
+    st.subheader("🔗 Correlação HR Zones × RPE")
+    if zonas_hr and rpe_col:
+        df_ok = df.copy()
+        for c in [c for c in zonas_hr]: df_ok[c] = pd.to_numeric(df_ok[c], errors='coerce').fillna(0)
+        df_ok['zb'] = df_ok[[c for c in zonas_hr if gzn(c) in (1, 2)]].sum(axis=1)
+        df_ok['zm'] = df_ok[[c for c in zonas_hr if gzn(c) in (3, 4)]].sum(axis=1)
+        df_ok['za'] = df_ok[[c for c in zonas_hr if gzn(c) in (5, 6, 7)]].sum(axis=1)
+        df_ok['zt'] = df_ok['zb'] + df_ok['zm'] + df_ok['za']; mhr = df_ok['zt'] > 0
+        df_ok.loc[mhr, 'pb'] = df_ok.loc[mhr, 'zb'] / df_ok.loc[mhr, 'zt'] * 100
+        df_ok.loc[mhr, 'pm'] = df_ok.loc[mhr, 'zm'] / df_ok.loc[mhr, 'zt'] * 100
+        df_ok.loc[mhr, 'pa'] = df_ok.loc[mhr, 'za'] / df_ok.loc[mhr, 'zt'] * 100
+        df_ok[rpe_col] = pd.to_numeric(df_ok[rpe_col], errors='coerce')
+        df_ok['rpe_cat'] = pd.cut(df_ok[rpe_col], bins=[0, 4.9, 6.9, 10], labels=['Leve (1–4)', 'Moderado (5–6)', 'Forte (7–10)'], right=True)
+        df_ok = df_ok.dropna(subset=[rpe_col, 'pb', 'pm', 'pa', 'rpe_cat']); df_ok = df_ok[df_ok['zt'] > 0]
+        mods_corr = [m for m in mods_sel if m in df_ok['type'].values]
+        if mods_corr and len(df_ok) >= 5:
+            HR_VARS = ['pb', 'pm', 'pa']; HR_LABELS = ['HR Baixa\n(Z1+Z2)', 'HR Moderada\n(Z3+Z4)', 'HR Alta\n(Z5+Z6+Z7)']
+            CORES_RPE_CAT = {'Leve (1–4)': CORES['azul'], 'Moderado (5–6)': CORES['laranja'], 'Forte (7–10)': CORES['vermelho']}
+            fig, axes2 = plt.subplots(1, len(mods_corr), figsize=(5 * len(mods_corr), 5))
+            if len(mods_corr) == 1: axes2 = [axes2]
+            for ax, mod in zip(axes2, mods_corr):
+                dm = df_ok[df_ok['type'] == mod]
+                if len(dm) < 5: ax.text(0.5, 0.5, f'{mod}\nn insuficiente', ha='center', va='center', transform=ax.transAxes); continue
+                cm_mat = np.zeros((3, 1)); annot = np.empty((3, 1), dtype=object)
+                for i, hv in enumerate(HR_VARS):
+                    x = dm[rpe_col].values; y = dm[hv].values
+                    if np.std(y) > 0 and len(x) >= 5:
+                        r, p = pearsonr(x, y); cm_mat[i, 0] = r
+                        sig = '***' if p < 0.001 else ('**' if p < 0.01 else ('*' if p < 0.05 else 'ns'))
+                        annot[i, 0] = f'r={r:.2f}\n{sig}'
+                    else: annot[i, 0] = 'n/a'
+                im = ax.imshow(cm_mat, cmap='RdYlGn', vmin=-1, vmax=1, aspect='auto')
+                ax.set_xticks([0]); ax.set_xticklabels(['RPE'], fontsize=10)
+                ax.set_yticks(range(3)); ax.set_yticklabels(HR_LABELS, fontsize=9)
+                for i in range(3):
+                    tc = 'white' if abs(cm_mat[i, 0]) > 0.5 else 'black'
+                    ax.text(0, i, annot[i, 0], ha='center', va='center', fontsize=10, fontweight='bold', color=tc)
+                ax.set_title(f'{mod} (n={len(dm)})', fontsize=11, fontweight='bold', color=get_cor(mod))
+                plt.colorbar(im, ax=ax, shrink=0.7, label='r de Pearson')
+            plt.suptitle('Correlação Pearson: RPE × HR Zones', fontsize=13, fontweight='bold', y=1.03)
+            plt.tight_layout(); st.pyplot(fig); plt.close()
+            rows = []
+            forca = lambda r: 'Muito Forte' if abs(r) >= 0.7 else ('Forte' if abs(r) >= 0.5 else ('Moderada' if abs(r) >= 0.3 else 'Fraca'))
+            for mod in mods_corr:
+                dm = df_ok[df_ok['type'] == mod]
+                for hv, hl in zip(HR_VARS, ['HR Baixa', 'HR Moderada', 'HR Alta']):
+                    x = dm[rpe_col].values; y = dm[hv].values
+                    if np.std(y) > 0 and len(x) >= 5:
+                        r, p = pearsonr(x, y)
+                        rows.append({'Modalidade': mod, 'HR Zone': hl, 'r': f'{r:+.3f}', 'p-value': f'{p:.4f}', 'n': len(x),
+                                     'Sig': '***' if p < 0.001 else ('**' if p < 0.01 else ('*' if p < 0.05 else 'ns')), 'Força': forca(r)})
+            if rows:
+                st.subheader("📋 Tabela de Correlações")
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 # ════════════════════════════════════════════════════════════════════════════════
-# TAB 5 — RECOVERY
+# TAB 6 — CORRELAÇÕES & IMPACTO RPE
 # ════════════════════════════════════════════════════════════════════════════════
+def tab_correlacoes(da, dw):
+    st.header("🧠 Correlações & Impacto RPE")
+    if len(da) == 0 or len(dw) == 0: st.warning("Sem dados suficientes."); return
+    rpe_col = next((c for c in ['rpe', 'RPE', 'icu_rpe'] if c in da.columns), None)
 
-def calcular_recovery(df_well):
-    if len(df_well) == 0: return pd.DataFrame()
-    df = df_well.copy().sort_values('Data')
-    df['hrv_baseline'] = df['hrv'].rolling(14, min_periods=7).mean()
-    df['rhr_baseline'] = df['rhr'].rolling(14, min_periods=7).mean()
-    df['hrv_cv_7d']    = calcular_cv_rolling(df['hrv'], 7)
-    df['hrv_cv_30d']   = calcular_cv_rolling(df['hrv'], 30)
+    st.subheader("💚 Impacto do RPE no HRV/RHR (dia seguinte)")
+    if rpe_col and 'hrv' in dw.columns:
+        da2 = filtrar_principais(da).copy(); da2['Data'] = pd.to_datetime(da2['Data']).dt.normalize()
+        dw2 = dw.copy(); dw2['Data'] = pd.to_datetime(dw2['Data']).dt.normalize()
+        rpe_daily = da2.groupby('Data')[rpe_col].mean().reset_index(); rpe_daily.columns = ['Data', 'rpe_avg']
+        rpe_daily['rpe_cat'] = rpe_daily['rpe_avg'].apply(classificar_rpe)
+        dw2_shift = dw2[['Data', 'hrv'] + (['rhr'] if 'rhr' in dw2.columns else [])].copy()
+        dw2_shift['Data_prev'] = dw2_shift['Data'] - pd.Timedelta(days=1)
+        merged = rpe_daily.merge(dw2_shift.rename(columns={'Data': 'Data_hrv', 'Data_prev': 'Data'}), on='Data', how='inner')
+        merged = merged.dropna(subset=['hrv', 'rpe_cat'])
+        if len(merged) >= 5:
+            cats = ['Leve', 'Moderado', 'Pesado']; baseline_hrv = merged['hrv'].mean()
+            col1, col2 = st.columns(2)
+            with col1:
+                fig, ax = plt.subplots(figsize=(7, 4))
+                medias_hrv = {c: merged[merged['rpe_cat'] == c]['hrv'].mean() for c in cats if c in merged['rpe_cat'].values}
+                vals = [((medias_hrv.get(c, baseline_hrv) - baseline_hrv) / baseline_hrv * 100) for c in cats]
+                ax.bar(cats, vals, color=[CORES['verde'] if v > 0 else CORES['vermelho'] for v in vals], alpha=0.8, edgecolor='white')
+                ax.axhline(0, color=CORES['cinza'], linestyle='--'); ax.set_title('Δ HRV% (dia+1) por RPE', fontweight='bold')
+                for i, v in enumerate(vals): ax.text(i, v + (1 if v >= 0 else -1.5), f'{v:+.1f}%', ha='center', fontsize=9, fontweight='bold')
+                ax.grid(True, alpha=0.3, axis='y'); plt.tight_layout(); st.pyplot(fig); plt.close()
+            with col2:
+                if 'rhr' in merged.columns:
+                    fig, ax = plt.subplots(figsize=(7, 4)); baseline_rhr = merged['rhr'].mean()
+                    medias_rhr = {c: merged[merged['rpe_cat'] == c]['rhr'].mean() for c in cats if c in merged['rpe_cat'].values}
+                    vals_r = [medias_rhr.get(c, baseline_rhr) - baseline_rhr for c in cats]
+                    ax.bar(cats, vals_r, color=[CORES['vermelho'] if v > 0 else CORES['verde'] for v in vals_r], alpha=0.8, edgecolor='white')
+                    ax.axhline(0, color=CORES['cinza'], linestyle='--'); ax.set_title('Δ RHR (bpm, dia+1) por RPE', fontweight='bold')
+                    for i, v in enumerate(vals_r): ax.text(i, v + (0.3 if v >= 0 else -0.6), f'{v:+.1f}', ha='center', fontsize=9, fontweight='bold')
+                    ax.grid(True, alpha=0.3, axis='y'); plt.tight_layout(); st.pyplot(fig); plt.close()
+            tabela = []
+            for cat in cats:
+                sub = merged[merged['rpe_cat'] == cat]
+                if len(sub) > 0:
+                    dhrv = ((sub['hrv'].mean() - baseline_hrv) / baseline_hrv * 100)
+                    drhr = (sub['rhr'].mean() - (merged['rhr'].mean() if 'rhr' in merged.columns else 0)) if 'rhr' in sub.columns else 0
+                    tabela.append({'Categoria': cat, 'Δ HRV (%)': f'{dhrv:+.1f}%', 'Δ RHR (bpm)': f'{drhr:+.1f}', 'n': len(sub)})
+            if tabela: st.dataframe(pd.DataFrame(tabela), use_container_width=True, hide_index=True)
 
+    st.subheader("🔍 Scatter: RPE → HRV | HRV → RHR")
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+    if rpe_col and 'hrv' in dw.columns and 'merged' in dir() and len(merged) > 5:
+        m_clean = merged[['rpe_avg', 'hrv']].dropna()
+        if len(m_clean) > 5:
+            ax1.scatter(m_clean['rpe_avg'], m_clean['hrv'], c=CORES['azul'], alpha=0.5, s=30)
+            z = np.polyfit(m_clean['rpe_avg'], m_clean['hrv'], 1); xl = np.linspace(m_clean['rpe_avg'].min(), m_clean['rpe_avg'].max(), 100)
+            ax1.plot(xl, np.poly1d(z)(xl), '--', color=CORES['vermelho'])
+            r, _ = pearsonr(m_clean['rpe_avg'], m_clean['hrv'])
+            ax1.text(0.05, 0.95, f'r = {r:.3f}', transform=ax1.transAxes, fontweight='bold', va='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+    ax1.set_xlabel('RPE'); ax1.set_ylabel('HRV (dia+1)'); ax1.set_title('RPE → HRV', fontweight='bold'); ax1.grid(True, alpha=0.3)
+    if 'hrv' in dw.columns and 'rhr' in dw.columns:
+        dw3 = dw.dropna(subset=['hrv', 'rhr'])
+        if len(dw3) > 5:
+            ax2.scatter(dw3['hrv'], dw3['rhr'], c=CORES['roxo'], alpha=0.5, s=30)
+            z2 = np.polyfit(dw3['hrv'], dw3['rhr'], 1); xl2 = np.linspace(dw3['hrv'].min(), dw3['hrv'].max(), 100)
+            ax2.plot(xl2, np.poly1d(z2)(xl2), '--', color=CORES['vermelho'])
+            r2 = dw3['hrv'].corr(dw3['rhr'])
+            ax2.text(0.05, 0.95, f'r = {r2:.3f}', transform=ax2.transAxes, fontweight='bold', va='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+    ax2.set_xlabel('HRV (ms)'); ax2.set_ylabel('RHR (bpm)'); ax2.set_title('HRV vs RHR', fontweight='bold'); ax2.grid(True, alpha=0.3)
+    plt.tight_layout(); st.pyplot(fig); plt.close()
+
+    st.subheader("📊 Correlações entre Métricas Wellness")
+    mets_num = [c for c in ['hrv', 'rhr', 'sleep_quality', 'fatiga', 'stress', 'humor', 'soreness'] if c in dw.columns and dw[c].notna().any()]
+    if len(mets_num) >= 3:
+        corr_mat = dw[mets_num].corr(method='pearson')
+        fig, ax = plt.subplots(figsize=(10, 8))
+        mask = np.triu(np.ones_like(corr_mat, dtype=bool))
+        sns.heatmap(corr_mat, mask=mask, annot=True, fmt='.2f', cmap='RdYlGn', center=0, ax=ax, square=True, linewidths=0.5, vmin=-1, vmax=1, cbar_kws={'shrink': 0.8})
+        ax.set_title('Correlações Wellness (Pearson)', fontsize=13, fontweight='bold')
+        plt.tight_layout(); st.pyplot(fig); plt.close()
+
+    st.subheader("🏃 Impacto por Tipo de Atividade → HRV/RHR (dia+1)")
+    if rpe_col and 'type' in da.columns and 'hrv' in dw.columns:
+        da3 = filtrar_principais(da).copy(); da3['Data'] = pd.to_datetime(da3['Data']).dt.normalize()
+        tipo_daily = da3.groupby('Data')['type'].agg(lambda x: x.mode()[0] if len(x) > 0 else None).reset_index()
+        dw2b = dw.copy(); dw2b['Data'] = pd.to_datetime(dw2b['Data']).dt.normalize()
+        dw2b_s = dw2b[['Data', 'hrv'] + (['rhr'] if 'rhr' in dw2b.columns else [])].copy()
+        dw2b_s['Data_prev'] = dw2b_s['Data'] - pd.Timedelta(days=1)
+        merged2 = tipo_daily.merge(dw2b_s.rename(columns={'Data': 'Data_hrv', 'Data_prev': 'Data'}), on='Data', how='inner')
+        merged2 = merged2.dropna(subset=['hrv', 'type'])
+        if len(merged2) >= 5:
+            tipos_disp = [t for t in ['Bike', 'Row', 'Run', 'Ski'] if t in merged2['type'].values]
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+            baseline_h = merged2['hrv'].mean()
+            vals_h = [((merged2[merged2['type'] == t]['hrv'].mean() - baseline_h) / baseline_h * 100) for t in tipos_disp]
+            ax1.bar(tipos_disp, vals_h, color=[get_cor(t) for t in tipos_disp], alpha=0.8, edgecolor='white')
+            ax1.axhline(0, color=CORES['cinza'], linestyle='--'); ax1.set_title('Atividade → HRV (dia+1)', fontweight='bold')
+            ax1.set_ylabel('Δ HRV (%)'); ax1.grid(True, alpha=0.3, axis='y')
+            if 'rhr' in merged2.columns:
+                baseline_r = merged2['rhr'].mean()
+                vals_r = [merged2[merged2['type'] == t]['rhr'].mean() - baseline_r for t in tipos_disp]
+                ax2.bar(tipos_disp, vals_r, color=[get_cor(t) for t in tipos_disp], alpha=0.8, edgecolor='white')
+                ax2.axhline(0, color=CORES['cinza'], linestyle='--'); ax2.set_title('Atividade → RHR (dia+1)', fontweight='bold')
+                ax2.set_ylabel('Δ RHR (bpm)'); ax2.grid(True, alpha=0.3, axis='y')
+            plt.tight_layout(); st.pyplot(fig); plt.close()
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 7 — RECOVERY
+# ════════════════════════════════════════════════════════════════════════════════
+def calcular_recovery(dw):
+    if len(dw) == 0: return pd.DataFrame()
+    df = dw.copy().sort_values('Data')
+    df['hrv_b14'] = df['hrv'].rolling(14, min_periods=7).mean()
+    df['rhr_b14'] = df['rhr'].rolling(14, min_periods=7).mean() if 'rhr' in df.columns else np.nan
+    df['cv7'] = cvr(df['hrv'], 7); df['cv30'] = cvr(df['hrv'], 30)
     rows = []
     for _, row in df.iterrows():
-        hrv_v = row.get('hrv');    hrv_b = row.get('hrv_baseline'); cv = row.get('hrv_cv_7d')
-        rhr_v = row.get('rhr');    rhr_b = row.get('rhr_baseline')
-
-        # HRV score
-        hrv_score = 50
-        if pd.notna(hrv_v) and pd.notna(hrv_b) and hrv_b > 0 and pd.notna(cv):
-            inf, sup = calcular_normal_range(hrv_b, cv)
+        hv = row.get('hrv'); hb = row.get('hrv_b14'); cv = row.get('cv7'); hs = 50
+        if pd.notna(hv) and pd.notna(hb) and hb > 0 and pd.notna(cv):
+            inf, sup = norm_range(hb, cv)
             if inf and sup:
                 band = sup - inf
-                if hrv_v >= sup:   hrv_score = min(100, 75 + (hrv_v-sup)/band*25 if band>0 else 75)
-                elif hrv_v <= inf: hrv_score = max(0,   40 - (inf-hrv_v)/band*40 if band>0 else 40)
-                else:              hrv_score = 50 + ((hrv_v-inf)/band*25 if band>0 else 0)
-
-        # RHR score (invertido)
-        rhr_score = 50
-        if pd.notna(rhr_v) and pd.notna(rhr_b) and rhr_b > 0:
-            pct = (rhr_v - rhr_b) / rhr_b * 100
-            rhr_score = 90 if pct<-10 else 75 if pct<-5 else 55 if pct<5 else 35 if pct<10 else 20
-
-        sleep_s   = converter_1_5_para_0_100(row.get('sleep_quality'))
-        fatiga_s  = converter_1_5_para_0_100(row.get('fatiga'))
-        stress_s  = converter_1_5_para_0_100(row.get('stress'))
-        humor_s   = converter_1_5_para_0_100(row.get('humor'))
-        soreness_s= converter_1_5_para_0_100(row.get('soreness'))
-
-        score = (hrv_score*0.30 + rhr_score*0.15 + sleep_s*0.20 +
-                 fatiga_s*0.10 + stress_s*0.10 + humor_s*0.05 + soreness_s*0.05 + 50*0.05)
-
-        inf_r, sup_r = (calcular_normal_range(hrv_b, cv)
-                        if pd.notna(hrv_b) and pd.notna(cv) else (None, None))
-
-        rows.append({'Data': row['Data'], 'recovery_score': score,
-                     'hrv': hrv_v, 'hrv_baseline': hrv_b, 'hrv_cv_7d': cv,
-                     'hrv_cv_30d': row.get('hrv_cv_30d'),
-                     'normal_range_inf': inf_r, 'normal_range_sup': sup_r,
-                     'hrv_component': hrv_score, 'rhr_component': rhr_score,
-                     'sleep_component': sleep_s, 'fatiga_component': fatiga_s,
-                     'stress_component': stress_s})
+                if hv >= sup: hs = min(100, 75 + (hv - sup) / band * 25 if band > 0 else 75)
+                elif hv <= inf: hs = max(0, 40 - (inf - hv) / band * 40 if band > 0 else 40)
+                else: hs = 50 + ((hv - inf) / band * 25 if band > 0 else 0)
+        rv = row.get('rhr'); rb = row.get('rhr_b14'); rs = 50
+        if pd.notna(rv) and pd.notna(rb) and rb > 0:
+            pct = (rv - rb) / rb * 100; rs = 90 if pct < -10 else 75 if pct < -5 else 55 if pct < 5 else 35 if pct < 10 else 20
+        sl = conv_15(row.get('sleep_quality')); fa = conv_15(row.get('fatiga'))
+        st_ = conv_15(row.get('stress')); hu = conv_15(row.get('humor')); so = conv_15(row.get('soreness'))
+        score = hs * 0.30 + rs * 0.15 + sl * 0.20 + fa * 0.10 + st_ * 0.10 + hu * 0.05 + so * 0.05 + 50 * 0.05
+        inf2, sup2 = norm_range(hb if pd.notna(hb) else 0, cv if pd.notna(cv) else 10)
+        rows.append({'Data': row['Data'], 'recovery_score': score, 'hrv': hv, 'hrv_baseline': hb,
+                     'hrv_cv7': cv, 'hrv_cv30': row.get('cv30'), 'normal_range_inf': inf2, 'normal_range_sup': sup2,
+                     'hrv_comp': hs, 'rhr_comp': rs, 'sleep_comp': sl, 'fatiga_comp': fa, 'stress_comp': st_})
     return pd.DataFrame(rows)
 
-def tab_recovery(df_well):
-    st.header("🔋 Recovery Score")
+def calcular_bpe(dw, metrica='hrv', baseline_dias=60):
+    if metrica not in dw.columns or len(dw) < 14: return pd.DataFrame()
+    df = dw.copy().sort_values('Data'); df['Data'] = pd.to_datetime(df['Data'])
+    df[metrica] = pd.to_numeric(df[metrica], errors='coerce'); df['semana'] = df['Data'].dt.to_period('W')
+    rows = []
+    for sem in sorted(df['semana'].unique()):
+        df_sem = df[df['semana'] == sem]; data_fim = df_sem['Data'].max()
+        df_base = df[df['Data'] <= data_fim].tail(baseline_dias)
+        if len(df_base) < 14: continue
+        base = df_base[metrica].mean(); cv = (df_base[metrica].std() / base) * 100 if base > 0 else None
+        swc = calcular_swc(base, cv)
+        if swc is None or swc <= 0: continue
+        media_sem = df_sem[metrica].mean()
+        if pd.isna(media_sem): continue
+        rows.append({'ano_semana': str(sem), 'media_semanal': media_sem, 'baseline': base, 'swc': swc, 'zscore': (media_sem - base) / swc})
+    return pd.DataFrame(rows)
 
-    if len(df_well) == 0 or 'hrv' not in df_well.columns:
-        st.warning("Sem dados de wellness/HRV no período.")
-        return
-
-    rec = calcular_recovery(df_well)
+def tab_recovery(dw):
+    st.header("🔋 Recovery Score & HRV Analysis")
+    if len(dw) == 0 or 'hrv' not in dw.columns: st.warning("Sem dados de wellness/HRV."); return
+    rec = calcular_recovery(dw)
     if len(rec) == 0: return
-
-    # KPIs Recovery
-    ult = rec.iloc[-1]
-    score = ult['recovery_score']
-    cat   = ('🟢 Excelente' if score>=80 else '🟡 Bom' if score>=60
-             else '🟠 Moderado' if score>=40 else '🔴 Baixo')
-
+    u = rec.iloc[-1]; score = u['recovery_score']
+    cat = ('🟢 Excelente' if score >= 80 else '🟡 Bom' if score >= 60 else '🟠 Moderado' if score >= 40 else '🔴 Baixo')
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Recovery Score", f"{score:.0f}/100", delta=cat)
-    c2.metric("HRV atual",      f"{ult['hrv']:.0f} ms"      if pd.notna(ult['hrv'])      else "—")
-    c3.metric("Baseline HRV",   f"{ult['hrv_baseline']:.0f} ms" if pd.notna(ult['hrv_baseline']) else "—")
-    c4.metric("CV% 7d",         f"{ult['hrv_cv_7d']:.1f}%"  if pd.notna(ult['hrv_cv_7d'])  else "—")
-
+    c2.metric("HRV atual", f"{u['hrv']:.0f} ms" if pd.notna(u['hrv']) else "—")
+    c3.metric("Baseline HRV", f"{u['hrv_baseline']:.0f} ms" if pd.notna(u['hrv_baseline']) else "—")
+    c4.metric("CV% 7d", f"{u['hrv_cv7']:.1f}%" if pd.notna(u['hrv_cv7']) else "—")
     st.markdown("---")
-
-    # Timeline Recovery Score
-    st.subheader("📊 Recovery Score — Timeline")
     n_dias = st.slider("Dias a mostrar", 14, min(len(rec), 365), min(90, len(rec)))
-    df_tl  = rec.tail(n_dias).copy()
+    df_tl = rec.tail(n_dias).copy()
+    fig, ax = plt.subplots(figsize=(14, 5))
+    ax.axhspan(80, 100, alpha=0.15, color=CORES['verde'], label='Excelente (80–100)')
+    ax.axhspan(60, 80, alpha=0.15, color=CORES['amarelo'], label='Bom (60–79)')
+    ax.axhspan(40, 60, alpha=0.15, color=CORES['laranja'], label='Moderado (40–59)')
+    ax.axhspan(0, 40, alpha=0.15, color=CORES['vermelho'], label='Baixo (0–39)')
+    x = range(len(df_tl)); sc = df_tl['recovery_score'].values
+    cpts = [CORES['verde'] if s >= 80 else CORES['amarelo'] if s >= 60 else CORES['laranja'] if s >= 40 else CORES['vermelho'] for s in sc]
+    ax.plot(x, sc, color=CORES['azul_escuro'], linewidth=2, alpha=0.7)
+    ax.scatter(x, sc, c=cpts, s=70, edgecolors='white', linewidths=2, zorder=5)
+    if len(df_tl) >= 7: ax.plot(x, pd.Series(sc).rolling(7, min_periods=3).mean(), color=CORES['roxo'], linewidth=2.5, linestyle='--', label='Média 7d', alpha=0.8)
+    datas = df_tl['Data'].dt.strftime('%d/%m'); step = max(1, len(x) // 10)
+    ax.set_xticks(list(x)[::step]); ax.set_xticklabels([datas.iloc[i] for i in range(0, len(datas), step)], rotation=45)
+    ax.set_ylim(0, 105); ax.legend(loc='upper left', fontsize=9); ax.grid(True, alpha=0.3)
+    ax.set_title('Recovery Score — Timeline', fontsize=14, fontweight='bold')
+    plt.tight_layout(); st.pyplot(fig); plt.close()
 
-    fig, ax = plt.subplots(figsize=(14,5))
-    ax.axhspan(80,100, alpha=0.15, color=CORES['verde'],   label='Excelente (80–100)')
-    ax.axhspan(60,80,  alpha=0.15, color=CORES['amarelo'], label='Bom (60–79)')
-    ax.axhspan(40,60,  alpha=0.15, color=CORES['laranja'], label='Moderado (40–59)')
-    ax.axhspan(0, 40,  alpha=0.15, color=CORES['vermelho'],label='Baixo (0–39)')
-    x      = range(len(df_tl))
-    scores = df_tl['recovery_score'].values
-    cores_pts = [CORES['verde'] if s>=80 else CORES['amarelo'] if s>=60
-                 else CORES['laranja'] if s>=40 else CORES['vermelho'] for s in scores]
-    ax.plot(x, scores, color=CORES['azul_escuro'], linewidth=2, alpha=0.7)
-    ax.scatter(x, scores, c=cores_pts, s=70, edgecolors='white', linewidths=2, zorder=5)
-    if len(df_tl) >= 7:
-        ax.plot(x, pd.Series(scores).rolling(7,min_periods=3).mean(),
-                color=CORES['roxo'], linewidth=2.5, linestyle='--', label='Média 7d', alpha=0.8)
-    datas = df_tl['Data'].dt.strftime('%d/%m')
-    step  = max(1, len(x)//10)
-    ax.set_xticks(list(x)[::step])
-    ax.set_xticklabels([datas.iloc[i] for i in range(0,len(datas),step)], rotation=45)
-    ax.set_ylim(0,105); ax.legend(loc='upper left', fontsize=9); ax.grid(True, alpha=0.3)
-    plt.tight_layout()
-    st.pyplot(fig); plt.close()
-
-    # HRV Normal Range
     st.subheader("📊 HRV com Normal Range")
-    fig2, (ax1, ax2) = plt.subplots(2, 1, figsize=(14,9), height_ratios=[2,1.2])
-
-    df_hrv = df_tl.copy()
-    xr = range(len(df_hrv))
-    datas_r = df_hrv['Data'].dt.strftime('%d/%m')
-
-    if df_hrv['normal_range_inf'].notna().any():
-        ax1.fill_between(xr, df_hrv['normal_range_inf'], df_hrv['normal_range_sup'],
-                         alpha=0.25, color=CORES['azul'], label='Normal Range HRV')
-    if df_hrv['hrv_baseline'].notna().any():
-        ax1.plot(xr, df_hrv['hrv_baseline'], color=CORES['roxo'], linestyle='--',
-                 linewidth=2, label='Baseline 14d')
-
-    hrv_vals = df_hrv['hrv'].values
-    c_hrv = []
-    for _, r in df_hrv.iterrows():
-        h, i, s = r.get('hrv'), r.get('normal_range_inf'), r.get('normal_range_sup')
-        if pd.isna(h) or pd.isna(i): c_hrv.append(CORES['cinza'])
-        elif h > s:  c_hrv.append(CORES['verde'])
-        elif h < i:  c_hrv.append(CORES['vermelho'])
-        else:        c_hrv.append(CORES['azul'])
-
-    ax1.plot(xr, hrv_vals, color=CORES['preto'], linewidth=2, alpha=0.6)
-    ax1.scatter(xr, hrv_vals, c=c_hrv, s=70, edgecolors='white', linewidths=2, zorder=5)
-    ax1.legend(loc='upper right', fontsize=9); ax1.grid(True, alpha=0.3)
-    ax1.set_ylabel('HRV (ms)', fontweight='bold')
+    fig2, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 9), height_ratios=[2, 1.2])
+    xr = range(len(df_tl)); dr = df_tl['Data'].dt.strftime('%d/%m'); sr = max(1, len(xr) // 10)
+    if df_tl['normal_range_inf'].notna().any():
+        ax1.fill_between(xr, df_tl['normal_range_inf'], df_tl['normal_range_sup'], alpha=0.25, color=CORES['azul'], label='Normal Range HRV')
+    if df_tl['hrv_baseline'].notna().any():
+        ax1.plot(xr, df_tl['hrv_baseline'], color=CORES['roxo'], linestyle='--', linewidth=2, label='Baseline 14d')
+    hv = df_tl['hrv'].values
+    chr_list = [CORES['verde'] if (not pd.isna(df_tl['normal_range_sup'].iloc[i]) and not pd.isna(hv[i]) and hv[i] > df_tl['normal_range_sup'].iloc[i])
+                else CORES['vermelho'] if (not pd.isna(df_tl['normal_range_inf'].iloc[i]) and not pd.isna(hv[i]) and hv[i] < df_tl['normal_range_inf'].iloc[i])
+                else CORES['azul'] for i in range(len(df_tl))]
+    ax1.plot(xr, hv, color=CORES['preto'], linewidth=2, alpha=0.6)
+    ax1.scatter(xr, hv, c=chr_list, s=70, edgecolors='white', linewidths=2, zorder=5)
+    ax1.legend(loc='upper right', fontsize=9); ax1.grid(True, alpha=0.3); ax1.set_ylabel('HRV (ms)', fontweight='bold')
     ax1.set_title('HRV com Normal Range (HRV4Training)', fontsize=13, fontweight='bold')
-
-    # CV% Normal Range
-    if df_hrv['hrv_cv_7d'].notna().sum() >= 5:
-        cv_s = df_hrv['hrv_cv_7d'].copy()
-        cv_b = cv_s.rolling(14, min_periods=5).mean()
-        cv_std = cv_s.rolling(14, min_periods=5).std()
-        cv_inf = cv_b - 0.5 * cv_std
-        cv_sup = cv_b + 0.5 * cv_std
-
+    cv_s = df_tl['hrv_cv7'].copy()
+    if cv_s.notna().sum() >= 5:
+        cv_b = cv_s.rolling(14, min_periods=5).mean(); cv_sd = cv_s.rolling(14, min_periods=5).std()
+        cv_inf = cv_b - 0.5 * cv_sd; cv_sup = cv_b + 0.5 * cv_sd
         ax2.fill_between(xr, cv_inf, cv_sup, alpha=0.25, color=CORES['laranja'], label='Normal Range CV%')
         ax2.plot(xr, cv_b, color=CORES['roxo'], linestyle='--', linewidth=1.8, alpha=0.8)
-        cv_vals = cv_s.values
-        c_cv = []
-        for i_r in range(len(df_hrv)):
-            cv  = cv_vals[i_r]
-            ci  = cv_inf.iloc[i_r] if not pd.isna(cv_inf.iloc[i_r]) else np.nan
-            cs  = cv_sup.iloc[i_r] if not pd.isna(cv_sup.iloc[i_r]) else np.nan
-            if pd.isna(cv) or pd.isna(ci): c_cv.append(CORES['cinza'])
-            elif cv > cs: c_cv.append(CORES['verde'])
-            elif cv < ci: c_cv.append(CORES['vermelho'])
-            else:         c_cv.append(CORES['azul'])
-        ax2.plot(xr, cv_vals, color=CORES['preto'], linewidth=1.8, alpha=0.6)
-        ax2.scatter(xr, cv_vals, c=c_cv, s=55, edgecolors='white', linewidths=1.5, zorder=5)
-        ax2.axhline(3,  color=CORES['cinza'], linestyle=':', alpha=0.5)
-        ax2.axhline(10, color=CORES['cinza'], linestyle=':', alpha=0.5)
+        cv_v = cv_s.values
+        ccv = [CORES['verde'] if (not pd.isna(cv_sup.iloc[i]) and not pd.isna(cv_v[i]) and cv_v[i] > cv_sup.iloc[i])
+               else CORES['vermelho'] if (not pd.isna(cv_inf.iloc[i]) and not pd.isna(cv_v[i]) and cv_v[i] < cv_inf.iloc[i])
+               else CORES['azul'] for i in range(len(df_tl))]
+        ax2.plot(xr, cv_v, color=CORES['preto'], linewidth=1.8, alpha=0.6)
+        ax2.scatter(xr, cv_v, c=ccv, s=55, edgecolors='white', linewidths=1.5, zorder=5)
+        ax2.axhline(3, color=CORES['cinza'], linestyle=':', alpha=0.5); ax2.axhline(10, color=CORES['cinza'], linestyle=':', alpha=0.5)
         ax2.legend(loc='upper right', fontsize=8)
+    for axr in [ax1, ax2]:
+        axr.set_xticks(list(xr)[::sr]); axr.set_xticklabels([dr.iloc[i] for i in range(0, len(dr), sr)], rotation=45); axr.grid(True, alpha=0.3)
+    ax2.set_ylabel('CV% HRV', fontweight='bold'); ax2.set_title('CV% com Normal Range', fontsize=12, fontweight='bold')
+    plt.tight_layout(); st.pyplot(fig2); plt.close()
 
-    step_r = max(1, len(xr)//10)
-    for ax_r in [ax1, ax2]:
-        ax_r.set_xticks(list(xr)[::step_r])
-        ax_r.set_xticklabels([datas_r.iloc[i] for i in range(0,len(datas_r),step_r)], rotation=45)
-        ax_r.grid(True, alpha=0.3)
-    ax2.set_ylabel('CV% HRV', fontweight='bold')
-    ax2.set_title('CV% com Normal Range', fontsize=12, fontweight='bold')
+    st.subheader("📊 BPE — Z-Score Semanal (Método SWC)")
+    mets_bpe = [m for m in ['hrv', 'rhr', 'sleep_quality', 'fatiga', 'stress'] if m in dw.columns and dw[m].notna().any()]
+    n_sem = st.slider("Semanas (BPE)", 4, min(52, max(4, len(dw) // 7)), min(16, max(4, len(dw) // 7)))
+    dados_bpe = {}
+    for met in mets_bpe:
+        s = calcular_bpe(dw, met, 60)
+        if len(s) > 0: dados_bpe[met] = s.tail(n_sem)
+    if dados_bpe:
+        semanas = list(dados_bpe[list(dados_bpe.keys())[0]]['ano_semana'])
+        nm = len(dados_bpe); mat = np.zeros((nm, len(semanas)))
+        for i, met in enumerate(dados_bpe.keys()):
+            z = dados_bpe[met]['zscore'].values; mat[i, :len(z)] = (-z if met == 'rhr' else z)[:len(semanas)]
+        cmap = LinearSegmentedColormap.from_list('bpe', [CORES['vermelho'], CORES['amarelo'], CORES['verde']], N=100)
+        fig, ax = plt.subplots(figsize=(max(14, len(semanas) * 0.9), max(5, nm * 1.1)))
+        im = ax.imshow(mat, cmap=cmap, aspect='auto', vmin=-2, vmax=2)
+        nomes = {'hrv': 'HRV', 'rhr': 'RHR (inv)', 'sleep_quality': 'Sono', 'fatiga': 'Energia', 'stress': 'Relaxamento'}
+        ax.set_yticks(range(nm)); ax.set_yticklabels([nomes.get(m, m) for m in dados_bpe.keys()], fontsize=11)
+        slbls = [s.split('-W')[1] if '-W' in s else s for s in semanas]
+        ax.set_xticks(range(len(semanas))); ax.set_xticklabels([f'S{s}' for s in slbls], rotation=45, fontsize=9)
+        for i in range(nm):
+            for j in range(len(semanas)):
+                v = mat[i, j]; tc = 'white' if abs(v) > 1 else 'black'
+                ax.text(j, i, f'{v:.1f}', ha='center', va='center', fontsize=9, fontweight='bold', color=tc)
+        cbar = plt.colorbar(im, ax=ax, shrink=0.8); cbar.set_label('Z-Score BPE (múltiplos de SWC)')
+        cbar.set_ticks([-2, -1, 0, 1, 2]); cbar.set_ticklabels(['🔴 -2', '🟠 -1', '0', '🟡 +1', '🟢 +2'])
+        ax.set_title('BPE — Blocos de Padrão Específico (Z-Score com SWC)', fontsize=13, fontweight='bold')
+        plt.tight_layout(); st.pyplot(fig); plt.close()
 
-    plt.tight_layout()
-    st.pyplot(fig2); plt.close()
+    st.subheader("🏋️ HRV-Guided Training (LnrMSSD)")
+    if len(dw) >= 14 and 'hrv' in dw.columns and dw['hrv'].notna().sum() >= 14:
+        df_hg = dw.copy().sort_values('Data'); df_hg['Data'] = pd.to_datetime(df_hg['Data'])
+        df_hg['LnrMSSD'] = np.where(df_hg['hrv'] > 0, np.log(df_hg['hrv']), np.nan); df_hg = df_hg.dropna(subset=['LnrMSSD'])
+        dias_fam = st.slider("Dias baseline rolling", 7, 28, 14)
+        df_hg['bm'] = df_hg['LnrMSSD'].rolling(dias_fam, min_periods=dias_fam).mean()
+        df_hg['bs'] = df_hg['LnrMSSD'].rolling(dias_fam, min_periods=dias_fam).std()
+        df_hg['linf'] = df_hg['bm'] - 0.5 * df_hg['bs']; df_hg['lsup'] = df_hg['bm'] + 0.5 * df_hg['bs']
+        df_hg['desvio'] = (df_hg['LnrMSSD'] - df_hg['bm']) / df_hg['bs']
+        df_hg['intens'] = df_hg.apply(lambda r: 'HIIT' if pd.notna(r['bm']) and r['linf'] <= r['LnrMSSD'] <= r['lsup'] else ('Recuperação' if pd.notna(r['bm']) else 'Sem dados'), axis=1)
+        n_hg = st.slider("Dias HRV-Guided", 14, min(len(df_hg), 180), min(60, len(df_hg)))
+        df_p = df_hg.tail(n_hg).copy(); xh = range(len(df_p)); dh = df_p['Data'].dt.strftime('%d/%m'); sh = max(1, len(xh) // 15)
+        ch = [CORES['verde'] if i == 'HIIT' else CORES['laranja'] if i == 'Recuperação' else CORES['cinza'] for i in df_p['intens']]
+        fig3, (ah1, ah2) = plt.subplots(2, 1, figsize=(15, 10))
+        ah1.plot(xh, df_p['LnrMSSD'], '-', alpha=0.6, color=CORES['azul'], linewidth=2, label='LnrMSSD')
+        ah1.scatter(xh, df_p['LnrMSSD'], c=ch, s=80, edgecolors='white', linewidths=2, zorder=5)
+        ah1.plot(xh, df_p['bm'], color=CORES['verde_escuro'], linestyle='--', linewidth=2.5, label=f'Baseline ({dias_fam}d)', alpha=0.8)
+        ah1.plot(xh, df_p['lsup'], color=CORES['laranja'], linestyle=':', linewidth=2, label='±0.5 DP', alpha=0.7)
+        ah1.plot(xh, df_p['linf'], color=CORES['laranja'], linestyle=':', linewidth=2, alpha=0.7)
+        ah1.fill_between(xh, df_p['linf'], df_p['lsup'], alpha=0.15, color=CORES['verde'], label='Zona HIIT')
+        ah1.legend(loc='best', fontsize=9); ah1.grid(True, alpha=0.3); ah1.set_ylabel('LnrMSSD', fontweight='bold')
+        ah1.set_title(f'HRV-Guided Training — Baseline Rolling ({dias_fam}d)', fontsize=13, fontweight='bold')
+        ah1.set_xticks(list(xh)[::sh]); ah1.set_xticklabels([dh.iloc[i] for i in range(0, len(dh), sh)], rotation=45)
+        ah2.axhline(0, color=CORES['verde_escuro'], linestyle='-', linewidth=2, alpha=0.8)
+        ah2.axhline(0.5, color=CORES['laranja'], linestyle=':', linewidth=2); ah2.axhline(-0.5, color=CORES['laranja'], linestyle=':', linewidth=2)
+        ah2.fill_between(xh, -0.5, 0.5, alpha=0.2, color=CORES['verde'], label='Zona HIIT')
+        ah2.scatter(xh, df_p['desvio'], c=ch, alpha=0.7, s=60, edgecolors='white', linewidths=1)
+        ah2.plot(xh, df_p['desvio'], color=CORES['cinza'], alpha=0.4, linewidth=1)
+        ah2.set_ylim(-3, 3); ah2.legend(loc='best', fontsize=9); ah2.grid(True, alpha=0.3)
+        ah2.set_ylabel('Desvio (DP)', fontweight='bold'); ah2.set_title('Desvio LnrMSSD do Baseline', fontsize=12, fontweight='bold')
+        ah2.set_xticks(list(xh)[::sh]); ah2.set_xticklabels([dh.iloc[i] for i in range(0, len(dh), sh)], rotation=45)
+        plt.tight_layout(); st.pyplot(fig3); plt.close()
+        df_val = df_hg[df_hg['bm'].notna()]
+        if len(df_val) > 0:
+            hiit_n = (df_val['intens'] == 'HIIT').sum(); rec_n = (df_val['intens'] == 'Recuperação').sum(); total_n = len(df_val)
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Dias HIIT", f"{hiit_n} ({hiit_n/total_n*100:.0f}%)")
+            c2.metric("Dias Recuperação", f"{rec_n} ({rec_n/total_n*100:.0f}%)")
+            c3.metric("Prescrição HOJE", '✅ HIIT' if df_val.iloc[-1]['intens'] == 'HIIT' else '🟠 Recuperação')
 
 # ════════════════════════════════════════════════════════════════════════════════
-# TAB 6 — WELLNESS
+# TAB 8 — WELLNESS
 # ════════════════════════════════════════════════════════════════════════════════
-
-def tab_wellness(df_well):
+def tab_wellness(dw):
     st.header("🧘 Wellness")
-
-    if len(df_well) == 0:
-        st.warning("Sem dados de wellness no período.")
-        return
-
-    metricas = [m for m in ['hrv','rhr','sleep_quality','fatiga','stress','humor','soreness']
-                if m in df_well.columns and df_well[m].notna().any()]
-
-    if not metricas:
-        st.warning("Nenhuma métrica wellness disponível.")
-        return
-
-    # Selector de métricas
-    sel = st.multiselect("Métricas a mostrar", metricas, default=metricas[:4])
+    if len(dw) == 0: st.warning("Sem dados de wellness."); return
+    mets = [m for m in ['hrv', 'rhr', 'sleep_quality', 'fatiga', 'stress', 'humor', 'soreness'] if m in dw.columns and dw[m].notna().any()]
+    if not mets: st.warning("Sem métricas wellness."); return
+    sel = st.multiselect("Métricas", mets, default=mets[:5])
     if not sel: return
-
-    fig, axes = plt.subplots(len(sel), 1, figsize=(14, 3*len(sel)), sharex=True)
+    fig, axes = plt.subplots(len(sel), 1, figsize=(14, 3 * len(sel)), sharex=True)
     if len(sel) == 1: axes = [axes]
-
-    x = range(len(df_well))
-    datas = pd.to_datetime(df_well['Data']).dt.strftime('%d/%m')
-    CORES_MET = {'hrv':CORES['verde'],'rhr':CORES['vermelho'],'sleep_quality':CORES['roxo'],
-                 'fatiga':CORES['laranja'],'stress':CORES['vermelho_escuro'],
-                 'humor':CORES['verde_escuro'],'soreness':CORES['azul']}
-
+    x = range(len(dw)); datas = pd.to_datetime(dw['Data']).dt.strftime('%d/%m')
+    CM = {'hrv': CORES['verde'], 'rhr': CORES['vermelho'], 'sleep_quality': CORES['roxo'],
+          'fatiga': CORES['laranja'], 'stress': CORES['vermelho_escuro'], 'humor': CORES['verde_escuro'], 'soreness': CORES['azul']}
     for ax, met in zip(axes, sel):
-        vals = pd.to_numeric(df_well[met], errors='coerce').values
-        cor  = CORES_MET.get(met, CORES['azul'])
-        ax.plot(x, vals, color=cor, linewidth=2, marker='o', markersize=4)
-        if len(vals) >= 7:
-            ax.plot(x, pd.Series(vals).rolling(7, min_periods=3).mean(),
-                    color=CORES['preto'], linewidth=1.5, linestyle='--', alpha=0.5, label='Média 7d')
-        ax.set_ylabel(met.replace('_',' ').title(), fontweight='bold')
-        ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=8)
-
-    step = max(1, len(x)//12)
-    axes[-1].set_xticks(list(x)[::step])
-    axes[-1].set_xticklabels([datas.iloc[i] for i in range(0,len(datas),step)], rotation=45)
-    plt.suptitle('Métricas Wellness', fontsize=14, fontweight='bold')
-    plt.tight_layout()
-    st.pyplot(fig); plt.close()
-
-    # Tabela resumo wellness
-    st.subheader("📋 Resumo Wellness (últimos 7 dias)")
-    if len(df_well) >= 7:
-        ult7 = df_well.tail(7)
-        resumo = {}
-        for m in metricas:
-            col = pd.to_numeric(ult7[m], errors='coerce')
-            resumo[m.replace('_',' ').title()] = [f"{col.mean():.1f}", f"{col.min():.0f}", f"{col.max():.0f}"]
-        df_res = pd.DataFrame(resumo, index=['Média 7d','Mín','Máx']).T
-        st.dataframe(df_res, use_container_width=True)
+        v = pd.to_numeric(dw[met], errors='coerce').values
+        ax.plot(x, v, color=CM.get(met, CORES['azul']), linewidth=2, marker='o', markersize=4)
+        if len(v) >= 7: ax.plot(x, pd.Series(v).rolling(7, min_periods=3).mean(), color=CORES['preto'], linewidth=1.5, linestyle='--', alpha=0.5, label='Média 7d')
+        ax.set_ylabel(met.replace('_', ' ').title(), fontweight='bold'); ax.grid(True, alpha=0.3); ax.legend(fontsize=8)
+    step = max(1, len(x) // 12); axes[-1].set_xticks(list(x)[::step])
+    axes[-1].set_xticklabels([datas.iloc[i] for i in range(0, len(datas), step)], rotation=45)
+    plt.suptitle('Métricas Wellness', fontsize=14, fontweight='bold'); plt.tight_layout(); st.pyplot(fig); plt.close()
+    st.subheader("📋 Resumo (últimos 7 dias)")
+    if len(dw) >= 7:
+        u7 = dw.tail(7); rows = []
+        for m in mets:
+            col = pd.to_numeric(u7[m], errors='coerce')
+            rows.append({'Métrica': m.replace('_', ' ').title(), 'Média': f"{col.mean():.1f}", 'Mín': f"{col.min():.0f}", 'Máx': f"{col.max():.0f}"})
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 # ════════════════════════════════════════════════════════════════════════════════
-# MAIN APP
+# MAIN
 # ════════════════════════════════════════════════════════════════════════════════
-
 def main():
-    days_back, data_ini, data_fim, modalidades_sel = render_sidebar()
-
+    days_back, di, df_, mods_sel = render_sidebar()
     st.title("🏃 ATHELTICA Analytics Dashboard")
-    st.caption(f"Período: {data_ini.strftime('%d/%m/%Y')} → {data_fim.strftime('%d/%m/%Y')}  |  Modalidades: {', '.join(modalidades_sel)}")
-
-    # Carregar dados
+    st.caption(f"Período: {di.strftime('%d/%m/%Y')} → {df_.strftime('%d/%m/%Y')}  |  Modalidades: {', '.join(mods_sel)}")
     with st.spinner("A carregar dados..."):
-        df_well_raw = carregar_wellness(days_back)
-        df_act_raw  = carregar_atividades(days_back)
+        wr = carregar_wellness(days_back); ar = carregar_atividades(days_back)
+    if wr.empty and ar.empty:
+        st.error("Não foi possível carregar dados."); st.stop()
+    wc = preproc_wellness(wr); ac = preproc_ativ(ar)
+    dw = filtrar_datas(wc, di, df_); da = filtrar_datas(ac, di, df_)
+    da_filt = da[da['type'].apply(norm_tipo).isin(mods_sel + ['WeightTraining'])] if len(da) > 0 and 'type' in da.columns else da
+    st.success(f"✅ {len(dw)} registros wellness  |  {len(da_filt)} atividades  |  Preprocessing activo")
+    with st.expander("🔍 Diagnóstico", expanded=False):
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**Atividades (RAW)**")
+            if len(ar) > 0:
+                ar2 = ar.copy(); ar2['Data'] = pd.to_datetime(ar2['Data'])
+                st.write(f"Total: {len(ar)} | Data máx: {ar2['Data'].max().date()}")
+                cs = [c for c in ['Data', 'type', 'name', 'power_avg', 'rpe', 'icu_eftp'] if c in ar2.columns]
+                st.dataframe(ar2[cs].sort_values('Data', ascending=False).head(5), hide_index=True)
+        with c2:
+            st.markdown("**Wellness (RAW)**")
+            if len(wr) > 0:
+                wr2 = wr.copy(); wr2['Data'] = pd.to_datetime(wr2['Data'])
+                st.write(f"Total: {len(wr)} | Data máx: {wr2['Data'].max().date()}")
+                cw = [c for c in ['Data', 'hrv', 'rhr', 'sleep_quality', 'fatiga', 'stress'] if c in wr2.columns]
+                st.dataframe(wr2[cw].sort_values('Data', ascending=False).head(5), hide_index=True)
 
-    if df_well_raw.empty and df_act_raw.empty:
-        st.error("Não foi possível carregar dados. Verifica as credenciais e os URLs das Google Sheets.")
-        st.stop()
-
-    # Preprocessing — mesmo pipeline do DataPreprocessor original
-    df_well_clean = preprocessar_wellness(df_well_raw)
-    df_act_clean  = preprocessar_atividades(df_act_raw)
-
-    # Filtrar por período seleccionado
-    df_well = filtrar_por_datas(df_well_clean, data_ini, data_fim)
-    df_act  = filtrar_por_datas(df_act_clean,  data_ini, data_fim)
-
-    # Filtrar por modalidade
-    if len(df_act) > 0 and 'type' in df_act.columns:
-        df_act_filt = df_act[df_act['type'].apply(normalizar_tipo).isin(modalidades_sel + ['WeightTraining'])]
-    else:
-        df_act_filt = df_act
-
-    st.success(f"✅ {len(df_well)} registros wellness (de {len(df_well_raw)} raw)  |  {len(df_act_filt)} atividades (de {len(df_act_raw)} raw)")
-
-    # ── DIAGNÓSTICO (expander)
-    with st.expander("🔍 Diagnóstico de dados (clica para ver)", expanded=False):
-        col_d1, col_d2 = st.columns(2)
-        with col_d1:
-            st.markdown("**📋 Atividades (RAW — antes de filtrar)**")
-            st.write(f"Total de linhas: {len(df_act_raw)}")
-            if len(df_act_raw) > 0:
-                df_act_raw2 = df_act_raw.copy()
-                df_act_raw2['Data'] = pd.to_datetime(df_act_raw2['Data'])
-                st.write(f"Data mínima: {df_act_raw2['Data'].min().date()}")
-                st.write(f"Data máxima: {df_act_raw2['Data'].max().date()}")
-                st.write(f"Todas as colunas ({len(df_act_raw2.columns)}): {list(df_act_raw2.columns)}")
-                st.write("Últimas 5 linhas:")
-                cols_show = [c for c in ['Data','type','name','power_avg','rpe','icu_eftp'] if c in df_act_raw2.columns]
-                st.dataframe(df_act_raw2[cols_show].tail(5))
-        with col_d2:
-            st.markdown("**📋 Wellness (RAW — antes de filtrar)**")
-            st.write(f"Total de linhas: {len(df_well_raw)}")
-            if len(df_well_raw) > 0:
-                df_well_raw2 = df_well_raw.copy()
-                df_well_raw2['Data'] = pd.to_datetime(df_well_raw2['Data'])
-                st.write(f"Data mínima: {df_well_raw2['Data'].min().date()}")
-                st.write(f"Data máxima: {df_well_raw2['Data'].max().date()}")
-                st.write(f"Todas as colunas ({len(df_well_raw2.columns)}): {list(df_well_raw2.columns)}")
-                st.write("Últimas 5 linhas:")
-                cols_w = [c for c in ['Data','hrv','rhr','sleep_quality','fatiga','stress'] if c in df_well_raw2.columns]
-                st.dataframe(df_well_raw2[cols_w].tail(5))
-
-    # Tabs
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-        "📊 Visão Geral",
-        "📈 PMC",
-        "⚡ eFTP",
-        "❤️ HR & RPE Zones",
-        "🔋 Recovery",
-        "🧘 Wellness",
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+        "📊 Visão Geral", "📈 PMC", "📦 Volume", "⚡ eFTP",
+        "❤️ HR & RPE", "🧠 Correlações", "🔋 Recovery", "🧘 Wellness"
     ])
-
-    with tab1: tab_visao_geral(df_well, df_act_filt, data_ini, data_fim)
-    with tab2: tab_pmc(df_act_filt)
-    with tab3: tab_eftp(df_act_filt, modalidades_sel)
-    with tab4: tab_zones(df_act_filt, modalidades_sel)
-    with tab5: tab_recovery(df_well)
-    with tab6: tab_wellness(df_well)
+    with tab1: tab_visao_geral(dw, da_filt, di, df_)
+    with tab2: tab_pmc(da_filt)
+    with tab3: tab_volume(da_filt, dw)
+    with tab4: tab_eftp(da_filt, mods_sel)
+    with tab5: tab_zones(da_filt, mods_sel)
+    with tab6: tab_correlacoes(da_filt, dw)
+    with tab7: tab_recovery(dw)
+    with tab8: tab_wellness(dw)
 
 if __name__ == "__main__":
     main()
