@@ -403,10 +403,14 @@ def tab_pmc(da):
     da_full = st.session_state.get('da_full', da)
     df = filtrar_principais(da_full).copy(); df['Data'] = pd.to_datetime(df['Data'])
 
+    # Prioridade: icu_training_load (mesmo escala do Intervals.icu / SQLite original)
+    # Fallback: session_rpe = (moving_time/60) * rpe (escala diferente!)
     if 'icu_training_load' in df.columns and df['icu_training_load'].notna().sum() > 10:
         df['load_val'] = pd.to_numeric(df['icu_training_load'], errors='coerce').fillna(0)
+        _load_metrica = "icu_training_load (Intervals.icu)"
     elif 'moving_time' in df.columns and 'rpe' in df.columns:
         df['load_val'] = (df['moving_time'] / 60) * df['rpe'].fillna(0)
+        _load_metrica = "session_rpe (RPE × min) — escala diferente do SQLite!"
     else:
         st.warning("Sem dados de load."); return
 
@@ -429,6 +433,10 @@ def tab_pmc(da):
     ld['FTLM'] = ld['load_val'].ewm(alpha=best_g, adjust=False).mean()
 
     # Filtro de exibição — controla o período mostrado no gráfico
+    st.info(f"📊 Métrica de load: **{_load_metrica}** | Histórico: {len(ld)} dias")
+    if "session_rpe" in _load_metrica:
+        st.warning("⚠️ Para resultados equivalentes ao Python/SQLite: usa icu_training_load. Exporta o histórico completo do Intervals.icu para a Google Sheet.")
+
     col1, col2, col3 = st.columns(3)
     dias_exib_opts = {"30 dias": 30, "60 dias": 60, "90 dias": 90, "180 dias": 180, "1 ano": 365, "Todo histórico": len(ld)}
     dias_exib_lbl = col1.selectbox("Período exibido", list(dias_exib_opts.keys()), index=2)
@@ -961,13 +969,18 @@ def tab_recovery(dw):
     st.subheader("📊 BPE — Z-Score Semanal (Método SWC)")
     mets_bpe = [m for m in ['hrv', 'rhr', 'sleep_quality', 'fatiga', 'stress'] if m in dw.columns and dw[m].notna().any()]
     n_semanas_disp = max(1, len(dw) // 7)
-    if n_semanas_disp < 4:
-        st.info(f"Dados insuficientes para BPE (mínimo 4 semanas, disponível: {n_semanas_disp}).")
+    _skip_bpe = n_semanas_disp < 4
+    if _skip_bpe:
+        st.info(f"Dados insuficientes para BPE (min 4 semanas, disponivel: {n_semanas_disp}).")
         n_sem = n_semanas_disp
-        _skip_bpe = True
     else:
-        _skip_bpe = False
-        n_sem = st.slider("Semanas (BPE)", 4, min(52, n_semanas_disp), min(16, n_semanas_disp))
+        _slider_max = min(52, n_semanas_disp)
+        _slider_val = min(16, _slider_max)
+        if _slider_max > 4:
+            n_sem = st.slider("Semanas (BPE)", 4, _slider_max, _slider_val)
+        else:
+            n_sem = _slider_max
+            st.caption(f"BPE: {n_sem} semanas disponíveis")
     dados_bpe = {}
     if not _skip_bpe:
         for met in mets_bpe:
@@ -1073,13 +1086,21 @@ def main():
     st.title("🏃 ATHELTICA Analytics Dashboard")
     st.caption(f"Período: {di.strftime('%d/%m/%Y')} → {df_.strftime('%d/%m/%Y')}  |  Modalidades: {', '.join(mods_sel)}")
     with st.spinner("A carregar dados..."):
-        wr = carregar_wellness(days_back); ar = carregar_atividades(days_back)
-    if wr.empty and ar.empty:
+        wr = carregar_wellness(days_back)
+        # PMC precisa sempre de historico maximo para CTL/ATL convergirem correctamente
+        ar_pmc = carregar_atividades(730)   # historico completo para PMC
+        ar = carregar_atividades(days_back) if days_back < 730 else ar_pmc
+    if wr.empty and ar_pmc.empty:
         st.error("Não foi possível carregar dados."); st.stop()
-    wc = preproc_wellness(wr); ac = preproc_ativ(ar)
+    # Preprocessar tudo
+    wc = preproc_wellness(wr)
+    ac_full = preproc_ativ(ar_pmc)       # historico completo preprocessado
+    ac = preproc_ativ(ar)                # periodo do filtro preprocessado
+    # Guardar historico completo no session_state para o PMC
+    st.session_state['da_full'] = ac_full
     dw = filtrar_datas(wc, di, df_); da = filtrar_datas(ac, di, df_)
     da_filt = da[da['type'].apply(norm_tipo).isin(mods_sel + ['WeightTraining'])] if len(da) > 0 and 'type' in da.columns else da
-    st.success(f"✅ {len(dw)} registros wellness  |  {len(da_filt)} atividades  |  Preprocessing activo")
+    st.success(f"✅ {len(dw)} registros wellness  |  {len(da_filt)} atividades ({di.strftime('%d/%m/%y')}→{df_.strftime('%d/%m/%y')})  |  Histórico PMC: {len(ac_full)} ativ.")
     with st.expander("🔍 Diagnóstico", expanded=False):
         c1, c2 = st.columns(2)
         with c1:
