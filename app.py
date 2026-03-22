@@ -127,6 +127,124 @@ WELLNESS_DESCRICOES = {
 }
 
 # ════════════════════════════════════════════════════════════════════════════════
+# PREPROCESSING — mesma lógica do DataPreprocessor original
+# ════════════════════════════════════════════════════════════════════════════════
+
+from scipy import stats as scipy_stats
+
+VALID_TYPES = ['Bike', 'Row', 'Run', 'Ski', 'WeightTraining']
+
+def remover_picos_zscore(series, threshold=3.0):
+    """Remove outliers com Z-score > threshold, substituindo por NaN."""
+    valores = pd.to_numeric(series, errors='coerce')
+    validos = valores[valores.notna()]
+    if len(validos) < 4:
+        return valores
+    z = np.abs(scipy_stats.zscore(validos))
+    picos = validos.index[z > threshold]
+    valores.loc[picos] = np.nan
+    return valores
+
+def remover_zeros_invalidos(df, colunas):
+    """Substitui zeros por NaN em colunas onde zero é inválido."""
+    df = df.copy()
+    for col in colunas:
+        if col in df.columns:
+            df.loc[df[col] == 0, col] = np.nan
+    return df
+
+def preencher_faltantes(df, coluna, janela=7):
+    """Preenche NaN com média rolling, fallback para média global."""
+    if coluna not in df.columns:
+        return df
+    df = df.copy()
+    df[coluna] = pd.to_numeric(df[coluna], errors='coerce')
+    mask = df[coluna].isna()
+    if mask.any():
+        roll = df[coluna].rolling(window=janela, min_periods=2, center=True).mean()
+        df.loc[mask, coluna] = roll[mask]
+        # segundo passo: janela maior
+        mask2 = df[coluna].isna()
+        if mask2.any():
+            roll2 = df[coluna].rolling(window=14, min_periods=2, center=True).mean()
+            df.loc[mask2, coluna] = roll2[mask2]
+        # fallback: média global
+        mask3 = df[coluna].isna()
+        if mask3.any():
+            df.loc[mask3, coluna] = df[coluna].mean()
+    return df
+
+def preprocessar_wellness(df_well):
+    """
+    Limpa e normaliza o DataFrame de wellness:
+    - Remove picos Z-score > 3
+    - Remove zeros inválidos (hrv, rhr, sleep_hours)
+    - Preenche faltantes com rolling mean
+    - Remove duplicatas de data
+    """
+    if len(df_well) == 0:
+        return df_well
+
+    df = df_well.copy().sort_values('Data')
+
+    # Remover duplicatas de data (manter primeiro registo do dia)
+    df = df.drop_duplicates(subset=['Data'], keep='first')
+
+    # Colunas numéricas wellness
+    cols_num = [c for c in ['hrv','rhr','sleep_hours','sleep_quality',
+                             'stress','fatiga','humor','soreness','peso','fat']
+                if c in df.columns]
+
+    # Remover picos Z-score
+    for col in cols_num:
+        df[col] = remover_picos_zscore(df[col], threshold=3.0)
+
+    # Remover zeros inválidos
+    df = remover_zeros_invalidos(df, ['hrv','rhr','sleep_hours'])
+
+    # Preencher faltantes
+    for col in cols_num:
+        df = preencher_faltantes(df, col, janela=7)
+
+    return df.reset_index(drop=True)
+
+def preprocessar_atividades(df_act):
+    """
+    Limpa e normaliza o DataFrame de atividades:
+    - Filtra tipos válidos
+    - Remove picos Z-score no eFTP
+    - Remove zeros inválidos
+    - Remove atividades com moving_time < 60s
+    - Remove duplicatas
+    """
+    if len(df_act) == 0:
+        return df_act
+
+    df = df_act.copy().sort_values('Data')
+
+    # Remover duplicatas
+    subset_dup = [c for c in ['Data','type','moving_time'] if c in df.columns]
+    if len(subset_dup) >= 2:
+        df = df.drop_duplicates(subset=subset_dup, keep='first')
+
+    # Filtrar tipos válidos
+    if 'type' in df.columns:
+        df = df[df['type'].isin(VALID_TYPES)]
+
+    # Remover moving_time < 60s
+    if 'moving_time' in df.columns:
+        df = df[pd.to_numeric(df['moving_time'], errors='coerce') > 60]
+
+    # Remover picos eFTP
+    if 'icu_eftp' in df.columns:
+        df['icu_eftp'] = remover_picos_zscore(df['icu_eftp'], threshold=3.5)
+
+    # Remover zeros inválidos
+    df = remover_zeros_invalidos(df, ['moving_time','icu_eftp'])
+
+    return df.reset_index(drop=True)
+
+# ════════════════════════════════════════════════════════════════════════════════
 # AUTENTICAÇÃO GOOGLE SHEETS
 # ════════════════════════════════════════════════════════════════════════════════
 
@@ -243,7 +361,7 @@ def carregar_atividades(days_back):
         col_data = detectar_coluna(df, ['Date','start_date_local','date','data','Data'])
         if col_data:
             df['Data'] = df[col_data].apply(lambda x: robust_date_parser(str(x)[:10]))
-            df = df.dropna(subset=['Data']).sort_values('Data', ascending=False)
+            df = df.dropna(subset=['Data']).sort_values('Data')
 
         # Mapear colunas padronizadas
         TEXTO_COLS = ['type','name','date','start_date_local']
@@ -931,9 +1049,13 @@ def main():
         st.error("Não foi possível carregar dados. Verifica as credenciais e os URLs das Google Sheets.")
         st.stop()
 
+    # Preprocessing — mesmo pipeline do DataPreprocessor original
+    df_well_clean = preprocessar_wellness(df_well_raw)
+    df_act_clean  = preprocessar_atividades(df_act_raw)
+
     # Filtrar por período seleccionado
-    df_well = filtrar_por_datas(df_well_raw, data_ini, data_fim)
-    df_act  = filtrar_por_datas(df_act_raw,  data_ini, data_fim)
+    df_well = filtrar_por_datas(df_well_clean, data_ini, data_fim)
+    df_act  = filtrar_por_datas(df_act_clean,  data_ini, data_fim)
 
     # Filtrar por modalidade
     if len(df_act) > 0 and 'type' in df_act.columns:
@@ -941,7 +1063,7 @@ def main():
     else:
         df_act_filt = df_act
 
-    st.success(f"✅ {len(df_well)} registros wellness  |  {len(df_act_filt)} atividades carregadas")
+    st.success(f"✅ {len(df_well)} registros wellness (de {len(df_well_raw)} raw)  |  {len(df_act_filt)} atividades (de {len(df_act_raw)} raw)")
 
     # ── DIAGNÓSTICO (expander)
     with st.expander("🔍 Diagnóstico de dados (clica para ver)", expanded=False):
