@@ -243,7 +243,7 @@ def carregar_atividades(days_back):
         col_data = detectar_coluna(df, ['Date','start_date_local','date','data','Data'])
         if col_data:
             df['Data'] = df[col_data].apply(lambda x: robust_date_parser(str(x)[:10]))
-            df = df.dropna(subset=['Data']).sort_values('Data')
+            df = df.dropna(subset=['Data']).sort_values('Data', ascending=False)
 
         # Mapear colunas padronizadas
         TEXTO_COLS = ['type','name','date','start_date_local']
@@ -373,7 +373,7 @@ def tab_visao_geral(df_well, df_act, data_ini, data_fim):
 
     # Tabela atividades recentes
     st.subheader("📋 Atividades Recentes")
-    df_tab = filtrar_atividades_principais(df_act).head(10).copy()
+    df_tab = filtrar_atividades_principais(df_act).sort_values('Data', ascending=False).head(10).copy()
     if len(df_tab) > 0:
         cols_show = [c for c in ['Data','type','name','moving_time','rpe','power_avg','icu_eftp'] if c in df_tab.columns]
         df_show = df_tab[cols_show].copy()
