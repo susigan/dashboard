@@ -403,16 +403,17 @@ def tab_pmc(da):
     da_full = st.session_state.get('da_full', da)
     df = filtrar_principais(da_full).copy(); df['Data'] = pd.to_datetime(df['Data'])
 
-    # Prioridade: icu_training_load (mesmo escala do Intervals.icu / SQLite original)
-    # Fallback: session_rpe = (moving_time/60) * rpe (escala diferente!)
-    if 'icu_training_load' in df.columns and df['icu_training_load'].notna().sum() > 10:
+    # MÉTRICA: session_rpe = (moving_time_min) × RPE — igual ao código original Python/SQLite
+    # CTL=~350-400 com esta escala (60min×RPE6=360). icu_training_load daria CTL~40-80 (escala errada).
+    if 'moving_time' in df.columns and 'rpe' in df.columns and df['rpe'].notna().sum() > 10:
+        df['rpe_fill'] = df['rpe'].fillna(df['rpe'].median())
+        df['load_val'] = (df['moving_time'] / 60) * df['rpe_fill']
+        _load_metrica = "session_rpe = (moving_time_min × RPE) — igual ao Python/SQLite original"
+    elif 'icu_training_load' in df.columns and df['icu_training_load'].notna().sum() > 10:
         df['load_val'] = pd.to_numeric(df['icu_training_load'], errors='coerce').fillna(0)
-        _load_metrica = "icu_training_load (Intervals.icu)"
-    elif 'moving_time' in df.columns and 'rpe' in df.columns:
-        df['load_val'] = (df['moving_time'] / 60) * df['rpe'].fillna(0)
-        _load_metrica = "session_rpe (RPE × min) — escala diferente do SQLite!"
+        _load_metrica = "icu_training_load — escala diferente (CTL ~40-80 em vez de ~350-400)"
     else:
-        st.warning("Sem dados de load."); return
+        st.warning("Sem dados de load (rpe ou icu_training_load necessários)."); return
 
     ld = df.groupby('Data')['load_val'].sum().reset_index().sort_values('Data')
     idx_full = pd.date_range(ld['Data'].min(), datetime.now().date())
@@ -885,20 +886,48 @@ def calcular_recovery(dw):
     return pd.DataFrame(rows)
 
 def calcular_bpe(dw, metrica='hrv', baseline_dias=60):
+    """
+    BPE Z-Score semanal usando metodologia do artigo (igual ao Python original):
+    - Baseline = média dos últimos N dias do período TOTAL (fixo, não rolling)
+    - CV%      = (STD / Média) × 100 do mesmo período de baseline
+    - SWC      = 0.5 × CV% × Baseline / 100
+    - Z-Score  = (Média_semanal - Baseline) / SWC
+    """
     if metrica not in dw.columns or len(dw) < 14: return pd.DataFrame()
-    df = dw.copy().sort_values('Data'); df['Data'] = pd.to_datetime(df['Data'])
-    df[metrica] = pd.to_numeric(df[metrica], errors='coerce'); df['semana'] = df['Data'].dt.to_period('W')
+    df = dw.copy().sort_values('Data')
+    df['Data'] = pd.to_datetime(df['Data'])
+    df[metrica] = pd.to_numeric(df[metrica], errors='coerce')
+    df_clean = df.dropna(subset=[metrica])
+    if len(df_clean) < 14: return pd.DataFrame()
+
+    # BASELINE FIXO: últimos baseline_dias do período total (igual ao original)
+    n_base = min(baseline_dias, len(df_clean))
+    baseline_data = df_clean[metrica].tail(n_base)
+    base = baseline_data.mean()
+    std_base = baseline_data.std()
+    if pd.isna(base) or base <= 0 or pd.isna(std_base) or std_base <= 0:
+        return pd.DataFrame()
+    cv = (std_base / base) * 100
+    swc = calcular_swc(base, cv)
+    if swc is None or swc <= 0: return pd.DataFrame()
+
+    # Agrupar por semana e calcular Z-Score com baseline fixo
+    df_clean['semana'] = df_clean['Data'].dt.to_period('W')
     rows = []
-    for sem in sorted(df['semana'].unique()):
-        df_sem = df[df['semana'] == sem]; data_fim = df_sem['Data'].max()
-        df_base = df[df['Data'] <= data_fim].tail(baseline_dias)
-        if len(df_base) < 14: continue
-        base = df_base[metrica].mean(); cv = (df_base[metrica].std() / base) * 100 if base > 0 else None
-        swc = calcular_swc(base, cv)
-        if swc is None or swc <= 0: continue
+    for sem in sorted(df_clean['semana'].unique()):
+        df_sem = df_clean[df_clean['semana'] == sem]
         media_sem = df_sem[metrica].mean()
         if pd.isna(media_sem): continue
-        rows.append({'ano_semana': str(sem), 'media_semanal': media_sem, 'baseline': base, 'swc': swc, 'zscore': (media_sem - base) / swc})
+        zscore = (media_sem - base) / swc
+        rows.append({
+            'ano_semana': str(sem),
+            'media_semanal': media_sem,
+            'baseline': base,
+            'swc': swc,
+            'cv_percent': cv,
+            'zscore': zscore,
+            'n_dias': len(df_sem)
+        })
     return pd.DataFrame(rows)
 
 def tab_recovery(dw):
