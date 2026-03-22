@@ -239,18 +239,27 @@ def carregar_atividades(days_back):
         df = get_as_dataframe(ws, evaluate_formulas=True, header=0)
         if df.columns.duplicated().any():
             df = df.loc[:, ~df.columns.duplicated()]
-        col_data = detectar_coluna(df, ['start_date_local','date','Date','data'])
+        # Detectar coluna de data — testa nomes comuns
+        col_data = detectar_coluna(df, ['Date','start_date_local','date','data','Data'])
         if col_data:
             df['Data'] = df[col_data].apply(lambda x: robust_date_parser(str(x)[:10]))
             df = df.dropna(subset=['Data']).sort_values('Data')
+
+        # Mapear colunas padronizadas
+        TEXTO_COLS = ['type','name','date','start_date_local']
         for var, possiveis in MAPA_TRAINING.items():
             col = detectar_coluna(df, possiveis)
             if col:
-                df[var] = df[col] if var in ['type','name','date','start_date_local'] else df[col].apply(br_to_float)
+                df[var] = df[col] if var in TEXTO_COLS else df[col].apply(br_to_float)
+
+        # Normalizar tipo de actividade
         if 'type' in df.columns:
             df['type'] = df['type'].apply(normalizar_tipo)
+
+        # Filtrar por período
         data_min = datetime.now() - timedelta(days=days_back)
-        return df[df['Data'] >= data_min].reset_index(drop=True)
+        df = df[df['Data'] >= data_min].reset_index(drop=True)
+        return df
     except Exception as e:
         st.error(f"Erro ao carregar atividades: {e}")
         return pd.DataFrame()
@@ -945,7 +954,7 @@ def main():
                 df_act_raw2['Data'] = pd.to_datetime(df_act_raw2['Data'])
                 st.write(f"Data mínima: {df_act_raw2['Data'].min().date()}")
                 st.write(f"Data máxima: {df_act_raw2['Data'].max().date()}")
-                st.write(f"Colunas detectadas: {list(df_act_raw2.columns[:15])}")
+                st.write(f"Todas as colunas ({len(df_act_raw2.columns)}): {list(df_act_raw2.columns)}")
                 st.write("Últimas 5 linhas:")
                 cols_show = [c for c in ['Data','type','name','power_avg','rpe','icu_eftp'] if c in df_act_raw2.columns]
                 st.dataframe(df_act_raw2[cols_show].tail(5))
@@ -957,7 +966,7 @@ def main():
                 df_well_raw2['Data'] = pd.to_datetime(df_well_raw2['Data'])
                 st.write(f"Data mínima: {df_well_raw2['Data'].min().date()}")
                 st.write(f"Data máxima: {df_well_raw2['Data'].max().date()}")
-                st.write(f"Colunas detectadas: {list(df_well_raw2.columns[:15])}")
+                st.write(f"Todas as colunas ({len(df_well_raw2.columns)}): {list(df_well_raw2.columns)}")
                 st.write("Últimas 5 linhas:")
                 cols_w = [c for c in ['Data','hrv','rhr','sleep_quality','fatiga','stress'] if c in df_well_raw2.columns]
                 st.dataframe(df_well_raw2[cols_w].tail(5))
