@@ -1607,58 +1607,102 @@ def tab_analises(da_full, dw):
 # ════════════════════════════════════════════════════════════════════════════════
 def main():
     days_back, di, df_, mods_sel = render_sidebar()
+
     st.title("🏃 ATHELTICA Analytics Dashboard")
     st.caption(f"Período: {di.strftime('%d/%m/%Y')} → {df_.strftime('%d/%m/%Y')}  |  Modalidades: {', '.join(mods_sel)}")
+
     with st.spinner("A carregar dados..."):
         wr = carregar_wellness(days_back)
-        # PMC precisa sempre de historico maximo para CTL/ATL convergirem correctamente
-        ar_pmc = carregar_atividades(730)   # historico completo para PMC
-        ar = carregar_atividades(days_back) if days_back < 730 else ar_pmc
-    if wr.empty and ar_pmc.empty:
-        st.error("Não foi possível carregar dados."); st.stop()
-    # Preprocessar tudo
-    wc = preproc_wellness(wr)
-    ac_full = preproc_ativ(ar_pmc)       # historico completo preprocessado
-    ac = preproc_ativ(ar)                # periodo do filtro preprocessado
-    # Guardar historico completo no session_state para o PMC
-    st.session_state['da_full'] = ac_full
-    dw = filtrar_datas(wc, di, df_); da = filtrar_datas(ac, di, df_)
-    a_filt = da.copy()
 
-if len(da_filt) > 0 and 'type' in da_filt.columns:
-    da_filt['type'] = da_filt['type'].apply(norm_tipo)
-    da_filt = da_filt[da_filt['type'].isin(mods_sel + ['WeightTraining'])]
-    st.success(f"✅ {len(dw)} registros wellness  |  {len(da_filt)} atividades ({di.strftime('%d/%m/%y')}→{df_.strftime('%d/%m/%y')})  |  Histórico PMC: {len(ac_full)} ativ.")
+        # PMC precisa sempre de histórico completo
+        ar_pmc = carregar_atividades(730)
+        ar = carregar_atividades(days_back) if days_back < 730 else ar_pmc
+
+    if wr.empty and ar_pmc.empty:
+        st.error("Não foi possível carregar dados.")
+        st.stop()
+
+    # 🔥 PREPROCESSING (CORRETO)
+    wc = preproc_wellness(wr)
+    ac_full = preproc_ativ(ar_pmc)   # histórico completo
+    ac = preproc_ativ(ar)            # período filtrado
+
+    # guardar histórico completo para PMC
+    st.session_state['da_full'] = ac_full
+
+    # aplicar filtro de datas
+    dw = filtrar_datas(wc, di, df_)
+    da = filtrar_datas(ac, di, df_)
+
+    # 🔥 FILTRO DE MODALIDADE (CORRETO)
+    da_filt = da.copy()
+    if len(da_filt) > 0 and 'type' in da_filt.columns:
+        da_filt['type'] = da_filt['type'].apply(norm_tipo)
+        da_filt = da_filt[da_filt['type'].isin(mods_sel + ['WeightTraining'])]
+
+    # STATUS
+    st.success(
+        f"✅ {len(dw)} registros wellness  |  {len(da_filt)} atividades "
+        f"({di.strftime('%d/%m/%y')}→{df_.strftime('%d/%m/%y')})  |  "
+        f"Histórico PMC: {len(ac_full)} ativ."
+    )
+
+    # DEBUG
     with st.expander("🔍 Diagnóstico", expanded=False):
         c1, c2 = st.columns(2)
+
         with c1:
             st.markdown("**Atividades (RAW)**")
             if len(ar) > 0:
-                ar2 = ar.copy(); ar2['Data'] = pd.to_datetime(ar2['Data'])
+                ar2 = ar.copy()
+                ar2['Data'] = pd.to_datetime(ar2['Data'])
                 st.write(f"Total: {len(ar)} | Data máx: {ar2['Data'].max().date()}")
+
                 cs = [c for c in ['Data', 'type', 'name', 'power_avg', 'rpe', 'icu_eftp'] if c in ar2.columns]
                 st.dataframe(ar2[cs].sort_values('Data', ascending=False).head(5), hide_index=True)
+
         with c2:
             st.markdown("**Wellness (RAW)**")
             if len(wr) > 0:
-                wr2 = wr.copy(); wr2['Data'] = pd.to_datetime(wr2['Data'])
+                wr2 = wr.copy()
+                wr2['Data'] = pd.to_datetime(wr2['Data'])
                 st.write(f"Total: {len(wr)} | Data máx: {wr2['Data'].max().date()}")
+
                 cw = [c for c in ['Data', 'hrv', 'rhr', 'sleep_quality', 'fatiga', 'stress'] if c in wr2.columns]
                 st.dataframe(wr2[cw].sort_values('Data', ascending=False).head(5), hide_index=True)
 
+    # TABS
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
         "📊 Visão Geral", "📈 PMC", "📦 Volume", "⚡ eFTP",
         "❤️ HR & RPE", "🧠 Correlações", "🔋 Recovery", "🧘 Wellness", "🔬 Análises"
     ])
-    with tab1: tab_visao_geral(dw, da_filt, di, df_)
-    with tab2: tab_pmc(ac_full)
-    with tab3: tab_volume(da_filt, dw)
-    with tab4: tab_eftp(da_filt, mods_sel)
-    with tab5: tab_zones(da_filt, mods_sel)
-    with tab6: tab_correlacoes(da_filt, dw)
-    with tab7: tab_recovery(dw)
-    with tab8: tab_wellness(dw)
-    with tab9: tab_analises(ac_full, dw)
+
+    with tab1:
+        tab_visao_geral(dw, da_filt, di, df_)
+
+    with tab2:
+        tab_pmc(ac_full)   # 🔥 CORRETO: usa histórico completo
+
+    with tab3:
+        tab_volume(da_filt, dw)
+
+    with tab4:
+        tab_eftp(da_filt, mods_sel)
+
+    with tab5:
+        tab_zones(da_filt, mods_sel)
+
+    with tab6:
+        tab_correlacoes(da_filt, dw)
+
+    with tab7:
+        tab_recovery(dw)
+
+    with tab8:
+        tab_wellness(dw)
+
+    with tab9:
+        tab_analises(ac_full, dw)
 
 if __name__ == "__main__":
     main()
