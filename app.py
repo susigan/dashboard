@@ -1623,7 +1623,11 @@ def main():
     # Guardar historico completo no session_state para o PMC
     st.session_state['da_full'] = ac_full
     dw = filtrar_datas(wc, di, df_); da = filtrar_datas(ac, di, df_)
-    da_filt = da[da['type'].apply(norm_tipo).isin(mods_sel + ['WeightTraining'])] if len(da) > 0 and 'type' in da.columns else da
+    a_filt = da.copy()
+
+if len(da_filt) > 0 and 'type' in da_filt.columns:
+    da_filt['type'] = da_filt['type'].apply(norm_tipo)
+    da_filt = da_filt[da_filt['type'].isin(mods_sel + ['WeightTraining'])]
     st.success(f"✅ {len(dw)} registros wellness  |  {len(da_filt)} atividades ({di.strftime('%d/%m/%y')}→{df_.strftime('%d/%m/%y')})  |  Histórico PMC: {len(ac_full)} ativ.")
     with st.expander("🔍 Diagnóstico", expanded=False):
         c1, c2 = st.columns(2)
@@ -1647,7 +1651,7 @@ def main():
         "❤️ HR & RPE", "🧠 Correlações", "🔋 Recovery", "🧘 Wellness", "🔬 Análises"
     ])
     with tab1: tab_visao_geral(dw, da_filt, di, df_)
-    with tab2: tab_pmc(da_filt)
+    with tab2: tab_pmc(ac_full)
     with tab3: tab_volume(da_filt, dw)
     with tab4: tab_eftp(da_filt, mods_sel)
     with tab5: tab_zones(da_filt, mods_sel)
