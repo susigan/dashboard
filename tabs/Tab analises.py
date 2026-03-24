@@ -1,34 +1,1092 @@
 # ════════════════════════════════════════════════════════════════════════════════
-# tab_analises.py — Análises Avançadas (8 secções)
+# tabs/tab_analises.py — ATHELTICA Dashboard
+# Aba de Análises Avançadas (8 secções):
+#   1. Tabela resumo + Top 10 power
+#   2. Training Load mensal stacked
+#   3. Polynomial CTL/ATL (overall + por modalidade)
+#   4. BPE Heatmap
+#   5. Falta de Estímulo (7d/14d)
+#   6. Annual — Aquecimentos HR/O2 vs Potência (filtrado por período, tendência temporal)
+#   7. Análise por Modalidade 6 Passos (CV, Tendências, Correlações, Sazonalidade, RPE, Metas)
+#   8. Resumo Geral CTL/ATL/TSB
 # ════════════════════════════════════════════════════════════════════════════════
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-from matplotlib.lines import Line2D
 from matplotlib.colors import LinearSegmentedColormap
-import seaborn as sns
-import gspread
-from gspread_dataframe import get_as_dataframe
-from google.oauth2.service_account import Credentials
-from scipy import stats as scipy_stats
-from scipy.stats import pearsonr
-from datetime import datetime, timedelta
-import re
 import warnings
 warnings.filterwarnings('ignore')
 plt.style.use('seaborn-v0_8-whitegrid')
+from scipy.stats import linregress
+from datetime import datetime, timedelta
 
-from config import CORES, CORES_ATIV, TYPE_MAP, VALID_TYPES, CICLICOS, ANNUAL_SPREADSHEET_ID, ANNUAL_SHEETS
+from config import CORES, CORES_ATIV
 from utils.helpers import (
-    filtrar_principais, add_tempo, norm_tipo, get_cor, norm_serie,
-    cvr, conv_15, norm_range, calcular_swc, classificar_rpe, remove_zscore,
-    calcular_series_carga, calcular_bpe, calcular_recovery,
+    filtrar_principais, add_tempo, norm_tipo, get_cor,
+    calcular_bpe, calcular_series_carga,
     calcular_polinomios_carga, analisar_falta_estimulo,
     tabela_resumo_por_tipo_df, tabela_ranking_power_df,
 )
-from data_loader import carregar_wellness, carregar_atividades, carregar_annual, preproc_wellness, preproc_ativ, filtrar_datas
+
+def calcular_polinomios_carga(df_act_full):
+    """
+    Polynomial fit CTL/ATL Overall e por modalidade.
+    Retorna dict com resultados + '_ld' (série completa).
+    """
+    df = filtrar_principais(df_act_full).copy()
+    df['Data'] = pd.to_datetime(df['Data'])
+    ld, _ = calcular_series_carga(df_act_full)
+    if len(ld) == 0: return None
+    ld['dias_num'] = (ld['Data'] - ld['Data'].min()).dt.days.values
+    res = {'overall': {'CTL': {}, 'ATL': {}}, '_ld': ld}
+    for met in ['CTL', 'ATL']:
+        x, y = ld['dias_num'].values, ld[met].values
+        for grau in [2, 3]:
+            try:
+                z = np.polyfit(x, y, grau); p = np.poly1d(z)
+                r2 = np.corrcoef(y, p(x))[0, 1] ** 2
+                res['overall'][met][f'grau{grau}'] = {'poly': p, 'r2': r2, 'x': x, 'y': y}
+            except Exception: pass
+    if 'moving_time' in df.columns and 'rpe' in df.columns:
+        df['rpe_fill'] = pd.to_numeric(df['rpe'], errors='coerce').fillna(df['rpe'].median())
+        df['load_val'] = (pd.to_numeric(df['moving_time'], errors='coerce') / 60) * df['rpe_fill']
+        for tipo in ['Bike', 'Run', 'Row', 'Ski']:
+            dt = df[df['type'] == tipo].copy()
+            if len(dt) < 5: continue
+            lt = dt.groupby('Data')['load_val'].sum().reset_index().sort_values('Data')
+            idx_t = pd.date_range(lt['Data'].min(), ld['Data'].max())
+            lt = lt.set_index('Data').reindex(idx_t, fill_value=0).reset_index(); lt.columns = ['Data', 'lv']
+            lt['CTL'] = lt['lv'].ewm(span=42, adjust=False).mean()
+            lt['ATL'] = lt['lv'].ewm(span=7,  adjust=False).mean()
+            lt['dn']  = (lt['Data'] - lt['Data'].min()).dt.days.values
+            res[f'tipo_{tipo}'] = {'CTL': {}, 'ATL': {}}
+            for met in ['CTL', 'ATL']:
+                x, y = lt['dn'].values, lt[met].values
+                for grau in [2, 3]:
+                    try:
+                        z = np.polyfit(x, y, grau); p = np.poly1d(z)
+                        r2 = np.corrcoef(y, p(x))[0, 1] ** 2
+                        res[f'tipo_{tipo}'][met][f'grau{grau}'] = {'poly': p, 'r2': r2, 'x': x, 'y': y}
+                    except Exception: pass
+    return res
+
+def analisar_falta_estimulo(df_act_full, janela_dias=14):
+    """Need Score por modalidade — quanto estímulo está em falta."""
+    ld, _ = calcular_series_carga(df_act_full)
+    if len(ld) == 0: return None
+    df = filtrar_principais(df_act_full).copy()
+    df['Data'] = pd.to_datetime(df['Data'])
+    data_lim = pd.Timestamp.now() - pd.Timedelta(days=janela_dias)
+    cr = ld[ld['Data'] >= data_lim].copy()
+    if len(cr) == 0: return None
+    res = {}
+    for mod in ['Bike', 'Run', 'Row', 'Ski']:
+        dm = df[(df['type'] == mod) & (df['Data'] >= data_lim)]
+        dias_a = dm['Data'].nunique(); freq = dias_a / max(janela_dias, 1)
+        atl_m = cr['ATL'].mean(); ctl_m = cr['CTL'].mean()
+        gap = ((ctl_m - atl_m) / ctl_m * 100) if ctl_m > 0 else 0
+        dias_b = (cr['ATL'] < cr['CTL']).sum()
+        sl = np.polyfit(np.arange(len(cr)), cr['ATL'].values, 1)[0] if len(cr) > 1 else 0
+        sl_n = max(0, min(1, (sl + 5) / 10))
+        need = (min(1, max(0, gap / 50)) * 100 * 0.4 +
+                min(1, dias_b / max(len(cr), 1)) * 100 * 0.3 +
+                (1 - sl_n) * 100 * 0.2 +
+                (1 - freq) * 100 * 0.1)
+        prio = 'ALTA' if need >= 70 else 'MÉDIA' if need >= 40 else 'BAIXA'
+        res[mod] = {'need_score': need, 'prioridade': prio, 'gap_relativo': gap,
+                    'dias_atl_menor_ctl': int(dias_b), 'dias_com_atividade': dias_a,
+                    'atl_medio': atl_m, 'ctl_medio': ctl_m}
+    return dict(sorted(res.items(), key=lambda x: x[1]['need_score'], reverse=True))
+
+# ════════════════════════════════════════════════════════════════════════════
+# MÓDULO: data_loader.py
+# ════════════════════════════════════════════════════════════════════════════
+
+# ════════════════════════════════════════════════════════════════════════════════
+# data_loader.py — ATHELTICA Dashboard
+# Autenticação Google Sheets, carregamento e preprocessing.
+# ════════════════════════════════════════════════════════════════════════════════
+
+# ── Autenticação ──────────────────────────────────────────────────────────────
+
+@st.cache_resource
+def get_gc():
+    """Autentica Google Sheets com Service Account em st.secrets."""
+    try:
+        creds = Credentials.from_service_account_info(
+            dict(st.secrets["gcp_service_account"]), scopes=SCOPES)
+        return gspread.authorize(creds)
+    except Exception as e:
+        st.error(f"❌ Erro autenticação Google: {e}")
+        st.info("Configura as credenciais em Settings → Secrets do Streamlit Cloud.")
+        return None
+
+# ── Carregamento ──────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=3600, show_spinner="A carregar wellness...")
+def carregar_wellness(days_back):
+    gc = get_gc()
+    if gc is None: return pd.DataFrame()
+    try:
+        ws  = gc.open_by_url(WELLNESS_URL).worksheet("Respostas ao formulário 1")
+        df  = get_as_dataframe(ws, evaluate_formulas=True, header=0)
+        if df.columns.duplicated().any(): df = df.loc[:, ~df.columns.duplicated()]
+        cd  = detectar_col(df, ['Data', 'data', 'Date', 'Carimbo de data/hora'])
+        if cd:
+            df['Data'] = df[cd].apply(parse_date)
+            df = df.dropna(subset=['Data']).sort_values('Data')
+        for var, lst in MAPA_WELLNESS.items():
+            col = detectar_col(df, lst)
+            if col: df[var] = df[col].apply(br_float)
+        dm = datetime.now() - timedelta(days=days_back)
+        return df[df['Data'] >= dm].reset_index(drop=True)
+    except Exception as e:
+        st.error(f"Erro ao carregar wellness: {e}")
+        return pd.DataFrame()
+
+@st.cache_data(ttl=3600, show_spinner="A carregar atividades...")
+def carregar_atividades(days_back):
+    gc = get_gc()
+    if gc is None: return pd.DataFrame()
+    try:
+        ws  = gc.open_by_url(TRAINING_URL).worksheet("intervals.icu_activities-export")
+        df  = get_as_dataframe(ws, evaluate_formulas=True, header=0)
+        if df.columns.duplicated().any(): df = df.loc[:, ~df.columns.duplicated()]
+        cd  = detectar_col(df, ['Date', 'start_date_local', 'date', 'data', 'Data'])
+        if cd:
+            df['Data'] = df[cd].apply(lambda x: parse_date(str(x)[:10]))
+            df = df.dropna(subset=['Data']).sort_values('Data')
+        TEXTO = ['type', 'name', 'date', 'start_date_local']
+        for var, lst in MAPA_TRAINING.items():
+            col = detectar_col(df, lst)
+            if col: df[var] = df[col] if var in TEXTO else df[col].apply(br_float)
+        if 'type' in df.columns: df['type'] = df['type'].apply(norm_tipo)
+        dm = datetime.now() - timedelta(days=days_back)
+        return df[df['Data'] >= dm].reset_index(drop=True)
+    except Exception as e:
+        st.error(f"Erro ao carregar atividades: {e}")
+        return pd.DataFrame()
+
+# ── Preprocessing ─────────────────────────────────────────────────────────────
+
+def preproc_wellness(df):
+    """Limpeza wellness: z-score, zeros, rolling fill."""
+    if len(df) == 0: return df
+    df = df.copy().sort_values('Data')
+    df = df.drop_duplicates(subset=['Data'], keep='first')
+    for c in [c for c in ['hrv', 'rhr', 'sleep_hours', 'sleep_quality',
+                           'stress', 'fatiga', 'humor', 'soreness', 'peso', 'fat'] if c in df.columns]:
+        df[c] = remove_zscore(df[c], 3.0)
+    df = remove_zeros(df, ['hrv', 'rhr', 'sleep_hours'])
+    for c in [c for c in ['hrv', 'rhr', 'sleep_quality', 'fatiga',
+                           'stress', 'humor', 'soreness'] if c in df.columns]:
+        df = fill_missing(df, c, 7)
+    return df.reset_index(drop=True)
+
+def preproc_ativ(df):
+    """Limpeza atividades: deduplicação, tipos válidos, duração mínima."""
+    if len(df) == 0: return df
+    df = df.copy().sort_values('Data')
+    sub = [c for c in ['Data', 'type', 'moving_time'] if c in df.columns]
+    if len(sub) >= 2: df = df.drop_duplicates(subset=sub, keep='first')
+    if 'type' in df.columns:       df = df[df['type'].isin(VALID_TYPES)]
+    if 'moving_time' in df.columns: df = df[pd.to_numeric(df['moving_time'], errors='coerce') > 60]
+    if 'icu_eftp'    in df.columns: df['icu_eftp'] = remove_zscore(df['icu_eftp'], 3.5)
+    df = remove_zeros(df, ['moving_time', 'icu_eftp'])
+    return df.reset_index(drop=True)
+
+def filtrar_datas(df, di, df_):
+    """Filtra DataFrame pelo intervalo [di, df_]."""
+    if len(df) == 0: return df
+    df = df.copy()
+    df['Data'] = pd.to_datetime(df['Data'])
+    return df[(df['Data'].dt.date >= di) & (df['Data'].dt.date <= df_)].reset_index(drop=True)
+
+@st.cache_data(ttl=3600, show_spinner="A carregar dados anuais (Aquecimentos)...")
+def carregar_annual():
+    """
+    Carrega AquecSki, AquecBike, AquecRow da planilha Annual via gviz CSV.
+    Igual ao código original Python (SPREADSHEET_ID = 1AEKhDrda9xhxRQA_1ty3z3oPELzH6oANa6L0cysJSMk).
+    Não precisa de autenticação — planilha pública via gviz.
+    """
+    dfs = {}
+    COLUNAS_NAO_NUM = ['Mês', 'Fase', 'DATA', 'Treino_antes', 'Atividade', 'Mes']
+    for aba in ANNUAL_SHEETS:
+        url = (f"https://docs.google.com/spreadsheets/d/{ANNUAL_SPREADSHEET_ID}"
+               f"/gviz/tq?tqx=out:csv&sheet={aba}")
+        try:
+            df = pd.read_csv(url)
+            df.columns = [str(c).strip() for c in df.columns]
+
+            # Renomear colunas AquecRow (igual ao original)
+            if aba == "AquecRow":
+                mapa = {'Unnamed: 2': 'DATA', 'Unnamed: 4': 'HR_140W', 'Unnamed: 5': 'HR_160W',
+                        'Unnamed: 6': 'HR_180W', 'Unnamed: 7': 'HR_200W',
+                        'Unnamed: 8': 'HR_Pwr_140w', 'Unnamed: 9': 'HR_Pwr_160w',
+                        'Unnamed: 10': 'HR_Pwr_180w', 'Unnamed: 11': 'O2_140W',
+                        'Unnamed: 12': 'O2_160W', 'Unnamed: 13': 'O2_180W',
+                        'Treino antes': 'Treino_antes', 'Drag Factor': 'Drag_Factor'}
+                df = df.rename(columns={k: v for k, v in mapa.items() if k in df.columns})
+
+            # Limpar e converter
+            df = df.dropna(axis=1, how='all')
+            df = df.replace(['', ' ', 'nan', 'NaN', 'null'], np.nan)
+            for col in df.columns:
+                if col not in COLUNAS_NAO_NUM:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').replace({0.0: np.nan, 0: np.nan})
+            df['Atividade'] = aba
+            dfs[aba] = df
+        except Exception as e:
+            dfs[aba] = pd.DataFrame()
+
+    # DataFrame unificado
+    validos = [d for d in dfs.values() if len(d) > 0]
+    df_all = pd.concat(validos, ignore_index=True) if validos else pd.DataFrame()
+    return dfs, df_all
+
+# ════════════════════════════════════════════════════════════════════════════
+# MÓDULO: tabs/tab_visao_geral.py
+# ════════════════════════════════════════════════════════════════════════════
+
+def tab_visao_geral(dw, da, di, df_):
+    st.header("📊 Visão Geral")
+    c1, c2, c3, c4 = st.columns(4)
+    horas = (da['moving_time'].sum() / 3600) if 'moving_time' in da.columns and len(da) > 0 else None
+    hrv_m = dw['hrv'].dropna().tail(7).mean() if 'hrv' in dw.columns and len(dw) > 0 else None
+    rhr_u = dw['rhr'].dropna().iloc[-1] if 'rhr' in dw.columns and len(dw) > 0 and dw['rhr'].notna().any() else None
+    c1.metric("🏋️ Sessões", f"{len(da)}")
+    c2.metric("⏱️ Horas", f"{horas:.1f}h" if horas else "—")
+    c3.metric("💚 HRV (7d)", f"{hrv_m:.0f} ms" if hrv_m else "—")
+    c4.metric("❤️ RHR", f"{rhr_u:.0f} bpm" if rhr_u else "—")
+    st.markdown("---")
+    col_l, col_r = st.columns([2, 1])
+    with col_l:
+        st.subheader("📈 Performance Overview")
+        fig, ax = plt.subplots(figsize=(13, 4))
+        if 'moving_time' in da.columns and 'rpe' in da.columns and len(da) > 0:
+            dl = da.copy(); dl['Data'] = pd.to_datetime(dl['Data'])
+            dl['load'] = (dl['moving_time'] / 60) * dl['rpe'].fillna(0)
+            ld = dl.groupby('Data')['load'].sum().reset_index().sort_values('Data')
+            ax.bar(ld['Data'], norm_serie(ld['load']), color=CORES['cinza'], alpha=0.3, label='Load (norm)', width=0.8)
+        if 'hrv' in dw.columns and len(dw) > 0:
+            dw2 = dw.dropna(subset=['hrv']).copy(); dw2['Data'] = pd.to_datetime(dw2['Data'])
+            ax.plot(dw2['Data'], norm_serie(dw2['hrv']), color=CORES['verde'], linewidth=2, linestyle='--', label='HRV (norm)')
+        ax.set_title('Performance Overview', fontsize=12, fontweight='bold')
+        ax.legend(loc='upper left', fontsize=9); ax.tick_params(axis='x', rotation=45); ax.grid(True, alpha=0.3)
+        plt.tight_layout(); st.pyplot(fig); plt.close()
+    with col_r:
+        st.subheader("🎯 Distribuição")
+        df_d = filtrar_principais(da).copy()
+        if len(df_d) > 0:
+            cnt = df_d['type'].apply(norm_tipo).value_counts()
+            fig2, ax2 = plt.subplots(figsize=(5, 5))
+            ax2.pie(cnt.values, labels=cnt.index, autopct='%1.0f%%',
+                    colors=[get_cor(t) for t in cnt.index], startangle=90,
+                    pctdistance=0.75, wedgeprops=dict(width=0.5, edgecolor='white', linewidth=2))
+            ax2.text(0, 0, f'{cnt.sum()}', fontsize=28, fontweight='bold', ha='center', va='center')
+            plt.tight_layout(); st.pyplot(fig2); plt.close()
+    st.markdown("---")
+    st.subheader("📋 Atividades Recentes")
+    df_tab = filtrar_principais(da).sort_values('Data', ascending=False).head(10)
+    if len(df_tab) > 0:
+        cs = [c for c in ['Data', 'type', 'name', 'moving_time', 'rpe', 'power_avg', 'icu_eftp'] if c in df_tab.columns]
+        ds = df_tab[cs].copy()
+        if 'moving_time' in ds.columns:
+            ds['moving_time'] = ds['moving_time'].apply(lambda x: f"{int(x/3600)}h{int((x%3600)/60):02d}m" if pd.notna(x) else '—')
+        ds.columns = [c.replace('_', ' ').title() for c in ds.columns]
+        st.dataframe(ds, use_container_width=True, hide_index=True)
+    st.markdown("---")
+    st.subheader("📋 Resumo Semanal")
+    col1, col2, col3 = st.columns(3)
+    if len(da) > 0:
+        dw7 = da[pd.to_datetime(da['Data']).dt.date >= (datetime.now().date() - timedelta(days=7))]
+        col1.metric("Sessões (7d)", len(dw7))
+        if 'moving_time' in dw7.columns: col2.metric("Horas (7d)", f"{dw7['moving_time'].sum()/3600:.1f}h")
+        if 'rpe' in dw7.columns and dw7['rpe'].notna().any(): col3.metric("RPE médio (7d)", f"{dw7['rpe'].mean():.1f}")
+    df_rank = filtrar_principais(da).copy()
+    if 'power_avg' in df_rank.columns and df_rank['power_avg'].notna().any():
+        st.subheader("🏆 Top 10 por Potência")
+        top = df_rank.nlargest(10, 'power_avg')[['Data', 'type', 'name', 'power_avg', 'rpe']].copy()
+        top['Data'] = pd.to_datetime(top['Data']).dt.strftime('%Y-%m-%d')
+        top.columns = ['Data', 'Tipo', 'Nome', 'Power (W)', 'RPE']
+        st.dataframe(top, use_container_width=True, hide_index=True)
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 2 — PMC + FTLM
+# ════════════════════════════════════════════════════════════════════════════════
+
+# ════════════════════════════════════════════════════════════════════════════
+# MÓDULO: tabs/tab_pmc.py
+# ════════════════════════════════════════════════════════════════════════════
+
+def tab_pmc(da):
+    """
+    PMC usa SEMPRE o histórico completo (histórico carregado = 730d) para calcular
+    CTL/ATL/FTLM correctamente — o filtro de período apenas controla o que é exibido.
+    """
+    st.header("📈 PMC — Performance Management Chart")
+    if len(da) == 0: st.warning("Sem dados de atividades."); return
+
+    # Usa todos os dados disponíveis (não só o período filtrado)
+    # da já vem do carregar_atividades(days_back=730) via st.session_state
+    da_full = st.session_state.get('da_full', da)
+    df = filtrar_principais(da_full).copy(); df['Data'] = pd.to_datetime(df['Data'])
+
+    # MÉTRICA: session_rpe = (moving_time_min) × RPE — igual ao código original Python/SQLite
+    # CTL=~350-400 com esta escala (60min×RPE6=360). icu_training_load daria CTL~40-80 (escala errada).
+    if 'moving_time' in df.columns and 'rpe' in df.columns and df['rpe'].notna().sum() > 10:
+        df['rpe_fill'] = df['rpe'].fillna(df['rpe'].median())
+        df['load_val'] = (df['moving_time'] / 60) * df['rpe_fill']
+        _load_metrica = "session_rpe = (moving_time_min × RPE) — igual ao Python/SQLite original"
+    elif 'icu_training_load' in df.columns and df['icu_training_load'].notna().sum() > 10:
+        df['load_val'] = pd.to_numeric(df['icu_training_load'], errors='coerce').fillna(0)
+        _load_metrica = "icu_training_load — escala diferente (CTL ~40-80 em vez de ~350-400)"
+    else:
+        st.warning("Sem dados de load (rpe ou icu_training_load necessários)."); return
+
+    ld = df.groupby('Data')['load_val'].sum().reset_index().sort_values('Data')
+    idx_full = pd.date_range(ld['Data'].min(), datetime.now().date())
+    ld = ld.set_index('Data').reindex(idx_full, fill_value=0).reset_index(); ld.columns = ['Data', 'load_val']
+
+    # CTL/ATL sobre TODO o histórico (para que os valores actuais sejam correctos)
+    ld['CTL'] = ld['load_val'].ewm(span=42, adjust=False).mean()
+    ld['ATL'] = ld['load_val'].ewm(span=7,  adjust=False).mean()
+    ld['TSB'] = ld['CTL'] - ld['ATL']
+
+    # FTLM — gamma otimizado sobre todo o histórico
+    best_g, best_r = 0.30, -1
+    for g in np.arange(0.25, 0.36, 0.01):
+        ema = ld['load_val'].ewm(alpha=g, adjust=False).mean()
+        if ema.std() > 0:
+            r = abs(np.corrcoef(ld['load_val'].values, ema.values)[0, 1])
+            if r > best_r: best_r, best_g = r, g
+    ld['FTLM'] = ld['load_val'].ewm(alpha=best_g, adjust=False).mean()
+
+    # Filtro de exibição — controla o período mostrado no gráfico
+    st.info(f"📊 Métrica de load: **{_load_metrica}** | Histórico: {len(ld)} dias")
+    if "session_rpe" in _load_metrica:
+        st.warning("⚠️ Para resultados equivalentes ao Python/SQLite: usa icu_training_load. Exporta o histórico completo do Intervals.icu para a Google Sheet.")
+
+    col1, col2, col3 = st.columns(3)
+    dias_exib_opts = {"30 dias": 30, "60 dias": 60, "90 dias": 90, "180 dias": 180, "1 ano": 365, "Todo histórico": len(ld)}
+    dias_exib_lbl = col1.selectbox("Período exibido", list(dias_exib_opts.keys()), index=2)
+    dias_exib = dias_exib_opts[dias_exib_lbl]
+    ld_plot = ld.tail(dias_exib).copy()
+
+    smooth = col2.checkbox("Suavizar CTL/ATL (3d)", value=False)
+    show_ftlm = col3.checkbox("Mostrar FTLM", value=True)
+    if smooth:
+        ld_plot = ld_plot.copy()
+        ld_plot['CTL'] = ld_plot['CTL'].rolling(3, min_periods=1).mean()
+        ld_plot['ATL'] = ld_plot['ATL'].rolling(3, min_periods=1).mean()
+
+    idx = ld_plot['Data']  # para as barras de load por tipo
+
+    fig, (ax_pmc, ax_load) = plt.subplots(2, 1, figsize=(16, 9), gridspec_kw={'height_ratios': [2.5, 1]}, sharex=True)
+    fig.subplots_adjust(hspace=0.05)
+    ax_pmc.plot(ld_plot['Data'], ld_plot['CTL'], label='CTL', color=CORES['azul'], linewidth=2.5)
+    ax_pmc.plot(ld_plot['Data'], ld_plot['ATL'], label='ATL', color=CORES['vermelho'], linewidth=2.5)
+    ax_pmc.fill_between(ld_plot['Data'], 0, ld_plot['TSB'], where=(ld_plot['TSB'] >= 0), color=CORES['verde'], alpha=0.25, label='TSB+')
+    ax_pmc.fill_between(ld_plot['Data'], 0, ld_plot['TSB'], where=(ld_plot['TSB'] < 0), color=CORES['vermelho'], alpha=0.20, label='TSB-')
+    ax_pmc.axhline(0, color=CORES['cinza'], linestyle='--', linewidth=0.8)
+    ax_pmc.set_ylabel('CTL / ATL / TSB', fontweight='bold'); ax_pmc.grid(True, alpha=0.3)
+    if show_ftlm:
+        ax2 = ax_pmc.twinx()
+        ax2.plot(ld_plot['Data'], ld_plot['FTLM'], label=f'FTLM (gamma={best_g:.2f})', color=CORES['laranja'], linewidth=2, linestyle='--', alpha=0.85)
+        ax2.set_ylabel('FTLM', color=CORES['laranja'], fontweight='bold')
+        ax2.tick_params(axis='y', labelcolor=CORES['laranja'])
+        l1, lb1 = ax_pmc.get_legend_handles_labels(); l2, lb2 = ax2.get_legend_handles_labels()
+        ax_pmc.legend(l1 + l2, lb1 + lb2, loc='upper left', fontsize=9)
+    else:
+        ax_pmc.legend(loc='upper left', fontsize=9)
+    # Valores actuais = sempre ultimo dia de todo o historico
+    u = ld.iloc[-1]
+    ax_pmc.text(0.99, 0.97, f"CTL: {u['CTL']:.0f}  |  ATL: {u['ATL']:.0f}  |  TSB: {u['TSB']:+.0f}",
+                transform=ax_pmc.transAxes, ha='right', va='top', fontsize=9, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.85))
+    ax_pmc.set_title('PMC — CTL / ATL / TSB / FTLM / Training Load', fontsize=14, fontweight='bold')
+    # Stacked bars por modalidade — igual ao original plot_training_load
+    if 'type' in df.columns:
+        tipos_ord = [t for t in ['Bike', 'Row', 'Ski', 'Run', 'WeightTraining'] if t in df['type'].unique()]
+        tipos_ord += [t for t in df['type'].unique() if t not in tipos_ord]
+        bottom_vals = np.zeros(len(ld_plot))
+        for tipo in tipos_ord:
+            dt = df[df['type'] == tipo].groupby('Data')['load_val'].sum().reset_index()
+            dt.columns = ['Data', 'lv']
+            dt['Data'] = pd.to_datetime(dt['Data'])
+            # Alinhar com ld_plot usando merge
+            merged_bar = ld_plot[['Data']].merge(dt, on='Data', how='left').fillna(0)
+            vals = merged_bar['lv'].values
+            ax_load.bar(ld_plot['Data'], vals, bottom=bottom_vals,
+                        color=get_cor(tipo), alpha=0.85, width=0.8, label=tipo, edgecolor='white', linewidth=0.3)
+            bottom_vals += vals
+        ax_load.legend(loc='upper left', fontsize=8, ncol=min(5, len(tipos_ord)))
+    else:
+        ax_load.bar(ld_plot['Data'], ld_plot['load_val'], color=CORES['roxo'], alpha=0.65, width=0.8, label='Training Load')
+        ax_load.legend(loc='upper left', fontsize=8)
+    ax_load.set_ylabel('Load\n(TRIMP)', fontweight='bold', fontsize=9); ax_load.grid(True, alpha=0.2, axis='y')
+    ax_load.tick_params(axis='x', rotation=45)
+    plt.tight_layout(); st.pyplot(fig); plt.close()
+    st.subheader("Resumo PMC")
+    res = pd.DataFrame({'Metrica': ['CTL (atual)', 'ATL (atual)', 'TSB (atual)', 'CTL (max hist)', 'ATL (max hist)', 'FTLM (atual)', 'FTLM gamma'],
+                        'Valor': [f"{u['CTL']:.1f}", f"{u['ATL']:.1f}", f"{u['TSB']:+.1f}",
+                                  f"{ld['CTL'].max():.1f}", f"{ld['ATL'].max():.1f}", f"{u['FTLM']:.1f}", f"{best_g:.3f}"]})
+    st.dataframe(res, use_container_width=True, hide_index=True)
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 3 — VOLUME & CARGA
+# ════════════════════════════════════════════════════════════════════════════════
+
+# ════════════════════════════════════════════════════════════════════════════
+# MÓDULO: tabs/tab_volume.py
+# ════════════════════════════════════════════════════════════════════════════
+
+def tab_volume(da, dw):
+    st.header("📦 Volume & Carga")
+    if len(da) == 0: st.warning("Sem dados de atividades."); return
+    df = filtrar_principais(da).copy()
+    df = add_tempo(df); df['Data'] = pd.to_datetime(df['Data'])
+    df['horas'] = (pd.to_numeric(df['moving_time'], errors='coerce') / 3600).fillna(0)
+    ciclicos = ['Bike', 'Run', 'Row', 'Ski']
+    CORES_MOD = {'Bike': CORES['vermelho'], 'Run': CORES['verde'], 'Row': CORES['azul'], 'Ski': CORES['roxo'], 'WeightTraining': CORES['laranja']}
+
+    st.subheader("🚴 Volume Mensal — Atividades Cíclicas (horas)")
+    df_cic = df[df['type'].isin(ciclicos)].copy()
+    if len(df_cic) > 0:
+        pivot = df_cic.pivot_table(index='mes', columns='type', values='horas', aggfunc='sum', fill_value=0).sort_index()
+        fig, ax = plt.subplots(figsize=(14, 6))
+        bottom = np.zeros(len(pivot))
+        for tipo in [t for t in ciclicos if t in pivot.columns]:
+            vals = pivot[tipo].values
+            ax.bar(range(len(pivot)), vals, bottom=bottom, label=tipo, color=CORES_MOD.get(tipo, 'gray'), alpha=0.85, edgecolor='white')
+            bottom += vals
+        totais = pivot.sum(axis=1).values
+        for i, t in enumerate(totais):
+            if t > 0: ax.text(i, t + 0.1, f'{t:.1f}h', ha='center', va='bottom', fontsize=9, fontweight='bold')
+        ax.set_xticks(range(len(pivot))); ax.set_xticklabels(pivot.index, rotation=45, ha='right')
+        media = totais.mean(); ax.axhline(media, color='black', linestyle='--', alpha=0.5, label=f'Média: {media:.1f}h')
+        ax.set_ylabel('Horas', fontweight='bold'); ax.legend(loc='upper left'); ax.grid(True, alpha=0.3, axis='y')
+        plt.tight_layout(); st.pyplot(fig); plt.close()
+        c1, c2 = st.columns(2)
+        c1.metric("Total horas cíclicos", f"{pivot.values.sum():.1f}h")
+        c2.metric("Média mensal", f"{media:.1f}h")
+
+    st.subheader("🏋️ Volume Mensal — WeightTraining (horas)")
+    df_wt = da[da['type'] == 'WeightTraining'].copy()
+    if len(df_wt) > 0:
+        df_wt = add_tempo(df_wt); df_wt['horas'] = (pd.to_numeric(df_wt['moving_time'], errors='coerce') / 3600).fillna(0)
+        mensal = df_wt.groupby('mes').agg(horas=('horas', 'sum'), sessoes=('Data', 'count')).reset_index().sort_values('mes')
+        fig, ax = plt.subplots(figsize=(12, 5))
+        ax.bar(range(len(mensal)), mensal['horas'], color=CORES['laranja'], alpha=0.8, edgecolor='white')
+        for i, (h, s) in enumerate(zip(mensal['horas'], mensal['sessoes'])):
+            if h > 0: ax.text(i, h + 0.05, f'{h:.1f}h\n({s}x)', ha='center', va='bottom', fontsize=8)
+        ax.set_xticks(range(len(mensal))); ax.set_xticklabels(mensal['mes'], rotation=45, ha='right')
+        media_wt = mensal['horas'].mean()
+        ax.axhline(media_wt, color='red', linestyle='--', alpha=0.7, label=f'Média: {media_wt:.1f}h')
+        ax.set_ylabel('Horas', fontweight='bold'); ax.legend(); ax.grid(True, alpha=0.3, axis='y')
+        plt.tight_layout(); st.pyplot(fig); plt.close()
+    else:
+        st.info("Sem sessões de WeightTraining no período.")
+
+    st.subheader("💥 Strain Score (XSS)")
+    xss_col = next((c for c in ['xss', 'SS', 'XSS'] if c in df.columns and df[c].notna().any()), None)
+    if xss_col:
+        df_xss = df[df['type'].isin(ciclicos)].dropna(subset=[xss_col]).copy()
+        if len(df_xss) > 3:
+            df_xss = df_xss.sort_values('Data'); df_xss['xss_s'] = pd.to_numeric(df_xss[xss_col], errors='coerce').rolling(7, min_periods=1).mean()
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+            ax1.plot(df_xss['Data'], pd.to_numeric(df_xss[xss_col], errors='coerce'), alpha=0.4, label='XSS')
+            ax1.plot(df_xss['Data'], df_xss['xss_s'], linewidth=2.5, label='XSS 7d')
+            ax1.set_title('Evolução XSS', fontweight='bold'); ax1.legend(); ax1.tick_params(axis='x', rotation=45)
+            comp = [c for c in ['glycolytic', 'aerobic', 'pmax'] if c in df_xss.columns]
+            if comp:
+                med = df_xss.groupby('type')[comp].mean().fillna(0)
+                med.plot(kind='bar', stacked=True, ax=ax2, color=[CORES['vermelho'], CORES['verde'], CORES['laranja']][:len(comp)])
+                ax2.set_title('Componentes por Tipo', fontweight='bold'); ax2.tick_params(axis='x', rotation=45)
+            plt.tight_layout(); st.pyplot(fig); plt.close()
+
+    st.subheader("📊 Volume de Horas por Intensidade (Trimestral)")
+    if 'rpe' in df.columns and 'moving_time' in df.columns:
+        df_rpe = df[df['type'].isin(ciclicos)].copy()
+        df_rpe['rpe_cat'] = df_rpe['rpe'].apply(classificar_rpe); df_rpe = df_rpe.dropna(subset=['rpe_cat'])
+        if len(df_rpe) > 0:
+            piv = df_rpe.pivot_table(index='trimestre', columns='rpe_cat', values='horas', aggfunc='sum', fill_value=0).sort_index()
+            CORES_RPE = {'Leve': CORES['verde'], 'Moderado': CORES['laranja'], 'Pesado': CORES['vermelho']}
+            fig, ax = plt.subplots(figsize=(13, 5))
+            bottom = np.zeros(len(piv))
+            for cat in ['Leve', 'Moderado', 'Pesado']:
+                if cat in piv.columns:
+                    vals = piv[cat].values
+                    ax.bar(range(len(piv)), vals, bottom=bottom, label=cat, color=CORES_RPE.get(cat, 'gray'), alpha=0.85, edgecolor='white')
+                    for i, (v, b) in enumerate(zip(vals, bottom)):
+                        if v > 0.5: ax.text(i, b + v / 2, f'{v:.1f}h', ha='center', va='center', fontsize=8, fontweight='bold', color='white')
+                    bottom += vals
+            ax.set_xticks(range(len(piv))); ax.set_xticklabels(piv.index, rotation=45, ha='right')
+            ax.set_ylabel('Horas', fontweight='bold'); ax.legend(loc='upper left'); ax.grid(True, alpha=0.3, axis='y')
+            ax.set_title('Volume de Horas por Intensidade RPE (Trimestral)', fontsize=12, fontweight='bold')
+            plt.tight_layout(); st.pyplot(fig); plt.close()
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 4 — eFTP
+# ════════════════════════════════════════════════════════════════════════════════
+
+# ════════════════════════════════════════════════════════════════════════════
+# MÓDULO: tabs/tab_eftp.py
+# ════════════════════════════════════════════════════════════════════════════
+
+def tab_eftp(da, mods_sel):
+    st.header("⚡ Evolução do eFTP por Modalidade")
+    ecol = next((c for c in ['icu_eftp', 'eFTP', 'eftp', 'EFTP'] if c in da.columns), None)
+    if ecol is None: st.warning("Coluna eFTP não encontrada."); return
+    df = filtrar_principais(da).copy(); df['Data'] = pd.to_datetime(df['Data']); df['ano'] = df['Data'].dt.year
+    df[ecol] = pd.to_numeric(df[ecol], errors='coerce'); df = df[df['type'].isin(mods_sel)].dropna(subset=[ecol]); df = df[df[ecol] > 50]
+    if len(df) == 0: st.warning("Sem dados de eFTP."); return
+    anos = sorted(df['ano'].unique()); CANO = ['#3498DB', '#E74C3C', '#2ECC71', '#9B59B6', '#F39C12']
+    mapa_cor = {a: CANO[i % len(CANO)] for i, a in enumerate(anos)}
+    anos_sel = st.multiselect("Filtrar anos", anos, default=list(anos)); df = df[df['ano'].isin(anos_sel)]
+    mods = [m for m in mods_sel if m in df['type'].values]
+    if not mods: st.info("Nenhuma modalidade com eFTP."); return
+    fig, axes = plt.subplots(1, len(mods), figsize=(7 * len(mods), 6))
+    if len(mods) == 1: axes = [axes]
+    for ax, mod in zip(axes, mods):
+        dm = df[df['type'] == mod].sort_values('Data'); cm = get_cor(mod)
+        for ano in anos_sel:
+            da_ = dm[dm['ano'] == ano]
+            if len(da_) == 0: continue
+            ax.scatter(da_['Data'], da_[ecol], color=mapa_cor[ano], alpha=0.65, s=35, label=str(ano))
+            if len(da_) >= 3:
+                xn = (da_['Data'] - da_['Data'].min()).dt.days.values; coef = np.polyfit(xn, da_[ecol].values, 1)
+                xp = np.array([xn.min(), xn.max()]); yp = np.poly1d(coef)(xp)
+                dp = [da_['Data'].min() + pd.Timedelta(days=int(x)) for x in xp]
+                ax.plot(dp, yp, color=mapa_cor[ano], linewidth=2, linestyle='--', alpha=0.9)
+                sm = coef[0] * 30
+                ax.annotate(f'{sm:+.1f}W/mês', xy=(dp[1], yp[1]), xytext=(5, 2), textcoords='offset points', fontsize=7.5, color=mapa_cor[ano], fontweight='bold')
+        if len(dm) >= 5:
+            roll = dm.set_index('Data')[ecol].resample('7D').mean().interpolate()
+            ax.plot(roll.index, roll.values, color=cm, linewidth=2, alpha=0.4, label='Média 7d')
+        if len(dm) > 0:
+            mx = dm[ecol].max()
+            ax.axhline(mx, color=cm, linestyle=':', linewidth=1.2, alpha=0.6)
+            ax.annotate(f'Máx: {mx:.0f}W', xy=(dm.loc[dm[ecol].idxmax(), 'Data'], mx), xytext=(0, 6), textcoords='offset points', fontsize=8, color=cm, fontweight='bold', ha='center')
+        ax.set_title(f'eFTP — {mod}', fontsize=13, fontweight='bold', color=cm)
+        ax.set_xlabel('Data'); ax.set_ylabel('eFTP (W)'); ax.tick_params(axis='x', rotation=45); ax.legend(fontsize=8); ax.grid(True, alpha=0.25)
+    plt.suptitle('Evolução eFTP por Modalidade', fontsize=14, fontweight='bold', y=1.02)
+    plt.tight_layout(); st.pyplot(fig); plt.close()
+
+    st.subheader("📦 RPE por Modalidade")
+    if 'rpe' in da.columns:
+        df_r = filtrar_principais(da).copy(); df_r = add_tempo(df_r); df_r = df_r[df_r['type'].isin(mods_sel)].dropna(subset=['rpe'])
+        if len(df_r) > 0:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+            tipos = [t for t in mods_sel if t in df_r['type'].values]
+            sns.boxplot(data=df_r, x='type', y='rpe', order=tipos, palette={t: get_cor(t) for t in tipos}, ax=ax1)
+            ax1.set_title('RPE por Modalidade', fontweight='bold'); ax1.tick_params(axis='x', rotation=45)
+            if 'mes' in df_r.columns:
+                meses = sorted(df_r['mes'].unique())[-12:]; df_rm = df_r[df_r['mes'].isin(meses)]
+                sns.violinplot(data=df_rm, x='mes', y='rpe', palette='Set2', ax=ax2)
+                ax2.set_title('RPE por Mês', fontweight='bold'); ax2.tick_params(axis='x', rotation=45)
+            plt.tight_layout(); st.pyplot(fig); plt.close()
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 5 — HR ZONES + RPE ZONES + CORRELAÇÃO
+# ════════════════════════════════════════════════════════════════════════════════
+
+# ════════════════════════════════════════════════════════════════════════════
+# MÓDULO: tabs/tab_zones.py
+# ════════════════════════════════════════════════════════════════════════════
+
+def _zonas_bp(ax_bar, ax_pie, por_tipo, total_seg, cores_zona, tit_bar, tit_pie):
+    zonas = list(cores_zona.keys()); bottom = np.zeros(len(por_tipo))
+    for zona in zonas:
+        if zona not in por_tipo.columns: continue
+        vals = por_tipo[zona].values
+        ax_bar.bar(por_tipo.index, vals, bottom=bottom, color=cores_zona[zona], label=zona, edgecolor='white', linewidth=0.5)
+        for i, (v, b) in enumerate(zip(vals, bottom)):
+            if v > 5: ax_bar.text(i, b + v / 2, f'{v:.0f}%', ha='center', va='center', fontsize=9, fontweight='bold', color='white')
+        bottom += vals
+    ax_bar.set_ylim(0, 100); ax_bar.set_ylabel('% sessões', fontweight='bold')
+    ax_bar.set_title(tit_bar, fontweight='bold'); ax_bar.legend(loc='upper right', fontsize=8); ax_bar.grid(True, alpha=0.2, axis='y')
+    lp = [l for l, v in total_seg.items() if v > 0]; sp = [v for v in total_seg.values() if v > 0]
+    if sum(sp) > 0:
+        _, _, ats = ax_pie.pie(sp, labels=lp, autopct='%1.1f%%', colors=[cores_zona[l] for l in lp], startangle=90, wedgeprops=dict(edgecolor='white', linewidth=2), pctdistance=0.75)
+        for at in ats: at.set_fontweight('bold'); at.set_fontsize(10)
+    ax_pie.set_title(tit_pie, fontweight='bold')
+
+def tab_zones(da, mods_sel):
+    st.header("❤️ HR Zones & RPE Zones")
+    df = filtrar_principais(da).copy(); df['Data'] = pd.to_datetime(df['Data']); df['ano'] = df['Data'].dt.year
+    df = df[df['type'].isin(mods_sel)]
+    if len(df) == 0: st.warning("Sem dados."); return
+    anos = sorted(df['ano'].unique()); ano_sel = st.selectbox("Ano", anos, index=len(anos) - 1)
+    df_ano = df[df['ano'] == ano_sel].copy()
+    zonas_hr = [c for c in df.columns if c.lower().startswith('hr_z') and c.lower().endswith('_secs')]
+    rpe_col = next((c for c in ['rpe', 'RPE', 'icu_rpe'] if c in df.columns), None)
+    def gzn(col): m = re.search(r'hr_z(\d+)_secs', col.lower()); return int(m.group(1)) if m else 0
+    CORES_HR = {'Baixa (Z1+Z2)': '#2ECC71', 'Moderada (Z3+Z4)': '#F39C12', 'Alta (Z5+Z6+Z7)': '#E74C3C'}
+    CORES_RPE = {'Leve (1–4)': '#3498DB', 'Moderado (5–6)': '#F39C12', 'Forte (7–10)': '#E74C3C'}
+    fig, axes = plt.subplots(1, 4, figsize=(22, 6))
+    if zonas_hr:
+        dh = df_ano.copy()
+        bc = [c for c in zonas_hr if gzn(c) in (1, 2)]; mc = [c for c in zonas_hr if gzn(c) in (3, 4)]; ac = [c for c in zonas_hr if gzn(c) in (5, 6, 7)]
+        for cols in [bc, mc, ac]:
+            for c in cols: dh[c] = pd.to_numeric(dh[c], errors='coerce').fillna(0)
+        dh['zb'] = dh[bc].sum(axis=1) if bc else 0; dh['zm'] = dh[mc].sum(axis=1) if mc else 0; dh['za'] = dh[ac].sum(axis=1) if ac else 0
+        dh['zt'] = dh['zb'] + dh['zm'] + dh['za']; dh = dh[dh['zt'] > 0]
+        if len(dh) > 0:
+            for z, p in [('zb', 'pb'), ('zm', 'pm'), ('za', 'pa')]: dh[p] = dh[z] / dh['zt'] * 100
+            pt = dh.groupby('type')[['pb', 'pm', 'pa']].mean(); pt.columns = list(CORES_HR.keys())
+            ts = {'Baixa (Z1+Z2)': dh['zb'].sum(), 'Moderada (Z3+Z4)': dh['zm'].sum(), 'Alta (Z5+Z6+Z7)': dh['za'].sum()}
+            _zonas_bp(axes[0], axes[1], pt, ts, CORES_HR, f'❤️ HR Zones — {ano_sel}', f'❤️ HR Geral — {ano_sel}')
+    if rpe_col:
+        dr = df_ano.dropna(subset=[rpe_col]).copy(); dr[rpe_col] = pd.to_numeric(dr[rpe_col], errors='coerce')
+        dr['rz'] = pd.cut(dr[rpe_col], bins=[0, 4.9, 6.9, 10], labels=list(CORES_RPE.keys()), right=True); dr = dr.dropna(subset=['rz'])
+        if len(dr) > 0:
+            piv = dr.groupby(['type', 'rz'], observed=True).size().unstack(fill_value=0)
+            for z in CORES_RPE.keys():
+                if z not in piv.columns: piv[z] = 0
+            piv = piv[list(CORES_RPE.keys())]; pct = piv.div(piv.sum(axis=1), axis=0) * 100
+            tr = {z: piv[z].sum() for z in CORES_RPE.keys()}
+            _zonas_bp(axes[2], axes[3], pct, tr, CORES_RPE, f'🎯 RPE Zones — {ano_sel}', f'🎯 RPE Geral — {ano_sel}')
+    plt.suptitle(f'HR Zones · RPE Zones — {ano_sel}', fontsize=13, fontweight='bold', y=1.02)
+    plt.tight_layout(); st.pyplot(fig); plt.close()
+
+    st.subheader("🔗 Correlação HR Zones × RPE")
+    if zonas_hr and rpe_col:
+        df_ok = df.copy()
+        for c in [c for c in zonas_hr]: df_ok[c] = pd.to_numeric(df_ok[c], errors='coerce').fillna(0)
+        df_ok['zb'] = df_ok[[c for c in zonas_hr if gzn(c) in (1, 2)]].sum(axis=1)
+        df_ok['zm'] = df_ok[[c for c in zonas_hr if gzn(c) in (3, 4)]].sum(axis=1)
+        df_ok['za'] = df_ok[[c for c in zonas_hr if gzn(c) in (5, 6, 7)]].sum(axis=1)
+        df_ok['zt'] = df_ok['zb'] + df_ok['zm'] + df_ok['za']; mhr = df_ok['zt'] > 0
+        df_ok.loc[mhr, 'pb'] = df_ok.loc[mhr, 'zb'] / df_ok.loc[mhr, 'zt'] * 100
+        df_ok.loc[mhr, 'pm'] = df_ok.loc[mhr, 'zm'] / df_ok.loc[mhr, 'zt'] * 100
+        df_ok.loc[mhr, 'pa'] = df_ok.loc[mhr, 'za'] / df_ok.loc[mhr, 'zt'] * 100
+        df_ok[rpe_col] = pd.to_numeric(df_ok[rpe_col], errors='coerce')
+        df_ok['rpe_cat'] = pd.cut(df_ok[rpe_col], bins=[0, 4.9, 6.9, 10], labels=['Leve (1–4)', 'Moderado (5–6)', 'Forte (7–10)'], right=True)
+        df_ok = df_ok.dropna(subset=[rpe_col, 'pb', 'pm', 'pa', 'rpe_cat']); df_ok = df_ok[df_ok['zt'] > 0]
+        mods_corr = [m for m in mods_sel if m in df_ok['type'].values]
+        if mods_corr and len(df_ok) >= 5:
+            HR_VARS = ['pb', 'pm', 'pa']; HR_LABELS = ['HR Baixa\n(Z1+Z2)', 'HR Moderada\n(Z3+Z4)', 'HR Alta\n(Z5+Z6+Z7)']
+            CORES_RPE_CAT = {'Leve (1–4)': CORES['azul'], 'Moderado (5–6)': CORES['laranja'], 'Forte (7–10)': CORES['vermelho']}
+            fig, axes2 = plt.subplots(1, len(mods_corr), figsize=(5 * len(mods_corr), 5))
+            if len(mods_corr) == 1: axes2 = [axes2]
+            for ax, mod in zip(axes2, mods_corr):
+                dm = df_ok[df_ok['type'] == mod]
+                if len(dm) < 5: ax.text(0.5, 0.5, f'{mod}\nn insuficiente', ha='center', va='center', transform=ax.transAxes); continue
+                cm_mat = np.zeros((3, 1)); annot = np.empty((3, 1), dtype=object)
+                for i, hv in enumerate(HR_VARS):
+                    x = dm[rpe_col].values; y = dm[hv].values
+                    if np.std(y) > 0 and len(x) >= 5:
+                        r, p = pearsonr(x, y); cm_mat[i, 0] = r
+                        sig = '***' if p < 0.001 else ('**' if p < 0.01 else ('*' if p < 0.05 else 'ns'))
+                        annot[i, 0] = f'r={r:.2f}\n{sig}'
+                    else: annot[i, 0] = 'n/a'
+                im = ax.imshow(cm_mat, cmap='RdYlGn', vmin=-1, vmax=1, aspect='auto')
+                ax.set_xticks([0]); ax.set_xticklabels(['RPE'], fontsize=10)
+                ax.set_yticks(range(3)); ax.set_yticklabels(HR_LABELS, fontsize=9)
+                for i in range(3):
+                    tc = 'white' if abs(cm_mat[i, 0]) > 0.5 else 'black'
+                    ax.text(0, i, annot[i, 0], ha='center', va='center', fontsize=10, fontweight='bold', color=tc)
+                ax.set_title(f'{mod} (n={len(dm)})', fontsize=11, fontweight='bold', color=get_cor(mod))
+                plt.colorbar(im, ax=ax, shrink=0.7, label='r de Pearson')
+            plt.suptitle('Correlação Pearson: RPE × HR Zones', fontsize=13, fontweight='bold', y=1.03)
+            plt.tight_layout(); st.pyplot(fig); plt.close()
+            rows = []
+            forca = lambda r: 'Muito Forte' if abs(r) >= 0.7 else ('Forte' if abs(r) >= 0.5 else ('Moderada' if abs(r) >= 0.3 else 'Fraca'))
+            for mod in mods_corr:
+                dm = df_ok[df_ok['type'] == mod]
+                for hv, hl in zip(HR_VARS, ['HR Baixa', 'HR Moderada', 'HR Alta']):
+                    x = dm[rpe_col].values; y = dm[hv].values
+                    if np.std(y) > 0 and len(x) >= 5:
+                        r, p = pearsonr(x, y)
+                        rows.append({'Modalidade': mod, 'HR Zone': hl, 'r': f'{r:+.3f}', 'p-value': f'{p:.4f}', 'n': len(x),
+                                     'Sig': '***' if p < 0.001 else ('**' if p < 0.01 else ('*' if p < 0.05 else 'ns')), 'Força': forca(r)})
+            if rows:
+                st.subheader("📋 Tabela de Correlações")
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 6 — CORRELAÇÕES & IMPACTO RPE
+# ════════════════════════════════════════════════════════════════════════════════
+
+# ════════════════════════════════════════════════════════════════════════════
+# MÓDULO: tabs/tab_correlacoes.py
+# ════════════════════════════════════════════════════════════════════════════
+
+def tab_correlacoes(da, dw):
+    st.header("🧠 Correlações & Impacto RPE")
+    if len(da) == 0 or len(dw) == 0: st.warning("Sem dados suficientes."); return
+    rpe_col = next((c for c in ['rpe', 'RPE', 'icu_rpe'] if c in da.columns), None)
+
+    st.subheader("💚 Impacto do RPE no HRV/RHR (dia seguinte)")
+    if rpe_col and 'hrv' in dw.columns:
+        da2 = filtrar_principais(da).copy(); da2['Data'] = pd.to_datetime(da2['Data']).dt.normalize()
+        dw2 = dw.copy(); dw2['Data'] = pd.to_datetime(dw2['Data']).dt.normalize()
+        rpe_daily = da2.groupby('Data')[rpe_col].mean().reset_index(); rpe_daily.columns = ['Data', 'rpe_avg']
+        rpe_daily['rpe_cat'] = rpe_daily['rpe_avg'].apply(classificar_rpe)
+        dw2_shift = dw2[['Data', 'hrv'] + (['rhr'] if 'rhr' in dw2.columns else [])].copy()
+        dw2_shift['Data_prev'] = dw2_shift['Data'] - pd.Timedelta(days=1)
+        merged = rpe_daily.merge(dw2_shift.rename(columns={'Data': 'Data_hrv', 'Data_prev': 'Data'}), on='Data', how='inner')
+        merged = merged.dropna(subset=['hrv', 'rpe_cat'])
+        if len(merged) >= 5:
+            cats = ['Leve', 'Moderado', 'Pesado']; baseline_hrv = merged['hrv'].mean()
+            col1, col2 = st.columns(2)
+            with col1:
+                fig, ax = plt.subplots(figsize=(7, 4))
+                medias_hrv = {c: merged[merged['rpe_cat'] == c]['hrv'].mean() for c in cats if c in merged['rpe_cat'].values}
+                vals = [((medias_hrv.get(c, baseline_hrv) - baseline_hrv) / baseline_hrv * 100) for c in cats]
+                ax.bar(cats, vals, color=[CORES['verde'] if v > 0 else CORES['vermelho'] for v in vals], alpha=0.8, edgecolor='white')
+                ax.axhline(0, color=CORES['cinza'], linestyle='--'); ax.set_title('Δ HRV% (dia+1) por RPE', fontweight='bold')
+                for i, v in enumerate(vals): ax.text(i, v + (1 if v >= 0 else -1.5), f'{v:+.1f}%', ha='center', fontsize=9, fontweight='bold')
+                ax.grid(True, alpha=0.3, axis='y'); plt.tight_layout(); st.pyplot(fig); plt.close()
+            with col2:
+                if 'rhr' in merged.columns:
+                    fig, ax = plt.subplots(figsize=(7, 4)); baseline_rhr = merged['rhr'].mean()
+                    medias_rhr = {c: merged[merged['rpe_cat'] == c]['rhr'].mean() for c in cats if c in merged['rpe_cat'].values}
+                    vals_r = [medias_rhr.get(c, baseline_rhr) - baseline_rhr for c in cats]
+                    ax.bar(cats, vals_r, color=[CORES['vermelho'] if v > 0 else CORES['verde'] for v in vals_r], alpha=0.8, edgecolor='white')
+                    ax.axhline(0, color=CORES['cinza'], linestyle='--'); ax.set_title('Δ RHR (bpm, dia+1) por RPE', fontweight='bold')
+                    for i, v in enumerate(vals_r): ax.text(i, v + (0.3 if v >= 0 else -0.6), f'{v:+.1f}', ha='center', fontsize=9, fontweight='bold')
+                    ax.grid(True, alpha=0.3, axis='y'); plt.tight_layout(); st.pyplot(fig); plt.close()
+            tabela = []
+            for cat in cats:
+                sub = merged[merged['rpe_cat'] == cat]
+                if len(sub) > 0:
+                    dhrv = ((sub['hrv'].mean() - baseline_hrv) / baseline_hrv * 100)
+                    drhr = (sub['rhr'].mean() - (merged['rhr'].mean() if 'rhr' in merged.columns else 0)) if 'rhr' in sub.columns else 0
+                    tabela.append({'Categoria': cat, 'Δ HRV (%)': f'{dhrv:+.1f}%', 'Δ RHR (bpm)': f'{drhr:+.1f}', 'n': len(sub)})
+            if tabela: st.dataframe(pd.DataFrame(tabela), use_container_width=True, hide_index=True)
+
+    st.subheader("🔍 Scatter: RPE → HRV | HRV → RHR")
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+    if rpe_col and 'hrv' in dw.columns and 'merged' in dir() and len(merged) > 5:
+        m_clean = merged[['rpe_avg', 'hrv']].dropna()
+        if len(m_clean) > 5:
+            ax1.scatter(m_clean['rpe_avg'], m_clean['hrv'], c=CORES['azul'], alpha=0.5, s=30)
+            z = np.polyfit(m_clean['rpe_avg'], m_clean['hrv'], 1); xl = np.linspace(m_clean['rpe_avg'].min(), m_clean['rpe_avg'].max(), 100)
+            ax1.plot(xl, np.poly1d(z)(xl), '--', color=CORES['vermelho'])
+            r, _ = pearsonr(m_clean['rpe_avg'], m_clean['hrv'])
+            ax1.text(0.05, 0.95, f'r = {r:.3f}', transform=ax1.transAxes, fontweight='bold', va='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+    ax1.set_xlabel('RPE'); ax1.set_ylabel('HRV (dia+1)'); ax1.set_title('RPE → HRV', fontweight='bold'); ax1.grid(True, alpha=0.3)
+    if 'hrv' in dw.columns and 'rhr' in dw.columns:
+        dw3 = dw.dropna(subset=['hrv', 'rhr'])
+        if len(dw3) > 5:
+            ax2.scatter(dw3['hrv'], dw3['rhr'], c=CORES['roxo'], alpha=0.5, s=30)
+            z2 = np.polyfit(dw3['hrv'], dw3['rhr'], 1); xl2 = np.linspace(dw3['hrv'].min(), dw3['hrv'].max(), 100)
+            ax2.plot(xl2, np.poly1d(z2)(xl2), '--', color=CORES['vermelho'])
+            r2 = dw3['hrv'].corr(dw3['rhr'])
+            ax2.text(0.05, 0.95, f'r = {r2:.3f}', transform=ax2.transAxes, fontweight='bold', va='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+    ax2.set_xlabel('HRV (ms)'); ax2.set_ylabel('RHR (bpm)'); ax2.set_title('HRV vs RHR', fontweight='bold'); ax2.grid(True, alpha=0.3)
+    plt.tight_layout(); st.pyplot(fig); plt.close()
+
+    st.subheader("📊 Correlações entre Métricas Wellness")
+    mets_num = [c for c in ['hrv', 'rhr', 'sleep_quality', 'fatiga', 'stress', 'humor', 'soreness'] if c in dw.columns and dw[c].notna().any()]
+    if len(mets_num) >= 3:
+        corr_mat = dw[mets_num].corr(method='pearson')
+        fig, ax = plt.subplots(figsize=(10, 8))
+        mask = np.triu(np.ones_like(corr_mat, dtype=bool))
+        sns.heatmap(corr_mat, mask=mask, annot=True, fmt='.2f', cmap='RdYlGn', center=0, ax=ax, square=True, linewidths=0.5, vmin=-1, vmax=1, cbar_kws={'shrink': 0.8})
+        ax.set_title('Correlações Wellness (Pearson)', fontsize=13, fontweight='bold')
+        plt.tight_layout(); st.pyplot(fig); plt.close()
+
+    st.subheader("🏃 Impacto por Tipo de Atividade → HRV/RHR (dia+1)")
+    if rpe_col and 'type' in da.columns and 'hrv' in dw.columns:
+        da3 = filtrar_principais(da).copy(); da3['Data'] = pd.to_datetime(da3['Data']).dt.normalize()
+        tipo_daily = da3.groupby('Data')['type'].agg(lambda x: x.mode()[0] if len(x) > 0 else None).reset_index()
+        dw2b = dw.copy(); dw2b['Data'] = pd.to_datetime(dw2b['Data']).dt.normalize()
+        dw2b_s = dw2b[['Data', 'hrv'] + (['rhr'] if 'rhr' in dw2b.columns else [])].copy()
+        dw2b_s['Data_prev'] = dw2b_s['Data'] - pd.Timedelta(days=1)
+        merged2 = tipo_daily.merge(dw2b_s.rename(columns={'Data': 'Data_hrv', 'Data_prev': 'Data'}), on='Data', how='inner')
+        merged2 = merged2.dropna(subset=['hrv', 'type'])
+        if len(merged2) >= 5:
+            tipos_disp = [t for t in ['Bike', 'Row', 'Run', 'Ski'] if t in merged2['type'].values]
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+            baseline_h = merged2['hrv'].mean()
+            vals_h = [((merged2[merged2['type'] == t]['hrv'].mean() - baseline_h) / baseline_h * 100) for t in tipos_disp]
+            ax1.bar(tipos_disp, vals_h, color=[get_cor(t) for t in tipos_disp], alpha=0.8, edgecolor='white')
+            ax1.axhline(0, color=CORES['cinza'], linestyle='--'); ax1.set_title('Atividade → HRV (dia+1)', fontweight='bold')
+            ax1.set_ylabel('Δ HRV (%)'); ax1.grid(True, alpha=0.3, axis='y')
+            if 'rhr' in merged2.columns:
+                baseline_r = merged2['rhr'].mean()
+                vals_r = [merged2[merged2['type'] == t]['rhr'].mean() - baseline_r for t in tipos_disp]
+                ax2.bar(tipos_disp, vals_r, color=[get_cor(t) for t in tipos_disp], alpha=0.8, edgecolor='white')
+                ax2.axhline(0, color=CORES['cinza'], linestyle='--'); ax2.set_title('Atividade → RHR (dia+1)', fontweight='bold')
+                ax2.set_ylabel('Δ RHR (bpm)'); ax2.grid(True, alpha=0.3, axis='y')
+            plt.tight_layout(); st.pyplot(fig); plt.close()
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 7 — RECOVERY
+# ════════════════════════════════════════════════════════════════════════════════
+
+# ════════════════════════════════════════════════════════════════════════════
+# MÓDULO: tabs/tab_recovery.py
+# ════════════════════════════════════════════════════════════════════════════
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 7 — RECOVERY
+# ════════════════════════════════════════════════════════════════════════════════
+def calcular_recovery(dw):
+    if len(dw) == 0: return pd.DataFrame()
+    df = dw.copy().sort_values('Data')
+    df['hrv_b14'] = df['hrv'].rolling(14, min_periods=7).mean()
+    df['rhr_b14'] = df['rhr'].rolling(14, min_periods=7).mean() if 'rhr' in df.columns else np.nan
+    df['cv7'] = cvr(df['hrv'], 7); df['cv30'] = cvr(df['hrv'], 30)
+    rows = []
+    for _, row in df.iterrows():
+        hv = row.get('hrv'); hb = row.get('hrv_b14'); cv = row.get('cv7'); hs = 50
+        if pd.notna(hv) and pd.notna(hb) and hb > 0 and pd.notna(cv):
+            inf, sup = norm_range(hb, cv)
+            if inf and sup:
+                band = sup - inf
+                if hv >= sup: hs = min(100, 75 + (hv - sup) / band * 25 if band > 0 else 75)
+                elif hv <= inf: hs = max(0, 40 - (inf - hv) / band * 40 if band > 0 else 40)
+                else: hs = 50 + ((hv - inf) / band * 25 if band > 0 else 0)
+        rv = row.get('rhr'); rb = row.get('rhr_b14'); rs = 50
+        if pd.notna(rv) and pd.notna(rb) and rb > 0:
+            pct = (rv - rb) / rb * 100; rs = 90 if pct < -10 else 75 if pct < -5 else 55 if pct < 5 else 35 if pct < 10 else 20
+        sl = conv_15(row.get('sleep_quality')); fa = conv_15(row.get('fatiga'))
+        st_ = conv_15(row.get('stress')); hu = conv_15(row.get('humor')); so = conv_15(row.get('soreness'))
+        score = hs * 0.30 + rs * 0.15 + sl * 0.20 + fa * 0.10 + st_ * 0.10 + hu * 0.05 + so * 0.05 + 50 * 0.05
+        inf2, sup2 = norm_range(hb if pd.notna(hb) else 0, cv if pd.notna(cv) else 10)
+        rows.append({'Data': row['Data'], 'recovery_score': score, 'hrv': hv, 'hrv_baseline': hb,
+                     'hrv_cv7': cv, 'hrv_cv30': row.get('cv30'), 'normal_range_inf': inf2, 'normal_range_sup': sup2,
+                     'hrv_comp': hs, 'rhr_comp': rs, 'sleep_comp': sl, 'fatiga_comp': fa, 'stress_comp': st_})
+    return pd.DataFrame(rows)
+
+def calcular_bpe(dw, metrica='hrv', baseline_dias=60):
+    """
+    BPE Z-Score semanal usando metodologia do artigo (igual ao Python original):
+    - Baseline = média dos últimos N dias do período TOTAL (fixo, não rolling)
+    - CV%      = (STD / Média) × 100 do mesmo período de baseline
+    - SWC      = 0.5 × CV% × Baseline / 100
+    - Z-Score  = (Média_semanal - Baseline) / SWC
+    """
+    if metrica not in dw.columns or len(dw) < 14: return pd.DataFrame()
+    df = dw.copy().sort_values('Data')
+    df['Data'] = pd.to_datetime(df['Data'])
+    df[metrica] = pd.to_numeric(df[metrica], errors='coerce')
+    df_clean = df.dropna(subset=[metrica])
+    if len(df_clean) < 14: return pd.DataFrame()
+
+    # BASELINE FIXO: últimos baseline_dias do período total (igual ao original)
+    n_base = min(baseline_dias, len(df_clean))
+    baseline_data = df_clean[metrica].tail(n_base)
+    base = baseline_data.mean()
+    std_base = baseline_data.std()
+    if pd.isna(base) or base <= 0 or pd.isna(std_base) or std_base <= 0:
+        return pd.DataFrame()
+    cv = (std_base / base) * 100
+    swc = calcular_swc(base, cv)
+    if swc is None or swc <= 0: return pd.DataFrame()
+
+    # Agrupar por semana e calcular Z-Score com baseline fixo
+    df_clean['semana'] = df_clean['Data'].dt.to_period('W')
+    rows = []
+    for sem in sorted(df_clean['semana'].unique()):
+        df_sem = df_clean[df_clean['semana'] == sem]
+        media_sem = df_sem[metrica].mean()
+        if pd.isna(media_sem): continue
+        zscore = (media_sem - base) / swc
+        rows.append({
+            'ano_semana': str(sem),
+            'media_semanal': media_sem,
+            'baseline': base,
+            'swc': swc,
+            'cv_percent': cv,
+            'zscore': zscore,
+            'n_dias': len(df_sem)
+        })
+    return pd.DataFrame(rows)
+
+def tab_recovery(dw):
+    st.header("🔋 Recovery Score & HRV Analysis")
+    if len(dw) == 0 or 'hrv' not in dw.columns: st.warning("Sem dados de wellness/HRV."); return
+    rec = calcular_recovery(dw)
+    if len(rec) == 0: return
+    u = rec.iloc[-1]; score = u['recovery_score']
+    cat = ('🟢 Excelente' if score >= 80 else '🟡 Bom' if score >= 60 else '🟠 Moderado' if score >= 40 else '🔴 Baixo')
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Recovery Score", f"{score:.0f}/100", delta=cat)
+    c2.metric("HRV atual", f"{u['hrv']:.0f} ms" if pd.notna(u['hrv']) else "—")
+    c3.metric("Baseline HRV", f"{u['hrv_baseline']:.0f} ms" if pd.notna(u['hrv_baseline']) else "—")
+    c4.metric("CV% 7d", f"{u['hrv_cv7']:.1f}%" if pd.notna(u['hrv_cv7']) else "—")
+    st.markdown("---")
+    n_dias = st.slider("Dias a mostrar", 14, min(len(rec), 365), min(90, len(rec)))
+    df_tl = rec.tail(n_dias).copy()
+    fig, ax = plt.subplots(figsize=(14, 5))
+    ax.axhspan(80, 100, alpha=0.15, color=CORES['verde'], label='Excelente (80–100)')
+    ax.axhspan(60, 80, alpha=0.15, color=CORES['amarelo'], label='Bom (60–79)')
+    ax.axhspan(40, 60, alpha=0.15, color=CORES['laranja'], label='Moderado (40–59)')
+    ax.axhspan(0, 40, alpha=0.15, color=CORES['vermelho'], label='Baixo (0–39)')
+    x = range(len(df_tl)); sc = df_tl['recovery_score'].values
+    cpts = [CORES['verde'] if s >= 80 else CORES['amarelo'] if s >= 60 else CORES['laranja'] if s >= 40 else CORES['vermelho'] for s in sc]
+    ax.plot(x, sc, color=CORES['azul_escuro'], linewidth=2, alpha=0.7)
+    ax.scatter(x, sc, c=cpts, s=70, edgecolors='white', linewidths=2, zorder=5)
+    if len(df_tl) >= 7: ax.plot(x, pd.Series(sc).rolling(7, min_periods=3).mean(), color=CORES['roxo'], linewidth=2.5, linestyle='--', label='Média 7d', alpha=0.8)
+    datas = df_tl['Data'].dt.strftime('%d/%m'); step = max(1, len(x) // 10)
+    ax.set_xticks(list(x)[::step]); ax.set_xticklabels([datas.iloc[i] for i in range(0, len(datas), step)], rotation=45)
+    ax.set_ylim(0, 105); ax.legend(loc='upper left', fontsize=9); ax.grid(True, alpha=0.3)
+    ax.set_title('Recovery Score — Timeline', fontsize=14, fontweight='bold')
+    plt.tight_layout(); st.pyplot(fig); plt.close()
+
+    st.subheader("📊 HRV com Normal Range")
+    fig2, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 9), height_ratios=[2, 1.2])
+    xr = range(len(df_tl)); dr = df_tl['Data'].dt.strftime('%d/%m'); sr = max(1, len(xr) // 10)
+    if df_tl['normal_range_inf'].notna().any():
+        ax1.fill_between(xr, df_tl['normal_range_inf'], df_tl['normal_range_sup'], alpha=0.25, color=CORES['azul'], label='Normal Range HRV')
+    if df_tl['hrv_baseline'].notna().any():
+        ax1.plot(xr, df_tl['hrv_baseline'], color=CORES['roxo'], linestyle='--', linewidth=2, label='Baseline 14d')
+    hv = df_tl['hrv'].values
+    chr_list = [CORES['verde'] if (not pd.isna(df_tl['normal_range_sup'].iloc[i]) and not pd.isna(hv[i]) and hv[i] > df_tl['normal_range_sup'].iloc[i])
+                else CORES['vermelho'] if (not pd.isna(df_tl['normal_range_inf'].iloc[i]) and not pd.isna(hv[i]) and hv[i] < df_tl['normal_range_inf'].iloc[i])
+                else CORES['azul'] for i in range(len(df_tl))]
+    ax1.plot(xr, hv, color=CORES['preto'], linewidth=2, alpha=0.6)
+    ax1.scatter(xr, hv, c=chr_list, s=70, edgecolors='white', linewidths=2, zorder=5)
+    ax1.legend(loc='upper right', fontsize=9); ax1.grid(True, alpha=0.3); ax1.set_ylabel('HRV (ms)', fontweight='bold')
+    ax1.set_title('HRV com Normal Range (HRV4Training)', fontsize=13, fontweight='bold')
+    cv_s = df_tl['hrv_cv7'].copy()
+    if cv_s.notna().sum() >= 5:
+        cv_b = cv_s.rolling(14, min_periods=5).mean(); cv_sd = cv_s.rolling(14, min_periods=5).std()
+        cv_inf = cv_b - 0.5 * cv_sd; cv_sup = cv_b + 0.5 * cv_sd
+        ax2.fill_between(xr, cv_inf, cv_sup, alpha=0.25, color=CORES['laranja'], label='Normal Range CV%')
+        ax2.plot(xr, cv_b, color=CORES['roxo'], linestyle='--', linewidth=1.8, alpha=0.8)
+        cv_v = cv_s.values
+        ccv = [CORES['verde'] if (not pd.isna(cv_sup.iloc[i]) and not pd.isna(cv_v[i]) and cv_v[i] > cv_sup.iloc[i])
+               else CORES['vermelho'] if (not pd.isna(cv_inf.iloc[i]) and not pd.isna(cv_v[i]) and cv_v[i] < cv_inf.iloc[i])
+               else CORES['azul'] for i in range(len(df_tl))]
+        ax2.plot(xr, cv_v, color=CORES['preto'], linewidth=1.8, alpha=0.6)
+        ax2.scatter(xr, cv_v, c=ccv, s=55, edgecolors='white', linewidths=1.5, zorder=5)
+        ax2.axhline(3, color=CORES['cinza'], linestyle=':', alpha=0.5); ax2.axhline(10, color=CORES['cinza'], linestyle=':', alpha=0.5)
+        ax2.legend(loc='upper right', fontsize=8)
+    for axr in [ax1, ax2]:
+        axr.set_xticks(list(xr)[::sr]); axr.set_xticklabels([dr.iloc[i] for i in range(0, len(dr), sr)], rotation=45); axr.grid(True, alpha=0.3)
+    ax2.set_ylabel('CV% HRV', fontweight='bold'); ax2.set_title('CV% com Normal Range', fontsize=12, fontweight='bold')
+    plt.tight_layout(); st.pyplot(fig2); plt.close()
+
+    st.subheader("📊 BPE — Z-Score Semanal (Método SWC)")
+    mets_bpe = [m for m in ['hrv', 'rhr', 'sleep_quality', 'fatiga', 'stress'] if m in dw.columns and dw[m].notna().any()]
+    n_semanas_disp = max(1, len(dw) // 7)
+    _skip_bpe = n_semanas_disp < 4
+    if _skip_bpe:
+        st.info(f"Dados insuficientes para BPE (min 4 semanas, disponivel: {n_semanas_disp}).")
+        n_sem = n_semanas_disp
+    else:
+        _slider_max = min(52, n_semanas_disp)
+        _slider_val = min(16, _slider_max)
+        if _slider_max > 4:
+            n_sem = st.slider("Semanas (BPE)", 4, _slider_max, _slider_val)
+        else:
+            n_sem = _slider_max
+            st.caption(f"BPE: {n_sem} semanas disponíveis")
+    dados_bpe = {}
+    if not _skip_bpe:
+        for met in mets_bpe:
+            s = calcular_bpe(dw, met, 60)
+            if len(s) > 0: dados_bpe[met] = s.tail(n_sem)
+    if dados_bpe:
+        semanas = list(dados_bpe[list(dados_bpe.keys())[0]]['ano_semana'])
+        nm = len(dados_bpe); mat = np.zeros((nm, len(semanas)))
+        for i, met in enumerate(dados_bpe.keys()):
+            z = dados_bpe[met]['zscore'].values; mat[i, :len(z)] = (-z if met == 'rhr' else z)[:len(semanas)]
+        cmap = LinearSegmentedColormap.from_list('bpe', [CORES['vermelho'], CORES['amarelo'], CORES['verde']], N=100)
+        fig, ax = plt.subplots(figsize=(max(14, len(semanas) * 0.9), max(5, nm * 1.1)))
+        im = ax.imshow(mat, cmap=cmap, aspect='auto', vmin=-2, vmax=2)
+        nomes = {'hrv': 'HRV', 'rhr': 'RHR (inv)', 'sleep_quality': 'Sono', 'fatiga': 'Energia', 'stress': 'Relaxamento'}
+        ax.set_yticks(range(nm)); ax.set_yticklabels([nomes.get(m, m) for m in dados_bpe.keys()], fontsize=11)
+        slbls = [s.split('-W')[1] if '-W' in s else s for s in semanas]
+        ax.set_xticks(range(len(semanas))); ax.set_xticklabels([f'S{s}' for s in slbls], rotation=45, fontsize=9)
+        for i in range(nm):
+            for j in range(len(semanas)):
+                v = mat[i, j]; tc = 'white' if abs(v) > 1 else 'black'
+                ax.text(j, i, f'{v:.1f}', ha='center', va='center', fontsize=9, fontweight='bold', color=tc)
+        cbar = plt.colorbar(im, ax=ax, shrink=0.8); cbar.set_label('Z-Score BPE (múltiplos de SWC)')
+        cbar.set_ticks([-2, -1, 0, 1, 2]); cbar.set_ticklabels(['🔴 -2', '🟠 -1', '0', '🟡 +1', '🟢 +2'])
+        ax.set_title('BPE — Blocos de Padrão Específico (Z-Score com SWC)', fontsize=13, fontweight='bold')
+        plt.tight_layout(); st.pyplot(fig); plt.close()
+
+    st.subheader("🏋️ HRV-Guided Training (LnrMSSD)")
+    if len(dw) >= 14 and 'hrv' in dw.columns and dw['hrv'].notna().sum() >= 14:
+        df_hg = dw.copy().sort_values('Data'); df_hg['Data'] = pd.to_datetime(df_hg['Data'])
+        df_hg['LnrMSSD'] = np.where(df_hg['hrv'] > 0, np.log(df_hg['hrv']), np.nan); df_hg = df_hg.dropna(subset=['LnrMSSD'])
+        dias_fam = st.slider("Dias baseline rolling", 7, 28, 14)
+        df_hg['bm'] = df_hg['LnrMSSD'].rolling(dias_fam, min_periods=dias_fam).mean()
+        df_hg['bs'] = df_hg['LnrMSSD'].rolling(dias_fam, min_periods=dias_fam).std()
+        df_hg['linf'] = df_hg['bm'] - 0.5 * df_hg['bs']; df_hg['lsup'] = df_hg['bm'] + 0.5 * df_hg['bs']
+        df_hg['desvio'] = (df_hg['LnrMSSD'] - df_hg['bm']) / df_hg['bs']
+        df_hg['intens'] = df_hg.apply(lambda r: 'HIIT' if pd.notna(r['bm']) and r['linf'] <= r['LnrMSSD'] <= r['lsup'] else ('Recuperação' if pd.notna(r['bm']) else 'Sem dados'), axis=1)
+        n_hg = st.slider("Dias HRV-Guided", 14, min(len(df_hg), 180), min(60, len(df_hg)))
+        df_p = df_hg.tail(n_hg).copy(); xh = range(len(df_p)); dh = df_p['Data'].dt.strftime('%d/%m'); sh = max(1, len(xh) // 15)
+        ch = [CORES['verde'] if i == 'HIIT' else CORES['laranja'] if i == 'Recuperação' else CORES['cinza'] for i in df_p['intens']]
+        fig3, (ah1, ah2) = plt.subplots(2, 1, figsize=(15, 10))
+        ah1.plot(xh, df_p['LnrMSSD'], '-', alpha=0.6, color=CORES['azul'], linewidth=2, label='LnrMSSD')
+        ah1.scatter(xh, df_p['LnrMSSD'], c=ch, s=80, edgecolors='white', linewidths=2, zorder=5)
+        ah1.plot(xh, df_p['bm'], color=CORES['verde_escuro'], linestyle='--', linewidth=2.5, label=f'Baseline ({dias_fam}d)', alpha=0.8)
+        ah1.plot(xh, df_p['lsup'], color=CORES['laranja'], linestyle=':', linewidth=2, label='±0.5 DP', alpha=0.7)
+        ah1.plot(xh, df_p['linf'], color=CORES['laranja'], linestyle=':', linewidth=2, alpha=0.7)
+        ah1.fill_between(xh, df_p['linf'], df_p['lsup'], alpha=0.15, color=CORES['verde'], label='Zona HIIT')
+        ah1.legend(loc='best', fontsize=9); ah1.grid(True, alpha=0.3); ah1.set_ylabel('LnrMSSD', fontweight='bold')
+        ah1.set_title(f'HRV-Guided Training — Baseline Rolling ({dias_fam}d)', fontsize=13, fontweight='bold')
+        ah1.set_xticks(list(xh)[::sh]); ah1.set_xticklabels([dh.iloc[i] for i in range(0, len(dh), sh)], rotation=45)
+        ah2.axhline(0, color=CORES['verde_escuro'], linestyle='-', linewidth=2, alpha=0.8)
+        ah2.axhline(0.5, color=CORES['laranja'], linestyle=':', linewidth=2); ah2.axhline(-0.5, color=CORES['laranja'], linestyle=':', linewidth=2)
+        ah2.fill_between(xh, -0.5, 0.5, alpha=0.2, color=CORES['verde'], label='Zona HIIT')
+        ah2.scatter(xh, df_p['desvio'], c=ch, alpha=0.7, s=60, edgecolors='white', linewidths=1)
+        ah2.plot(xh, df_p['desvio'], color=CORES['cinza'], alpha=0.4, linewidth=1)
+        ah2.set_ylim(-3, 3); ah2.legend(loc='best', fontsize=9); ah2.grid(True, alpha=0.3)
+        ah2.set_ylabel('Desvio (DP)', fontweight='bold'); ah2.set_title('Desvio LnrMSSD do Baseline', fontsize=12, fontweight='bold')
+        ah2.set_xticks(list(xh)[::sh]); ah2.set_xticklabels([dh.iloc[i] for i in range(0, len(dh), sh)], rotation=45)
+        plt.tight_layout(); st.pyplot(fig3); plt.close()
+        df_val = df_hg[df_hg['bm'].notna()]
+        if len(df_val) > 0:
+            hiit_n = (df_val['intens'] == 'HIIT').sum(); rec_n = (df_val['intens'] == 'Recuperação').sum(); total_n = len(df_val)
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Dias HIIT", f"{hiit_n} ({hiit_n/total_n*100:.0f}%)")
+            c2.metric("Dias Recuperação", f"{rec_n} ({rec_n/total_n*100:.0f}%)")
+            c3.metric("Prescrição HOJE", '✅ HIIT' if df_val.iloc[-1]['intens'] == 'HIIT' else '🟠 Recuperação')
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 8 — WELLNESS
+# ════════════════════════════════════════════════════════════════════════════════
+
+# ════════════════════════════════════════════════════════════════════════════
+# MÓDULO: tabs/tab_wellness.py
+# ════════════════════════════════════════════════════════════════════════════
+
+def tab_wellness(dw):
+    st.header("🧘 Wellness")
+    if len(dw) == 0: st.warning("Sem dados de wellness."); return
+    mets = [m for m in ['hrv', 'rhr', 'sleep_quality', 'fatiga', 'stress', 'humor', 'soreness'] if m in dw.columns and dw[m].notna().any()]
+    if not mets: st.warning("Sem métricas wellness."); return
+    sel = st.multiselect("Métricas", mets, default=mets[:5])
+    if not sel: return
+    fig, axes = plt.subplots(len(sel), 1, figsize=(14, 3 * len(sel)), sharex=True)
+    if len(sel) == 1: axes = [axes]
+    x = range(len(dw)); datas = pd.to_datetime(dw['Data']).dt.strftime('%d/%m')
+    CM = {'hrv': CORES['verde'], 'rhr': CORES['vermelho'], 'sleep_quality': CORES['roxo'],
+          'fatiga': CORES['laranja'], 'stress': CORES['vermelho_escuro'], 'humor': CORES['verde_escuro'], 'soreness': CORES['azul']}
+    for ax, met in zip(axes, sel):
+        v = pd.to_numeric(dw[met], errors='coerce').values
+        ax.plot(x, v, color=CM.get(met, CORES['azul']), linewidth=2, marker='o', markersize=4)
+        if len(v) >= 7: ax.plot(x, pd.Series(v).rolling(7, min_periods=3).mean(), color=CORES['preto'], linewidth=1.5, linestyle='--', alpha=0.5, label='Média 7d')
+        ax.set_ylabel(met.replace('_', ' ').title(), fontweight='bold'); ax.grid(True, alpha=0.3); ax.legend(fontsize=8)
+    step = max(1, len(x) // 12); axes[-1].set_xticks(list(x)[::step])
+    axes[-1].set_xticklabels([datas.iloc[i] for i in range(0, len(datas), step)], rotation=45)
+    plt.suptitle('Métricas Wellness', fontsize=14, fontweight='bold'); plt.tight_layout(); st.pyplot(fig); plt.close()
+    st.subheader("📋 Resumo (últimos 7 dias)")
+    if len(dw) >= 7:
+        u7 = dw.tail(7); rows = []
+        for m in mets:
+            col = pd.to_numeric(u7[m], errors='coerce')
+            rows.append({'Métrica': m.replace('_', ' ').title(), 'Média': f"{col.mean():.1f}", 'Mín': f"{col.min():.0f}", 'Máx': f"{col.max():.0f}"})
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+# ════════════════════════════════════════════════════════════════════════════
+# MÓDULO: tabs/tab_analises.py
+# ════════════════════════════════════════════════════════════════════════════
+
+# ════════════════════════════════════════════════════════════════════════════════
+# FUNÇÕES AUXILIARES — ANÁLISES AVANÇADAS (do original Python/SQLite)
+# ════════════════════════════════════════════════════════════════════════════════
 
 def calcular_polinomios_carga(df_act_full):
     """
@@ -356,49 +1414,260 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
     st.markdown("---")
 
     # ── Secção 6: Annual — Aquecimentos ─────────────────────────────────────
-    st.subheader("📅 Dados Annual — Aquecimentos por Modalidade")
-    MODAL_ABA = {'Ski': 'AquecSki', 'Bike': 'AquecBike', 'Row': 'AquecRow'}
-    MODAL_HR  = {'Ski':  ['HR_140W','HR_160W','HR_180W','HR_200W'],
-                 'Bike': ['HR_140W','HR_160W','HR_180W','HR_200W'],
-                 'Row':  ['HR_140W','HR_160W','HR_180W','HR_200W']}
-    MODAL_O2  = {'Row': ['O2_140W','O2_160W','O2_180W']}
+    st.subheader("📅 Annual — Aquecimentos por Modalidade (HR/O2 vs Potência)")
 
-    if not df_annual.empty:
+    def _extrair_potencia(col):
+        """Extrai valor da potência do nome da coluna (ex: HR_140W → 140)."""
+        import re as _re
+        m = _re.search(r'(\d+)[_\s]*W', str(col).upper())
+        return int(m.group(1)) if m else None
+
+    def _calcular_sem_mdc(valores):
+        """SEM e MDC (confiabilidade 0.9) — igual ao original."""
+        if len(valores) < 2: return None
+        media = np.mean(valores); std = np.std(valores, ddof=1)
+        sem = std * np.sqrt(1 - 0.9)
+        mdc95 = sem * 1.96 * np.sqrt(2)
+        z_up = media + 2*std; z_dn = media - 2*std
+        q1,q3 = np.percentile(valores,25), np.percentile(valores,75)
+        iqr = q3 - q1
+        return {'mean':media,'std':std,'SEM':sem,'MDC_95':mdc95,
+                'z_upper':z_up,'z_lower':z_dn,
+                'iqr_upper':q3+1.5*iqr,'iqr_lower':q1-1.5*iqr,
+                'mdc_upper':media+mdc95,'mdc_lower':media-mdc95}
+
+    if dfs_annual is None or all(v.empty for v in dfs_annual.values()):
+        st.info("Planilha Annual não carregada — verifica ANNUAL_SPREADSHEET_ID e permissões de partilha pública.")
+    else:
         tabs_aq = st.tabs(["🎿 Ski", "🚴 Bike", "🚣 Row"])
-        for tab_aq, (modal, aba) in zip(tabs_aq, MODAL_ABA.items()):
+        for tab_aq, aba in zip(tabs_aq, ["AquecSki", "AquecBike", "AquecRow"]):
             with tab_aq:
                 df_a = dfs_annual.get(aba, pd.DataFrame())
                 if df_a.empty:
                     st.info(f"Sem dados para {aba}.")
                     continue
-                st.write(f"**{aba}** — {len(df_a)} registos")
-                st.dataframe(df_a.head(10), use_container_width=True)
 
-                hr_cols = [c for c in MODAL_HR.get(modal, []) if c in df_a.columns]
-                if hr_cols and df_a[hr_cols].notna().any().any():
-                    fig, ax = plt.subplots(figsize=(14, 5))
+                # ── Filtro por DATA ──────────────────────────────────────
+                df_a = df_a.copy()
+                if 'DATA' in df_a.columns:
+                    df_a['DATA'] = pd.to_datetime(df_a['DATA'], dayfirst=True, errors='coerce')
+                    df_a = df_a.dropna(subset=['DATA']).sort_values('DATA')
+                    # Filtrar pelo período seleccionado no sidebar
+                    df_a_filt = df_a[df_a['DATA'].dt.date >= di]
+                    # Se não houver dados no período, mostrar os últimos N registos
+                    if len(df_a_filt) == 0:
+                        n_show = 20
+                        df_a_filt = df_a.tail(n_show)
+                        st.caption(f"⚠️ Sem dados no período seleccionado — a mostrar os últimos {n_show} registos")
+                    else:
+                        st.caption(f"📅 {len(df_a_filt)} registos no período | Total histórico: {len(df_a)}")
+                else:
+                    df_a_filt = df_a.tail(20)
+                    st.caption("⚠️ Coluna DATA não encontrada — a mostrar os últimos 20 registos")
+
+                # ── Tabela — últimos registos (mais recentes primeiro) ───
+                st.markdown("**Últimos registos:**")
+                cols_show = [c for c in df_a_filt.columns
+                             if not str(c).startswith('Unnamed') and df_a_filt[c].notna().any()]
+                st.dataframe(df_a_filt[cols_show].sort_values('DATA', ascending=False).head(15)
+                             if 'DATA' in df_a_filt.columns else df_a_filt[cols_show].tail(15),
+                             use_container_width=True)
+
+                # Detectar colunas HR e O2
+                hr_cols  = sorted([c for c in df_a_filt.columns
+                                   if 'HR' in str(c).upper() and 'PWR' not in str(c).upper()
+                                   and 'DRAG' not in str(c).upper() and _extrair_potencia(c)],
+                                  key=lambda c: _extrair_potencia(c) or 0)
+                o2_cols  = sorted([c for c in df_a_filt.columns
+                                   if 'O2' in str(c).upper() and _extrair_potencia(c)],
+                                  key=lambda c: _extrair_potencia(c) or 0)
+                pwr_cols = sorted([c for c in df_a_filt.columns
+                                   if 'PWR' in str(c).upper() and _extrair_potencia(c)],
+                                  key=lambda c: _extrair_potencia(c) or 0)
+
+                # ── GRÁFICO 1: HR/O2 vs Potência com limites SEM/MDC ────
+                if hr_cols or o2_cols:
+                    st.markdown("**HR e O2 vs Potência — com limites Z-Score (±2σ) e MDC**")
+                    # Montar DataFrames longos
+                    rows_hr, rows_o2 = [], []
                     for col in hr_cols:
-                        vals = df_a[col].dropna()
-                        if len(vals) > 0:
-                            ax.plot(range(len(vals)), vals.values, marker='o', label=col, linewidth=2, alpha=0.8)
-                    ax.set_title(f'{aba} — HR por Potência ao Longo do Tempo', fontsize=12, fontweight='bold')
-                    ax.set_xlabel('Sessão'); ax.set_ylabel('HR (bpm)')
-                    ax.legend(fontsize=9); ax.grid(True, alpha=0.3)
+                        p = _extrair_potencia(col)
+                        for v in df_a_filt[col].dropna():
+                            rows_hr.append({'Power': p, 'Value': float(v)})
+                    for col in o2_cols:
+                        p = _extrair_potencia(col)
+                        for v in df_a_filt[col].dropna():
+                            rows_o2.append({'Power': p, 'Value': float(v)})
+                    df_hr_l = pd.DataFrame(rows_hr)
+                    df_o2_l = pd.DataFrame(rows_o2)
+
+                    fig, ax1 = plt.subplots(figsize=(16, 8))
+                    has_o2_ax = False
+
+                    # HR (eixo esquerdo)
+                    res_hr = {}
+                    if len(df_hr_l) > 0:
+                        jit = np.random.normal(0, 0.3, len(df_hr_l))
+                        ax1.scatter(df_hr_l['Power']+jit, df_hr_l['Value'],
+                                   alpha=0.25, color='red', s=50, edgecolors='darkred', linewidth=0.5, label='HR (pontos)')
+                        agg_hr = df_hr_l.groupby('Power')['Value'].mean().reset_index().sort_values('Power')
+                        ax1.plot(agg_hr['Power'], agg_hr['Value'], color='darkred',
+                                linewidth=3, marker='o', markersize=10, zorder=10, label='HR (média)')
+                        for pw in sorted(df_hr_l['Power'].unique()):
+                            vals = df_hr_l[df_hr_l['Power']==pw]['Value'].values
+                            if len(vals) >= 2:
+                                s = _calcular_sem_mdc(vals)
+                                if s:
+                                    res_hr[pw] = s
+                                    ax1.fill_between([pw-2, pw+2],[s['z_lower']]*2,[s['z_upper']]*2,
+                                                    color='red', alpha=0.10, label='Z-Score ±2σ' if pw==list(df_hr_l['Power'].unique())[0] else '')
+                                    ax1.hlines([s['z_upper'],s['z_lower']], pw-2, pw+2,
+                                              colors='darkred', linestyles='--', linewidth=1.5, alpha=0.7)
+                                    ax1.hlines([s['mdc_upper'],s['mdc_lower']], pw-1.5, pw+1.5,
+                                              colors='red', linestyles=':', linewidth=1.5, alpha=0.8)
+                                    ax1.text(pw, s['z_upper']+1, f"{s['z_upper']:.0f}", fontsize=8,
+                                            ha='center', color='darkred', fontweight='bold')
+                                    ax1.text(pw, s['z_lower']-1.5, f"{s['z_lower']:.0f}", fontsize=8,
+                                            ha='center', color='darkred', fontweight='bold')
+                        ax1.set_ylabel('HR (bpm)', fontsize=12, fontweight='bold', color='red')
+                        ax1.tick_params(axis='y', labelcolor='red')
+
+                    # O2 (eixo direito)
+                    res_o2 = {}
+                    if len(df_o2_l) > 0:
+                        ax2 = ax1.twinx(); has_o2_ax = True
+                        jit2 = np.random.normal(0, 0.3, len(df_o2_l))
+                        ax2.scatter(df_o2_l['Power']+jit2, df_o2_l['Value'],
+                                   alpha=0.25, color='blue', s=50, edgecolors='darkblue', linewidth=0.5, label='O2 (pontos)')
+                        agg_o2 = df_o2_l.groupby('Power')['Value'].mean().reset_index().sort_values('Power')
+                        ax2.plot(agg_o2['Power'], agg_o2['Value'], color='darkblue',
+                                linewidth=3, marker='s', markersize=10, zorder=10, label='O2 (média)')
+                        for pw in sorted(df_o2_l['Power'].unique()):
+                            vals = df_o2_l[df_o2_l['Power']==pw]['Value'].values
+                            if len(vals) >= 2:
+                                s = _calcular_sem_mdc(vals)
+                                if s:
+                                    res_o2[pw] = s
+                                    ax2.fill_between([pw-2, pw+2],[s['z_lower']]*2,[s['z_upper']]*2,
+                                                    color='blue', alpha=0.10)
+                                    ax2.hlines([s['z_upper'],s['z_lower']], pw-2, pw+2,
+                                              colors='darkblue', linestyles='--', linewidth=1.5, alpha=0.7)
+                        ax2.set_ylabel('O2 (%)', fontsize=12, fontweight='bold', color='blue')
+                        ax2.tick_params(axis='y', labelcolor='blue')
+                        l1,lb1 = ax1.get_legend_handles_labels()
+                        l2,lb2 = ax2.get_legend_handles_labels()
+                        ax1.legend(l1+l2, lb1+lb2, loc='upper left', fontsize=9, ncol=2, framealpha=0.9)
+                    else:
+                        ax1.legend(loc='upper left', fontsize=9)
+
+                    ax1.set_xlabel('Potência (W)', fontsize=12, fontweight='bold')
+                    ax1.set_title(f'HR e O2 vs Potência — {aba}\ncom limites Z-Score (±2σ) e MDC',
+                                 fontsize=14, fontweight='bold')
+                    ax1.grid(True, alpha=0.2, linestyle='--')
                     plt.tight_layout(); st.pyplot(fig); plt.close()
 
-                o2_cols = [c for c in MODAL_O2.get(modal, []) if c in df_a.columns]
-                if o2_cols and df_a[o2_cols].notna().any().any():
-                    fig, ax = plt.subplots(figsize=(14, 4))
-                    for col in o2_cols:
-                        vals = df_a[col].dropna()
-                        if len(vals) > 0:
-                            ax.plot(range(len(vals)), vals.values, marker='s', label=col, linewidth=2, alpha=0.8)
-                    ax.set_title(f'{aba} — SmO2 por Potência', fontsize=12, fontweight='bold')
-                    ax.set_xlabel('Sessão'); ax.set_ylabel('SmO2 (%)')
-                    ax.legend(fontsize=9); ax.grid(True, alpha=0.3)
-                    plt.tight_layout(); st.pyplot(fig); plt.close()
-    else:
-        st.info("Planilha Annual não carregada (verificar ANNUAL_SPREADSHEET_ID e permissões).")
+                    # ── Saídas escritas — limites por potência ───────────
+                    with st.expander("📊 Limites estatísticos por potência (Z-Score, IQR, MDC)"):
+                        rows_stat = []
+                        for pw, s in sorted(res_hr.items()):
+                            rows_stat.append({
+                                'Tipo': 'HR', 'Potência (W)': pw,
+                                'Média (bpm)': f"{s['mean']:.1f}", 'STD': f"{s['std']:.1f}",
+                                'Z-Score inf': f"{s['z_lower']:.1f}", 'Z-Score sup': f"{s['z_upper']:.1f}",
+                                'MDC-95 inf': f"{s['mdc_lower']:.1f}", 'MDC-95 sup': f"{s['mdc_upper']:.1f}",
+                                'IQR inf': f"{s['iqr_lower']:.1f}", 'IQR sup': f"{s['iqr_upper']:.1f}",
+                            })
+                        for pw, s in sorted(res_o2.items()):
+                            rows_stat.append({
+                                'Tipo': 'O2', 'Potência (W)': pw,
+                                'Média (bpm)': f"{s['mean']:.1f}", 'STD': f"{s['std']:.1f}",
+                                'Z-Score inf': f"{s['z_lower']:.1f}", 'Z-Score sup': f"{s['z_upper']:.1f}",
+                                'MDC-95 inf': f"{s['mdc_lower']:.1f}", 'MDC-95 sup': f"{s['mdc_upper']:.1f}",
+                                'IQR inf': f"{s['iqr_lower']:.1f}", 'IQR sup': f"{s['iqr_upper']:.1f}",
+                            })
+                        if rows_stat:
+                            st.dataframe(pd.DataFrame(rows_stat), use_container_width=True, hide_index=True)
+
+                # ── GRÁFICO 2: Evolução temporal (HR por potência) ───────
+                if hr_cols and 'DATA' in df_a_filt.columns and df_a_filt['DATA'].notna().any():
+                    st.markdown("**Evolução temporal de HR por potência (todos os dados históricos)**")
+                    # Usa TODOS os dados históricos para tendência, não só o período filtrado
+                    df_hist = df_a.copy() if 'DATA' in df_a.columns else df_a_filt.copy()
+                    df_hist['DATA'] = pd.to_datetime(df_hist['DATA'], dayfirst=True, errors='coerce')
+                    df_hist = df_hist.dropna(subset=['DATA']).sort_values('DATA')
+
+                    fig2, ax = plt.subplots(figsize=(16, 7))
+                    colors_pw = ['#E74C3C','#F39C12','#9B59B6','#2ECC71','#3498DB']
+                    for i, col in enumerate(hr_cols[:5]):
+                        vals_t = df_hist[['DATA', col]].dropna()
+                        if len(vals_t) < 3: continue
+                        pw = _extrair_potencia(col)
+                        cor = colors_pw[i % len(colors_pw)]
+                        ax.scatter(vals_t['DATA'], vals_t[col], color=cor, alpha=0.5, s=60,
+                                  edgecolors='white', linewidth=1, zorder=5)
+                        ax.plot(vals_t['DATA'], vals_t[col].rolling(3, min_periods=1).mean(),
+                               color=cor, linewidth=2.5, label=f'{pw}W', alpha=0.9)
+                        # Linha de tendência (regressão linear)
+                        x_num = (vals_t['DATA'] - vals_t['DATA'].min()).dt.days.values
+                        y_num = vals_t[col].values
+                        if len(x_num) > 2:
+                            from scipy.stats import linregress as _lr
+                            sl, ic, rv, pv, _ = _lr(x_num, y_num)
+                            y_trend = sl * x_num + ic
+                            sinal = "↗" if sl > 0.01 else "↘" if sl < -0.01 else "→"
+                            ax.plot(vals_t['DATA'], y_trend, color=cor, linewidth=1.5,
+                                   linestyle='--', alpha=0.6,
+                                   label=f'{pw}W trend {sinal} ({sl*30:.2f} bpm/mês, p={pv:.3f})')
+                    # Marcar período filtrado
+                    ax.axvline(pd.Timestamp(di), color='black', linestyle=':', linewidth=2,
+                              alpha=0.7, label=f'Início período ({di})')
+                    ax.set_xlabel('Data'); ax.set_ylabel('HR (bpm)')
+                    ax.set_title(f'{aba} — Evolução temporal HR (histórico completo + tendência)',
+                                fontsize=13, fontweight='bold')
+                    ax.legend(fontsize=8, ncol=2); ax.grid(True, alpha=0.3)
+                    plt.xticks(rotation=45); plt.tight_layout()
+                    st.pyplot(fig2); plt.close()
+
+                    # Saídas escritas — tendência temporal
+                    with st.expander("📈 Análise de tendência temporal (slope, R², p-value)"):
+                        trend_rows = []
+                        for col in hr_cols:
+                            vals_t = df_hist[['DATA', col]].dropna()
+                            if len(vals_t) < 3: continue
+                            pw = _extrair_potencia(col)
+                            x_n = (vals_t['DATA'] - vals_t['DATA'].min()).dt.days.values
+                            y_n = vals_t[col].values
+                            from scipy.stats import linregress as _lr
+                            sl, ic, rv, pv, se = _lr(x_n, y_n)
+                            sinal = "↗ AUMENTANDO" if (sl > 0.01 and pv < 0.05) else "↘ DIMINUINDO" if (sl < -0.01 and pv < 0.05) else "→ SEM MUDANÇA"
+                            mud_pct = ((y_n[-1] - y_n[0]) / y_n[0] * 100) if y_n[0] != 0 else 0
+                            trend_rows.append({
+                                'Potência (W)': pw, 'N': len(vals_t),
+                                'Média': f"{y_n.mean():.1f} bpm",
+                                'Slope (bpm/mês)': f"{sl*30:+.3f}",
+                                'R²': f"{rv**2:.3f}", 'p-value': f"{pv:.4f}",
+                                'Mudança total': f"{mud_pct:+.1f}%",
+                                'Tendência': sinal
+                            })
+                        if trend_rows:
+                            st.dataframe(pd.DataFrame(trend_rows), use_container_width=True, hide_index=True)
+
+                # ── HR/Pwr ratio temporal ────────────────────────────────
+                if pwr_cols and 'DATA' in df_a_filt.columns:
+                    st.markdown("**HR/Pwr ratio — eficiência cardíaca por potência**")
+                    fig3, ax3 = plt.subplots(figsize=(14, 5))
+                    for i, col in enumerate(pwr_cols[:4]):
+                        df_p = df_a_filt[['DATA', col]].dropna()
+                        if len(df_p) < 2: continue
+                        pw = _extrair_potencia(col)
+                        ax3.plot(df_p['DATA'], df_p[col].rolling(3, min_periods=1).mean(),
+                                marker='D', linewidth=2, markersize=6, alpha=0.85, label=f'{pw}W')
+                    ax3.set_xlabel('Data'); ax3.set_ylabel('HR/Pwr (bpm/W)')
+                    ax3.set_title(f'{aba} — HR/Pwr ratio (↘ = melhora eficiência)',
+                                 fontsize=12, fontweight='bold')
+                    ax3.legend(fontsize=9); ax3.grid(True, alpha=0.3)
+                    plt.xticks(rotation=45); plt.tight_layout()
+                    st.pyplot(fig3); plt.close()
 
     st.markdown("---")
 
