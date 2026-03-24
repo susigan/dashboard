@@ -1,5 +1,6 @@
 # ════════════════════════════════════════════════════════════════════════════════
-# data_loader.py — ATHELTICA Dashboard — Google Sheets auth + load + preprocess
+# data_loader.py — ATHELTICA Dashboard
+# Google Sheets auth + carregamento + preprocessing + Annual
 # ════════════════════════════════════════════════════════════════════════════════
 
 import streamlit as st
@@ -9,8 +10,25 @@ import gspread
 from gspread_dataframe import get_as_dataframe
 from google.oauth2.service_account import Credentials
 from datetime import datetime, timedelta
-from config import WELLNESS_URL, TRAINING_URL, SCOPES, MAPA_WELLNESS, MAPA_TRAINING, VALID_TYPES, TYPE_MAP, ANNUAL_SPREADSHEET_ID, ANNUAL_SHEETS
-from utils.helpers import detectar_col, br_float, parse_date, norm_tipo, remove_zscore, remove_zeros, fill_missing
+
+from config import (WELLNESS_URL, TRAINING_URL, SCOPES,
+                    MAPA_WELLNESS, MAPA_TRAINING, VALID_TYPES, TYPE_MAP,
+                    ANNUAL_SPREADSHEET_ID, ANNUAL_SHEETS)
+from utils.helpers import (detectar_col, br_float, parse_date, norm_tipo,
+                            remove_zscore, remove_zeros, fill_missing)
+
+def get_gc():
+    """Autentica Google Sheets com Service Account em st.secrets."""
+    try:
+        creds = Credentials.from_service_account_info(
+            dict(st.secrets["gcp_service_account"]), scopes=SCOPES)
+        return gspread.authorize(creds)
+    except Exception as e:
+        st.error(f"❌ Erro autenticação Google: {e}")
+        st.info("Configura as credenciais em Settings → Secrets do Streamlit Cloud.")
+        return None
+
+# ── Carregamento ──────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=3600, show_spinner="A carregar wellness...")
 def carregar_wellness(days_back):
@@ -95,47 +113,71 @@ def filtrar_datas(df, di, df_):
 @st.cache_data(ttl=3600, show_spinner="A carregar dados anuais (Aquecimentos)...")
 def carregar_annual():
     """
-    Carrega AquecSki, AquecBike, AquecRow da planilha Annual via gviz CSV.
-    Igual ao código original Python (SPREADSHEET_ID = 1AEKhDrda9xhxRQA_1ty3z3oPELzH6oANa6L0cysJSMk).
-    Não precisa de autenticação — planilha pública via gviz.
+    Carrega AquecSki, AquecBike, AquecRow via gviz CSV.
+    Data cleaning idêntico ao código original Python:
+    - Renomeia colunas Unnamed (AquecRow)
+    - Remove colunas 100% vazias
+    - Converte vazios/nan/null → NaN
+    - Converte numéricos, zeros → NaN
+    - Remove ruídos: HR fora 40-220, O2 fora 20-100, Drag fora 80-200, Pwr fora 0.3-3.0
+    - Normaliza coluna DATA e remove linhas sem data
     """
+    COLS_NAO_NUM = ['Mês', 'Mes', 'Fase', 'DATA', 'Data', 'Treino_antes', 'Atividade']
+    AQUECROW_RENAME = {
+        'Unnamed: 2': 'DATA',       'Treino antes': 'Treino_antes',
+        'Unnamed: 4': 'HR_140W',    'Unnamed: 5':   'HR_160W',
+        'Unnamed: 6': 'HR_180W',    'Unnamed: 7':   'HR_200W',
+        'Unnamed: 8': 'HR_Pwr_140w','Unnamed: 9':   'HR_Pwr_160w',
+        'Unnamed: 10':'HR_Pwr_180w','Unnamed: 11':  'O2_140W',
+        'Unnamed: 12':'O2_160W',    'Unnamed: 13':  'O2_180W',
+        'Drag Factor':'Drag_Factor',
+    }
     dfs = {}
-    COLUNAS_NAO_NUM = ['Mês', 'Fase', 'DATA', 'Treino_antes', 'Atividade', 'Mes']
     for aba in ANNUAL_SHEETS:
         url = (f"https://docs.google.com/spreadsheets/d/{ANNUAL_SPREADSHEET_ID}"
                f"/gviz/tq?tqx=out:csv&sheet={aba}")
         try:
             df = pd.read_csv(url)
             df.columns = [str(c).strip() for c in df.columns]
-
-            # Renomear colunas AquecRow (igual ao original)
-            if aba == "AquecRow":
-                mapa = {'Unnamed: 2': 'DATA', 'Unnamed: 4': 'HR_140W', 'Unnamed: 5': 'HR_160W',
-                        'Unnamed: 6': 'HR_180W', 'Unnamed: 7': 'HR_200W',
-                        'Unnamed: 8': 'HR_Pwr_140w', 'Unnamed: 9': 'HR_Pwr_160w',
-                        'Unnamed: 10': 'HR_Pwr_180w', 'Unnamed: 11': 'O2_140W',
-                        'Unnamed: 12': 'O2_160W', 'Unnamed: 13': 'O2_180W',
-                        'Treino antes': 'Treino_antes', 'Drag Factor': 'Drag_Factor'}
-                df = df.rename(columns={k: v for k, v in mapa.items() if k in df.columns})
-
-            # Limpar e converter
-            df = df.dropna(axis=1, how='all')
-            df = df.replace(['', ' ', 'nan', 'NaN', 'null'], np.nan)
+            if aba == 'AquecRow':
+                df = df.rename(columns={k:v for k,v in AQUECROW_RENAME.items() if k in df.columns})
+            # Normalizar nomes genéricos
+            rename_gen = {}
             for col in df.columns:
-                if col not in COLUNAS_NAO_NUM:
-                    df[col] = pd.to_numeric(df[col], errors='coerce').replace({0.0: np.nan, 0: np.nan})
+                if col in ['Mês','Mes']: rename_gen[col] = 'Mês'
+                elif col in ['DATA','Data']: rename_gen[col] = 'DATA'
+                elif 'Drag' in col and 'Factor' in col: rename_gen[col] = 'Drag_Factor'
+                elif 'Treino' in col: rename_gen[col] = 'Treino_antes'
+            if rename_gen: df = df.rename(columns=rename_gen)
+            # Remove colunas 100% vazias
+            df = df.dropna(axis=1, how='all')
+            # Strings inválidas → NaN
+            df = df.replace(['', ' ', 'nan', 'NaN', 'null', 'NULL', 'None'], np.nan)
+            # Numéricos + zeros → NaN
+            for col in df.columns:
+                if col not in COLS_NAO_NUM:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                    df[col] = df[col].replace({0.0: np.nan, 0: np.nan})
+            # Remover ruídos por tipo (igual ao original Python)
+            for col in df.columns:
+                if col in COLS_NAO_NUM: continue
+                cu = col.upper()
+                if 'HR' in cu and 'PWR' not in cu and 'DRAG' not in cu:
+                    df[col] = df[col].where((df[col] >= 40) & (df[col] <= 220))
+                elif 'O2' in cu:
+                    df[col] = df[col].where((df[col] >= 20) & (df[col] <= 100))
+                elif 'DRAG' in cu:
+                    df[col] = df[col].where((df[col] >= 80) & (df[col] <= 200))
+                elif 'PWR' in cu:
+                    df[col] = df[col].where((df[col] >= 0.3) & (df[col] <= 3.0))
+            # Normalizar DATA
+            if 'DATA' in df.columns:
+                df['DATA'] = pd.to_datetime(df['DATA'], dayfirst=True, errors='coerce')
+                df = df.dropna(subset=['DATA']).sort_values('DATA')
             df['Atividade'] = aba
-            dfs[aba] = df
-        except Exception as e:
+            dfs[aba] = df.reset_index(drop=True)
+        except Exception:
             dfs[aba] = pd.DataFrame()
-
-    # DataFrame unificado
     validos = [d for d in dfs.values() if len(d) > 0]
     df_all = pd.concat(validos, ignore_index=True) if validos else pd.DataFrame()
     return dfs, df_all
-
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# MÓDULO: tabs/tab_visao_geral.py
-# ════════════════════════════════════════════════════════════════════════════
