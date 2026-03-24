@@ -711,6 +711,10 @@ def tab_pmc(da):
     # Usa todos os dados disponíveis (não só o período filtrado)
     # da já vem do carregar_atividades(days_back=730) via st.session_state
     da_full = st.session_state.get('da_full', da)
+    # Filtrar por modalidades seleccionadas (se disponível no session_state)
+    _mods = st.session_state.get('mods_sel', None)
+    if _mods and 'type' in da_full.columns:
+        da_full = da_full[da_full['type'].isin(_mods + ['WeightTraining'])]
     df = filtrar_principais(da_full).copy(); df['Data'] = pd.to_datetime(df['Data'])
 
     # MÉTRICA: session_rpe = (moving_time_min) × RPE — igual ao código original Python/SQLite
@@ -2469,6 +2473,7 @@ def main():
 
     # Guardar histórico completo no session_state (usado pelo tab_pmc)
     st.session_state['da_full'] = ac_full
+    st.session_state['mods_sel'] = mods_sel  # para PMC respeitar filtro de modalidades
 
     dw      = filtrar_datas(wc, di, df_)
     da      = filtrar_datas(ac, di, df_)
