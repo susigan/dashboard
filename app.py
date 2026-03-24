@@ -1601,7 +1601,7 @@ def tabela_ranking_power_df(da, n=10):
 # ════════════════════════════════════════════════════════════════════════════════
 # TAB 9 — ANÁLISES AVANÇADAS
 # ════════════════════════════════════════════════════════════════════════════════
-def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
+def tab_analises(da_full, dw, dfs_annual=None, df_annual=None, di=None):
     """
     Aba de Análises Avançadas — equivalente completo ao código Python original.
     Inclui: tabelas, training load, polynomial, BPE, falta de estímulo,
@@ -1610,6 +1610,7 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
     st.header("🔬 Análises Avançadas")
     if dfs_annual is None: dfs_annual = {}
     if df_annual is None:  df_annual  = pd.DataFrame()
+    if di is None: di = (datetime.now() - timedelta(days=90)).date()
 
     if len(da_full) == 0:
         st.warning("Sem dados de atividades para análise avançada.")
@@ -2440,7 +2441,7 @@ def main():
     with tab6: tab_correlacoes(da_filt, dw)
     with tab7: tab_recovery(dw)
     with tab8: tab_wellness(dw)
-    with tab9: tab_analises(ac_full, dw, dfs_annual, df_annual)   # usa histórico completo + Annual
+    with tab9: tab_analises(ac_full, dw, dfs_annual, df_annual, di)   # usa histórico completo + Annual
 
 if __name__ == "__main__":
     main()
