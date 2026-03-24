@@ -520,30 +520,92 @@ def carregar_atividades(days_back):
 
 # ── Preprocessing ─────────────────────────────────────────────────────────────
 
+def _preencher_faltantes_lookback(df, coluna):
+    """
+    Preenche NaN com mediana dos 7 dias ANTERIORES (lookback, sem data leakage).
+    Fallback: mediana 14 dias anteriores → média global.
+    Igual ao método preencher_faltantes() do ATHELTICA v12 original.
+    """
+    if coluna not in df.columns: return df
+    df = df.copy()
+    df['Data'] = pd.to_datetime(df['Data'])
+    df = df.sort_values('Data').reset_index(drop=True)
+    for idx, row in df.iterrows():
+        if pd.notna(row[coluna]): continue
+        data_ref = row['Data']
+        # Janela 7 dias anteriores
+        w7 = df[(df['Data'] >= data_ref - timedelta(days=7)) &
+                (df['Data'] <  data_ref) &
+                (df[coluna].notna())][coluna]
+        if len(w7) >= 2:
+            df.at[idx, coluna] = w7.median(); continue
+        # Janela 14 dias anteriores
+        w14 = df[(df['Data'] >= data_ref - timedelta(days=14)) &
+                 (df['Data'] <  data_ref) &
+                 (df[coluna].notna())][coluna]
+        if len(w14) >= 3:
+            df.at[idx, coluna] = w14.median(); continue
+        # Fallback: média global
+        media = df[df[coluna].notna()][coluna].mean()
+        if pd.notna(media):
+            df.at[idx, coluna] = media
+    return df
+
+
 def preproc_wellness(df):
-    """Limpeza wellness: z-score, zeros, rolling fill."""
+    """
+    Limpeza wellness — igual ao ATHELTICA v12 DataPreprocessor.limpar_wellness():
+    1. Ordenar por Data
+    2. Remover duplicatas por Data (keep=first)
+    3. Z-score threshold=3.0 → NaN (picos)
+    4. Zeros inválidos → NaN (hrv, rhr, sleep_hours)
+    5. Preencher faltantes: mediana 7d anteriores → 14d → média global
+    """
     if len(df) == 0: return df
     df = df.copy().sort_values('Data')
     df = df.drop_duplicates(subset=['Data'], keep='first')
+    # [1] Remover picos Z-score
     for c in [c for c in ['hrv', 'rhr', 'sleep_hours', 'sleep_quality',
-                           'stress', 'fatiga', 'humor', 'soreness', 'peso', 'fat'] if c in df.columns]:
+                           'stress', 'fatiga', 'humor', 'soreness', 'peso', 'fat']
+              if c in df.columns]:
         df[c] = remove_zscore(df[c], 3.0)
+    # [2] Zeros inválidos → NaN
     df = remove_zeros(df, ['hrv', 'rhr', 'sleep_hours'])
+    # [3] Preencher faltantes com lookback (sem data leakage)
     for c in [c for c in ['hrv', 'rhr', 'sleep_quality', 'fatiga',
-                           'stress', 'humor', 'soreness'] if c in df.columns]:
-        df = fill_missing(df, c, 7)
+                           'stress', 'humor', 'soreness']
+              if c in df.columns]:
+        df = _preencher_faltantes_lookback(df, c)
     return df.reset_index(drop=True)
 
 def preproc_ativ(df):
-    """Limpeza atividades: deduplicação, tipos válidos, duração mínima."""
+    """
+    Limpeza atividades — igual ao ATHELTICA v12 DataPreprocessor.limpar_training():
+    1. Ordenar por Data
+    2. Remover duplicatas por [Data, type, moving_time]
+    3. Padronizar tipos via TYPE_MAP
+    4. Remover tipos inválidos (não em VALID_TYPES)
+    5. Z-score threshold=3.5 → NaN em icu_eftp E AllWorkFTP
+    6. Zeros → NaN em moving_time, icu_eftp, AllWorkFTP
+    7. Remover moving_time ≤ 60s
+    """
     if len(df) == 0: return df
     df = df.copy().sort_values('Data')
+    # [1] Deduplicar
     sub = [c for c in ['Data', 'type', 'moving_time'] if c in df.columns]
     if len(sub) >= 2: df = df.drop_duplicates(subset=sub, keep='first')
-    if 'type' in df.columns:       df = df[df['type'].isin(VALID_TYPES)]
-    if 'moving_time' in df.columns: df = df[pd.to_numeric(df['moving_time'], errors='coerce') > 60]
-    if 'icu_eftp'    in df.columns: df['icu_eftp'] = remove_zscore(df['icu_eftp'], 3.5)
-    df = remove_zeros(df, ['moving_time', 'icu_eftp'])
+    # [2] Padronizar tipos
+    if 'type' in df.columns: df['type'] = df['type'].apply(norm_tipo)
+    # [3] Filtrar tipos válidos
+    if 'type' in df.columns: df = df[df['type'].isin(VALID_TYPES)]
+    # [4] Z-score picos icu_eftp e AllWorkFTP (threshold=3.5, igual ao original)
+    if 'icu_eftp'    in df.columns: df['icu_eftp']    = remove_zscore(df['icu_eftp'],    3.5)
+    if 'AllWorkFTP'  in df.columns: df['AllWorkFTP']  = remove_zscore(df['AllWorkFTP'],  3.5)
+    # [5] Zeros → NaN
+    df = remove_zeros(df, ['moving_time', 'icu_eftp', 'AllWorkFTP'])
+    # [6] Remover duração ≤ 60s
+    if 'moving_time' in df.columns:
+        df = df[pd.to_numeric(df['moving_time'], errors='coerce') > 60]
     return df.reset_index(drop=True)
 
 def filtrar_datas(df, di, df_):
