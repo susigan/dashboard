@@ -1,3 +1,4 @@
+# ATHELTICA app.py — v4 — tab_analises com di — 2448 linhas
 # ════════════════════════════════════════════════════════════════════════════════
 # app_bundle.py — ATHELTICA Dashboard (ficheiro único gerado por build.py)
 # Gerado em: 2026-03-23 20:35
