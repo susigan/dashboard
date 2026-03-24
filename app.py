@@ -1,4 +1,3 @@
-# ATHELTICA app.py — v4 — tab_analises com di — 2448 linhas
 # ════════════════════════════════════════════════════════════════════════════════
 # app_bundle.py — ATHELTICA Dashboard (ficheiro único gerado por build.py)
 # Gerado em: 2026-03-23 20:35
@@ -558,50 +557,75 @@ def filtrar_datas(df, di, df_):
 @st.cache_data(ttl=3600, show_spinner="A carregar dados anuais (Aquecimentos)...")
 def carregar_annual():
     """
-    Carrega AquecSki, AquecBike, AquecRow da planilha Annual via gviz CSV.
-    Igual ao código original Python (SPREADSHEET_ID = 1AEKhDrda9xhxRQA_1ty3z3oPELzH6oANa6L0cysJSMk).
-    Não precisa de autenticação — planilha pública via gviz.
+    Carrega AquecSki, AquecBike, AquecRow via gviz CSV.
+    Data cleaning idêntico ao código original Python:
+    - Renomeia colunas Unnamed (AquecRow)
+    - Remove colunas 100% vazias
+    - Converte vazios/nan/null → NaN
+    - Converte numéricos, zeros → NaN
+    - Remove ruídos: HR fora 40-220, O2 fora 20-100, Drag fora 80-200, Pwr fora 0.3-3.0
+    - Normaliza coluna DATA e remove linhas sem data
     """
+    COLS_NAO_NUM = ['Mês', 'Mes', 'Fase', 'DATA', 'Data', 'Treino_antes', 'Atividade']
+    AQUECROW_RENAME = {
+        'Unnamed: 2': 'DATA',       'Treino antes': 'Treino_antes',
+        'Unnamed: 4': 'HR_140W',    'Unnamed: 5':   'HR_160W',
+        'Unnamed: 6': 'HR_180W',    'Unnamed: 7':   'HR_200W',
+        'Unnamed: 8': 'HR_Pwr_140w','Unnamed: 9':   'HR_Pwr_160w',
+        'Unnamed: 10':'HR_Pwr_180w','Unnamed: 11':  'O2_140W',
+        'Unnamed: 12':'O2_160W',    'Unnamed: 13':  'O2_180W',
+        'Drag Factor':'Drag_Factor',
+    }
     dfs = {}
-    COLUNAS_NAO_NUM = ['Mês', 'Fase', 'DATA', 'Treino_antes', 'Atividade', 'Mes']
     for aba in ANNUAL_SHEETS:
         url = (f"https://docs.google.com/spreadsheets/d/{ANNUAL_SPREADSHEET_ID}"
                f"/gviz/tq?tqx=out:csv&sheet={aba}")
         try:
             df = pd.read_csv(url)
             df.columns = [str(c).strip() for c in df.columns]
-
-            # Renomear colunas AquecRow (igual ao original)
-            if aba == "AquecRow":
-                mapa = {'Unnamed: 2': 'DATA', 'Unnamed: 4': 'HR_140W', 'Unnamed: 5': 'HR_160W',
-                        'Unnamed: 6': 'HR_180W', 'Unnamed: 7': 'HR_200W',
-                        'Unnamed: 8': 'HR_Pwr_140w', 'Unnamed: 9': 'HR_Pwr_160w',
-                        'Unnamed: 10': 'HR_Pwr_180w', 'Unnamed: 11': 'O2_140W',
-                        'Unnamed: 12': 'O2_160W', 'Unnamed: 13': 'O2_180W',
-                        'Treino antes': 'Treino_antes', 'Drag Factor': 'Drag_Factor'}
-                df = df.rename(columns={k: v for k, v in mapa.items() if k in df.columns})
-
-            # Limpar e converter
-            df = df.dropna(axis=1, how='all')
-            df = df.replace(['', ' ', 'nan', 'NaN', 'null'], np.nan)
+            if aba == 'AquecRow':
+                df = df.rename(columns={k:v for k,v in AQUECROW_RENAME.items() if k in df.columns})
+            # Normalizar nomes genéricos
+            rename_gen = {}
             for col in df.columns:
-                if col not in COLUNAS_NAO_NUM:
-                    df[col] = pd.to_numeric(df[col], errors='coerce').replace({0.0: np.nan, 0: np.nan})
+                if col in ['Mês','Mes']: rename_gen[col] = 'Mês'
+                elif col in ['DATA','Data']: rename_gen[col] = 'DATA'
+                elif 'Drag' in col and 'Factor' in col: rename_gen[col] = 'Drag_Factor'
+                elif 'Treino' in col: rename_gen[col] = 'Treino_antes'
+            if rename_gen: df = df.rename(columns=rename_gen)
+            # Remove colunas 100% vazias
+            df = df.dropna(axis=1, how='all')
+            # Strings inválidas → NaN
+            df = df.replace(['', ' ', 'nan', 'NaN', 'null', 'NULL', 'None'], np.nan)
+            # Numéricos + zeros → NaN
+            for col in df.columns:
+                if col not in COLS_NAO_NUM:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                    df[col] = df[col].replace({0.0: np.nan, 0: np.nan})
+            # Remover ruídos por tipo (igual ao original Python)
+            for col in df.columns:
+                if col in COLS_NAO_NUM: continue
+                cu = col.upper()
+                if 'HR' in cu and 'PWR' not in cu and 'DRAG' not in cu:
+                    df[col] = df[col].where((df[col] >= 40) & (df[col] <= 220))
+                elif 'O2' in cu:
+                    df[col] = df[col].where((df[col] >= 20) & (df[col] <= 100))
+                elif 'DRAG' in cu:
+                    df[col] = df[col].where((df[col] >= 80) & (df[col] <= 200))
+                elif 'PWR' in cu:
+                    df[col] = df[col].where((df[col] >= 0.3) & (df[col] <= 3.0))
+            # Normalizar DATA
+            if 'DATA' in df.columns:
+                df['DATA'] = pd.to_datetime(df['DATA'], dayfirst=True, errors='coerce')
+                df = df.dropna(subset=['DATA']).sort_values('DATA')
             df['Atividade'] = aba
-            dfs[aba] = df
-        except Exception as e:
+            dfs[aba] = df.reset_index(drop=True)
+        except Exception:
             dfs[aba] = pd.DataFrame()
-
-    # DataFrame unificado
     validos = [d for d in dfs.values() if len(d) > 0]
     df_all = pd.concat(validos, ignore_index=True) if validos else pd.DataFrame()
     return dfs, df_all
 
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# MÓDULO: tabs/tab_visao_geral.py
-# ════════════════════════════════════════════════════════════════════════════
 
 def tab_visao_geral(dw, da, di, df_):
     st.header("📊 Visão Geral")
@@ -1602,7 +1626,7 @@ def tabela_ranking_power_df(da, n=10):
 # ════════════════════════════════════════════════════════════════════════════════
 # TAB 9 — ANÁLISES AVANÇADAS
 # ════════════════════════════════════════════════════════════════════════════════
-def tab_analises(da_full, dw, dfs_annual=None, df_annual=None, di=None):
+def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
     """
     Aba de Análises Avançadas — equivalente completo ao código Python original.
     Inclui: tabelas, training load, polynomial, BPE, falta de estímulo,
@@ -1611,7 +1635,6 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None, di=None):
     st.header("🔬 Análises Avançadas")
     if dfs_annual is None: dfs_annual = {}
     if df_annual is None:  df_annual  = pd.DataFrame()
-    if di is None: di = (datetime.now() - timedelta(days=90)).date()
 
     if len(da_full) == 0:
         st.warning("Sem dados de atividades para análise avançada.")
@@ -1784,261 +1807,6 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None, di=None):
 
     st.markdown("---")
 
-    # ── Secção 6: Annual — Aquecimentos ─────────────────────────────────────
-    st.subheader("📅 Annual — Aquecimentos por Modalidade (HR/O2 vs Potência)")
-
-    def _extrair_potencia(col):
-        """Extrai valor da potência do nome da coluna (ex: HR_140W → 140)."""
-        import re as _re
-        m = _re.search(r'(\d+)[_\s]*W', str(col).upper())
-        return int(m.group(1)) if m else None
-
-    def _calcular_sem_mdc(valores):
-        """SEM e MDC (confiabilidade 0.9) — igual ao original."""
-        if len(valores) < 2: return None
-        media = np.mean(valores); std = np.std(valores, ddof=1)
-        sem = std * np.sqrt(1 - 0.9)
-        mdc95 = sem * 1.96 * np.sqrt(2)
-        z_up = media + 2*std; z_dn = media - 2*std
-        q1,q3 = np.percentile(valores,25), np.percentile(valores,75)
-        iqr = q3 - q1
-        return {'mean':media,'std':std,'SEM':sem,'MDC_95':mdc95,
-                'z_upper':z_up,'z_lower':z_dn,
-                'iqr_upper':q3+1.5*iqr,'iqr_lower':q1-1.5*iqr,
-                'mdc_upper':media+mdc95,'mdc_lower':media-mdc95}
-
-    if dfs_annual is None or all(v.empty for v in dfs_annual.values()):
-        st.info("Planilha Annual não carregada — verifica ANNUAL_SPREADSHEET_ID e permissões de partilha pública.")
-    else:
-        tabs_aq = st.tabs(["🎿 Ski", "🚴 Bike", "🚣 Row"])
-        for tab_aq, aba in zip(tabs_aq, ["AquecSki", "AquecBike", "AquecRow"]):
-            with tab_aq:
-                df_a = dfs_annual.get(aba, pd.DataFrame())
-                if df_a.empty:
-                    st.info(f"Sem dados para {aba}.")
-                    continue
-
-                # ── Filtro por DATA ──────────────────────────────────────
-                df_a = df_a.copy()
-                if 'DATA' in df_a.columns:
-                    df_a['DATA'] = pd.to_datetime(df_a['DATA'], dayfirst=True, errors='coerce')
-                    df_a = df_a.dropna(subset=['DATA']).sort_values('DATA')
-                    # Filtrar pelo período seleccionado no sidebar
-                    df_a_filt = df_a[df_a['DATA'].dt.date >= di]
-                    # Se não houver dados no período, mostrar os últimos N registos
-                    if len(df_a_filt) == 0:
-                        n_show = 20
-                        df_a_filt = df_a.tail(n_show)
-                        st.caption(f"⚠️ Sem dados no período seleccionado — a mostrar os últimos {n_show} registos")
-                    else:
-                        st.caption(f"📅 {len(df_a_filt)} registos no período | Total histórico: {len(df_a)}")
-                else:
-                    df_a_filt = df_a.tail(20)
-                    st.caption("⚠️ Coluna DATA não encontrada — a mostrar os últimos 20 registos")
-
-                # ── Tabela — últimos registos (mais recentes primeiro) ───
-                st.markdown("**Últimos registos:**")
-                cols_show = [c for c in df_a_filt.columns
-                             if not str(c).startswith('Unnamed') and df_a_filt[c].notna().any()]
-                st.dataframe(df_a_filt[cols_show].sort_values('DATA', ascending=False).head(15)
-                             if 'DATA' in df_a_filt.columns else df_a_filt[cols_show].tail(15),
-                             use_container_width=True)
-
-                # Detectar colunas HR e O2
-                hr_cols  = sorted([c for c in df_a_filt.columns
-                                   if 'HR' in str(c).upper() and 'PWR' not in str(c).upper()
-                                   and 'DRAG' not in str(c).upper() and _extrair_potencia(c)],
-                                  key=lambda c: _extrair_potencia(c) or 0)
-                o2_cols  = sorted([c for c in df_a_filt.columns
-                                   if 'O2' in str(c).upper() and _extrair_potencia(c)],
-                                  key=lambda c: _extrair_potencia(c) or 0)
-                pwr_cols = sorted([c for c in df_a_filt.columns
-                                   if 'PWR' in str(c).upper() and _extrair_potencia(c)],
-                                  key=lambda c: _extrair_potencia(c) or 0)
-
-                # ── GRÁFICO 1: HR/O2 vs Potência com limites SEM/MDC ────
-                if hr_cols or o2_cols:
-                    st.markdown("**HR e O2 vs Potência — com limites Z-Score (±2σ) e MDC**")
-                    # Montar DataFrames longos
-                    rows_hr, rows_o2 = [], []
-                    for col in hr_cols:
-                        p = _extrair_potencia(col)
-                        for v in df_a_filt[col].dropna():
-                            rows_hr.append({'Power': p, 'Value': float(v)})
-                    for col in o2_cols:
-                        p = _extrair_potencia(col)
-                        for v in df_a_filt[col].dropna():
-                            rows_o2.append({'Power': p, 'Value': float(v)})
-                    df_hr_l = pd.DataFrame(rows_hr)
-                    df_o2_l = pd.DataFrame(rows_o2)
-
-                    fig, ax1 = plt.subplots(figsize=(16, 8))
-                    has_o2_ax = False
-
-                    # HR (eixo esquerdo)
-                    res_hr = {}
-                    if len(df_hr_l) > 0:
-                        jit = np.random.normal(0, 0.3, len(df_hr_l))
-                        ax1.scatter(df_hr_l['Power']+jit, df_hr_l['Value'],
-                                   alpha=0.25, color='red', s=50, edgecolors='darkred', linewidth=0.5, label='HR (pontos)')
-                        agg_hr = df_hr_l.groupby('Power')['Value'].mean().reset_index().sort_values('Power')
-                        ax1.plot(agg_hr['Power'], agg_hr['Value'], color='darkred',
-                                linewidth=3, marker='o', markersize=10, zorder=10, label='HR (média)')
-                        for pw in sorted(df_hr_l['Power'].unique()):
-                            vals = df_hr_l[df_hr_l['Power']==pw]['Value'].values
-                            if len(vals) >= 2:
-                                s = _calcular_sem_mdc(vals)
-                                if s:
-                                    res_hr[pw] = s
-                                    ax1.fill_between([pw-2, pw+2],[s['z_lower']]*2,[s['z_upper']]*2,
-                                                    color='red', alpha=0.10, label='Z-Score ±2σ' if pw==list(df_hr_l['Power'].unique())[0] else '')
-                                    ax1.hlines([s['z_upper'],s['z_lower']], pw-2, pw+2,
-                                              colors='darkred', linestyles='--', linewidth=1.5, alpha=0.7)
-                                    ax1.hlines([s['mdc_upper'],s['mdc_lower']], pw-1.5, pw+1.5,
-                                              colors='red', linestyles=':', linewidth=1.5, alpha=0.8)
-                                    ax1.text(pw, s['z_upper']+1, f"{s['z_upper']:.0f}", fontsize=8,
-                                            ha='center', color='darkred', fontweight='bold')
-                                    ax1.text(pw, s['z_lower']-1.5, f"{s['z_lower']:.0f}", fontsize=8,
-                                            ha='center', color='darkred', fontweight='bold')
-                        ax1.set_ylabel('HR (bpm)', fontsize=12, fontweight='bold', color='red')
-                        ax1.tick_params(axis='y', labelcolor='red')
-
-                    # O2 (eixo direito)
-                    res_o2 = {}
-                    if len(df_o2_l) > 0:
-                        ax2 = ax1.twinx(); has_o2_ax = True
-                        jit2 = np.random.normal(0, 0.3, len(df_o2_l))
-                        ax2.scatter(df_o2_l['Power']+jit2, df_o2_l['Value'],
-                                   alpha=0.25, color='blue', s=50, edgecolors='darkblue', linewidth=0.5, label='O2 (pontos)')
-                        agg_o2 = df_o2_l.groupby('Power')['Value'].mean().reset_index().sort_values('Power')
-                        ax2.plot(agg_o2['Power'], agg_o2['Value'], color='darkblue',
-                                linewidth=3, marker='s', markersize=10, zorder=10, label='O2 (média)')
-                        for pw in sorted(df_o2_l['Power'].unique()):
-                            vals = df_o2_l[df_o2_l['Power']==pw]['Value'].values
-                            if len(vals) >= 2:
-                                s = _calcular_sem_mdc(vals)
-                                if s:
-                                    res_o2[pw] = s
-                                    ax2.fill_between([pw-2, pw+2],[s['z_lower']]*2,[s['z_upper']]*2,
-                                                    color='blue', alpha=0.10)
-                                    ax2.hlines([s['z_upper'],s['z_lower']], pw-2, pw+2,
-                                              colors='darkblue', linestyles='--', linewidth=1.5, alpha=0.7)
-                        ax2.set_ylabel('O2 (%)', fontsize=12, fontweight='bold', color='blue')
-                        ax2.tick_params(axis='y', labelcolor='blue')
-                        l1,lb1 = ax1.get_legend_handles_labels()
-                        l2,lb2 = ax2.get_legend_handles_labels()
-                        ax1.legend(l1+l2, lb1+lb2, loc='upper left', fontsize=9, ncol=2, framealpha=0.9)
-                    else:
-                        ax1.legend(loc='upper left', fontsize=9)
-
-                    ax1.set_xlabel('Potência (W)', fontsize=12, fontweight='bold')
-                    ax1.set_title(f'HR e O2 vs Potência — {aba}\ncom limites Z-Score (±2σ) e MDC',
-                                 fontsize=14, fontweight='bold')
-                    ax1.grid(True, alpha=0.2, linestyle='--')
-                    plt.tight_layout(); st.pyplot(fig); plt.close()
-
-                    # ── Saídas escritas — limites por potência ───────────
-                    with st.expander("📊 Limites estatísticos por potência (Z-Score, IQR, MDC)"):
-                        rows_stat = []
-                        for pw, s in sorted(res_hr.items()):
-                            rows_stat.append({
-                                'Tipo': 'HR', 'Potência (W)': pw,
-                                'Média (bpm)': f"{s['mean']:.1f}", 'STD': f"{s['std']:.1f}",
-                                'Z-Score inf': f"{s['z_lower']:.1f}", 'Z-Score sup': f"{s['z_upper']:.1f}",
-                                'MDC-95 inf': f"{s['mdc_lower']:.1f}", 'MDC-95 sup': f"{s['mdc_upper']:.1f}",
-                                'IQR inf': f"{s['iqr_lower']:.1f}", 'IQR sup': f"{s['iqr_upper']:.1f}",
-                            })
-                        for pw, s in sorted(res_o2.items()):
-                            rows_stat.append({
-                                'Tipo': 'O2', 'Potência (W)': pw,
-                                'Média (bpm)': f"{s['mean']:.1f}", 'STD': f"{s['std']:.1f}",
-                                'Z-Score inf': f"{s['z_lower']:.1f}", 'Z-Score sup': f"{s['z_upper']:.1f}",
-                                'MDC-95 inf': f"{s['mdc_lower']:.1f}", 'MDC-95 sup': f"{s['mdc_upper']:.1f}",
-                                'IQR inf': f"{s['iqr_lower']:.1f}", 'IQR sup': f"{s['iqr_upper']:.1f}",
-                            })
-                        if rows_stat:
-                            st.dataframe(pd.DataFrame(rows_stat), use_container_width=True, hide_index=True)
-
-                # ── GRÁFICO 2: Evolução temporal (HR por potência) ───────
-                if hr_cols and 'DATA' in df_a_filt.columns and df_a_filt['DATA'].notna().any():
-                    st.markdown("**Evolução temporal de HR por potência (todos os dados históricos)**")
-                    # Usa TODOS os dados históricos para tendência, não só o período filtrado
-                    df_hist = df_a.copy() if 'DATA' in df_a.columns else df_a_filt.copy()
-                    df_hist['DATA'] = pd.to_datetime(df_hist['DATA'], dayfirst=True, errors='coerce')
-                    df_hist = df_hist.dropna(subset=['DATA']).sort_values('DATA')
-
-                    fig2, ax = plt.subplots(figsize=(16, 7))
-                    colors_pw = ['#E74C3C','#F39C12','#9B59B6','#2ECC71','#3498DB']
-                    for i, col in enumerate(hr_cols[:5]):
-                        vals_t = df_hist[['DATA', col]].dropna()
-                        if len(vals_t) < 3: continue
-                        pw = _extrair_potencia(col)
-                        cor = colors_pw[i % len(colors_pw)]
-                        ax.scatter(vals_t['DATA'], vals_t[col], color=cor, alpha=0.5, s=60,
-                                  edgecolors='white', linewidth=1, zorder=5)
-                        ax.plot(vals_t['DATA'], vals_t[col].rolling(3, min_periods=1).mean(),
-                               color=cor, linewidth=2.5, label=f'{pw}W', alpha=0.9)
-                        # Linha de tendência (regressão linear)
-                        x_num = (vals_t['DATA'] - vals_t['DATA'].min()).dt.days.values
-                        y_num = vals_t[col].values
-                        if len(x_num) > 2:
-                            from scipy.stats import linregress as _lr
-                            sl, ic, rv, pv, _ = _lr(x_num, y_num)
-                            y_trend = sl * x_num + ic
-                            sinal = "↗" if sl > 0.01 else "↘" if sl < -0.01 else "→"
-                            ax.plot(vals_t['DATA'], y_trend, color=cor, linewidth=1.5,
-                                   linestyle='--', alpha=0.6,
-                                   label=f'{pw}W trend {sinal} ({sl*30:.2f} bpm/mês, p={pv:.3f})')
-                    # Marcar período filtrado
-                    ax.axvline(pd.Timestamp(di), color='black', linestyle=':', linewidth=2,
-                              alpha=0.7, label=f'Início período ({di})')
-                    ax.set_xlabel('Data'); ax.set_ylabel('HR (bpm)')
-                    ax.set_title(f'{aba} — Evolução temporal HR (histórico completo + tendência)',
-                                fontsize=13, fontweight='bold')
-                    ax.legend(fontsize=8, ncol=2); ax.grid(True, alpha=0.3)
-                    plt.xticks(rotation=45); plt.tight_layout()
-                    st.pyplot(fig2); plt.close()
-
-                    # Saídas escritas — tendência temporal
-                    with st.expander("📈 Análise de tendência temporal (slope, R², p-value)"):
-                        trend_rows = []
-                        for col in hr_cols:
-                            vals_t = df_hist[['DATA', col]].dropna()
-                            if len(vals_t) < 3: continue
-                            pw = _extrair_potencia(col)
-                            x_n = (vals_t['DATA'] - vals_t['DATA'].min()).dt.days.values
-                            y_n = vals_t[col].values
-                            from scipy.stats import linregress as _lr
-                            sl, ic, rv, pv, se = _lr(x_n, y_n)
-                            sinal = "↗ AUMENTANDO" if (sl > 0.01 and pv < 0.05) else "↘ DIMINUINDO" if (sl < -0.01 and pv < 0.05) else "→ SEM MUDANÇA"
-                            mud_pct = ((y_n[-1] - y_n[0]) / y_n[0] * 100) if y_n[0] != 0 else 0
-                            trend_rows.append({
-                                'Potência (W)': pw, 'N': len(vals_t),
-                                'Média': f"{y_n.mean():.1f} bpm",
-                                'Slope (bpm/mês)': f"{sl*30:+.3f}",
-                                'R²': f"{rv**2:.3f}", 'p-value': f"{pv:.4f}",
-                                'Mudança total': f"{mud_pct:+.1f}%",
-                                'Tendência': sinal
-                            })
-                        if trend_rows:
-                            st.dataframe(pd.DataFrame(trend_rows), use_container_width=True, hide_index=True)
-
-                # ── HR/Pwr ratio temporal ────────────────────────────────
-                if pwr_cols and 'DATA' in df_a_filt.columns:
-                    st.markdown("**HR/Pwr ratio — eficiência cardíaca por potência**")
-                    fig3, ax3 = plt.subplots(figsize=(14, 5))
-                    for i, col in enumerate(pwr_cols[:4]):
-                        df_p = df_a_filt[['DATA', col]].dropna()
-                        if len(df_p) < 2: continue
-                        pw = _extrair_potencia(col)
-                        ax3.plot(df_p['DATA'], df_p[col].rolling(3, min_periods=1).mean(),
-                                marker='D', linewidth=2, markersize=6, alpha=0.85, label=f'{pw}W')
-                    ax3.set_xlabel('Data'); ax3.set_ylabel('HR/Pwr (bpm/W)')
-                    ax3.set_title(f'{aba} — HR/Pwr ratio (↘ = melhora eficiência)',
-                                 fontsize=12, fontweight='bold')
-                    ax3.legend(fontsize=9); ax3.grid(True, alpha=0.3)
-                    plt.xticks(rotation=45); plt.tight_layout()
-                    st.pyplot(fig3); plt.close()
 
     st.markdown("---")
 
@@ -2317,6 +2085,316 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None, di=None):
 
 
 
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 10 — AQUECIMENTO (Annual)
+# ════════════════════════════════════════════════════════════════════════════════
+def tab_aquecimento(dfs_annual, df_annual, di):
+    """
+    Análise completa dos dados de Aquecimento (AquecSki, AquecBike, AquecRow).
+    Equivalente ao código original Python: processar_aba + analisar_dados_por_potencia
+    + criar_grafico_com_limites + analisar_tendencia_temporal.
+    """
+    import re as _re
+    from scipy.stats import linregress as _lr
+
+    st.header("🌡️ Aquecimento — HR/O2 vs Potência (Annual)")
+
+    if dfs_annual is None or all(v.empty for v in (dfs_annual or {}).values()):
+        st.warning("Planilha Annual não carregada. Verifica ANNUAL_SPREADSHEET_ID e permissões de partilha pública.")
+        return
+
+    def _extrair_pot(col):
+        m = _re.search(r'(\d+)[_\s]*W', str(col).upper())
+        return int(m.group(1)) if m else None
+
+    def _sem_mdc(vals):
+        if len(vals) < 2: return None
+        mu, sd = np.mean(vals), np.std(vals, ddof=1)
+        sem = sd * np.sqrt(1 - 0.9)
+        mdc = sem * 1.96 * np.sqrt(2)
+        q1, q3 = np.percentile(vals, 25), np.percentile(vals, 75)
+        iqr = q3 - q1
+        return dict(mean=mu, std=sd, SEM=sem, MDC_95=mdc,
+                    z_up=mu+2*sd, z_dn=mu-2*sd,
+                    mdc_up=mu+mdc, mdc_dn=mu-mdc,
+                    iqr_up=q3+1.5*iqr, iqr_dn=q1-1.5*iqr)
+
+    ABAS = [("🎿 Ski", "AquecSki"), ("🚴 Bike", "AquecBike"), ("🚣 Row", "AquecRow")]
+    tabs_aq = st.tabs([a[0] for a in ABAS])
+
+    for tab_aq, (label, aba) in zip(tabs_aq, ABAS):
+        with tab_aq:
+            df_a = (dfs_annual or {}).get(aba, pd.DataFrame())
+            if df_a.empty:
+                st.info(f"Sem dados para {aba}.")
+                continue
+
+            df_a = df_a.copy()
+
+            # ── Info geral ──────────────────────────────────────────────
+            n_total = len(df_a)
+            if 'DATA' in df_a.columns and df_a['DATA'].notna().any():
+                d_min = df_a['DATA'].min()
+                d_max = df_a['DATA'].max()
+                st.caption(f"📅 {n_total} registos | {d_min.strftime('%d/%m/%Y')} → {d_max.strftime('%d/%m/%Y')}")
+
+                # Filtrar pelo período do sidebar — fallback para histórico completo
+                df_periodo = df_a[df_a['DATA'].dt.date >= di] if di else df_a
+                if len(df_periodo) == 0:
+                    st.caption(f"⚠️ Sem dados no período seleccionado — a mostrar histórico completo")
+                    df_periodo = df_a
+                else:
+                    st.caption(f"📊 {len(df_periodo)} registos no período seleccionado")
+            else:
+                df_periodo = df_a
+
+            # ── Tabela — registos mais recentes primeiro ─────────────────
+            with st.expander("📋 Ver tabela de dados (mais recentes primeiro)"):
+                cols_ok = [c for c in df_periodo.columns
+                           if not str(c).startswith('Unnamed') and df_periodo[c].notna().any()]
+                df_show = (df_periodo[cols_ok].sort_values('DATA', ascending=False)
+                           if 'DATA' in df_periodo.columns
+                           else df_periodo[cols_ok].iloc[::-1])
+                st.dataframe(df_show.head(20), use_container_width=True)
+
+            # Detectar colunas por tipo
+            hr_cols  = sorted([c for c in df_a.columns
+                                if 'HR' in c.upper() and 'PWR' not in c.upper()
+                                and 'DRAG' not in c.upper() and _extrair_pot(c)],
+                               key=lambda c: _extrair_pot(c) or 0)
+            o2_cols  = sorted([c for c in df_a.columns
+                                if 'O2' in c.upper() and _extrair_pot(c)],
+                               key=lambda c: _extrair_pot(c) or 0)
+            pwr_cols = sorted([c for c in df_a.columns
+                                if 'PWR' in c.upper() and _extrair_pot(c)],
+                               key=lambda c: _extrair_pot(c) or 0)
+            drag_col = next((c for c in df_a.columns if 'DRAG' in c.upper()), None)
+
+            if not hr_cols and not o2_cols:
+                st.info("Sem colunas HR/O2 detectadas.")
+                continue
+
+            # ════════════════════════════════════════════════════════════
+            # GRÁFICO 1: HR e O2 vs Potência com limites (usando PERÍODO)
+            # ════════════════════════════════════════════════════════════
+            st.subheader("📊 HR e O2 vs Potência — com limites Z-Score (±2σ) e MDC")
+
+            rows_hr, rows_o2 = [], []
+            for col in hr_cols:
+                p = _extrair_pot(col)
+                for v in df_periodo[col].dropna():
+                    rows_hr.append({'Power': p, 'Value': float(v)})
+            for col in o2_cols:
+                p = _extrair_pot(col)
+                for v in df_periodo[col].dropna():
+                    rows_o2.append({'Power': p, 'Value': float(v)})
+
+            df_hr_l = pd.DataFrame(rows_hr)
+            df_o2_l = pd.DataFrame(rows_o2)
+
+            if len(df_hr_l) == 0 and len(df_o2_l) == 0:
+                st.info("Sem dados HR/O2 no período seleccionado.")
+            else:
+                fig, ax1 = plt.subplots(figsize=(16, 8))
+                res_hr, res_o2 = {}, {}
+
+                # HR — eixo esquerdo
+                if len(df_hr_l) > 0:
+                    rng = np.random.default_rng(42)
+                    jit = rng.normal(0, 0.3, len(df_hr_l))
+                    ax1.scatter(df_hr_l['Power']+jit, df_hr_l['Value'],
+                               alpha=0.25, color='red', s=50, edgecolors='darkred',
+                               linewidth=0.5, label='HR (pontos)', zorder=3)
+                    agg = df_hr_l.groupby('Power')['Value'].mean().reset_index().sort_values('Power')
+                    ax1.plot(agg['Power'], agg['Value'], color='darkred',
+                            linewidth=3, marker='o', markersize=10, zorder=10, label='HR média')
+                    first_pw = True
+                    for pw in sorted(df_hr_l['Power'].unique()):
+                        vals = df_hr_l[df_hr_l['Power']==pw]['Value'].values
+                        if len(vals) < 2: continue
+                        s = _sem_mdc(vals)
+                        if not s: continue
+                        res_hr[pw] = s
+                        lbl_z  = 'Z-Score ±2σ' if first_pw else ''
+                        lbl_mdc = 'MDC 95%'    if first_pw else ''
+                        first_pw = False
+                        ax1.fill_between([pw-2,pw+2],[s['z_dn']]*2,[s['z_up']]*2,
+                                        color='red', alpha=0.08, label=lbl_z)
+                        ax1.hlines([s['z_up'],s['z_dn']], pw-2, pw+2,
+                                  colors='darkred', linestyles='--', linewidth=1.5, alpha=0.7)
+                        ax1.hlines([s['mdc_up'],s['mdc_dn']], pw-1.5, pw+1.5,
+                                  colors='red', linestyles=':', linewidth=1.5, alpha=0.8,
+                                  label=lbl_mdc)
+                        ax1.text(pw, s['z_up']+1.5, f"{s['z_up']:.0f}",
+                                fontsize=8, ha='center', color='darkred', fontweight='bold')
+                        ax1.text(pw, s['z_dn']-2, f"{s['z_dn']:.0f}",
+                                fontsize=8, ha='center', color='darkred', fontweight='bold')
+                    ax1.set_ylabel('HR (bpm)', fontsize=12, fontweight='bold', color='darkred')
+                    ax1.tick_params(axis='y', labelcolor='darkred')
+
+                # O2 — eixo direito
+                if len(df_o2_l) > 0:
+                    ax2 = ax1.twinx()
+                    rng2 = np.random.default_rng(99)
+                    jit2 = rng2.normal(0, 0.3, len(df_o2_l))
+                    ax2.scatter(df_o2_l['Power']+jit2, df_o2_l['Value'],
+                               alpha=0.25, color='blue', s=50, edgecolors='darkblue',
+                               linewidth=0.5, label='O2 (pontos)', zorder=3)
+                    agg2 = df_o2_l.groupby('Power')['Value'].mean().reset_index().sort_values('Power')
+                    ax2.plot(agg2['Power'], agg2['Value'], color='darkblue',
+                            linewidth=3, marker='s', markersize=10, zorder=10, label='O2 média')
+                    for pw in sorted(df_o2_l['Power'].unique()):
+                        vals = df_o2_l[df_o2_l['Power']==pw]['Value'].values
+                        if len(vals) < 2: continue
+                        s = _sem_mdc(vals)
+                        if not s: continue
+                        res_o2[pw] = s
+                        ax2.fill_between([pw-2,pw+2],[s['z_dn']]*2,[s['z_up']]*2,
+                                        color='blue', alpha=0.08)
+                        ax2.hlines([s['z_up'],s['z_dn']], pw-2, pw+2,
+                                  colors='darkblue', linestyles='--', linewidth=1.5, alpha=0.7)
+                    ax2.set_ylabel('SmO2 (%)', fontsize=12, fontweight='bold', color='darkblue')
+                    ax2.tick_params(axis='y', labelcolor='darkblue')
+                    l1,lb1 = ax1.get_legend_handles_labels()
+                    l2,lb2 = ax2.get_legend_handles_labels()
+                    ax1.legend(l1+l2, lb1+lb2, loc='upper left', fontsize=9, ncol=2)
+                else:
+                    ax1.legend(loc='upper left', fontsize=9)
+
+                ax1.set_xlabel('Potência (W)', fontsize=12, fontweight='bold')
+                ax1.set_title(f'{aba} — HR e O2 vs Potência\ncom Z-Score (±2σ) e MDC-95',
+                             fontsize=14, fontweight='bold')
+                ax1.grid(True, alpha=0.2, linestyle='--')
+                plt.tight_layout()
+                st.pyplot(fig); plt.close()
+
+                # ── Saídas escritas: limites por potência ────────────────
+                with st.expander("📊 Limites estatísticos por potência (SEM, MDC, Z-Score)"):
+                    rows_stat = []
+                    for tipo, res_dict, unidade in [('HR', res_hr, 'bpm'), ('SmO2', res_o2, '%')]:
+                        for pw, s in sorted(res_dict.items()):
+                            rows_stat.append({
+                                'Tipo': tipo, 'Potência (W)': pw, 'Unidade': unidade,
+                                'Média':     f"{s['mean']:.1f}",
+                                'STD':       f"{s['std']:.1f}",
+                                'SEM':       f"{s['SEM']:.2f}",
+                                'MDC-95':    f"{s['MDC_95']:.2f}",
+                                'Z inf':     f"{s['z_dn']:.1f}",
+                                'Z sup':     f"{s['z_up']:.1f}",
+                                'MDC inf':   f"{s['mdc_dn']:.1f}",
+                                'MDC sup':   f"{s['mdc_up']:.1f}",
+                                'IQR inf':   f"{s['iqr_dn']:.1f}",
+                                'IQR sup':   f"{s['iqr_up']:.1f}",
+                            })
+                    if rows_stat:
+                        st.dataframe(pd.DataFrame(rows_stat), use_container_width=True, hide_index=True)
+
+            # ════════════════════════════════════════════════════════════
+            # GRÁFICO 2: Evolução temporal — HISTÓRICO COMPLETO
+            # ════════════════════════════════════════════════════════════
+            if hr_cols and 'DATA' in df_a.columns and df_a['DATA'].notna().any():
+                st.subheader("📈 Evolução temporal HR — histórico completo + tendência")
+                CORES_PW = ['#E74C3C','#F39C12','#9B59B6','#2ECC71','#3498DB']
+                fig2, ax = plt.subplots(figsize=(16, 7))
+                trend_rows = []
+                for i, col in enumerate(hr_cols[:5]):
+                    df_t = df_a[['DATA', col]].dropna().sort_values('DATA')
+                    if len(df_t) < 3: continue
+                    pw = _extrair_pot(col)
+                    cor = CORES_PW[i % len(CORES_PW)]
+                    ax.scatter(df_t['DATA'], df_t[col], color=cor, alpha=0.4, s=50,
+                              edgecolors='white', linewidth=1, zorder=4)
+                    ax.plot(df_t['DATA'], df_t[col].rolling(3, min_periods=1).mean(),
+                           color=cor, linewidth=2.5, label=f'{pw}W', alpha=0.9)
+                    # Regressão linear
+                    x_n = (df_t['DATA'] - df_t['DATA'].min()).dt.days.values
+                    y_n = df_t[col].values
+                    sl, ic, rv, pv, _ = _lr(x_n, y_n)
+                    y_tr = sl * x_n + ic
+                    sinal = "↗" if sl>0.01 else "↘" if sl<-0.01 else "→"
+                    ax.plot(df_t['DATA'], y_tr, color=cor, linewidth=1.5,
+                           linestyle='--', alpha=0.6,
+                           label=f'{pw}W trend {sinal} ({sl*30:.2f} bpm/mês p={pv:.3f})')
+                    mud = (y_n[-1]-y_n[0])/y_n[0]*100 if y_n[0] != 0 else 0
+                    trend_rows.append({
+                        'Potência (W)': pw, 'N': len(df_t),
+                        'Média (bpm)': f"{y_n.mean():.1f}",
+                        'Slope (bpm/mês)': f"{sl*30:+.3f}",
+                        'R²': f"{rv**2:.3f}", 'p-value': f"{pv:.4f}",
+                        'Mudança total': f"{mud:+.1f}%",
+                        'Tendência': f"{'↗ AUMENTANDO' if sl>0.01 and pv<0.05 else '↘ DIMINUINDO' if sl<-0.01 and pv<0.05 else '→ ESTÁVEL'}"
+                    })
+                # Linha vertical marcando início do período
+                ax.axvline(pd.Timestamp(di), color='black', linestyle=':',
+                          linewidth=2, alpha=0.8, label=f'Início período ({di})')
+                ax.set_xlabel('Data'); ax.set_ylabel('HR (bpm)')
+                ax.set_title(f'{aba} — Evolução temporal HR (histórico completo)',
+                            fontsize=13, fontweight='bold')
+                ax.legend(fontsize=8, ncol=2)
+                ax.grid(True, alpha=0.3)
+                plt.xticks(rotation=45)
+                plt.tight_layout()
+                st.pyplot(fig2); plt.close()
+
+                # Saídas escritas: tendência temporal
+                with st.expander("📈 Análise de tendência (slope, R², p-value)"):
+                    if trend_rows:
+                        st.dataframe(pd.DataFrame(trend_rows), use_container_width=True, hide_index=True)
+
+            # ════════════════════════════════════════════════════════════
+            # GRÁFICO 3: HR/Pwr ratio — eficiência cardíaca
+            # ════════════════════════════════════════════════════════════
+            if pwr_cols and 'DATA' in df_periodo.columns and df_periodo['DATA'].notna().any():
+                st.subheader("⚡ HR/Pwr ratio — eficiência cardíaca por potência")
+                fig3, ax3 = plt.subplots(figsize=(14, 5))
+                CORES_PW2 = ['#E74C3C','#F39C12','#9B59B6','#2ECC71']
+                for i, col in enumerate(pwr_cols[:4]):
+                    df_p = df_a[['DATA', col]].dropna().sort_values('DATA')
+                    if len(df_p) < 2: continue
+                    pw = _extrair_pot(col)
+                    cor = CORES_PW2[i % len(CORES_PW2)]
+                    ax3.scatter(df_p['DATA'], df_p[col], color=cor, alpha=0.4, s=40, zorder=4)
+                    ax3.plot(df_p['DATA'], df_p[col].rolling(3, min_periods=1).mean(),
+                            color=cor, linewidth=2.5, marker='D', markersize=5,
+                            alpha=0.85, label=f'{pw}W')
+                ax3.set_xlabel('Data'); ax3.set_ylabel('HR/Pwr (bpm/W)')
+                ax3.set_title(f'{aba} — HR/Pwr ratio (↘ = melhora eficiência cardíaca)',
+                             fontsize=12, fontweight='bold')
+                ax3.legend(fontsize=9)
+                ax3.grid(True, alpha=0.3)
+                plt.xticks(rotation=45)
+                plt.tight_layout()
+                st.pyplot(fig3); plt.close()
+
+            # ════════════════════════════════════════════════════════════
+            # GRÁFICO 4: Drag Factor (Row only)
+            # ════════════════════════════════════════════════════════════
+            if drag_col and aba == 'AquecRow' and 'DATA' in df_a.columns:
+                df_drag = df_a[['DATA', drag_col]].dropna().sort_values('DATA')
+                if len(df_drag) >= 2:
+                    st.subheader("⚙️ Drag Factor — evolução temporal")
+                    fig4, ax4 = plt.subplots(figsize=(14, 4))
+                    ax4.plot(df_drag['DATA'], df_drag[drag_col], marker='o',
+                            color=CORES['azul'], linewidth=2.5, markersize=6, alpha=0.85)
+                    ax4.fill_between(df_drag['DATA'],
+                                    df_drag[drag_col].rolling(5,min_periods=1).mean()-5,
+                                    df_drag[drag_col].rolling(5,min_periods=1).mean()+5,
+                                    alpha=0.15, color=CORES['azul'])
+                    ax4.axhline(df_drag[drag_col].mean(), color='red', linestyle='--',
+                               linewidth=1.5, alpha=0.7,
+                               label=f"Média: {df_drag[drag_col].mean():.0f}")
+                    ax4.set_ylabel('Drag Factor')
+                    ax4.set_title('Drag Factor — AquecRow', fontsize=12, fontweight='bold')
+                    ax4.legend(); ax4.grid(True, alpha=0.3)
+                    plt.xticks(rotation=45)
+                    plt.tight_layout()
+                    st.pyplot(fig4); plt.close()
+                    st.caption(f"Drag Factor: média={df_drag[drag_col].mean():.0f}, "
+                               f"min={df_drag[drag_col].min():.0f}, "
+                               f"max={df_drag[drag_col].max():.0f}")
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # MÓDULO: app.py (sidebar + main)
 # ════════════════════════════════════════════════════════════════════════════
@@ -2422,7 +2500,7 @@ def main():
                 st.dataframe(wr2[cw].sort_values('Data', ascending=False).head(5), hide_index=True)
 
     # ── Tabs ─────────────────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
         "📊 Visão Geral",
         "📈 PMC",
         "📦 Volume",
@@ -2432,17 +2510,19 @@ def main():
         "🔋 Recovery",
         "🧘 Wellness",
         "🔬 Análises",
+        "🌡️ Aquecimento",
     ])
 
-    with tab1: tab_visao_geral(dw, da_filt, di, df_)
-    with tab2: tab_pmc(da_filt)
-    with tab3: tab_volume(da_filt, dw)
-    with tab4: tab_eftp(da_filt, mods_sel)
-    with tab5: tab_zones(da_filt, mods_sel)
-    with tab6: tab_correlacoes(da_filt, dw)
-    with tab7: tab_recovery(dw)
-    with tab8: tab_wellness(dw)
-    with tab9: tab_analises(ac_full, dw, dfs_annual, df_annual, di)   # usa histórico completo + Annual
+    with tab1:  tab_visao_geral(dw, da_filt, di, df_)
+    with tab2:  tab_pmc(da_filt)
+    with tab3:  tab_volume(da_filt, dw)
+    with tab4:  tab_eftp(da_filt, mods_sel)
+    with tab5:  tab_zones(da_filt, mods_sel)
+    with tab6:  tab_correlacoes(da_filt, dw)
+    with tab7:  tab_recovery(dw)
+    with tab8:  tab_wellness(dw)
+    with tab9:  tab_analises(ac_full, dw, dfs_annual, df_annual)
+    with tab10: tab_aquecimento(dfs_annual, df_annual, di)
 
 if __name__ == "__main__":
     main()
