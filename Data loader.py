@@ -1,6 +1,5 @@
 # ════════════════════════════════════════════════════════════════════════════════
-# data_loader.py — ATHELTICA Dashboard
-# Autenticação Google Sheets, carregamento e preprocessing.
+# data_loader.py — ATHELTICA Dashboard — Google Sheets auth + load + preprocess
 # ════════════════════════════════════════════════════════════════════════════════
 
 import streamlit as st
@@ -10,27 +9,8 @@ import gspread
 from gspread_dataframe import get_as_dataframe
 from google.oauth2.service_account import Credentials
 from datetime import datetime, timedelta
-
-from config import WELLNESS_URL, TRAINING_URL, SCOPES, MAPA_WELLNESS, MAPA_TRAINING, VALID_TYPES, TYPE_MAP
+from config import WELLNESS_URL, TRAINING_URL, SCOPES, MAPA_WELLNESS, MAPA_TRAINING, VALID_TYPES, TYPE_MAP, ANNUAL_SPREADSHEET_ID, ANNUAL_SHEETS
 from utils.helpers import detectar_col, br_float, parse_date, norm_tipo, remove_zscore, remove_zeros, fill_missing
-
-
-# ── Autenticação ──────────────────────────────────────────────────────────────
-
-@st.cache_resource
-def get_gc():
-    """Autentica Google Sheets com Service Account em st.secrets."""
-    try:
-        creds = Credentials.from_service_account_info(
-            dict(st.secrets["gcp_service_account"]), scopes=SCOPES)
-        return gspread.authorize(creds)
-    except Exception as e:
-        st.error(f"❌ Erro autenticação Google: {e}")
-        st.info("Configura as credenciais em Settings → Secrets do Streamlit Cloud.")
-        return None
-
-
-# ── Carregamento ──────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=3600, show_spinner="A carregar wellness...")
 def carregar_wellness(days_back):
@@ -52,7 +32,6 @@ def carregar_wellness(days_back):
     except Exception as e:
         st.error(f"Erro ao carregar wellness: {e}")
         return pd.DataFrame()
-
 
 @st.cache_data(ttl=3600, show_spinner="A carregar atividades...")
 def carregar_atividades(days_back):
@@ -77,7 +56,6 @@ def carregar_atividades(days_back):
         st.error(f"Erro ao carregar atividades: {e}")
         return pd.DataFrame()
 
-
 # ── Preprocessing ─────────────────────────────────────────────────────────────
 
 def preproc_wellness(df):
@@ -94,7 +72,6 @@ def preproc_wellness(df):
         df = fill_missing(df, c, 7)
     return df.reset_index(drop=True)
 
-
 def preproc_ativ(df):
     """Limpeza atividades: deduplicação, tipos válidos, duração mínima."""
     if len(df) == 0: return df
@@ -107,10 +84,58 @@ def preproc_ativ(df):
     df = remove_zeros(df, ['moving_time', 'icu_eftp'])
     return df.reset_index(drop=True)
 
-
 def filtrar_datas(df, di, df_):
     """Filtra DataFrame pelo intervalo [di, df_]."""
     if len(df) == 0: return df
     df = df.copy()
     df['Data'] = pd.to_datetime(df['Data'])
     return df[(df['Data'].dt.date >= di) & (df['Data'].dt.date <= df_)].reset_index(drop=True)
+
+
+@st.cache_data(ttl=3600, show_spinner="A carregar dados anuais (Aquecimentos)...")
+def carregar_annual():
+    """
+    Carrega AquecSki, AquecBike, AquecRow da planilha Annual via gviz CSV.
+    Igual ao código original Python (SPREADSHEET_ID = 1AEKhDrda9xhxRQA_1ty3z3oPELzH6oANa6L0cysJSMk).
+    Não precisa de autenticação — planilha pública via gviz.
+    """
+    dfs = {}
+    COLUNAS_NAO_NUM = ['Mês', 'Fase', 'DATA', 'Treino_antes', 'Atividade', 'Mes']
+    for aba in ANNUAL_SHEETS:
+        url = (f"https://docs.google.com/spreadsheets/d/{ANNUAL_SPREADSHEET_ID}"
+               f"/gviz/tq?tqx=out:csv&sheet={aba}")
+        try:
+            df = pd.read_csv(url)
+            df.columns = [str(c).strip() for c in df.columns]
+
+            # Renomear colunas AquecRow (igual ao original)
+            if aba == "AquecRow":
+                mapa = {'Unnamed: 2': 'DATA', 'Unnamed: 4': 'HR_140W', 'Unnamed: 5': 'HR_160W',
+                        'Unnamed: 6': 'HR_180W', 'Unnamed: 7': 'HR_200W',
+                        'Unnamed: 8': 'HR_Pwr_140w', 'Unnamed: 9': 'HR_Pwr_160w',
+                        'Unnamed: 10': 'HR_Pwr_180w', 'Unnamed: 11': 'O2_140W',
+                        'Unnamed: 12': 'O2_160W', 'Unnamed: 13': 'O2_180W',
+                        'Treino antes': 'Treino_antes', 'Drag Factor': 'Drag_Factor'}
+                df = df.rename(columns={k: v for k, v in mapa.items() if k in df.columns})
+
+            # Limpar e converter
+            df = df.dropna(axis=1, how='all')
+            df = df.replace(['', ' ', 'nan', 'NaN', 'null'], np.nan)
+            for col in df.columns:
+                if col not in COLUNAS_NAO_NUM:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').replace({0.0: np.nan, 0: np.nan})
+            df['Atividade'] = aba
+            dfs[aba] = df
+        except Exception as e:
+            dfs[aba] = pd.DataFrame()
+
+    # DataFrame unificado
+    validos = [d for d in dfs.values() if len(d) > 0]
+    df_all = pd.concat(validos, ignore_index=True) if validos else pd.DataFrame()
+    return dfs, df_all
+
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# MÓDULO: tabs/tab_visao_geral.py
+# ════════════════════════════════════════════════════════════════════════════
