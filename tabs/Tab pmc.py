@@ -1,34 +1,22 @@
 # ════════════════════════════════════════════════════════════════════════════════
-# tab_pmc.py — PMC + FTLM + Training Load
+# tabs/tab_pmc.py — ATHELTICA Dashboard
+# PMC — CTL / ATL / TSB / FTLM + Training Load stacked por modalidade
+# NOTA: usa histórico completo 730d (session_state da_full) para CTL/ATL correcto
+#       respects mods_sel — se retirares/adicionares modalidades, CTL/ATL actualiza
 # ════════════════════════════════════════════════════════════════════════════════
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-from matplotlib.lines import Line2D
-from matplotlib.colors import LinearSegmentedColormap
-import seaborn as sns
-import gspread
-from gspread_dataframe import get_as_dataframe
-from google.oauth2.service_account import Credentials
-from scipy import stats as scipy_stats
-from scipy.stats import pearsonr
-from datetime import datetime, timedelta
-import re
 import warnings
 warnings.filterwarnings('ignore')
 plt.style.use('seaborn-v0_8-whitegrid')
+from datetime import datetime, timedelta
 
-from config import CORES, CORES_ATIV, TYPE_MAP, VALID_TYPES, CICLICOS, ANNUAL_SPREADSHEET_ID, ANNUAL_SHEETS
-from utils.helpers import (
-    filtrar_principais, add_tempo, norm_tipo, get_cor, norm_serie,
-    cvr, conv_15, norm_range, calcular_swc, classificar_rpe, remove_zscore,
-    calcular_series_carga, calcular_bpe, calcular_recovery,
-    calcular_polinomios_carga, analisar_falta_estimulo,
-    tabela_resumo_por_tipo_df, tabela_ranking_power_df,
-)
-from data_loader import carregar_wellness, carregar_atividades, carregar_annual, preproc_wellness, preproc_ativ, filtrar_datas
+from config import CORES, CORES_ATIV
+from utils.helpers import (filtrar_principais, add_tempo, norm_tipo, get_cor,
+                            cvr, classificar_rpe)
 
 def tab_pmc(da):
     """
@@ -41,6 +29,10 @@ def tab_pmc(da):
     # Usa todos os dados disponíveis (não só o período filtrado)
     # da já vem do carregar_atividades(days_back=730) via st.session_state
     da_full = st.session_state.get('da_full', da)
+    # Filtrar por modalidades seleccionadas (se disponível no session_state)
+    _mods = st.session_state.get('mods_sel', None)
+    if _mods and 'type' in da_full.columns:
+        da_full = da_full[da_full['type'].isin(_mods + ['WeightTraining'])]
     df = filtrar_principais(da_full).copy(); df['Data'] = pd.to_datetime(df['Data'])
 
     # MÉTRICA: session_rpe = (moving_time_min) × RPE — igual ao código original Python/SQLite
