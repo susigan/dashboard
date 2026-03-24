@@ -1,3 +1,11 @@
+from tabs.tab_analises import tab_analises
+from tabs.tab_correlacoes import tab_correlacoes
+from tabs.tab_visao_geral import tab_visao_geral
+from tabs.tab_volume import tab_volume
+from tabs.tab_wellness import tab_wellness
+from tabs.tab_zones import tab_zones
+from tabs.tab_recovery import tab_recovery
+from tabs.tab_etfp import tab_etfp
 # ════════════════════════════════════════════════════════════════════════════════
 # app_bundle.py — ATHELTICA Dashboard (ficheiro único gerado por build.py)
 # Gerado em: 2026-03-23 20:35
