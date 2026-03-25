@@ -40,6 +40,7 @@ BUILD_ORDER = [
     "tabs/tab_recovery.py",
     "tabs/tab_wellness.py",
     "tabs/tab_analises.py",
+    "tabs/tab_aquecimento.py",
 ]
 
 # Imports que devem aparecer uma só vez no bundle
@@ -56,7 +57,8 @@ import gspread
 from gspread_dataframe import get_as_dataframe
 from google.oauth2.service_account import Credentials
 from scipy import stats as scipy_stats
-from scipy.stats import pearsonr
+from scipy.stats import pearsonr, linregress, spearmanr, theilslopes
+from itertools import combinations
 from datetime import datetime, timedelta
 import re
 import warnings
