@@ -1,22 +1,14 @@
 # ════════════════════════════════════════════════════════════════════════════════
-# tabs/tab_aquecimento.py — ATHELTICA Dashboard — v4
+# tabs/tab_aquecimento.py — ATHELTICA Dashboard
 # Aba de Aquecimento — análise completa dos dados Annual
 #
-# CORRECÇÕES v4:
-#   - Slider rolling average DENTRO de cada secção temporal (HR e O2 independentes)
-#   - Detecção robusta de Drag Factor (múltiplos nomes possíveis de coluna)
-#   - Diagnóstico de colunas para debug
-#   - Evolução temporal O2 com slider próprio
-#   - Drag Factor para AquecSki E AquecRow
-#
-# Equivalente ao código original Python:
-#   1. HR/O2 vs Potência (Z-Score, SEM, MDC)
-#   2. Evolução temporal HR com slider rolling próprio (4 métodos)
-#   3. Evolução temporal O2 com slider rolling próprio (4 métodos)
-#   4. HR/Pwr ratio
-#   5. Drag Factor evolução temporal (AquecRow E AquecSki)
-#   6. Correlação Drag Factor vs HR e O2 por W (tabela + scatter)
-#   7. SEM/MDC por grupo Drag Factor (3 partes)
+# Funções:
+#   _extrair_pot()            — extrai potência do nome da coluna
+#   _detectar_drag_col()      — detecção robusta coluna Drag Factor
+#   _calcular_sem_mdc()       — SEM e MDC com ICC=0.9
+#   _analisar_tendencia()     — 4 métodos: Linear, Mann-Kendall, MDC, Theil-Sen
+#   _secao_temporal()         — gráfico temporal com slider rolling + Fase no eixo X
+#   tab_aquecimento()         — função principal da aba
 # ════════════════════════════════════════════════════════════════════════════════
 
 import streamlit as st
@@ -29,22 +21,17 @@ plt.style.use('seaborn-v0_8-whitegrid')
 
 from scipy import stats as scipy_stats
 from scipy.stats import linregress, spearmanr, theilslopes
-import re as _re
-from datetime import datetime, timedelta
 from itertools import combinations
+from datetime import datetime, timedelta
+import re as _re_aq
+import re
 
 from config import CORES
 
-
-# ════════════════════════════════════════════════════════════════════════════════
-# FUNÇÕES AUXILIARES
-# ════════════════════════════════════════════════════════════════════════════════
-
 def _extrair_pot(col):
     """Extrai valor de potência do nome da coluna (ex: HR_140W → 140)."""
-    m = _re.search(r'(\d+)[_\s]*W', str(col).upper())
+    m = re.search(r'(\d+)[_\s]*W', str(col).upper())
     return int(m.group(1)) if m else None
-
 
 def _detectar_drag_col(df):
     """
@@ -64,7 +51,6 @@ def _detectar_drag_col(df):
         if 'DRAG' in str(c).upper():
             return c
     return None
-
 
 def _calcular_sem_mdc(valores):
     """
@@ -90,7 +76,6 @@ def _calcular_sem_mdc(valores):
         mdc_up=media + mdc95, mdc_dn=media - mdc95,
         iqr_up=q3 + 1.5*iqr, iqr_dn=q1 - 1.5*iqr,
     )
-
 
 def _analisar_tendencia(df_long):
     """
@@ -152,22 +137,11 @@ def _analisar_tendencia(df_long):
         )
     return resultados
 
-
 def _secao_temporal(df_a, cols, tipo_label, unidade, aba, di,
-                     cores_pw, slider_key):
+                     cores_pw, slider_key, fase_col=None):
     """
     Secção completa de evolução temporal com slider rolling próprio.
-    Usada para HR e O2 independentemente — cada uma com o seu slider.
-
-    Parâmetros:
-        df_a        : DataFrame completo da aba (histórico total)
-        cols        : lista de colunas a plotar (ex: hr_cols ou o2_cols)
-        tipo_label  : 'HR' ou 'SmO2'
-        unidade     : 'bpm' ou '%'
-        aba         : nome da aba (AquecSki, etc.)
-        di          : data início do período seleccionado
-        cores_pw    : lista de cores por potência
-        slider_key  : chave única para o slider Streamlit
+    fase_col: se fornecido, adiciona "Data\nFase" no eixo X.
     """
     if not cols:
         return
@@ -210,65 +184,75 @@ def _secao_temporal(df_a, cols, tipo_label, unidade, aba, di,
     res_tend    = _analisar_tendencia(df_temporal)
 
     # Gráficos em subplots (um por potência)
-    n_pw = len(cols)
-    fig, axes = plt.subplots(n_pw, 1, figsize=(16, 5 * n_pw))
-    if n_pw == 1:
-        axes = [axes]
+    # Todos os W num único gráfico (igual ao comportamento anterior)
+    fig, ax = plt.subplots(figsize=(16, 7))
     fig.suptitle(
         f'{aba} — Evolução temporal {tipo_label} '
         f'(histórico completo | rolling={roll_w})',
-        fontsize=14, fontweight='bold', y=1.01)
+        fontsize=14, fontweight='bold')
 
     for idx, col in enumerate(cols):
         if col not in df_a.columns:
             continue
-        ax  = axes[idx]
         pw  = _extrair_pot(col)
         cor = cores_pw[idx % len(cores_pw)]
         df_t = df_a[['DATA', col]].dropna().sort_values('DATA')
         if len(df_t) < 2:
-            ax.set_visible(False)
             continue
 
         # Scatter + rolling
         ax.scatter(df_t['DATA'], df_t[col],
-                   color=cor, alpha=0.4, s=50,
-                   edgecolors='white', linewidth=1, zorder=4, label='Medições')
+                   color=cor, alpha=0.35, s=40,
+                   edgecolors='white', linewidth=1, zorder=4)
         rolled = df_t[col].rolling(roll_w, min_periods=1).mean()
         ax.plot(df_t['DATA'], rolled, color=cor, linewidth=2.5,
-               label=f'Rolling {roll_w}', alpha=0.9)
+               label=f'{pw}W (rolling {roll_w})', alpha=0.9)
 
-        # Tendências
+        # Tendência linear
         if pw in res_tend:
             r = res_tend[pw]
             y_lin = r['intercept'] + r['slope'] * r['dias']
-            y_th  = r['theil_intercept'] + r['theil_slope'] * r['dias']
             ax.plot(df_t['DATA'], y_lin,
-                   color=cor, linewidth=1.8, linestyle='--', alpha=0.7,
-                   label=f"Linear {r['slope']*30:.2f} {unidade}/mês "
-                         f"p={r['p_value']:.3f}")
-            ax.plot(df_t['DATA'], y_th,
-                   color='black', linewidth=1.5, linestyle=':', alpha=0.6,
-                   label='Theil-Sen (robusto)')
-            resumo = (
-                f"n={r['n']} | {r['classificacao']}\n"
-                f"Confiança: {r['confianca_percentual']:.0f}%\n"
-                f"Δ={r['mudanca_percentual']:+.1f}% | "
-                f"p={r['p_value']:.3f} | τ-p={r['p_kendall']:.3f}"
-            )
-            ax.text(0.02, 0.97, resumo, transform=ax.transAxes, fontsize=8,
-                   va='top', bbox=dict(boxstyle='round',
-                                       facecolor='wheat', alpha=0.85))
+                   color=cor, linewidth=1.5, linestyle='--', alpha=0.6,
+                   label=f'{pw}W trend {r["classificacao"]} ' 
+                         f'({r["slope"]*30:.2f}/mês p={r["p_value"]:.3f})')
 
-        # Linha vertical: início do período seleccionado
-        ax.axvline(pd.Timestamp(di), color='black', linestyle=':',
-                  linewidth=2, alpha=0.7, label=f'Início período ({di})')
-        ax.set_ylabel(f'{tipo_label} ({unidade})', fontsize=10)
+    # Linha vertical: início do período
+    ax.axvline(pd.Timestamp(di), color='black', linestyle=':',
+              linewidth=2, alpha=0.7, label=f'Início período ({di})')
+    ax.set_ylabel(f'{tipo_label} ({unidade})', fontsize=12, fontweight='bold')
+    ax.set_title(f'{aba} — {tipo_label} por potência (todos os W juntos)',
+                fontsize=13, fontweight='bold')
+    ax.legend(fontsize=9, loc='upper left', ncol=2)
+    ax.grid(True, alpha=0.3)
+
+    # Eixo X: Data + Fase se disponível
+    if fase_col and fase_col in df_a.columns:
+        col_ref = next((c for c in cols if c in df_a.columns), None)
+        if col_ref:
+            df_ref = (df_a[['DATA', fase_col]].dropna(subset=['DATA'])
+                      .sort_values('DATA').reset_index(drop=True))
+            step = max(1, len(df_ref) // 15)
+            tick_dates, tick_labels = [], []
+            for i_r, row_x in df_ref.iloc[::step].iterrows():
+                d_str = row_x['DATA'].strftime('%d/%m/%y')
+                f_str = str(row_x[fase_col]).strip() if pd.notna(row_x[fase_col]) else ''
+                tick_dates.append(row_x['DATA'])
+                tick_labels.append(d_str + ('\n' + f_str if f_str else ''))
+            ax.set_xticks(tick_dates)
+            ax.set_xticklabels(tick_labels, rotation=45, ha='right', fontsize=7)
+            ax.set_xlabel('Data / Fase')
+            # Linha vertical nas mudanças de Fase
+            fases_v = []
+            for _, row_x in df_ref.iterrows():
+                fv = str(row_x[fase_col]).strip() if pd.notna(row_x[fase_col]) else ''
+                if fv and fv not in fases_v:
+                    ax.axvline(row_x['DATA'], color='gray',
+                              linestyle=':', linewidth=1, alpha=0.5)
+                    fases_v.append(fv)
+    else:
         ax.set_xlabel('Data')
-        ax.set_title(f'{pw}W', fontsize=11, fontweight='bold')
-        ax.legend(fontsize=8, loc='upper right')
-        ax.grid(True, alpha=0.3)
-        plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
+        plt.xticks(rotation=45)
 
     plt.tight_layout()
     st.pyplot(fig)
@@ -317,7 +301,6 @@ def _secao_temporal(df_a, cols, tipo_label, unidade, aba, di,
                 st.info(f"→ {tipo_label} ESTÁVEL em {pw}W — continue a monitorar")
             st.markdown("---")
 
-
 # ════════════════════════════════════════════════════════════════════════════════
 # FUNÇÃO PRINCIPAL
 # ════════════════════════════════════════════════════════════════════════════════
@@ -342,27 +325,100 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                 continue
             df_a = df_a.copy()
 
-            # ── Info + filtro período ────────────────────────────────────
+            # ── Filtro de período com dropdown + datas manuais ──────────
             if 'DATA' in df_a.columns and df_a['DATA'].notna().any():
-                d_min = df_a['DATA'].min()
-                d_max = df_a['DATA'].max()
+                d_min_hist = df_a['DATA'].min().date()
+                d_max_hist = df_a['DATA'].max().date()
+                n_total_aba = len(df_a)
                 st.caption(
-                    f"📅 Histórico: {len(df_a)} registos | "
-                    f"{d_min.strftime('%d/%m/%Y')} → {d_max.strftime('%d/%m/%Y')}")
-                df_periodo = df_a[df_a['DATA'].dt.date >= di] if di else df_a
-                if len(df_periodo) == 0:
-                    st.caption("⚠️ Sem dados no período — a usar histórico completo")
-                    df_periodo = df_a
-                else:
-                    st.caption(f"📊 {len(df_periodo)} registos no período seleccionado")
+                    f"📅 Histórico: {n_total_aba} registos | "
+                    f"{d_min_hist.strftime('%d/%m/%Y')} → "
+                    f"{d_max_hist.strftime('%d/%m/%Y')}")
             else:
-                df_periodo = df_a
+                d_min_hist = None
+                d_max_hist = None
 
-            # ── Toggle período ───────────────────────────────────────────
-            usar_periodo = st.checkbox(
-                "Gráficos HR/O2 vs Potência só com período seleccionado",
-                value=False, key=f"per_{aba}")
-            df_plot = df_periodo if usar_periodo else df_a
+            col_filt1, col_filt2 = st.columns([2, 2])
+
+            with col_filt1:
+                opcao_periodo = st.selectbox(
+                    "📅 Período para gráficos",
+                    options=[
+                        "Todo o histórico",
+                        "Últimos 60 dias",
+                        "Últimos 90 dias",
+                        "Últimos 180 dias",
+                        "Último ano (365 dias)",
+                        "Datas manuais",
+                    ],
+                    index=0,
+                    key=f"periodo_sel_{aba}",
+                )
+
+            with col_filt2:
+                if opcao_periodo == "Datas manuais" and d_min_hist and d_max_hist:
+                    data_ini_man = st.date_input(
+                        "Data início",
+                        value=d_min_hist,
+                        min_value=d_min_hist,
+                        max_value=d_max_hist,
+                        key=f"data_ini_{aba}",
+                    )
+                    data_fim_man = st.date_input(
+                        "Data fim",
+                        value=d_max_hist,
+                        min_value=d_min_hist,
+                        max_value=d_max_hist,
+                        key=f"data_fim_{aba}",
+                    )
+                else:
+                    data_ini_man = None
+                    data_fim_man = None
+                    # Show info about selected range
+                    if opcao_periodo != "Todo o histórico" and d_max_hist:
+                        dias_map = {
+                            "Últimos 60 dias": 60,
+                            "Últimos 90 dias": 90,
+                            "Últimos 180 dias": 180,
+                            "Último ano (365 dias)": 365,
+                        }
+                        n_dias = dias_map.get(opcao_periodo, 0)
+                        if n_dias:
+                            d_calc = d_max_hist - timedelta(days=n_dias)
+                            st.caption(f"De {d_calc.strftime('%d/%m/%Y')} "
+                                       f"até {d_max_hist.strftime('%d/%m/%Y')}")
+
+            # Aplicar filtro
+            if 'DATA' in df_a.columns and df_a['DATA'].notna().any():
+                if opcao_periodo == "Todo o histórico":
+                    df_plot = df_a.copy()
+                elif opcao_periodo == "Datas manuais" and data_ini_man and data_fim_man:
+                    df_plot = df_a[
+                        (df_a['DATA'].dt.date >= data_ini_man) &
+                        (df_a['DATA'].dt.date <= data_fim_man)
+                    ].copy()
+                else:
+                    dias_map = {
+                        "Últimos 60 dias": 60,
+                        "Últimos 90 dias": 90,
+                        "Últimos 180 dias": 180,
+                        "Último ano (365 dias)": 365,
+                    }
+                    n_dias = dias_map.get(opcao_periodo, 0)
+                    if n_dias and d_max_hist:
+                        d_corte = d_max_hist - timedelta(days=n_dias)
+                        df_plot = df_a[df_a['DATA'].dt.date >= d_corte].copy()
+                    else:
+                        df_plot = df_a.copy()
+
+                if len(df_plot) == 0:
+                    st.warning("Sem dados no período seleccionado — "
+                               "a usar histórico completo.")
+                    df_plot = df_a.copy()
+                else:
+                    st.caption(f"✅ {len(df_plot)} registos no período seleccionado")
+            else:
+                df_plot = df_a.copy()
 
             # ── Diagnóstico de colunas ───────────────────────────────────
             with st.expander("🔍 Diagnóstico de colunas detectadas"):
@@ -417,6 +473,10 @@ def tab_aquecimento(dfs_annual, df_annual, di):
 
             # Detecção robusta Drag Factor
             drag_col = _detectar_drag_col(df_a)
+            # Detectar Fase e Treino_antes (usadas em múltiplas secções)
+            fase_col   = next((c for c in df_a.columns if c.lower() == 'fase'), None)
+            treino_col = next((c for c in df_a.columns
+                               if 'treino' in c.lower() or 'antes' in c.lower()), None)
 
             CORES_HR  = ['#E74C3C', '#F39C12', '#9B59B6', '#2ECC71', '#3498DB']
             CORES_O2  = ['#2471A3', '#1D8348', '#7D3C98', '#117A65', '#C0392B']
@@ -574,7 +634,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
             # 2. Evolução temporal HR — slider rolling PRÓPRIO
             # ════════════════════════════════════════════════════════════
             _secao_temporal(
-                df_a=df_a,
+                df_a=df_plot,
                 cols=hr_cols,
                 tipo_label='HR',
                 unidade='bpm',
@@ -582,6 +642,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                 di=di,
                 cores_pw=CORES_HR,
                 slider_key=f"roll_hr_{aba}",
+                fase_col=fase_col,
             )
 
             st.markdown("---")
@@ -590,7 +651,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
             # 3. Evolução temporal O2 — slider rolling PRÓPRIO e INDEPENDENTE
             # ════════════════════════════════════════════════════════════
             _secao_temporal(
-                df_a=df_a,
+                df_a=df_plot,
                 cols=o2_cols,
                 tipo_label='SmO2',
                 unidade='%',
@@ -598,6 +659,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                 di=di,
                 cores_pw=CORES_O2,
                 slider_key=f"roll_o2_{aba}",
+                fase_col=fase_col,
             )
 
             st.markdown("---")
@@ -613,7 +675,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                     key=f"roll_pwr_{aba}")
                 fig3, ax3 = plt.subplots(figsize=(14, 5))
                 for i, col in enumerate(pwr_cols[:4]):
-                    df_p = df_a[['DATA', col]].dropna().sort_values('DATA')
+                    df_p = df_plot[['DATA', col]].dropna().sort_values('DATA')
                     if len(df_p) < 2:
                         continue
                     pw  = _extrair_pot(col)
@@ -641,7 +703,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
             #    Disponível para AquecRow E AquecSki (e Bike se tiver)
             # ════════════════════════════════════════════════════════════
             if drag_col:
-                df_drag = df_a[['DATA', drag_col]].dropna().sort_values('DATA')
+                df_drag = df_plot[['DATA', drag_col]].dropna().sort_values('DATA')
                 if len(df_drag) >= 2:
                     st.subheader(f"⚙️ Drag Factor — evolução temporal ({aba})")
                     roll_drag = st.slider(
@@ -702,7 +764,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                 corr_rows = []
                 for col in hr_cols + o2_cols:
                     tipo_c = 'HR' if col in hr_cols else 'SmO2'
-                    df_c   = df_a[[drag_col, col]].dropna()
+                    df_c   = df_plot[[drag_col, col]].dropna()
                     if len(df_c) < 5:
                         continue
                     sl_c, ic_c, rv_c, pv_c, _ = linregress(
@@ -749,7 +811,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                                  if _extrair_pot(c) == pw_s), None)
                             if col_s is None:
                                 continue
-                            df_sc = df_a[[drag_col, col_s]].dropna()
+                            df_sc = df_plot[[drag_col, col_s]].dropna()
                             if len(df_sc) < 3:
                                 continue
                             cor_s = CORES_SC[idx_s % len(CORES_SC)]
@@ -789,7 +851,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                 st.caption("Partes 1, 2 e 3 do analisar_com_sem_mdc() "
                            "do código original Python.")
 
-                df_db = df_a.dropna(subset=[drag_col, 'DATA']).copy()
+                df_db = df_plot.dropna(subset=[drag_col, 'DATA']).copy()
                 if len(df_db) >= 6:
                     try:
                         df_db['Drag_Quartil'] = pd.qcut(
@@ -948,3 +1010,104 @@ def tab_aquecimento(dfs_annual, df_annual, di):
 
 **Grupos Drag Factor:** Baixo DF / Médio DF / Alto DF (tercis via `pd.qcut`)
                         """)
+
+
+            # ════════════════════════════════════════════════════════════
+            # 8. Treino_antes — tabela de correlação com HR/O2
+            # ════════════════════════════════════════════════════════════
+            if treino_col and (hr_cols or o2_cols):
+                st.subheader(f"🏋️ Treino Antes — impacto no HR/O2 ({aba})")
+
+                df_ta = df_plot.copy()
+                df_ta[treino_col] = (df_ta[treino_col]
+                                     .astype(str).str.strip().str.lower()
+                                     .replace({'nan': None, 'none': None,
+                                               '': None, 'n/a': None}))
+
+                cats_raw = sorted(df_ta[treino_col].dropna().unique().tolist())
+                st.caption(f"Categorias em '{treino_col}': "
+                           f"{', '.join(cats_raw) if cats_raw else 'nenhuma'}")
+
+                for col in hr_cols + o2_cols:
+                    if col not in df_ta.columns: continue
+                    pw   = _extrair_pot(col)
+                    tipo = 'HR' if col in hr_cols else 'SmO2'
+                    unid = 'bpm' if tipo == 'HR' else '%'
+
+                    df_col = df_ta[[treino_col, col]].copy()
+                    df_col['_tem_treino'] = df_col[treino_col].notna()
+                    df_col = df_col[[treino_col, col, '_tem_treino']].dropna(subset=[col])
+
+                    if len(df_col) < 4: continue
+
+                    st.markdown(f"**{tipo} {pw}W**")
+                    rows_ta = []
+
+                    # 1. Comparação: com treino antes vs sem treino antes
+                    com    = df_col[df_col['_tem_treino']][col].values
+                    sem    = df_col[~df_col['_tem_treino']][col].values
+                    for grupo_label, vals in [('Com treino antes', com),
+                                              ('Sem treino antes', sem)]:
+                        if len(vals) == 0: continue
+                        rows_ta.append({
+                            'Grupo': grupo_label,
+                            'N': len(vals),
+                            f'Media {tipo} ({unid})': f"{np.mean(vals):.1f}",
+                            'Mediana': f"{np.median(vals):.1f}",
+                            'STD': f"{np.std(vals, ddof=1):.1f}" if len(vals)>1 else '—',
+                        })
+
+                    # 2. Por categoria (pesos, ciclicos, etc.)
+                    for cat in cats_raw:
+                        vals_c = df_col[df_col[treino_col] == cat][col].values
+                        if len(vals_c) == 0: continue
+                        rows_ta.append({
+                            'Grupo': cat.capitalize(),
+                            'N': len(vals_c),
+                            f'Media {tipo} ({unid})': f"{np.mean(vals_c):.1f}",
+                            'Mediana': f"{np.median(vals_c):.1f}",
+                            'STD': f"{np.std(vals_c, ddof=1):.1f}" if len(vals_c)>1 else '—',
+                        })
+
+                    if rows_ta:
+                        st.dataframe(pd.DataFrame(rows_ta),
+                                     use_container_width=True, hide_index=True)
+
+                    # Mann-Whitney: com vs sem + entre categorias
+                    comp_rows = []
+                    grupos_comp = []
+                    if len(com) >= 3 and len(sem) >= 3:
+                        grupos_comp.append(('Com treino', com, 'Sem treino', sem))
+                    for c1, c2 in combinations(cats_raw, 2):
+                        v1 = df_col[df_col[treino_col]==c1][col].values
+                        v2 = df_col[df_col[treino_col]==c2][col].values
+                        if len(v1) >= 3 and len(v2) >= 3:
+                            grupos_comp.append((c1.capitalize(), v1,
+                                                c2.capitalize(), v2))
+
+                    for g1_n, v1, g2_n, v2 in grupos_comp:
+                        stat, pval = scipy_stats.mannwhitneyu(
+                            v1, v2, alternative='two-sided')
+                        delta = np.mean(v1) - np.mean(v2)
+                        s_mdc = _calcular_sem_mdc(np.concatenate([v1, v2]))
+                        mdc_v = s_mdc['MDC_95'] if s_mdc else None
+                        real  = ('REAL' if mdc_v and abs(delta) >= mdc_v
+                                 else 'Proximo' if mdc_v and abs(delta) >= mdc_v*0.5
+                                 else 'Dentro do erro')
+                        comp_rows.append({
+                            'Comparacao': f"{g1_n} vs {g2_n}",
+                            f'Delta {tipo} ({unid})': f"{delta:+.1f}",
+                            'p-value': f"{pval:.4f}",
+                            'Sig.': 'SIG' if pval < 0.05 else 'ns',
+                            'MDC-95': f"{mdc_v:.2f}" if mdc_v else '—',
+                            'Diferenca real': real,
+                            'Conclusao': (
+                                f"{g1_n} {'maior' if delta>0 else 'menor'} "
+                                f"({abs(delta):.1f} {unid})"
+                                if pval < 0.05 else 'sem diferenca significativa'),
+                        })
+
+                    if comp_rows:
+                        st.markdown("*Testes estatísticos (Mann-Whitney U):*")
+                        st.dataframe(pd.DataFrame(comp_rows),
+                                     use_container_width=True, hide_index=True)
