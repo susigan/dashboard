@@ -2769,7 +2769,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
             # 2. Evolução temporal HR — slider rolling PRÓPRIO
             # ════════════════════════════════════════════════════════════
             _secao_temporal(
-                df_a=df_a,
+                df_a=df_plot,
                 cols=hr_cols,
                 tipo_label='HR',
                 unidade='bpm',
@@ -2785,7 +2785,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
             # 3. Evolução temporal O2 — slider rolling PRÓPRIO e INDEPENDENTE
             # ════════════════════════════════════════════════════════════
             _secao_temporal(
-                df_a=df_a,
+                df_a=df_plot,
                 cols=o2_cols,
                 tipo_label='SmO2',
                 unidade='%',
@@ -2808,7 +2808,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                     key=f"roll_pwr_{aba}")
                 fig3, ax3 = plt.subplots(figsize=(14, 5))
                 for i, col in enumerate(pwr_cols[:4]):
-                    df_p = df_a[['DATA', col]].dropna().sort_values('DATA')
+                    df_p = df_plot[['DATA', col]].dropna().sort_values('DATA')
                     if len(df_p) < 2:
                         continue
                     pw  = _extrair_pot(col)
@@ -2836,7 +2836,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
             #    Disponível para AquecRow E AquecSki (e Bike se tiver)
             # ════════════════════════════════════════════════════════════
             if drag_col:
-                df_drag = df_a[['DATA', drag_col]].dropna().sort_values('DATA')
+                df_drag = df_plot[['DATA', drag_col]].dropna().sort_values('DATA')
                 if len(df_drag) >= 2:
                     st.subheader(f"⚙️ Drag Factor — evolução temporal ({aba})")
                     roll_drag = st.slider(
@@ -2897,7 +2897,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                 corr_rows = []
                 for col in hr_cols + o2_cols:
                     tipo_c = 'HR' if col in hr_cols else 'SmO2'
-                    df_c   = df_a[[drag_col, col]].dropna()
+                    df_c   = df_plot[[drag_col, col]].dropna()
                     if len(df_c) < 5:
                         continue
                     sl_c, ic_c, rv_c, pv_c, _ = linregress(
@@ -2944,7 +2944,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                                  if _extrair_pot(c) == pw_s), None)
                             if col_s is None:
                                 continue
-                            df_sc = df_a[[drag_col, col_s]].dropna()
+                            df_sc = df_plot[[drag_col, col_s]].dropna()
                             if len(df_sc) < 3:
                                 continue
                             cor_s = CORES_SC[idx_s % len(CORES_SC)]
@@ -2984,7 +2984,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                 st.caption("Partes 1, 2 e 3 do analisar_com_sem_mdc() "
                            "do código original Python.")
 
-                df_db = df_a.dropna(subset=[drag_col, 'DATA']).copy()
+                df_db = df_plot.dropna(subset=[drag_col, 'DATA']).copy()
                 if len(df_db) >= 6:
                     try:
                         df_db['Drag_Quartil'] = pd.qcut(
