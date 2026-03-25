@@ -2464,27 +2464,100 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                 continue
             df_a = df_a.copy()
 
-            # ── Info + filtro período ────────────────────────────────────
+            # ── Filtro de período com dropdown + datas manuais ──────────
             if 'DATA' in df_a.columns and df_a['DATA'].notna().any():
-                d_min = df_a['DATA'].min()
-                d_max = df_a['DATA'].max()
+                d_min_hist = df_a['DATA'].min().date()
+                d_max_hist = df_a['DATA'].max().date()
+                n_total_aba = len(df_a)
                 st.caption(
-                    f"📅 Histórico: {len(df_a)} registos | "
-                    f"{d_min.strftime('%d/%m/%Y')} → {d_max.strftime('%d/%m/%Y')}")
-                df_periodo = df_a[df_a['DATA'].dt.date >= di] if di else df_a
-                if len(df_periodo) == 0:
-                    st.caption("⚠️ Sem dados no período — a usar histórico completo")
-                    df_periodo = df_a
-                else:
-                    st.caption(f"📊 {len(df_periodo)} registos no período seleccionado")
+                    f"📅 Histórico: {n_total_aba} registos | "
+                    f"{d_min_hist.strftime('%d/%m/%Y')} → "
+                    f"{d_max_hist.strftime('%d/%m/%Y')}")
             else:
-                df_periodo = df_a
+                d_min_hist = None
+                d_max_hist = None
 
-            # ── Toggle período ───────────────────────────────────────────
-            usar_periodo = st.checkbox(
-                "Gráficos HR/O2 vs Potência só com período seleccionado",
-                value=False, key=f"per_{aba}")
-            df_plot = df_periodo if usar_periodo else df_a
+            col_filt1, col_filt2 = st.columns([2, 2])
+
+            with col_filt1:
+                opcao_periodo = st.selectbox(
+                    "📅 Período para gráficos",
+                    options=[
+                        "Todo o histórico",
+                        "Últimos 60 dias",
+                        "Últimos 90 dias",
+                        "Últimos 180 dias",
+                        "Último ano (365 dias)",
+                        "Datas manuais",
+                    ],
+                    index=0,
+                    key=f"periodo_sel_{aba}",
+                )
+
+            with col_filt2:
+                if opcao_periodo == "Datas manuais" and d_min_hist and d_max_hist:
+                    data_ini_man = st.date_input(
+                        "Data início",
+                        value=d_min_hist,
+                        min_value=d_min_hist,
+                        max_value=d_max_hist,
+                        key=f"data_ini_{aba}",
+                    )
+                    data_fim_man = st.date_input(
+                        "Data fim",
+                        value=d_max_hist,
+                        min_value=d_min_hist,
+                        max_value=d_max_hist,
+                        key=f"data_fim_{aba}",
+                    )
+                else:
+                    data_ini_man = None
+                    data_fim_man = None
+                    # Show info about selected range
+                    if opcao_periodo != "Todo o histórico" and d_max_hist:
+                        dias_map = {
+                            "Últimos 60 dias": 60,
+                            "Últimos 90 dias": 90,
+                            "Últimos 180 dias": 180,
+                            "Último ano (365 dias)": 365,
+                        }
+                        n_dias = dias_map.get(opcao_periodo, 0)
+                        if n_dias:
+                            d_calc = d_max_hist - timedelta(days=n_dias)
+                            st.caption(f"De {d_calc.strftime('%d/%m/%Y')} "
+                                       f"até {d_max_hist.strftime('%d/%m/%Y')}")
+
+            # Aplicar filtro
+            if 'DATA' in df_a.columns and df_a['DATA'].notna().any():
+                if opcao_periodo == "Todo o histórico":
+                    df_plot = df_a.copy()
+                elif opcao_periodo == "Datas manuais" and data_ini_man and data_fim_man:
+                    df_plot = df_a[
+                        (df_a['DATA'].dt.date >= data_ini_man) &
+                        (df_a['DATA'].dt.date <= data_fim_man)
+                    ].copy()
+                else:
+                    dias_map = {
+                        "Últimos 60 dias": 60,
+                        "Últimos 90 dias": 90,
+                        "Últimos 180 dias": 180,
+                        "Último ano (365 dias)": 365,
+                    }
+                    n_dias = dias_map.get(opcao_periodo, 0)
+                    if n_dias and d_max_hist:
+                        d_corte = d_max_hist - timedelta(days=n_dias)
+                        df_plot = df_a[df_a['DATA'].dt.date >= d_corte].copy()
+                    else:
+                        df_plot = df_a.copy()
+
+                if len(df_plot) == 0:
+                    st.warning("Sem dados no período seleccionado — "
+                               "a usar histórico completo.")
+                    df_plot = df_a.copy()
+                else:
+                    st.caption(f"✅ {len(df_plot)} registos no período seleccionado")
+            else:
+                df_plot = df_a.copy()
 
             # ── Diagnóstico de colunas ───────────────────────────────────
             with st.expander("🔍 Diagnóstico de colunas detectadas"):
