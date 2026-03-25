@@ -17,6 +17,7 @@ from gspread_dataframe import get_as_dataframe
 from google.oauth2.service_account import Credentials
 from scipy import stats as scipy_stats
 from scipy.stats import pearsonr, linregress, spearmanr, theilslopes
+from itertools import combinations
 from datetime import datetime, timedelta
 import re
 import warnings
@@ -2349,66 +2350,49 @@ def _secao_temporal(df_a, cols, tipo_label, unidade, aba, di,
     res_tend    = _analisar_tendencia(df_temporal)
 
     # Gráficos em subplots (um por potência)
-    n_pw = len(cols)
-    fig, axes = plt.subplots(n_pw, 1, figsize=(16, 5 * n_pw))
-    if n_pw == 1:
-        axes = [axes]
+    # Todos os W num único gráfico (igual ao comportamento anterior)
+    fig, ax = plt.subplots(figsize=(16, 7))
     fig.suptitle(
         f'{aba} — Evolução temporal {tipo_label} '
         f'(histórico completo | rolling={roll_w})',
-        fontsize=14, fontweight='bold', y=1.01)
+        fontsize=14, fontweight='bold')
 
     for idx, col in enumerate(cols):
         if col not in df_a.columns:
             continue
-        ax  = axes[idx]
         pw  = _extrair_pot(col)
         cor = cores_pw[idx % len(cores_pw)]
         df_t = df_a[['DATA', col]].dropna().sort_values('DATA')
         if len(df_t) < 2:
-            ax.set_visible(False)
             continue
 
         # Scatter + rolling
         ax.scatter(df_t['DATA'], df_t[col],
-                   color=cor, alpha=0.4, s=50,
-                   edgecolors='white', linewidth=1, zorder=4, label='Medições')
+                   color=cor, alpha=0.35, s=40,
+                   edgecolors='white', linewidth=1, zorder=4)
         rolled = df_t[col].rolling(roll_w, min_periods=1).mean()
         ax.plot(df_t['DATA'], rolled, color=cor, linewidth=2.5,
-               label=f'Rolling {roll_w}', alpha=0.9)
+               label=f'{pw}W (rolling {roll_w})', alpha=0.9)
 
-        # Tendências
+        # Tendência linear
         if pw in res_tend:
             r = res_tend[pw]
             y_lin = r['intercept'] + r['slope'] * r['dias']
-            y_th  = r['theil_intercept'] + r['theil_slope'] * r['dias']
             ax.plot(df_t['DATA'], y_lin,
-                   color=cor, linewidth=1.8, linestyle='--', alpha=0.7,
-                   label=f"Linear {r['slope']*30:.2f} {unidade}/mês "
-                         f"p={r['p_value']:.3f}")
-            ax.plot(df_t['DATA'], y_th,
-                   color='black', linewidth=1.5, linestyle=':', alpha=0.6,
-                   label='Theil-Sen (robusto)')
-            resumo = (
-                f"n={r['n']} | {r['classificacao']}\n"
-                f"Confiança: {r['confianca_percentual']:.0f}%\n"
-                f"Δ={r['mudanca_percentual']:+.1f}% | "
-                f"p={r['p_value']:.3f} | τ-p={r['p_kendall']:.3f}"
-            )
-            ax.text(0.02, 0.97, resumo, transform=ax.transAxes, fontsize=8,
-                   va='top', bbox=dict(boxstyle='round',
-                                       facecolor='wheat', alpha=0.85))
+                   color=cor, linewidth=1.5, linestyle='--', alpha=0.6,
+                   label=f'{pw}W trend {r["classificacao"]} ' 
+                         f'({r["slope"]*30:.2f}/mês p={r["p_value"]:.3f})')
 
-        # Linha vertical: início do período seleccionado
-        ax.axvline(pd.Timestamp(di), color='black', linestyle=':',
-                  linewidth=2, alpha=0.7, label=f'Início período ({di})')
-        ax.set_ylabel(f'{tipo_label} ({unidade})', fontsize=10)
-        ax.set_xlabel('Data')
-        ax.set_title(f'{pw}W', fontsize=11, fontweight='bold')
-        ax.legend(fontsize=8, loc='upper right')
-        ax.grid(True, alpha=0.3)
-        plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
-
+    # Linha vertical: início do período
+    ax.axvline(pd.Timestamp(di), color='black', linestyle=':',
+              linewidth=2, alpha=0.7, label=f'Início período ({di})')
+    ax.set_ylabel(f'{tipo_label} ({unidade})', fontsize=12, fontweight='bold')
+    ax.set_xlabel('Data')
+    ax.set_title(f'{aba} — {tipo_label} por potência (todos os W juntos)',
+                fontsize=13, fontweight='bold')
+    ax.legend(fontsize=9, loc='upper left', ncol=2)
+    ax.grid(True, alpha=0.3)
+    plt.xticks(rotation=45)
     plt.tight_layout()
     st.pyplot(fig)
     plt.close()
