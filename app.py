@@ -16,7 +16,7 @@ import gspread
 from gspread_dataframe import get_as_dataframe
 from google.oauth2.service_account import Credentials
 from scipy import stats as scipy_stats
-from scipy.stats import pearsonr
+from scipy.stats import pearsonr, linregress, spearmanr, theilslopes
 from datetime import datetime, timedelta
 import re
 import warnings
@@ -2185,7 +2185,7 @@ plt.style.use('seaborn-v0_8-whitegrid')
 
 def _extrair_pot(col):
     """Extrai valor de potência do nome da coluna (ex: HR_140W → 140)."""
-    m = _re.search(r'(\d+)[_\s]*W', str(col).upper())
+    m = re.search(r'(\d+)[_\s]*W', str(col).upper())
     return int(m.group(1)) if m else None
 
 def _detectar_drag_col(df):
@@ -3086,6 +3086,14 @@ def tab_aquecimento(dfs_annual, df_annual, di):
 
 **Grupos Drag Factor:** Baixo DF / Médio DF / Alto DF (tercis via `pd.qcut`)
                         """)
+
+# Configuração da página — DEVE ser a primeira chamada Streamlit
+st.set_page_config(
+    page_title="ATHELTICA",
+    page_icon="🏃",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
 def render_sidebar():
     st.sidebar.image("https://img.icons8.com/emoji/96/runner-emoji.png", width=60)
