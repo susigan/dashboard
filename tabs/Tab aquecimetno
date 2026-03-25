@@ -1,18 +1,22 @@
 # ════════════════════════════════════════════════════════════════════════════════
-# tabs/tab_aquecimento.py — ATHELTICA Dashboard — VERSÃO COMPLETA v3
+# tabs/tab_aquecimento.py — ATHELTICA Dashboard — v4
 # Aba de Aquecimento — análise completa dos dados Annual
+#
+# CORRECÇÕES v4:
+#   - Slider rolling average DENTRO de cada secção temporal (HR e O2 independentes)
+#   - Detecção robusta de Drag Factor (múltiplos nomes possíveis de coluna)
+#   - Diagnóstico de colunas para debug
+#   - Evolução temporal O2 com slider próprio
+#   - Drag Factor para AquecSki E AquecRow
+#
 # Equivalente ao código original Python:
-#   1. HR/O2 vs Potência com Z-Score, SEM, MDC (gráfico + tabela limites)
-#   2. Evolução temporal HR — 4 métodos (Linear, Mann-Kendall, MDC, Theil-Sen)
-#   3. Evolução temporal O2 — mesmos 4 métodos (igual ao HR)
-#   4. HR/Pwr ratio com rolling
-#   5. Drag Factor AquecRow E AquecSki — evolução temporal + rolling
-#   6. Correlação Drag Factor vs HR e vs O2 por potência (tabela + scatter)
-#   7. SEM/MDC por grupo de Drag Factor (Baixo/Médio/Alto DF)
-#      - Parte 1: SEM/MDC por grupo
-#      - Parte 2: Mudanças reais vs erro de medição
-#      - Parte 3: Tendência excede MDC?
-#   8. Rolling average slider (1–10 sessões)
+#   1. HR/O2 vs Potência (Z-Score, SEM, MDC)
+#   2. Evolução temporal HR com slider rolling próprio (4 métodos)
+#   3. Evolução temporal O2 com slider rolling próprio (4 métodos)
+#   4. HR/Pwr ratio
+#   5. Drag Factor evolução temporal (AquecRow E AquecSki)
+#   6. Correlação Drag Factor vs HR e O2 por W (tabela + scatter)
+#   7. SEM/MDC por grupo Drag Factor (3 partes)
 # ════════════════════════════════════════════════════════════════════════════════
 
 import streamlit as st
@@ -37,41 +41,77 @@ from config import CORES
 # ════════════════════════════════════════════════════════════════════════════════
 
 def _extrair_pot(col):
+    """Extrai valor de potência do nome da coluna (ex: HR_140W → 140)."""
     m = _re.search(r'(\d+)[_\s]*W', str(col).upper())
     return int(m.group(1)) if m else None
 
 
+def _detectar_drag_col(df):
+    """
+    Detecção robusta da coluna Drag Factor.
+    Tenta múltiplos nomes possíveis usados na planilha.
+    """
+    candidatos = [
+        'Drag_Factor', 'Drag Factor', 'DragFactor', 'drag_factor',
+        'DRAG_FACTOR', 'Drag', 'drag', 'DF', 'df',
+    ]
+    # Primeiro tenta nomes exactos
+    for c in candidatos:
+        if c in df.columns:
+            return c
+    # Depois tenta substring 'DRAG'
+    for c in df.columns:
+        if 'DRAG' in str(c).upper():
+            return c
+    return None
+
+
 def _calcular_sem_mdc(valores):
-    """SEM e MDC com ICC=0.9. Igual ao calcular_SEM_MDC do original Python."""
-    if len(valores) < 2: return None
-    media = np.mean(valores); std = np.std(valores, ddof=1)
-    if media == 0: return None
+    """
+    SEM e MDC com ICC=0.9.
+    SEM = SD × √(1-ICC), MDC₉₅ = SEM × 1.96 × √2
+    Igual ao calcular_SEM_MDC do original Python.
+    """
+    if len(valores) < 2:
+        return None
+    media = np.mean(valores)
+    std   = np.std(valores, ddof=1)
+    if media == 0:
+        return None
     sem   = std * np.sqrt(1 - 0.9)
     mdc95 = sem * 1.96 * np.sqrt(2)
     mdc90 = sem * 1.645 * np.sqrt(2)
     q1, q3 = np.percentile(valores, 25), np.percentile(valores, 75)
     iqr   = q3 - q1
-    return dict(mean=media, std=std, SEM=sem, MDC_95=mdc95, MDC_90=mdc90,
-                cv=(std/media*100), n=len(valores),
-                z_up=media+2*std, z_dn=media-2*std,
-                mdc_up=media+mdc95, mdc_dn=media-mdc95,
-                iqr_up=q3+1.5*iqr, iqr_dn=q1-1.5*iqr)
+    return dict(
+        mean=media, std=std, SEM=sem, MDC_95=mdc95, MDC_90=mdc90,
+        cv=(std / media * 100), n=len(valores),
+        z_up=media + 2*std, z_dn=media - 2*std,
+        mdc_up=media + mdc95, mdc_dn=media - mdc95,
+        iqr_up=q3 + 1.5*iqr, iqr_dn=q1 - 1.5*iqr,
+    )
 
 
-def _analisar_tendencia_detalhada(df_long):
+def _analisar_tendencia(df_long):
     """
-    4 métodos de análise temporal por potência — igual ao original Python:
-    1. Regressão Linear | 2. Mann-Kendall (Spearman) | 3. MDC-based | 4. Theil-Sen
+    4 métodos de análise temporal por potência.
+    Igual ao analisar_tendencia_temporal_melhorada() do original Python.
+    Retorna dict {pw: resultados}.
     """
-    if len(df_long) == 0: return {}
+    if len(df_long) == 0:
+        return {}
     resultados = {}
     for pw in sorted(df_long['Power'].unique()):
         df_pw = df_long[df_long['Power'] == pw].copy().sort_values('Data')
-        if len(df_pw) < 3: continue
+        if len(df_pw) < 3:
+            continue
         df_pw['Dias'] = (df_pw['Data'] - df_pw['Data'].min()).dt.days
-        X = df_pw['Dias'].values; y = df_pw['Value'].values
+        X = df_pw['Dias'].values
+        y = df_pw['Value'].values
+
         sl, ic, rv, pv, se = linregress(X, y)
         tau, p_k = spearmanr(X, y)
+
         bl     = y[:2].mean() if len(y) >= 2 else y[0]
         bl_std = np.std(y[:2], ddof=0) if len(y) >= 2 else 0
         sem_bl = bl_std * np.sqrt(1 - 0.9)
@@ -79,95 +119,148 @@ def _analisar_tendencia_detalhada(df_long):
         rec    = y[-2:].mean() if len(y) >= 2 else y[-1]
         mud    = rec - bl
         mud_mdc = mud / mdc_bl if mdc_bl > 0 else 0
+
         th_sl, th_ic, _, _ = theilslopes(y, X)
+
         conf = 0
-        if pv < 0.05 and abs(sl) > 0:   conf += 2
-        if p_k < 0.05:                   conf += 2
-        if abs(mud_mdc) >= 1:            conf += 1
-        if (th_sl > 0 and sl > 0) or (th_sl < 0 and sl < 0): conf += 1
+        if pv < 0.05 and abs(sl) > 0:                           conf += 2
+        if p_k < 0.05:                                           conf += 2
+        if abs(mud_mdc) >= 1:                                    conf += 1
+        if (th_sl > 0 and sl > 0) or (th_sl < 0 and sl < 0):   conf += 1
+
         mudanca_real = conf >= 2
         classif = (("↗ AUMENTANDO" if (sl > 0 or th_sl > 0) else "↘ DIMINUINDO")
                    if mudanca_real else "→ SEM MUDANÇA")
+
         mid = len(y) // 2
         _, p_t = scipy_stats.ttest_ind(y[:mid], y[mid:]) if mid >= 2 else (0, 1)
         mud_pct = (mud / bl * 100) if bl != 0 else 0
+
         resultados[pw] = dict(
-            n=len(df_pw), dias_total=int(X[-1]-X[0]),
+            n=len(df_pw), dias_total=int(X[-1] - X[0]),
             slope=sl, intercept=ic, r_value=rv, p_value=pv,
             tau_kendall=tau, p_kendall=p_k,
             theil_slope=th_sl, theil_intercept=th_ic,
-            baseline=bl, recente=rec, mudanca_absoluta=mud,
-            mudanca_percentual=mud_pct, mudanca_mdc_multiplos=mud_mdc,
-            mdc_95_baseline=mdc_bl,
+            baseline=bl, recente=rec,
+            mudanca_absoluta=mud, mudanca_percentual=mud_pct,
+            mudanca_mdc_multiplos=mud_mdc, mdc_95_baseline=mdc_bl,
             media_inicio=np.mean(y[:mid]), media_fim=np.mean(y[mid:]),
             p_teste_t=p_t,
             classificacao=classif, mudanca_real=mudanca_real,
-            confianca_score=conf, confianca_percentual=(conf/6)*100,
+            confianca_score=conf, confianca_percentual=(conf / 6) * 100,
             valores=y, dias=X,
         )
     return resultados
 
 
-def _plot_temporal_metrica(df_a, cols, tipo_label, unidade, aba,
-                            roll_w, di, cores_pw):
+def _secao_temporal(df_a, cols, tipo_label, unidade, aba, di,
+                     cores_pw, slider_key):
     """
-    Gráfico de evolução temporal com 4 métodos + saídas escritas.
-    Reutilizado para HR e O2.
+    Secção completa de evolução temporal com slider rolling próprio.
+    Usada para HR e O2 independentemente — cada uma com o seu slider.
+
+    Parâmetros:
+        df_a        : DataFrame completo da aba (histórico total)
+        cols        : lista de colunas a plotar (ex: hr_cols ou o2_cols)
+        tipo_label  : 'HR' ou 'SmO2'
+        unidade     : 'bpm' ou '%'
+        aba         : nome da aba (AquecSki, etc.)
+        di          : data início do período seleccionado
+        cores_pw    : lista de cores por potência
+        slider_key  : chave única para o slider Streamlit
     """
-    if not cols or 'DATA' not in df_a.columns or not df_a['DATA'].notna().any():
+    if not cols:
+        return
+    if 'DATA' not in df_a.columns or not df_a['DATA'].notna().any():
+        return
+    # Verificar que há dados nas colunas
+    has_data = any(df_a[c].notna().any() for c in cols if c in df_a.columns)
+    if not has_data:
+        st.info(f"Sem dados de {tipo_label} para análise temporal.")
         return
 
-    st.subheader(f"📈 Evolução temporal {tipo_label} — 4 métodos "
-                 f"(Linear, Mann-Kendall, MDC, Theil-Sen)")
+    st.subheader(f"📈 Evolução temporal {tipo_label} — "
+                 f"4 métodos (Linear, Mann-Kendall, MDC, Theil-Sen)")
 
+    # ── Slider rolling DEDICADO a esta métrica ───────────────────────────────
+    n_max = max(2, len(df_a) - 1)
+    roll_w = st.slider(
+        f"🔄 Rolling average {tipo_label} (sessões)",
+        min_value=1, max_value=min(10, n_max), value=min(3, n_max),
+        key=slider_key,
+        help=(f"1 = sem suavização | 3 = média de 3 sessões\n"
+              f"Afecta apenas os gráficos de {tipo_label}"),
+    )
+
+    # Construir DataFrame longo
     rows_t = []
     for col in cols:
+        if col not in df_a.columns:
+            continue
         p = _extrair_pot(col)
         for _, row in df_a.iterrows():
             if pd.notna(row.get(col)) and pd.notna(row.get('DATA')):
                 rows_t.append({'Data': row['DATA'], 'Power': p,
                                 'Value': float(row[col])})
-    df_temporal = pd.DataFrame(rows_t)
-    res_tend    = _analisar_tendencia_detalhada(df_temporal)
+    if not rows_t:
+        st.info(f"Sem dados de {tipo_label} para análise temporal.")
+        return
 
+    df_temporal = pd.DataFrame(rows_t)
+    res_tend    = _analisar_tendencia(df_temporal)
+
+    # Gráficos em subplots (um por potência)
     n_pw = len(cols)
     fig, axes = plt.subplots(n_pw, 1, figsize=(16, 5 * n_pw))
-    if n_pw == 1: axes = [axes]
-    fig.suptitle(f'{aba} — Evolução temporal {tipo_label} (histórico completo)',
-                 fontsize=14, fontweight='bold', y=1.01)
+    if n_pw == 1:
+        axes = [axes]
+    fig.suptitle(
+        f'{aba} — Evolução temporal {tipo_label} '
+        f'(histórico completo | rolling={roll_w})',
+        fontsize=14, fontweight='bold', y=1.01)
 
     for idx, col in enumerate(cols):
+        if col not in df_a.columns:
+            continue
         ax  = axes[idx]
         pw  = _extrair_pot(col)
         cor = cores_pw[idx % len(cores_pw)]
         df_t = df_a[['DATA', col]].dropna().sort_values('DATA')
         if len(df_t) < 2:
-            ax.set_visible(False); continue
+            ax.set_visible(False)
+            continue
 
-        ax.scatter(df_t['DATA'], df_t[col], color=cor, alpha=0.4, s=50,
-                  edgecolors='white', linewidth=1, zorder=4, label='Medições')
+        # Scatter + rolling
+        ax.scatter(df_t['DATA'], df_t[col],
+                   color=cor, alpha=0.4, s=50,
+                   edgecolors='white', linewidth=1, zorder=4, label='Medições')
         rolled = df_t[col].rolling(roll_w, min_periods=1).mean()
         ax.plot(df_t['DATA'], rolled, color=cor, linewidth=2.5,
                label=f'Rolling {roll_w}', alpha=0.9)
 
+        # Tendências
         if pw in res_tend:
             r = res_tend[pw]
             y_lin = r['intercept'] + r['slope'] * r['dias']
             y_th  = r['theil_intercept'] + r['theil_slope'] * r['dias']
-            ax.plot(df_t['DATA'], y_lin, color=cor, linewidth=1.8,
-                   linestyle='--', alpha=0.7,
-                   label=f"Linear slope={r['slope']*30:.2f} {unidade}/mês "
+            ax.plot(df_t['DATA'], y_lin,
+                   color=cor, linewidth=1.8, linestyle='--', alpha=0.7,
+                   label=f"Linear {r['slope']*30:.2f} {unidade}/mês "
                          f"p={r['p_value']:.3f}")
-            ax.plot(df_t['DATA'], y_th, color='black', linewidth=1.5,
-                   linestyle=':', alpha=0.6, label='Theil-Sen (robusto)')
-            resumo = (f"n={r['n']} | {r['classificacao']}\n"
-                      f"Confiança: {r['confianca_percentual']:.0f}%\n"
-                      f"Δ={r['mudanca_percentual']:+.1f}% | "
-                      f"p={r['p_value']:.3f} | τ-p={r['p_kendall']:.3f}")
+            ax.plot(df_t['DATA'], y_th,
+                   color='black', linewidth=1.5, linestyle=':', alpha=0.6,
+                   label='Theil-Sen (robusto)')
+            resumo = (
+                f"n={r['n']} | {r['classificacao']}\n"
+                f"Confiança: {r['confianca_percentual']:.0f}%\n"
+                f"Δ={r['mudanca_percentual']:+.1f}% | "
+                f"p={r['p_value']:.3f} | τ-p={r['p_kendall']:.3f}"
+            )
             ax.text(0.02, 0.97, resumo, transform=ax.transAxes, fontsize=8,
                    va='top', bbox=dict(boxstyle='round',
                                        facecolor='wheat', alpha=0.85))
 
+        # Linha vertical: início do período seleccionado
         ax.axvline(pd.Timestamp(di), color='black', linestyle=':',
                   linewidth=2, alpha=0.7, label=f'Início período ({di})')
         ax.set_ylabel(f'{tipo_label} ({unidade})', fontsize=10)
@@ -181,32 +274,33 @@ def _plot_temporal_metrica(df_a, cols, tipo_label, unidade, aba,
     st.pyplot(fig)
     plt.close()
 
-    # Saídas escritas detalhadas
-    with st.expander(f"📊 Análise detalhada {tipo_label} — saídas escritas (4 métodos)"):
+    # Saídas escritas detalhadas por potência
+    with st.expander(f"📊 Análise detalhada {tipo_label} — "
+                     f"saídas escritas completas (4 métodos)"):
         for pw, r in sorted(res_tend.items()):
-            st.markdown(f"**⚡ {pw}W** — n={r['n']} medições em "
-                        f"{r['dias_total']} dias")
+            st.markdown(f"**⚡ {pw}W** — n={r['n']} medições "
+                        f"em {r['dias_total']} dias")
             c1, c2, c3 = st.columns(3)
             c1.metric("Classificação", r['classificacao'])
             c2.metric("Confiança",     f"{r['confianca_percentual']:.0f}%")
             c3.metric("Mudança Real",  "✓ SIM" if r['mudanca_real'] else "✗ NÃO")
             rows_tb = [
                 {'Método': 'Regressão Linear',
-                 'Slope': f"{r['slope']:.4f} {unidade}/dia "
-                           f"({r['slope']*30:.3f}/mês)",
+                 'Slope': (f"{r['slope']:.4f} {unidade}/dia "
+                            f"({r['slope']*30:.3f}/mês)"),
                  'R²': f"{r['r_value']**2:.4f}",
                  'p-value': f"{r['p_value']:.4f}",
                  'Sig.': '✓' if r['p_value'] < 0.05 else '✗'},
                 {'Método': 'Mann-Kendall (τ)',
-                 'Slope': f"τ={r['tau_kendall']:.4f}", 'R²': '—',
-                 'p-value': f"{r['p_kendall']:.4f}",
+                 'Slope': f"τ={r['tau_kendall']:.4f}",
+                 'R²': '—', 'p-value': f"{r['p_kendall']:.4f}",
                  'Sig.': '✓' if r['p_kendall'] < 0.05 else '✗'},
                 {'Método': 'Theil-Sen (robusto)',
                  'Slope': f"{r['theil_slope']:.4f} {unidade}/dia",
                  'R²': '—', 'p-value': '—', 'Sig.': '—'},
                 {'Método': 'Teste T (início vs fim)',
-                 'Slope': f"Δ={r['mudanca_absoluta']:+.1f} {unidade} "
-                           f"({r['mudanca_percentual']:+.1f}%)",
+                 'Slope': (f"Δ={r['mudanca_absoluta']:+.1f} {unidade} "
+                            f"({r['mudanca_percentual']:+.1f}%)"),
                  'R²': '—', 'p-value': f"{r['p_teste_t']:.4f}",
                  'Sig.': '✓' if r['p_teste_t'] < 0.05 else '✗'},
             ]
@@ -215,12 +309,12 @@ def _plot_temporal_metrica(df_a, cols, tipo_label, unidade, aba,
             if r['mudanca_real']:
                 if '↗' in r['classificacao']:
                     st.warning(f"⚠️ {tipo_label} AUMENTANDO em {pw}W → "
-                               "Possível fadiga ou perda de eficiência")
+                               "Possível fadiga acumulada ou perda de eficiência")
                 else:
                     st.success(f"✓ {tipo_label} DIMINUINDO em {pw}W → "
-                               "Melhoria de eficiência / adaptação")
+                               "Melhoria de eficiência / adaptação ao treino")
             else:
-                st.info(f"→ {tipo_label} ESTÁVEL em {pw}W")
+                st.info(f"→ {tipo_label} ESTÁVEL em {pw}W — continue a monitorar")
             st.markdown("---")
 
 
@@ -232,8 +326,9 @@ def tab_aquecimento(dfs_annual, df_annual, di):
     st.header("🌡️ Aquecimento — HR/O2 vs Potência (Annual)")
 
     if dfs_annual is None or all(v.empty for v in (dfs_annual or {}).values()):
-        st.warning("Planilha Annual não carregada. Verifica ANNUAL_SPREADSHEET_ID "
-                   "e que a planilha está partilhada como 'Qualquer pessoa com o link'.")
+        st.warning(
+            "Planilha Annual não carregada. Verifica ANNUAL_SPREADSHEET_ID "
+            "e que a planilha está partilhada como 'Qualquer pessoa com o link'.")
         return
 
     ABAS = [("🎿 Ski", "AquecSki"), ("🚴 Bike", "AquecBike"), ("🚣 Row", "AquecRow")]
@@ -249,10 +344,11 @@ def tab_aquecimento(dfs_annual, df_annual, di):
 
             # ── Info + filtro período ────────────────────────────────────
             if 'DATA' in df_a.columns and df_a['DATA'].notna().any():
-                d_min = df_a['DATA'].min(); d_max = df_a['DATA'].max()
-                st.caption(f"📅 Histórico: {len(df_a)} registos | "
-                           f"{d_min.strftime('%d/%m/%Y')} → "
-                           f"{d_max.strftime('%d/%m/%Y')}")
+                d_min = df_a['DATA'].min()
+                d_max = df_a['DATA'].max()
+                st.caption(
+                    f"📅 Histórico: {len(df_a)} registos | "
+                    f"{d_min.strftime('%d/%m/%Y')} → {d_max.strftime('%d/%m/%Y')}")
                 df_periodo = df_a[df_a['DATA'].dt.date >= di] if di else df_a
                 if len(df_periodo) == 0:
                     st.caption("⚠️ Sem dados no período — a usar histórico completo")
@@ -262,17 +358,35 @@ def tab_aquecimento(dfs_annual, df_annual, di):
             else:
                 df_periodo = df_a
 
-            # ── Slider rolling + toggle período ─────────────────────────
-            c_sl1, c_sl2 = st.columns([2, 2])
-            roll_w = c_sl1.slider(
-                "Rolling average (sessões)", 1,
-                min(10, max(1, len(df_a) - 1)), 3,
-                key=f"roll_{aba}",
-                help="1 = sem suavização | 3 = média 3 sessões consecutivas")
-            usar_periodo = c_sl2.checkbox(
-                "Gráficos só com período seleccionado",
+            # ── Toggle período ───────────────────────────────────────────
+            usar_periodo = st.checkbox(
+                "Gráficos HR/O2 vs Potência só com período seleccionado",
                 value=False, key=f"per_{aba}")
             df_plot = df_periodo if usar_periodo else df_a
+
+            # ── Diagnóstico de colunas ───────────────────────────────────
+            with st.expander("🔍 Diagnóstico de colunas detectadas"):
+                st.write(f"**Colunas disponíveis em {aba}:**")
+                cols_info = []
+                for c in df_a.columns:
+                    n_vals = df_a[c].notna().sum()
+                    cols_info.append({
+                        'Coluna': c,
+                        'Tipo': str(df_a[c].dtype),
+                        'N não-nulos': n_vals,
+                        'Detecção': (
+                            'HR' if ('HR' in c.upper() and 'PWR' not in c.upper()
+                                     and 'DRAG' not in c.upper()
+                                     and _extrair_pot(c))
+                            else 'O2' if ('O2' in c.upper() and _extrair_pot(c))
+                            else 'HR/Pwr' if ('PWR' in c.upper() and _extrair_pot(c))
+                            else 'Drag' if 'DRAG' in c.upper() or 'DRAG' in c.upper()
+                            else 'DATA' if c == 'DATA'
+                            else '—'
+                        )
+                    })
+                st.dataframe(pd.DataFrame(cols_info),
+                             use_container_width=True, hide_index=True)
 
             # ── Tabela de dados ──────────────────────────────────────────
             with st.expander("📋 Dados (mais recentes primeiro)"):
@@ -284,28 +398,34 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                            else df_plot[cols_ok].iloc[::-1])
                 st.dataframe(df_show.head(20), use_container_width=True)
 
-            # Detectar colunas por tipo
-            hr_cols  = sorted(
+            # Detectar colunas por tipo (detecção robusta)
+            hr_cols = sorted(
                 [c for c in df_a.columns
                  if 'HR' in c.upper() and 'PWR' not in c.upper()
                  and 'DRAG' not in c.upper() and _extrair_pot(c)],
                 key=lambda c: _extrair_pot(c) or 0)
-            o2_cols  = sorted(
+
+            o2_cols = sorted(
                 [c for c in df_a.columns
                  if 'O2' in c.upper() and _extrair_pot(c)],
                 key=lambda c: _extrair_pot(c) or 0)
+
             pwr_cols = sorted(
                 [c for c in df_a.columns
                  if 'PWR' in c.upper() and _extrair_pot(c)],
                 key=lambda c: _extrair_pot(c) or 0)
-            drag_col = next(
-                (c for c in df_a.columns if 'DRAG' in c.upper()), None)
+
+            # Detecção robusta Drag Factor
+            drag_col = _detectar_drag_col(df_a)
+
+            CORES_HR  = ['#E74C3C', '#F39C12', '#9B59B6', '#2ECC71', '#3498DB']
+            CORES_O2  = ['#2471A3', '#1D8348', '#7D3C98', '#117A65', '#C0392B']
+            CORES_PW2 = ['#E74C3C', '#F39C12', '#9B59B6', '#2ECC71']
 
             if not hr_cols and not o2_cols:
-                st.info("Sem colunas HR/O2 detectadas."); continue
-
-            CORES_PW  = ['#E74C3C', '#F39C12', '#9B59B6', '#2ECC71', '#3498DB']
-            CORES_PW2 = ['#2471A3', '#1D8348', '#7D3C98', '#117A65', '#C0392B']
+                st.warning("Sem colunas HR/O2 detectadas. "
+                           "Verifica o diagnóstico de colunas acima.")
+                continue
 
             # ════════════════════════════════════════════════════════════
             # 1. HR e O2 vs Potência — Z-Score, SEM, MDC
@@ -321,6 +441,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                 p = _extrair_pot(col)
                 for v in df_plot[col].dropna():
                     rows_o2.append({'Power': p, 'Value': float(v)})
+
             df_hr_l = pd.DataFrame(rows_hr)
             df_o2_l = pd.DataFrame(rows_o2)
             res_hr_stat, res_o2_stat = {}, {}
@@ -338,15 +459,17 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                                label='HR pontos', zorder=3)
                     agg = (df_hr_l.groupby('Power')['Value'].mean()
                            .reset_index().sort_values('Power'))
-                    ax1.plot(agg['Power'], agg['Value'], color='darkred',
-                            linewidth=3, marker='o', markersize=10,
-                            zorder=10, label='HR média')
+                    ax1.plot(agg['Power'], agg['Value'],
+                            color='darkred', linewidth=3, marker='o',
+                            markersize=10, zorder=10, label='HR média')
                     first_hr = True
                     for pw in sorted(df_hr_l['Power'].unique()):
                         vals = df_hr_l[df_hr_l['Power'] == pw]['Value'].values
-                        if len(vals) < 2: continue
+                        if len(vals) < 2:
+                            continue
                         s = _calcular_sem_mdc(vals)
-                        if not s: continue
+                        if not s:
+                            continue
                         res_hr_stat[pw] = s
                         ax1.fill_between([pw-2, pw+2],
                                         [s['z_dn']]*2, [s['z_up']]*2,
@@ -380,14 +503,16 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                                label='O2 pontos', zorder=3)
                     agg2 = (df_o2_l.groupby('Power')['Value'].mean()
                             .reset_index().sort_values('Power'))
-                    ax2.plot(agg2['Power'], agg2['Value'], color='darkblue',
-                            linewidth=3, marker='s', markersize=10,
-                            zorder=10, label='O2 média')
+                    ax2.plot(agg2['Power'], agg2['Value'],
+                            color='darkblue', linewidth=3, marker='s',
+                            markersize=10, zorder=10, label='O2 média')
                     for pw in sorted(df_o2_l['Power'].unique()):
                         vals = df_o2_l[df_o2_l['Power'] == pw]['Value'].values
-                        if len(vals) < 2: continue
+                        if len(vals) < 2:
+                            continue
                         s = _calcular_sem_mdc(vals)
-                        if not s: continue
+                        if not s:
+                            continue
                         res_o2_stat[pw] = s
                         ax2.fill_between([pw-2, pw+2],
                                         [s['z_dn']]*2, [s['z_up']]*2,
@@ -420,7 +545,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                     rows_stat = []
                     for tipo_s, res_d, unid_s in [
                         ('HR', res_hr_stat, 'bpm'),
-                        ('SmO2', res_o2_stat, '%')
+                        ('SmO2', res_o2_stat, '%'),
                     ]:
                         for pw, s in sorted(res_d.items()):
                             rows_stat.append({
@@ -443,58 +568,96 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                         st.dataframe(pd.DataFrame(rows_stat),
                                      use_container_width=True, hide_index=True)
 
-            # ════════════════════════════════════════════════════════════
-            # 2. Evolução temporal HR (4 métodos)
-            # ════════════════════════════════════════════════════════════
-            _plot_temporal_metrica(df_a, hr_cols, 'HR', 'bpm',
-                                    aba, roll_w, di, CORES_PW)
+            st.markdown("---")
 
             # ════════════════════════════════════════════════════════════
-            # 3. Evolução temporal O2 (4 métodos) — igual ao HR
+            # 2. Evolução temporal HR — slider rolling PRÓPRIO
             # ════════════════════════════════════════════════════════════
-            _plot_temporal_metrica(df_a, o2_cols, 'SmO2', '%',
-                                    aba, roll_w, di, CORES_PW2)
+            _secao_temporal(
+                df_a=df_a,
+                cols=hr_cols,
+                tipo_label='HR',
+                unidade='bpm',
+                aba=aba,
+                di=di,
+                cores_pw=CORES_HR,
+                slider_key=f"roll_hr_{aba}",
+            )
+
+            st.markdown("---")
+
+            # ════════════════════════════════════════════════════════════
+            # 3. Evolução temporal O2 — slider rolling PRÓPRIO e INDEPENDENTE
+            # ════════════════════════════════════════════════════════════
+            _secao_temporal(
+                df_a=df_a,
+                cols=o2_cols,
+                tipo_label='SmO2',
+                unidade='%',
+                aba=aba,
+                di=di,
+                cores_pw=CORES_O2,
+                slider_key=f"roll_o2_{aba}",
+            )
+
+            st.markdown("---")
 
             # ════════════════════════════════════════════════════════════
             # 4. HR/Pwr ratio — eficiência cardíaca
             # ════════════════════════════════════════════════════════════
             if pwr_cols and 'DATA' in df_a.columns and df_a['DATA'].notna().any():
                 st.subheader("⚡ HR/Pwr ratio — eficiência cardíaca (↘ = melhora)")
+                roll_pwr = st.slider(
+                    "🔄 Rolling average HR/Pwr (sessões)",
+                    1, min(10, max(1, len(df_a)-1)), 3,
+                    key=f"roll_pwr_{aba}")
                 fig3, ax3 = plt.subplots(figsize=(14, 5))
                 for i, col in enumerate(pwr_cols[:4]):
                     df_p = df_a[['DATA', col]].dropna().sort_values('DATA')
-                    if len(df_p) < 2: continue
-                    pw = _extrair_pot(col)
-                    cor = CORES_PW[i % len(CORES_PW)]
-                    ax3.scatter(df_p['DATA'], df_p[col], color=cor,
-                               alpha=0.35, s=40, zorder=4)
+                    if len(df_p) < 2:
+                        continue
+                    pw  = _extrair_pot(col)
+                    cor = CORES_PW2[i % len(CORES_PW2)]
+                    ax3.scatter(df_p['DATA'], df_p[col],
+                               color=cor, alpha=0.35, s=40, zorder=4)
                     ax3.plot(df_p['DATA'],
-                            df_p[col].rolling(roll_w, min_periods=1).mean(),
+                            df_p[col].rolling(roll_pwr, min_periods=1).mean(),
                             color=cor, linewidth=2.5, marker='D',
                             markersize=5, alpha=0.85, label=f'{pw}W')
-                ax3.set_xlabel('Data'); ax3.set_ylabel('HR/Pwr (bpm/W)')
+                ax3.set_xlabel('Data')
+                ax3.set_ylabel('HR/Pwr (bpm/W)')
                 ax3.set_title(f'{aba} — HR/Pwr ratio',
                              fontsize=12, fontweight='bold')
-                ax3.legend(fontsize=9); ax3.grid(True, alpha=0.3)
-                plt.xticks(rotation=45); plt.tight_layout()
-                st.pyplot(fig3); plt.close()
+                ax3.legend(fontsize=9)
+                ax3.grid(True, alpha=0.3)
+                plt.xticks(rotation=45)
+                plt.tight_layout()
+                st.pyplot(fig3)
+                plt.close()
+                st.markdown("---")
 
             # ════════════════════════════════════════════════════════════
-            # 5. Drag Factor — evolução temporal (AquecRow E AquecSki)
+            # 5. Drag Factor — evolução temporal
+            #    Disponível para AquecRow E AquecSki (e Bike se tiver)
             # ════════════════════════════════════════════════════════════
-            if drag_col and 'DATA' in df_a.columns:
+            if drag_col:
                 df_drag = df_a[['DATA', drag_col]].dropna().sort_values('DATA')
                 if len(df_drag) >= 2:
                     st.subheader(f"⚙️ Drag Factor — evolução temporal ({aba})")
+                    roll_drag = st.slider(
+                        "🔄 Rolling average Drag Factor (sessões)",
+                        1, min(10, max(1, len(df_drag)-1)), 3,
+                        key=f"roll_drag_{aba}")
                     fig4, ax4 = plt.subplots(figsize=(14, 5))
                     ax4.scatter(df_drag['DATA'], df_drag[drag_col],
                                color=CORES['azul'], alpha=0.45, s=60,
                                edgecolors='white', linewidth=1,
                                zorder=4, label='Medições')
-                    ax4.plot(df_drag['DATA'],
-                            df_drag[drag_col].rolling(roll_w, min_periods=1).mean(),
-                            color=CORES['azul'], linewidth=2.5,
-                            label=f'Rolling {roll_w}')
+                    ax4.plot(
+                        df_drag['DATA'],
+                        df_drag[drag_col].rolling(roll_drag, min_periods=1).mean(),
+                        color=CORES['azul'], linewidth=2.5,
+                        label=f'Rolling {roll_drag}')
                     mu_d = df_drag[drag_col].mean()
                     sd_d = df_drag[drag_col].std()
                     ax4.axhline(mu_d, color='red', linestyle='--',
@@ -504,33 +667,44 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                                     mu_d - sd_d, mu_d + sd_d,
                                     alpha=0.12, color=CORES['azul'],
                                     label='±1 STD')
-                    ax4.set_xlabel('Data'); ax4.set_ylabel('Drag Factor')
+                    ax4.set_xlabel('Data')
+                    ax4.set_ylabel('Drag Factor')
                     ax4.set_title(f'Drag Factor — {aba}',
                                  fontsize=12, fontweight='bold')
-                    ax4.legend(fontsize=9); ax4.grid(True, alpha=0.3)
-                    plt.xticks(rotation=45); plt.tight_layout()
-                    st.pyplot(fig4); plt.close()
+                    ax4.legend(fontsize=9)
+                    ax4.grid(True, alpha=0.3)
+                    plt.xticks(rotation=45)
+                    plt.tight_layout()
+                    st.pyplot(fig4)
+                    plt.close()
 
                     c1d, c2d, c3d = st.columns(3)
                     c1d.metric("Drag médio", f"{mu_d:.0f}")
                     c2d.metric("Mínimo", f"{df_drag[drag_col].min():.0f}")
                     c3d.metric("Máximo", f"{df_drag[drag_col].max():.0f}")
+                    st.markdown("---")
+
+            elif aba in ('AquecSki', 'AquecRow'):
+                # Aviso específico se Ski ou Row não têm Drag Factor
+                st.info(
+                    f"⚠️ Coluna Drag Factor não detectada em **{aba}**.\n\n"
+                    f"Colunas disponíveis: `{', '.join(df_a.columns.tolist())}`\n\n"
+                    "O Drag Factor deve ter 'Drag' no nome da coluna na planilha.")
 
             # ════════════════════════════════════════════════════════════
-            # 6. Correlação Drag Factor vs HR e vs O2 por Potência
-            #    (tabela completa + scatter por W — igual ao original Python)
+            # 6. Correlação Drag Factor vs HR e O2 por Potência
             # ════════════════════════════════════════════════════════════
             if drag_col and (hr_cols or o2_cols):
-                st.subheader(f"🔗 Correlação Drag Factor vs HR / O2 por "
-                             f"Potência — {aba}")
-                st.caption("Equivalente à análise analisar_com_sem_mdc() "
-                           "do código original Python.")
+                st.subheader(f"🔗 Correlação Drag Factor vs HR / O2 — {aba}")
+                st.caption("Tabela completa + scatter por potência "
+                           "(igual ao analisar_com_sem_mdc() do original Python)")
 
                 corr_rows = []
                 for col in hr_cols + o2_cols:
                     tipo_c = 'HR' if col in hr_cols else 'SmO2'
                     df_c   = df_a[[drag_col, col]].dropna()
-                    if len(df_c) < 5: continue
+                    if len(df_c) < 5:
+                        continue
                     sl_c, ic_c, rv_c, pv_c, _ = linregress(
                         df_c[drag_col].values, df_c[col].values)
                     pw = _extrair_pot(col)
@@ -541,8 +715,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                     else:
                         interp = '→ sem relação significativa'
                     corr_rows.append({
-                        'Tipo': tipo_c, 'Potência (W)': pw,
-                        'N': len(df_c),
+                        'Tipo': tipo_c, 'Potência (W)': pw, 'N': len(df_c),
                         'r': f"{rv_c:.3f}", 'R²': f"{rv_c**2:.3f}",
                         'Slope': f"{sl_c:.4f}",
                         'p-value': f"{pv_c:.4f}",
@@ -554,19 +727,19 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                     st.dataframe(pd.DataFrame(corr_rows),
                                  use_container_width=True, hide_index=True)
 
-                    # Scatter Drag vs HR/O2 por potência
                     n_sc = len(corr_rows)
                     if n_sc > 0:
-                        nc = min(2, n_sc); nr = (n_sc + 1) // 2
+                        nc = min(2, n_sc)
+                        nr = (n_sc + 1) // 2
                         fig5, axes5 = plt.subplots(nr, nc,
                                                     figsize=(14, 5 * nr))
                         axes5_flat = (axes5.flatten()
-                                      if hasattr(axes5, 'flatten')
-                                      else [axes5])
+                                      if hasattr(axes5, 'flatten') else [axes5])
                         CORES_SC = ['#E74C3C', '#F39C12', '#9B59B6',
                                     '#2ECC71', '#3498DB', '#1ABC9C']
                         for idx_s, crow in enumerate(corr_rows):
-                            if idx_s >= len(axes5_flat): break
+                            if idx_s >= len(axes5_flat):
+                                break
                             axs   = axes5_flat[idx_s]
                             pw_s  = crow['Potência (W)']
                             t_s   = crow['Tipo']
@@ -574,9 +747,11 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                                 (c for c in (hr_cols if t_s == 'HR'
                                              else o2_cols)
                                  if _extrair_pot(c) == pw_s), None)
-                            if col_s is None: continue
+                            if col_s is None:
+                                continue
                             df_sc = df_a[[drag_col, col_s]].dropna()
-                            if len(df_sc) < 3: continue
+                            if len(df_sc) < 3:
+                                continue
                             cor_s = CORES_SC[idx_s % len(CORES_SC)]
                             axs.scatter(df_sc[drag_col], df_sc[col_s],
                                        color=cor_s, alpha=0.6, s=70,
@@ -587,7 +762,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                             x_ln = np.linspace(x_sc.min(), x_sc.max(), 100)
                             axs.plot(x_ln, sl_sc * x_ln + ic_sc,
                                     'r--', linewidth=2, alpha=0.8)
-                            sig = '✓' if pv_sc < 0.05 else '✗'
+                            sig   = '✓' if pv_sc < 0.05 else '✗'
                             unid_s = 'bpm' if t_s == 'HR' else '%'
                             axs.set_xlabel('Drag Factor')
                             axs.set_ylabel(f'{t_s} ({unid_s})')
@@ -604,12 +779,15 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                         plt.tight_layout()
                         st.pyplot(fig5)
                         plt.close()
+                st.markdown("---")
 
             # ════════════════════════════════════════════════════════════
-            # 7. SEM/MDC por grupo de Drag Factor (3 partes do original)
+            # 7. SEM/MDC por grupo de Drag Factor (3 partes)
             # ════════════════════════════════════════════════════════════
             if drag_col and (hr_cols or o2_cols):
                 st.subheader(f"🔬 SEM/MDC por grupo de Drag Factor — {aba}")
+                st.caption("Partes 1, 2 e 3 do analisar_com_sem_mdc() "
+                           "do código original Python.")
 
                 df_db = df_a.dropna(subset=[drag_col, 'DATA']).copy()
                 if len(df_db) >= 6:
@@ -623,11 +801,12 @@ def tab_aquecimento(dfs_annual, df_annual, di):
 
                     for tipo_d, cols_d, unid_d in [
                         ('HR', hr_cols, 'bpm'),
-                        ('SmO2', o2_cols, '%')
+                        ('SmO2', o2_cols, '%'),
                     ]:
-                        if not cols_d: continue
+                        if not cols_d:
+                            continue
 
-                        # ── PARTE 1: SEM/MDC por grupo ───────────────
+                        # PARTE 1: SEM/MDC por grupo
                         st.markdown(
                             f"**PARTE 1 — {tipo_d} ({unid_d}): "
                             f"SEM/MDC por grupo de Drag Factor**")
@@ -638,15 +817,16 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                             for grupo in sorted(df_col['Drag_Quartil'].unique()):
                                 vals_g = (df_col[df_col['Drag_Quartil'] == grupo]
                                           [col].values)
-                                if len(vals_g) < 2: continue
+                                if len(vals_g) < 2:
+                                    continue
                                 s_g = _calcular_sem_mdc(vals_g)
-                                if not s_g: continue
-                                cv_i = ('✓ Boa' if s_g['cv'] < 10
+                                if not s_g:
+                                    continue
+                                cv_i = ('✓ Boa'       if s_g['cv'] < 10
                                         else '🟡 Moderada' if s_g['cv'] < 15
                                         else '⚠️ Alta')
                                 sem_rows.append({
-                                    'Potência (W)': pw_d,
-                                    'Grupo Drag': grupo,
+                                    'Potência (W)': pw_d, 'Grupo Drag': grupo,
                                     'N': s_g['n'],
                                     'Média': f"{s_g['mean']:.1f} {unid_d}",
                                     'STD': f"{s_g['std']:.1f}",
@@ -661,7 +841,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                                          use_container_width=True,
                                          hide_index=True)
 
-                        # ── PARTE 2: Mudanças reais vs erro de medição
+                        # PARTE 2: Mudanças reais vs erro de medição
                         st.markdown(
                             f"**PARTE 2 — {tipo_d}: "
                             f"Mudanças reais vs erro de medição**")
@@ -676,17 +856,18 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                                           [col].values)
                                 if len(vals_g) >= 2:
                                     s_g = _calcular_sem_mdc(vals_g)
-                                    if s_g: mdc_grp[g] = s_g
+                                    if s_g:
+                                        mdc_grp[g] = s_g
                             for g1, g2 in combinations(grupos_u, 2):
                                 if g1 not in mdc_grp or g2 not in mdc_grp:
                                     continue
-                                m1, m2   = mdc_grp[g1]['mean'], mdc_grp[g2]['mean']
-                                mdc_ref  = mdc_grp[g1]['MDC_95']
-                                diff     = abs(m2 - m1)
-                                mult     = diff / mdc_ref if mdc_ref > 0 else 0
-                                verdict  = ('✓ DIFERENÇA REAL' if mult >= 1
-                                            else '⚠️ Próximo MDC' if mult >= 0.5
-                                            else '✗ Dentro do erro')
+                                m1, m2  = mdc_grp[g1]['mean'], mdc_grp[g2]['mean']
+                                mdc_ref = mdc_grp[g1]['MDC_95']
+                                diff    = abs(m2 - m1)
+                                mult    = diff / mdc_ref if mdc_ref > 0 else 0
+                                verdict = ('✓ DIFERENÇA REAL' if mult >= 1
+                                           else '⚠️ Próximo MDC' if mult >= 0.5
+                                           else '✗ Dentro do erro')
                                 comp_rows.append({
                                     'Potência (W)': pw_d,
                                     'Grupo 1': f"{g1} ({m1:.1f})",
@@ -701,38 +882,44 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                                          use_container_width=True,
                                          hide_index=True)
 
-                        # ── PARTE 3: Tendência excede MDC? ─────────────
+                        # PARTE 3: Tendência excede MDC?
                         st.markdown(
                             f"**PARTE 3 — {tipo_d}: "
                             f"Tendência temporal excede MDC?**")
                         tend_rows = []
                         for col in cols_d:
                             pw_d   = _extrair_pot(col)
-                            df_col = df_db[[col, 'Drag_Quartil', 'DATA']].dropna()
-                            if len(df_col) < 5: continue
-                            # MDC baseline (primeiros 30%)
+                            df_col = (df_db[[col, 'Drag_Quartil', 'DATA']]
+                                      .dropna())
+                            if len(df_col) < 5:
+                                continue
                             n_bl  = max(2, int(len(df_col) * 0.3))
                             df_bl = df_col.nsmallest(n_bl, 'DATA')
                             s_bl  = _calcular_sem_mdc(df_bl[col].values)
-                            if not s_bl: continue
+                            if not s_bl:
+                                continue
                             mdc_b = s_bl['MDC_95']
                             for grupo in sorted(df_col['Drag_Quartil'].unique()):
                                 df_g = (df_col[df_col['Drag_Quartil'] == grupo]
                                         .sort_values('DATA'))
-                                if len(df_g) < 3: continue
+                                if len(df_g) < 3:
+                                    continue
                                 v_ini = df_g[col].iloc[0]
                                 v_fim = df_g[col].iloc[-1]
                                 mud_g = v_fim - v_ini
                                 mult  = abs(mud_g) / mdc_b if mdc_b > 0 else 0
-                                x_g   = (df_g['DATA'] - df_g['DATA'].min()).dt.days.values
+                                x_g   = ((df_g['DATA'] - df_g['DATA'].min())
+                                         .dt.days.values)
                                 y_g   = df_g[col].values
-                                sl_g, _, _, pv_g, _ = linregress(x_g, y_g) if len(np.unique(x_g)) >= 2 else (0, 0, 0, 1, 0)
+                                if len(np.unique(x_g)) >= 2:
+                                    sl_g, _, _, pv_g, _ = linregress(x_g, y_g)
+                                else:
+                                    sl_g, pv_g = 0, 1
                                 verdict = ('✓ MUDANÇA REAL' if mult >= 1
                                            else '⚠️ Possível mudança' if mult >= 0.5
                                            else '✗ Dentro do erro')
                                 tend_rows.append({
-                                    'Potência (W)': pw_d,
-                                    'Grupo': grupo,
+                                    'Potência (W)': pw_d, 'Grupo': grupo,
                                     'N': len(df_g),
                                     'MDC-95 ref': f"{mdc_b:.1f}",
                                     'Mudança início→fim': f"{mud_g:+.1f} {unid_d}",
@@ -749,9 +936,9 @@ def tab_aquecimento(dfs_annual, df_annual, di):
 
                     with st.expander("📚 Explicação SEM/MDC"):
                         st.markdown("""
-**SEM** = SD × √(1 − ICC), com ICC = 0.9  
-**MDC₉₅** = SEM × 1.96 × √2 — mudança mínima REAL com 95% confiança  
-**MDC₉₀** = SEM × 1.645 × √2 — mudança mínima REAL com 90% confiança  
+**SEM** = SD × √(1 − ICC), com ICC = 0.9
+**MDC₉₅** = SEM × 1.96 × √2 — mudança mínima REAL com 95% confiança
+**MDC₉₀** = SEM × 1.645 × √2 — mudança mínima REAL com 90% confiança
 
 | CV% | Confiabilidade |
 |---|---|
@@ -759,6 +946,5 @@ def tab_aquecimento(dfs_annual, df_annual, di):
 | 10–15% | 🟡 Moderada |
 | > 15% | ⚠️ Alta variabilidade |
 
-**Grupos de Drag Factor:** Baixo DF / Médio DF / Alto DF  
-(divididos por tercis via `pd.qcut`)
+**Grupos Drag Factor:** Baixo DF / Médio DF / Alto DF (tercis via `pd.qcut`)
                         """)
