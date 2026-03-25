@@ -2294,20 +2294,10 @@ def _analisar_tendencia(df_long):
     return resultados
 
 def _secao_temporal(df_a, cols, tipo_label, unidade, aba, di,
-                     cores_pw, slider_key):
+                     cores_pw, slider_key, fase_col=None):
     """
     Secção completa de evolução temporal com slider rolling próprio.
-    Usada para HR e O2 independentemente — cada uma com o seu slider.
-
-    Parâmetros:
-        df_a        : DataFrame completo da aba (histórico total)
-        cols        : lista de colunas a plotar (ex: hr_cols ou o2_cols)
-        tipo_label  : 'HR' ou 'SmO2'
-        unidade     : 'bpm' ou '%'
-        aba         : nome da aba (AquecSki, etc.)
-        di          : data início do período seleccionado
-        cores_pw    : lista de cores por potência
-        slider_key  : chave única para o slider Streamlit
+    fase_col: se fornecido, adiciona "Data\nFase" no eixo X.
     """
     if not cols:
         return
@@ -2387,12 +2377,39 @@ def _secao_temporal(df_a, cols, tipo_label, unidade, aba, di,
     ax.axvline(pd.Timestamp(di), color='black', linestyle=':',
               linewidth=2, alpha=0.7, label=f'Início período ({di})')
     ax.set_ylabel(f'{tipo_label} ({unidade})', fontsize=12, fontweight='bold')
-    ax.set_xlabel('Data')
     ax.set_title(f'{aba} — {tipo_label} por potência (todos os W juntos)',
                 fontsize=13, fontweight='bold')
     ax.legend(fontsize=9, loc='upper left', ncol=2)
     ax.grid(True, alpha=0.3)
-    plt.xticks(rotation=45)
+
+    # Eixo X: Data + Fase se disponível
+    if fase_col and fase_col in df_a.columns:
+        col_ref = next((c for c in cols if c in df_a.columns), None)
+        if col_ref:
+            df_ref = (df_a[['DATA', fase_col]].dropna(subset=['DATA'])
+                      .sort_values('DATA').reset_index(drop=True))
+            step = max(1, len(df_ref) // 15)
+            tick_dates, tick_labels = [], []
+            for i_r, row_x in df_ref.iloc[::step].iterrows():
+                d_str = row_x['DATA'].strftime('%d/%m/%y')
+                f_str = str(row_x[fase_col]).strip() if pd.notna(row_x[fase_col]) else ''
+                tick_dates.append(row_x['DATA'])
+                tick_labels.append(d_str + ('\n' + f_str if f_str else ''))
+            ax.set_xticks(tick_dates)
+            ax.set_xticklabels(tick_labels, rotation=45, ha='right', fontsize=7)
+            ax.set_xlabel('Data / Fase')
+            # Linha vertical nas mudanças de Fase
+            fases_v = []
+            for _, row_x in df_ref.iterrows():
+                fv = str(row_x[fase_col]).strip() if pd.notna(row_x[fase_col]) else ''
+                if fv and fv not in fases_v:
+                    ax.axvline(row_x['DATA'], color='gray',
+                              linestyle=':', linewidth=1, alpha=0.5)
+                    fases_v.append(fv)
+    else:
+        ax.set_xlabel('Data')
+        plt.xticks(rotation=45)
+
     plt.tight_layout()
     st.pyplot(fig)
     plt.close()
@@ -2612,6 +2629,10 @@ def tab_aquecimento(dfs_annual, df_annual, di):
 
             # Detecção robusta Drag Factor
             drag_col = _detectar_drag_col(df_a)
+            # Detectar Fase e Treino_antes (usadas em múltiplas secções)
+            fase_col   = next((c for c in df_a.columns if c.lower() == 'fase'), None)
+            treino_col = next((c for c in df_a.columns
+                               if 'treino' in c.lower() or 'antes' in c.lower()), None)
 
             CORES_HR  = ['#E74C3C', '#F39C12', '#9B59B6', '#2ECC71', '#3498DB']
             CORES_O2  = ['#2471A3', '#1D8348', '#7D3C98', '#117A65', '#C0392B']
@@ -2777,6 +2798,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                 di=di,
                 cores_pw=CORES_HR,
                 slider_key=f"roll_hr_{aba}",
+                fase_col=fase_col,
             )
 
             st.markdown("---")
@@ -2793,6 +2815,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                 di=di,
                 cores_pw=CORES_O2,
                 slider_key=f"roll_o2_{aba}",
+                fase_col=fase_col,
             )
 
             st.markdown("---")
@@ -3146,210 +3169,105 @@ def tab_aquecimento(dfs_annual, df_annual, di):
 
 
             # ════════════════════════════════════════════════════════════
-            # 8. Treino_antes — correlação com HR/O2
+            # 8. Treino_antes — tabela de correlação com HR/O2
             # ════════════════════════════════════════════════════════════
-            treino_col = next(
-                (c for c in df_plot.columns
-                 if 'treino' in c.lower() or 'antes' in c.lower()), None)
-
             if treino_col and (hr_cols or o2_cols):
                 st.subheader(f"🏋️ Treino Antes — impacto no HR/O2 ({aba})")
-                st.caption("Compara HR/O2 quando há treino antes (pesos vs ciclicos) "
-                           "vs sem treino antes.")
 
                 df_ta = df_plot.copy()
                 df_ta[treino_col] = (df_ta[treino_col]
                                      .astype(str).str.strip().str.lower()
                                      .replace({'nan': None, 'none': None,
                                                '': None, 'n/a': None}))
-                cats = df_ta[treino_col].dropna().unique().tolist()
-                st.caption(f"Categorias encontradas em '{treino_col}': "
-                           f"{', '.join(sorted(cats)) if cats else 'nenhuma'}")
+
+                cats_raw = sorted(df_ta[treino_col].dropna().unique().tolist())
+                st.caption(f"Categorias em '{treino_col}': "
+                           f"{', '.join(cats_raw) if cats_raw else 'nenhuma'}")
 
                 for col in hr_cols + o2_cols:
                     if col not in df_ta.columns: continue
-                    pw    = _extrair_pot(col)
-                    tipo  = 'HR' if col in hr_cols else 'SmO2'
-                    unid  = 'bpm' if tipo == 'HR' else '%'
-                    df_col = df_ta[[treino_col, col]].dropna()
+                    pw   = _extrair_pot(col)
+                    tipo = 'HR' if col in hr_cols else 'SmO2'
+                    unid = 'bpm' if tipo == 'HR' else '%'
+
+                    df_col = df_ta[[treino_col, col]].copy()
+                    df_col['_tem_treino'] = df_col[treino_col].notna()
+                    df_col = df_col[[treino_col, col, '_tem_treino']].dropna(subset=[col])
+
                     if len(df_col) < 4: continue
 
                     st.markdown(f"**{tipo} {pw}W**")
-                    cats_disp = sorted(df_col[treino_col].dropna().unique())
-                    if not cats_disp: continue
-
-                    # Boxplot por categoria
-                    fig_ta, ax_ta = plt.subplots(figsize=(max(8, len(cats_disp)*2), 5))
-                    data_by_cat = [df_col[df_col[treino_col] == c][col].values
-                                   for c in cats_disp]
-                    bp = ax_ta.boxplot(data_by_cat, labels=cats_disp,
-                                      patch_artist=True, notch=False, showfliers=True)
-                    box_colors = ['#E74C3C', '#3498DB', '#2ECC71', '#F39C12']
-                    for patch, color in zip(bp['boxes'], box_colors):
-                        patch.set_facecolor(color); patch.set_alpha(0.65)
-                    for i_c, c_name in enumerate(cats_disp, 1):
-                        vals = df_col[df_col[treino_col] == c_name][col].values
-                        jitter = np.random.default_rng(42).normal(0, 0.08, len(vals))
-                        ax_ta.scatter(np.full(len(vals), i_c) + jitter, vals,
-                                     alpha=0.5, s=40, color='black', zorder=5)
-                        if len(vals) > 0:
-                            ax_ta.text(i_c, np.mean(vals),
-                                      f" mu={np.mean(vals):.1f}", fontsize=8,
-                                      va='center', color='darkred', fontweight='bold')
-                    ax_ta.set_xlabel(treino_col.replace('_', ' ').title())
-                    ax_ta.set_ylabel(f'{tipo} ({unid})')
-                    ax_ta.set_title(f'{tipo} {pw}W por tipo de treino anterior',
-                                   fontsize=11, fontweight='bold')
-                    ax_ta.grid(True, alpha=0.3, axis='y')
-                    plt.tight_layout()
-                    st.pyplot(fig_ta)
-                    plt.close()
-
-                    # Tabela resumo
                     rows_ta = []
-                    for c_name in cats_disp:
-                        vals = df_col[df_col[treino_col] == c_name][col].values
+
+                    # 1. Comparação: com treino antes vs sem treino antes
+                    com    = df_col[df_col['_tem_treino']][col].values
+                    sem    = df_col[~df_col['_tem_treino']][col].values
+                    for grupo_label, vals in [('Com treino antes', com),
+                                              ('Sem treino antes', sem)]:
                         if len(vals) == 0: continue
                         rows_ta.append({
-                            'Treino Antes': c_name.capitalize(),
+                            'Grupo': grupo_label,
                             'N': len(vals),
-                            'Media': f"{np.mean(vals):.1f} {unid}",
+                            f'Media {tipo} ({unid})': f"{np.mean(vals):.1f}",
                             'Mediana': f"{np.median(vals):.1f}",
-                            'STD': f"{np.std(vals, ddof=1):.1f}",
-                            'Min': f"{np.min(vals):.1f}",
-                            'Max': f"{np.max(vals):.1f}",
+                            'STD': f"{np.std(vals, ddof=1):.1f}" if len(vals)>1 else '—',
                         })
+
+                    # 2. Por categoria (pesos, ciclicos, etc.)
+                    for cat in cats_raw:
+                        vals_c = df_col[df_col[treino_col] == cat][col].values
+                        if len(vals_c) == 0: continue
+                        rows_ta.append({
+                            'Grupo': cat.capitalize(),
+                            'N': len(vals_c),
+                            f'Media {tipo} ({unid})': f"{np.mean(vals_c):.1f}",
+                            'Mediana': f"{np.median(vals_c):.1f}",
+                            'STD': f"{np.std(vals_c, ddof=1):.1f}" if len(vals_c)>1 else '—',
+                        })
+
                     if rows_ta:
                         st.dataframe(pd.DataFrame(rows_ta),
                                      use_container_width=True, hide_index=True)
 
-                    # Mann-Whitney entre pares
-                    if len(cats_disp) >= 2:
-                        st.markdown("*Comparação entre grupos (Mann-Whitney U):*")
-                        comp_ta = []
-                        for c1_n, c2_n in combinations(cats_disp, 2):
-                            v1 = df_col[df_col[treino_col] == c1_n][col].values
-                            v2 = df_col[df_col[treino_col] == c2_n][col].values
-                            if len(v1) < 3 or len(v2) < 3: continue
-                            stat, pval = scipy_stats.mannwhitneyu(
-                                v1, v2, alternative='two-sided')
-                            diff = np.mean(v1) - np.mean(v2)
-                            s_mdc = _calcular_sem_mdc(np.concatenate([v1, v2]))
-                            mdc_val = s_mdc['MDC_95'] if s_mdc else None
-                            if mdc_val:
-                                real = ('REAL' if abs(diff) >= mdc_val
-                                        else 'Proximo' if abs(diff) >= mdc_val*0.5
-                                        else 'Dentro do erro')
-                            else:
-                                real = '-'
-                            comp_ta.append({
-                                'Grupo 1': c1_n.capitalize(),
-                                'Grupo 2': c2_n.capitalize(),
-                                'Delta medias': f"{diff:+.1f} {unid}",
-                                'p-value': f"{pval:.4f}",
-                                'Sig.': 'SIG' if pval < 0.05 else 'ns',
-                                'MDC-95': f"{mdc_val:.2f}" if mdc_val else '-',
-                                'Diferenca real': real,
-                                'Interpretacao': (
-                                    ('subiu' if diff > 0 else 'desceu') +
-                                    f" com {c1_n} vs {c2_n}"
-                                    if pval < 0.05 else "sem diferenca significativa"),
-                            })
-                        if comp_ta:
-                            st.dataframe(pd.DataFrame(comp_ta),
-                                         use_container_width=True, hide_index=True)
+                    # Mann-Whitney: com vs sem + entre categorias
+                    comp_rows = []
+                    grupos_comp = []
+                    if len(com) >= 3 and len(sem) >= 3:
+                        grupos_comp.append(('Com treino', com, 'Sem treino', sem))
+                    for c1, c2 in combinations(cats_raw, 2):
+                        v1 = df_col[df_col[treino_col]==c1][col].values
+                        v2 = df_col[df_col[treino_col]==c2][col].values
+                        if len(v1) >= 3 and len(v2) >= 3:
+                            grupos_comp.append((c1.capitalize(), v1,
+                                                c2.capitalize(), v2))
 
-            # ════════════════════════════════════════════════════════════
-            # 9. Fase no eixo X — evolução temporal com Fase anotada
-            # ════════════════════════════════════════════════════════════
-            fase_col = next(
-                (c for c in df_plot.columns if c.lower() == 'fase'), None)
-
-            if fase_col and hr_cols and 'DATA' in df_plot.columns:
-                st.subheader(f"📅 Evolução com Fases — HR por potência ({aba})")
-                st.caption("Eixo X mostra Data + Fase no label de cada ponto.")
-
-                roll_fase = st.slider(
-                    "Rolling average (Fases)", 1,
-                    min(10, max(1, len(df_plot)-1)), 3,
-                    key=f"roll_fase_{aba}")
-
-                for col in hr_cols[:4]:
-                    if col not in df_plot.columns: continue
-                    pw   = _extrair_pot(col)
-                    df_f = df_plot[['DATA', fase_col, col]].dropna(
-                        subset=['DATA', col]).sort_values('DATA')
-                    if len(df_f) < 2: continue
-
-                    fig_f, ax_f = plt.subplots(figsize=(16, 6))
-                    cor_f = CORES_HR[hr_cols.index(col) % len(CORES_HR)]
-
-                    ax_f.scatter(range(len(df_f)), df_f[col],
-                                color=cor_f, alpha=0.5, s=60,
-                                edgecolors='white', linewidth=1, zorder=4)
-                    rolled_f = df_f[col].rolling(roll_fase, min_periods=1).mean()
-                    ax_f.plot(range(len(df_f)), rolled_f, color=cor_f,
-                             linewidth=2.5, label=f'HR {pw}W (rolling {roll_fase})')
-
-                    # Eixo X: Data + Fase como label
-                    x_labels = []
-                    for _, row_f in df_f.iterrows():
-                        data_str = (row_f['DATA'].strftime('%d/%m/%y')
-                                    if pd.notna(row_f['DATA']) else '')
-                        fase_str = (str(row_f[fase_col]).strip()
-                                    if pd.notna(row_f[fase_col]) else '')
-                        x_labels.append(data_str + '\n' + fase_str)
-
-                    step = max(1, len(df_f) // 15)
-                    ax_f.set_xticks(range(0, len(df_f), step))
-                    ax_f.set_xticklabels(
-                        [x_labels[i] for i in range(0, len(df_f), step)],
-                        rotation=45, ha='right', fontsize=8)
-
-                    # Linhas verticais nas mudancas de Fase
-                    fases_vistas = []
-                    y_max = df_f[col].max() if len(df_f) > 0 else 200
-                    for idx_f, (_, row_f) in enumerate(df_f.iterrows()):
-                        fase_val = (str(row_f[fase_col]).strip()
-                                    if pd.notna(row_f[fase_col]) else '')
-                        if fase_val and fase_val not in fases_vistas:
-                            ax_f.axvline(idx_f, color='gray', linestyle=':',
-                                        linewidth=1, alpha=0.6)
-                            ax_f.text(idx_f + 0.2, y_max, fase_val,
-                                     fontsize=7, color='gray',
-                                     rotation=90, va='top', alpha=0.8)
-                            fases_vistas.append(fase_val)
-
-                    ax_f.set_ylabel('HR (bpm)', fontsize=11, fontweight='bold')
-                    ax_f.set_title(f'{aba} — HR {pw}W com Fases',
-                                  fontsize=12, fontweight='bold')
-                    ax_f.legend(fontsize=9)
-                    ax_f.grid(True, alpha=0.3)
-                    plt.tight_layout()
-                    st.pyplot(fig_f)
-                    plt.close()
-
-                # Tabela resumo por Fase
-                st.markdown("**Resumo HR por Fase:**")
-                fase_rows = []
-                for col in hr_cols:
-                    if col not in df_plot.columns: continue
-                    pw = _extrair_pot(col)
-                    df_f2 = df_plot[[fase_col, col]].dropna()
-                    for fase_v in sorted(df_f2[fase_col].dropna().unique()):
-                        vals_f = df_f2[df_f2[fase_col] == fase_v][col].values
-                        if len(vals_f) == 0: continue
-                        fase_rows.append({
-                            'Fase': str(fase_v).strip(),
-                            'Potencia (W)': pw,
-                            'N': len(vals_f),
-                            'HR medio (bpm)': f"{np.mean(vals_f):.1f}",
-                            'Mediana': f"{np.median(vals_f):.1f}",
-                            'STD': f"{np.std(vals_f, ddof=1):.1f}",
+                    for g1_n, v1, g2_n, v2 in grupos_comp:
+                        stat, pval = scipy_stats.mannwhitneyu(
+                            v1, v2, alternative='two-sided')
+                        delta = np.mean(v1) - np.mean(v2)
+                        s_mdc = _calcular_sem_mdc(np.concatenate([v1, v2]))
+                        mdc_v = s_mdc['MDC_95'] if s_mdc else None
+                        real  = ('REAL' if mdc_v and abs(delta) >= mdc_v
+                                 else 'Proximo' if mdc_v and abs(delta) >= mdc_v*0.5
+                                 else 'Dentro do erro')
+                        comp_rows.append({
+                            'Comparacao': f"{g1_n} vs {g2_n}",
+                            f'Delta {tipo} ({unid})': f"{delta:+.1f}",
+                            'p-value': f"{pval:.4f}",
+                            'Sig.': 'SIG' if pval < 0.05 else 'ns',
+                            'MDC-95': f"{mdc_v:.2f}" if mdc_v else '—',
+                            'Diferenca real': real,
+                            'Conclusao': (
+                                f"{g1_n} {'maior' if delta>0 else 'menor'} "
+                                f"({abs(delta):.1f} {unid})"
+                                if pval < 0.05 else 'sem diferenca significativa'),
                         })
-                if fase_rows:
-                    st.dataframe(pd.DataFrame(fase_rows),
-                                 use_container_width=True, hide_index=True)
+
+                    if comp_rows:
+                        st.markdown("*Testes estatísticos (Mann-Whitney U):*")
+                        st.dataframe(pd.DataFrame(comp_rows),
+                                     use_container_width=True, hide_index=True)
+
 
 # Configuração da página — DEVE ser a primeira chamada Streamlit
 st.set_page_config(
