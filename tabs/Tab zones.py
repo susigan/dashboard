@@ -1,34 +1,31 @@
-# ════════════════════════════════════════════════════════════════════════════════
-# tab_zones.py — HR & RPE Zones
-# ════════════════════════════════════════════════════════════════════════════════
+# tabs/tab_zones.py — ATHELTICA Dashboard
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-from matplotlib.lines import Line2D
-from matplotlib.colors import LinearSegmentedColormap
-import seaborn as sns
-import gspread
-from gspread_dataframe import get_as_dataframe
-from google.oauth2.service_account import Credentials
-from scipy import stats as scipy_stats
-from scipy.stats import pearsonr
 from datetime import datetime, timedelta
-import re
-import warnings
-warnings.filterwarnings('ignore')
-plt.style.use('seaborn-v0_8-whitegrid')
 
-from config import CORES, CORES_ATIV, TYPE_MAP, VALID_TYPES, CICLICOS, ANNUAL_SPREADSHEET_ID, ANNUAL_SHEETS
-from utils.helpers import (
-    filtrar_principais, add_tempo, norm_tipo, get_cor, norm_serie,
-    cvr, conv_15, norm_range, calcular_swc, classificar_rpe, remove_zscore,
-    calcular_series_carga, calcular_bpe, calcular_recovery,
-    calcular_polinomios_carga, analisar_falta_estimulo,
-    tabela_resumo_por_tipo_df, tabela_ranking_power_df,
-)
-from data_loader import carregar_wellness, carregar_atividades, carregar_annual, preproc_wellness, preproc_ativ, filtrar_datas
+from config import CORES, CORES_ATIV
+from utils.helpers import filtrar_principais, add_tempo, get_cor
+
+def _zonas_bp(ax_bar, ax_pie, por_tipo, total_seg, cores_zona, tit_bar, tit_pie):
+    zonas = list(cores_zona.keys()); bottom = np.zeros(len(por_tipo))
+    for zona in zonas:
+        if zona not in por_tipo.columns: continue
+        vals = por_tipo[zona].values
+        ax_bar.bar(por_tipo.index, vals, bottom=bottom, color=cores_zona[zona], label=zona, edgecolor='white', linewidth=0.5)
+        for i, (v, b) in enumerate(zip(vals, bottom)):
+            if v > 5: ax_bar.text(i, b + v / 2, f'{v:.0f}%', ha='center', va='center', fontsize=9, fontweight='bold', color='white')
+        bottom += vals
+    ax_bar.set_ylim(0, 100); ax_bar.set_ylabel('% sessões', fontweight='bold')
+    ax_bar.set_title(tit_bar, fontweight='bold'); ax_bar.legend(loc='upper right', fontsize=8); ax_bar.grid(True, alpha=0.2, axis='y')
+    lp = [l for l, v in total_seg.items() if v > 0]; sp = [v for v in total_seg.values() if v > 0]
+    if sum(sp) > 0:
+        _, _, ats = ax_pie.pie(sp, labels=lp, autopct='%1.1f%%', colors=[cores_zona[l] for l in lp], startangle=90, wedgeprops=dict(edgecolor='white', linewidth=2), pctdistance=0.75)
+        for at in ats: at.set_fontweight('bold'); at.set_fontsize(10)
+    ax_pie.set_title(tit_pie, fontweight='bold')
 
 def tab_zones(da, mods_sel):
     st.header("❤️ HR Zones & RPE Zones")
@@ -126,6 +123,8 @@ def tab_zones(da, mods_sel):
 # ════════════════════════════════════════════════════════════════════════════════
 # TAB 6 — CORRELAÇÕES & IMPACTO RPE
 # ════════════════════════════════════════════════════════════════════════════════
+
+
 
 # ════════════════════════════════════════════════════════════════════════════
 # MÓDULO: tabs/tab_correlacoes.py
