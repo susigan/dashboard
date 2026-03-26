@@ -1,22 +1,14 @@
-# ════════════════════════════════════════════════════════════════════════════════
 # tabs/tab_pmc.py — ATHELTICA Dashboard
-# PMC — CTL / ATL / TSB / FTLM + Training Load stacked por modalidade
-# NOTA: usa histórico completo 730d (session_state da_full) para CTL/ATL correcto
-#       respects mods_sel — se retirares/adicionares modalidades, CTL/ATL actualiza
-# ════════════════════════════════════════════════════════════════════════════════
+# PMC — CTL / ATL / TSB / FTLM
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import warnings
-warnings.filterwarnings('ignore')
-plt.style.use('seaborn-v0_8-whitegrid')
 from datetime import datetime, timedelta
 
 from config import CORES, CORES_ATIV
-from utils.helpers import (filtrar_principais, add_tempo, norm_tipo, get_cor,
-                            cvr, classificar_rpe)
+from utils.helpers import filtrar_principais, add_tempo, get_cor
 
 def tab_pmc(da):
     """
@@ -138,6 +130,8 @@ def tab_pmc(da):
 # ════════════════════════════════════════════════════════════════════════════════
 # TAB 3 — VOLUME & CARGA
 # ════════════════════════════════════════════════════════════════════════════════
+
+
 
 # ════════════════════════════════════════════════════════════════════════════
 # MÓDULO: tabs/tab_volume.py
