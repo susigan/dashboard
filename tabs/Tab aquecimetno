@@ -1,29 +1,13 @@
-# ════════════════════════════════════════════════════════════════════════════════
 # tabs/tab_aquecimento.py — ATHELTICA Dashboard
-# Aba de Aquecimento — análise completa dos dados Annual
-#
-# Funções:
-#   _extrair_pot()            — extrai potência do nome da coluna
-#   _detectar_drag_col()      — detecção robusta coluna Drag Factor
-#   _calcular_sem_mdc()       — SEM e MDC com ICC=0.9
-#   _analisar_tendencia()     — 4 métodos: Linear, Mann-Kendall, MDC, Theil-Sen
-#   _secao_temporal()         — gráfico temporal com slider rolling + Fase no eixo X
-#   tab_aquecimento()         — função principal da aba
-# ════════════════════════════════════════════════════════════════════════════════
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import warnings
-warnings.filterwarnings('ignore')
-plt.style.use('seaborn-v0_8-whitegrid')
-
 from scipy import stats as scipy_stats
 from scipy.stats import linregress, spearmanr, theilslopes
 from itertools import combinations
 from datetime import datetime, timedelta
-import re as _re_aq
 import re
 
 from config import CORES
@@ -1111,3 +1095,12 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                         st.markdown("*Testes estatísticos (Mann-Whitney U):*")
                         st.dataframe(pd.DataFrame(comp_rows),
                                      use_container_width=True, hide_index=True)
+
+
+# Configuração da página — DEVE ser a primeira chamada Streamlit
+st.set_page_config(
+    page_title="ATHELTICA",
+    page_icon="🏃",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
