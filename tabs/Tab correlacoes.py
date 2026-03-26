@@ -1,34 +1,15 @@
-# ════════════════════════════════════════════════════════════════════════════════
-# tab_correlacoes.py — Correlações
-# ════════════════════════════════════════════════════════════════════════════════
+# tabs/tab_correlacoes.py — ATHELTICA Dashboard
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-from matplotlib.lines import Line2D
-from matplotlib.colors import LinearSegmentedColormap
 import seaborn as sns
-import gspread
-from gspread_dataframe import get_as_dataframe
-from google.oauth2.service_account import Credentials
-from scipy import stats as scipy_stats
 from scipy.stats import pearsonr
 from datetime import datetime, timedelta
-import re
-import warnings
-warnings.filterwarnings('ignore')
-plt.style.use('seaborn-v0_8-whitegrid')
 
-from config import CORES, CORES_ATIV, TYPE_MAP, VALID_TYPES, CICLICOS, ANNUAL_SPREADSHEET_ID, ANNUAL_SHEETS
-from utils.helpers import (
-    filtrar_principais, add_tempo, norm_tipo, get_cor, norm_serie,
-    cvr, conv_15, norm_range, calcular_swc, classificar_rpe, remove_zscore,
-    calcular_series_carga, calcular_bpe, calcular_recovery,
-    calcular_polinomios_carga, analisar_falta_estimulo,
-    tabela_resumo_por_tipo_df, tabela_ranking_power_df,
-)
-from data_loader import carregar_wellness, carregar_atividades, carregar_annual, preproc_wellness, preproc_ativ, filtrar_datas
+from config import CORES, CORES_ATIV
+from utils.helpers import filtrar_principais, add_tempo, get_cor
 
 def tab_correlacoes(da, dw):
     st.header("🧠 Correlações & Impacto RPE")
@@ -135,10 +116,6 @@ def tab_correlacoes(da, dw):
 # TAB 7 — RECOVERY
 # ════════════════════════════════════════════════════════════════════════════════
 
-# ════════════════════════════════════════════════════════════════════════════
-# MÓDULO: tabs/tab_recovery.py
-# ════════════════════════════════════════════════════════════════════════════
 
-# ════════════════════════════════════════════════════════════════════════════════
-# TAB 7 — RECOVERY
-# ════════════════════════════════════════════════════════════════════════════════
+
+# ════════════════════════════════════════════════════════════════════════════
