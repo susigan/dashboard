@@ -1,11 +1,5 @@
-# ════════════════════════════════════════════════════════════════════════════════
 # data_loader.py — ATHELTICA Dashboard
 # Google Sheets auth + carregamento + preprocessing + Annual
-# Preprocessing idêntico ao ATHELTICA v12 DataPreprocessor:
-#   - limpar_wellness: Z-score 3.0, zeros→NaN, lookback median 7d/14d/global
-#   - limpar_training: Z-score 3.5 em icu_eftp E AllWorkFTP, zeros→NaN, tipos válidos
-#   - carregar_annual: data cleaning completo (ranges HR/O2/Drag/Pwr, Unnamed AquecRow)
-# ════════════════════════════════════════════════════════════════════════════════
 
 import streamlit as st
 import pandas as pd
@@ -21,6 +15,17 @@ from config import (WELLNESS_URL, TRAINING_URL, SCOPES,
 from utils.helpers import (detectar_col, br_float, parse_date, norm_tipo,
                             remove_zscore, remove_zeros, fill_missing)
 
+# MÓDULO: data_loader.py
+# ════════════════════════════════════════════════════════════════════════════
+
+# ════════════════════════════════════════════════════════════════════════════════
+# data_loader.py — ATHELTICA Dashboard
+# Autenticação Google Sheets, carregamento e preprocessing.
+# ════════════════════════════════════════════════════════════════════════════════
+
+# ── Autenticação ──────────────────────────────────────────────────────────────
+
+@st.cache_resource
 def get_gc():
     """Autentica Google Sheets com Service Account em st.secrets."""
     try:
@@ -111,6 +116,7 @@ def _preencher_faltantes_lookback(df, coluna):
             df.at[idx, coluna] = media
     return df
 
+
 def preproc_wellness(df):
     """
     Limpeza wellness — igual ao ATHELTICA v12 DataPreprocessor.limpar_wellness():
@@ -173,6 +179,7 @@ def filtrar_datas(df, di, df_):
     df = df.copy()
     df['Data'] = pd.to_datetime(df['Data'])
     return df[(df['Data'].dt.date >= di) & (df['Data'].dt.date <= df_)].reset_index(drop=True)
+
 
 @st.cache_data(ttl=3600, show_spinner="A carregar dados anuais (Aquecimentos)...")
 def carregar_annual():
