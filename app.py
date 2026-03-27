@@ -602,8 +602,8 @@ def preproc_ativ(df):
     # [4] Z-score picos icu_eftp e AllWorkFTP (threshold=3.5, igual ao original)
     if 'icu_eftp'    in df.columns: df['icu_eftp']    = remove_zscore(df['icu_eftp'],    3.5)
     if 'AllWorkFTP'  in df.columns: df['AllWorkFTP']  = remove_zscore(df['AllWorkFTP'],  3.5)
-    # [5] Zeros → NaN
-    df = remove_zeros(df, ['moving_time', 'icu_eftp', 'AllWorkFTP'])
+    # [5] Zeros → NaN (rpe=0 também é inválido — sem esforço não é sessão)
+    df = remove_zeros(df, ['moving_time', 'icu_eftp', 'AllWorkFTP', 'rpe'])
     # [6] Remover duração ≤ 60s
     if 'moving_time' in df.columns:
         df = df[pd.to_numeric(df['moving_time'], errors='coerce') > 60]
@@ -1188,7 +1188,7 @@ def tab_volume(da, dw):
 # MÓDULO: tabs/tab_eftp.py
 # ════════════════════════════════════════════════════════════════════════════
 
-def tab_eftp(da, mods_sel):
+def tab_eftp(da, mods_sel, da_full=None):
     st.header("⚡ Evolução do eFTP por Modalidade")
     ecol = next((c for c in ['icu_eftp', 'eFTP', 'eftp', 'EFTP'] if c in da.columns), None)
     if ecol is None: st.warning("Coluna eFTP não encontrada."); return
@@ -1246,7 +1246,14 @@ def tab_eftp(da, mods_sel):
     st.markdown("---")
     st.subheader("📅 Tabelas históricas por modalidade")
 
-    # ── Filtro de período (só para tabelas — gráficos PMC/KM usam filtro global) ──
+    # Tabelas usam histórico COMPLETO (da_full) independente do filtro do sidebar
+    # Assim o filtro próprio das tabelas funciona sobre todos os dados disponíveis
+    # da_full param (passed from main) or session_state fallback or da
+    _da_full_tab = da_full if da_full is not None and len(da_full) > 0 else st.session_state.get('da_full', da)
+    _df_full_tab = filtrar_principais(_da_full_tab).copy()
+    _df_full_tab['Data'] = pd.to_datetime(_df_full_tab['Data'])
+
+    # ── Filtro de período (só para tabelas — gráficos usam filtro sidebar) ──
     _c1, _c2, _c3 = st.columns([2, 1, 1])
     _tab_opts = {
         "Últimos 3 meses": 90,  "Últimos 6 meses": 180,
@@ -1268,9 +1275,9 @@ def tab_eftp(da, mods_sel):
         _c2.caption(f"De {_tab_di.strftime('%d/%m/%Y')}")
         _c3.caption(f"Até {_tab_df_.strftime('%d/%m/%Y')}")
 
-    df_tab = df[
-        (df['Data'] >= pd.Timestamp(_tab_di)) &
-        (df['Data'] <= pd.Timestamp(_tab_df_))
+    df_tab = _df_full_tab[
+        (_df_full_tab['Data'] >= pd.Timestamp(_tab_di)) &
+        (_df_full_tab['Data'] <= pd.Timestamp(_tab_df_))
     ].copy()
     df_tab = df_tab[df_tab['type'] != 'WeightTraining']
     st.caption(f"📊 {len(df_tab)} actividades "
@@ -1451,7 +1458,9 @@ def tab_eftp(da, mods_sel):
     st.caption("Correlação semanal, mensal e anual entre variáveis de carga e eFTP. "
                "Apenas correlações moderadas/fortes e estatisticamente significativas são mostradas.")
 
-    if 'icu_eftp' in df.columns and df['icu_eftp'].notna().any():
+    # Correlações usam histórico completo
+    _df_corr = _df_full_tab.copy() if '_df_full_tab' in locals() else df.copy()
+    if 'icu_eftp' in _df_corr.columns and _df_corr['icu_eftp'].notna().any():
         from scipy.stats import spearmanr
 
         def _cv_ok(series, max_cv=50):
@@ -1531,10 +1540,10 @@ def tab_eftp(da, mods_sel):
             return results
 
         tipos_corr = [t for t in ['Bike', 'Run', 'Ski', 'Row']
-                      if t in df['type'].unique()]
+                      if t in _df_corr['type'].unique()]
 
         for tipo in tipos_corr:
-            df_mod = df[df['type'] == tipo].copy()
+            df_mod = _df_corr[_df_corr['type'] == tipo].copy()
             if len(df_mod) < 10: continue
 
             all_results = []
@@ -3852,20 +3861,21 @@ def main():
     # ── Carregamento de dados ────────────────────────────────────────────────
     with st.spinner("A carregar dados..."):
         wr           = carregar_wellness(days_back)
-        # ar_full: carrega SEMPRE o máximo pedido (ou 9999 = todo histórico)
-        # CTL/ATL precisam do histórico completo para convergir correctamente
-        ar_full      = carregar_atividades(days_back)
-        ar           = ar_full  # mesmo dataset — filtrar_datas aplica o período
-        dfs_annual, df_annual = carregar_annual()   # planilha Annual (AquecSki/Bike/Row)
+        # ar_max: SEMPRE histórico completo (desde 2017) — para tabelas eFTP/KM/Correlações
+        # e para CTL/ATL convergirem correctamente. Cached, não recarrega se não mudar.
+        ar_max       = carregar_atividades(9999)
+        # ar: período seleccionado pelo sidebar (para gráficos e análises filtradas)
+        ar           = carregar_atividades(days_back) if days_back < 9999 else ar_max
+        dfs_annual, df_annual = carregar_annual()
 
-    if wr.empty and ar_full.empty:
+    if wr.empty and ac_full.empty:
         st.error("Não foi possível carregar dados. Verifica as credenciais e os URLs.")
         st.stop()
 
     # ── Preprocessing ────────────────────────────────────────────────────────
     wc       = preproc_wellness(wr)
-    ac_full  = preproc_ativ(ar_full)   # histórico completo para PMC e Análises
-    ac       = preproc_ativ(ar)        # período filtrado
+    ac_full  = preproc_ativ(ar_max)    # histórico completo (9999d) para tabelas e PMC
+    ac       = preproc_ativ(ar)        # período seleccionado no sidebar
 
     # Guardar histórico completo no session_state (usado pelo tab_pmc)
     st.session_state['da_full'] = ac_full
@@ -3917,7 +3927,7 @@ def main():
     with tab1:  tab_visao_geral(dw, da_filt, di, df_)
     with tab2:  tab_pmc(da_filt)
     with tab3:  tab_volume(da_filt, dw)
-    with tab4:  tab_eftp(da_filt, mods_sel)
+    with tab4:  tab_eftp(da_filt, mods_sel, ac_full)
     with tab5:  tab_zones(da_filt, mods_sel)
     with tab6:  tab_correlacoes(da_filt, dw)
     with tab7:  tab_recovery(dw)
