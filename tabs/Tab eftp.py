@@ -1,5 +1,6 @@
 # tabs/tab_eftp.py — ATHELTICA Dashboard
-# eFTP: evolução + RPE + tabelas eFTP/KM/kJ/Sessões com filtro+agrupamento + correlações
+# eFTP: evolução + RPE + tabelas históricas (eFTP/KM/kJ/Sessões) + correlações
+# Tabelas e correlações usam da_full (histórico completo) independente do sidebar
 
 import streamlit as st
 import pandas as pd
@@ -12,7 +13,7 @@ from datetime import datetime, timedelta
 from config import CORES, CORES_ATIV
 from utils.helpers import filtrar_principais, add_tempo, get_cor, norm_tipo
 
-def tab_eftp(da, mods_sel):
+def tab_eftp(da, mods_sel, da_full=None):
     st.header("⚡ Evolução do eFTP por Modalidade")
     ecol = next((c for c in ['icu_eftp', 'eFTP', 'eftp', 'EFTP'] if c in da.columns), None)
     if ecol is None: st.warning("Coluna eFTP não encontrada."); return
@@ -70,7 +71,14 @@ def tab_eftp(da, mods_sel):
     st.markdown("---")
     st.subheader("📅 Tabelas históricas por modalidade")
 
-    # ── Filtro de período (só para tabelas — gráficos PMC/KM usam filtro global) ──
+    # Tabelas usam histórico COMPLETO (da_full) independente do filtro do sidebar
+    # Assim o filtro próprio das tabelas funciona sobre todos os dados disponíveis
+    # da_full param (passed from main) or session_state fallback or da
+    _da_full_tab = da_full if da_full is not None and len(da_full) > 0 else st.session_state.get('da_full', da)
+    _df_full_tab = filtrar_principais(_da_full_tab).copy()
+    _df_full_tab['Data'] = pd.to_datetime(_df_full_tab['Data'])
+
+    # ── Filtro de período (só para tabelas — gráficos usam filtro sidebar) ──
     _c1, _c2, _c3 = st.columns([2, 1, 1])
     _tab_opts = {
         "Últimos 3 meses": 90,  "Últimos 6 meses": 180,
@@ -92,9 +100,9 @@ def tab_eftp(da, mods_sel):
         _c2.caption(f"De {_tab_di.strftime('%d/%m/%Y')}")
         _c3.caption(f"Até {_tab_df_.strftime('%d/%m/%Y')}")
 
-    df_tab = df[
-        (df['Data'] >= pd.Timestamp(_tab_di)) &
-        (df['Data'] <= pd.Timestamp(_tab_df_))
+    df_tab = _df_full_tab[
+        (_df_full_tab['Data'] >= pd.Timestamp(_tab_di)) &
+        (_df_full_tab['Data'] <= pd.Timestamp(_tab_df_))
     ].copy()
     df_tab = df_tab[df_tab['type'] != 'WeightTraining']
     st.caption(f"📊 {len(df_tab)} actividades "
@@ -275,7 +283,9 @@ def tab_eftp(da, mods_sel):
     st.caption("Correlação semanal, mensal e anual entre variáveis de carga e eFTP. "
                "Apenas correlações moderadas/fortes e estatisticamente significativas são mostradas.")
 
-    if 'icu_eftp' in df.columns and df['icu_eftp'].notna().any():
+    # Correlações usam histórico completo
+    _df_corr = _df_full_tab.copy() if '_df_full_tab' in locals() else df.copy()
+    if 'icu_eftp' in _df_corr.columns and _df_corr['icu_eftp'].notna().any():
         from scipy.stats import spearmanr
 
         def _cv_ok(series, max_cv=50):
@@ -355,10 +365,10 @@ def tab_eftp(da, mods_sel):
             return results
 
         tipos_corr = [t for t in ['Bike', 'Run', 'Ski', 'Row']
-                      if t in df['type'].unique()]
+                      if t in _df_corr['type'].unique()]
 
         for tipo in tipos_corr:
-            df_mod = df[df['type'] == tipo].copy()
+            df_mod = _df_corr[_df_corr['type'] == tipo].copy()
             if len(df_mod) < 10: continue
 
             all_results = []
