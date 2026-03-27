@@ -4017,12 +4017,12 @@ def tab_corporal(dc, da_full):
         if 'Peso' in agg_v.columns and agg_v['Peso'].notna().sum() >= 3:
             peso_s     = agg_v['Peso'].dropna()
             peso_delta = peso_s.diff().dropna()
-            colors_p   = ['#27ae60' if v >= 0 else '#e74c3c' for v in peso_delta.values]
+            colors_p   = ['#27ae60'] * len(peso_delta)  # cor fixa Peso
             ax4p.bar(peso_delta.index - _off, peso_delta.values,
                      width=bar_w * 0.42, color=colors_p,
                      alpha=0.85, align='center', zorder=3)
             from matplotlib.patches import Patch as _PatchP
-            _proxy_peso = _PatchP(facecolor='#27ae60', alpha=0.85, label='Peso')
+            _proxy_peso = _PatchP(facecolor='#27ae60', alpha=0.85, label='Peso')  # verde
 
             # Linhas de limite dinâmicas (baseadas no valor do período anterior)
             prev_vals_p = peso_s.shift(1).dropna()
@@ -4048,12 +4048,12 @@ def tab_corporal(dc, da_full):
         if 'BF' in agg_v.columns and agg_v['BF'].notna().sum() >= 3:
             bf_s     = agg_v['BF'].dropna()
             bf_delta = bf_s.diff().dropna()
-            colors_b = ['#f39c12' if v >= 0 else '#2980b9' for v in bf_delta.values]
+            colors_b = ['#2980b9'] * len(bf_delta)  # cor fixa BF
             ax4b.bar(bf_delta.index + _off, bf_delta.values,
                      width=bar_w * 0.42, color=colors_b,
                      alpha=0.65, align='center', zorder=2)
             from matplotlib.patches import Patch as _PatchB
-            _proxy_bf = _PatchB(facecolor='#2980b9', alpha=0.65, label='BF')
+            _proxy_bf = _PatchB(facecolor='#2980b9', alpha=0.65, label='BF')  # azul
 
             prev_vals_b = bf_s.shift(1).dropna()
             lim_idx_b   = prev_vals_b.index
