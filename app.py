@@ -4010,19 +4010,19 @@ def tab_corporal(dc, da_full):
         ax4b = ax4p.twinx()
 
         bar_w = {'W': 4, 'M': 20, 'Q': 60}[agrup_code]
+        # Offset: Peso ligeiramente à esquerda, BF à direita
+        _off = pd.Timedelta(days={'W': 1, 'M': 5, 'Q': 12}[agrup_code])
 
-        # ── Peso: uma barra por período (cor = ganho/perda) ──
+        # ── Peso: barras deslocadas à esquerda ──
         if 'Peso' in agg_v.columns and agg_v['Peso'].notna().sum() >= 3:
             peso_s     = agg_v['Peso'].dropna()
             peso_delta = peso_s.diff().dropna()
-            # Uma única chamada bar com cores por valor
             colors_p   = ['#27ae60' if v >= 0 else '#e74c3c' for v in peso_delta.values]
-            ax4p.bar(peso_delta.index, peso_delta.values,
-                     width=bar_w * 0.45, color=colors_p,
-                     alpha=0.80, align='center', zorder=3)
-            # Proxy para legenda — handle manual, sem add_patch
+            ax4p.bar(peso_delta.index - _off, peso_delta.values,
+                     width=bar_w * 0.42, color=colors_p,
+                     alpha=0.85, align='center', zorder=3)
             from matplotlib.patches import Patch as _PatchP
-            _proxy_peso = _PatchP(facecolor='#27ae60', alpha=0.80, label='Peso')
+            _proxy_peso = _PatchP(facecolor='#27ae60', alpha=0.85, label='Peso')
 
             # Linhas de limite dinâmicas (baseadas no valor do período anterior)
             prev_vals_p = peso_s.shift(1).dropna()
@@ -4044,16 +4044,16 @@ def tab_corporal(dc, da_full):
             ax4p.axhline(0, color='black', linewidth=0.8, alpha=0.5)
             ax4p.set_ylabel('Δ Peso (kg)', fontweight='bold')
 
-        # ── BF: uma barra por período (eixo secundário) ──
+        # ── BF: barras deslocadas à direita (eixo secundário) ──
         if 'BF' in agg_v.columns and agg_v['BF'].notna().sum() >= 3:
             bf_s     = agg_v['BF'].dropna()
             bf_delta = bf_s.diff().dropna()
             colors_b = ['#f39c12' if v >= 0 else '#2980b9' for v in bf_delta.values]
-            ax4b.bar(bf_delta.index, bf_delta.values,
-                     width=bar_w * 0.40, color=colors_b,
-                     alpha=0.55, align='center', zorder=2)
+            ax4b.bar(bf_delta.index + _off, bf_delta.values,
+                     width=bar_w * 0.42, color=colors_b,
+                     alpha=0.65, align='center', zorder=2)
             from matplotlib.patches import Patch as _PatchB
-            _proxy_bf = _PatchB(facecolor='#2980b9', alpha=0.55, label='BF')
+            _proxy_bf = _PatchB(facecolor='#2980b9', alpha=0.65, label='BF')
 
             prev_vals_b = bf_s.shift(1).dropna()
             lim_idx_b   = prev_vals_b.index
