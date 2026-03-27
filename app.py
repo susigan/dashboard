@@ -1025,6 +1025,223 @@ def tab_pmc(da):
     ax_load.tick_params(axis='x', rotation=45)
     plt.tight_layout(); st.pyplot(fig); plt.close()
 
+    # ── RESUMO PMC ──
+    st.subheader("📊 Resumo PMC")
+    tsb_v = u['TSB']
+    if   tsb_v >  25: tsb_i = "🟢 Forma — pronto para competir/esforço máximo"
+    elif tsb_v >   5: tsb_i = "🟡 Fresco — bom equilíbrio treino/recuperação"
+    elif tsb_v > -10: tsb_i = "🟠 Neutro — zona de manutenção"
+    elif tsb_v > -25: tsb_i = "🔴 Fatigado — carga elevada, monitorar recuperação"
+    else:              tsb_i = "⛔ Sobrecarregado — reduzir carga imediatamente"
+    resumo = pd.DataFrame([
+        {'Métrica': 'CTL (Fitness atual)',  'Valor': f"{u['CTL']:.1f}",
+         'Interpretação': 'Capacidade aeróbica crónica (42d). Maior = melhor condição.'},
+        {'Métrica': 'ATL (Fadiga atual)',   'Valor': f"{u['ATL']:.1f}",
+         'Interpretação': 'Fadiga aguda (7d). Maior = mais fatigado recentemente.'},
+        {'Métrica': 'TSB (Forma atual)',    'Valor': f"{u['TSB']:+.1f}",
+         'Interpretação': tsb_i},
+        {'Métrica': 'CTL max histórico',    'Valor': f"{ld['CTL'].max():.1f}",
+         'Interpretação': 'Pico de fitness no período carregado.'},
+        {'Métrica': 'ATL max histórico',    'Valor': f"{ld['ATL'].max():.1f}",
+         'Interpretação': 'Pico de fadiga no período carregado.'},
+    ])
+    st.dataframe(resumo, use_container_width=True, hide_index=True)
+
+    # ── FTLM — explicação + resultado atual ──
+    st.subheader("🔁 FTLM — Fast Training Load Monitor")
+    ftlm_v = u['FTLM']
+    ctl_v  = u['CTL']
+    pct    = (ftlm_v / ctl_v * 100) if ctl_v > 0 else 0
+    if   pct > 110: ftlm_i = "⚠️ Carga muito acima do crónico — risco de overreaching"
+    elif pct > 100: ftlm_i = "🔴 Carga acima do CTL — fase de acumulação/sobrecarga"
+    elif pct >  90: ftlm_i = "🟡 Ligeiramente abaixo do CTL — manutenção/tapering leve"
+    elif pct >  75: ftlm_i = "🟢 Tapering activo — carga a baixar, forma a subir"
+    else:            ftlm_i = "⬇️ Destreino — carga muito abaixo do nível crónico"
+
+    with st.expander("📖 O que é o FTLM e como interpretar", expanded=True):
+        st.markdown(f"""
+**FTLM (Fast Training Load Monitor)** é uma média exponencial da carga diária com
+um factor gamma (γ) **optimizado automaticamente** por correlação com os teus dados.
+
+| Parâmetro | Valor actual |
+|---|---|
+| Gamma (γ) | `{best_g:.3f}` |
+| FTLM actual | `{ftlm_v:.1f}` |
+| CTL actual | `{ctl_v:.1f}` |
+| FTLM / CTL | `{pct:.0f}%` |
+| Interpretação | {ftlm_i} |
+
+**Como interpretar:**
+- **FTLM > CTL (>100%)** — Carga recente **acima** da capacidade crónica. Bloco de carga intenso. Monitorar recuperação.
+- **FTLM ≈ CTL (90–110%)** — Carga estável. Manutenção do nível actual.
+- **FTLM < CTL (<90%)** — Carga recente **abaixo** do crónico. Tapering intencional ou destreino.
+
+**Diferença para o ATL:**
+O ATL usa sempre span=7 (fixo). O FTLM usa γ=`{best_g:.3f}`
+(equivalente a span≈{int(round(2/best_g - 1))}), **optimizado para os teus dados**,
+tornando-o mais sensível ao teu padrão específico de treino.
+        """)
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 3 — VOLUME & CARGA
+# ════════════════════════════════════════════════════════════════════════════════
+
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# MÓDULO: tabs/tab_volume.py
+# ════════════════════════════════════════════════════════════════════════════
+
+def tab_volume(da, dw):
+    st.header("📦 Volume & Carga")
+    if len(da) == 0: st.warning("Sem dados de atividades."); return
+    df = filtrar_principais(da).copy()
+    df = add_tempo(df); df['Data'] = pd.to_datetime(df['Data'])
+    df['horas'] = (pd.to_numeric(df['moving_time'], errors='coerce') / 3600).fillna(0)
+    ciclicos = ['Bike', 'Run', 'Row', 'Ski']
+    CORES_MOD = {'Bike': CORES['vermelho'], 'Run': CORES['verde'], 'Row': CORES['azul'], 'Ski': CORES['roxo'], 'WeightTraining': CORES['laranja']}
+
+    st.subheader("🚴 Volume Mensal — Atividades Cíclicas (horas)")
+    df_cic = df[df['type'].isin(ciclicos)].copy()
+    if len(df_cic) > 0:
+        pivot = df_cic.pivot_table(index='mes', columns='type', values='horas', aggfunc='sum', fill_value=0).sort_index()
+        fig, ax = plt.subplots(figsize=(14, 6))
+        bottom = np.zeros(len(pivot))
+        for tipo in [t for t in ciclicos if t in pivot.columns]:
+            vals = pivot[tipo].values
+            ax.bar(range(len(pivot)), vals, bottom=bottom, label=tipo, color=CORES_MOD.get(tipo, 'gray'), alpha=0.85, edgecolor='white')
+            bottom += vals
+        totais = pivot.sum(axis=1).values
+        for i, t in enumerate(totais):
+            if t > 0: ax.text(i, t + 0.1, f'{t:.1f}h', ha='center', va='bottom', fontsize=9, fontweight='bold')
+        ax.set_xticks(range(len(pivot))); ax.set_xticklabels(pivot.index, rotation=45, ha='right')
+        media = totais.mean(); ax.axhline(media, color='black', linestyle='--', alpha=0.5, label=f'Média: {media:.1f}h')
+        ax.set_ylabel('Horas', fontweight='bold'); ax.legend(loc='upper left'); ax.grid(True, alpha=0.3, axis='y')
+        plt.tight_layout(); st.pyplot(fig); plt.close()
+        c1, c2 = st.columns(2)
+        c1.metric("Total horas cíclicos", f"{pivot.values.sum():.1f}h")
+        c2.metric("Média mensal", f"{media:.1f}h")
+
+    st.subheader("🏋️ Volume Mensal — WeightTraining (horas)")
+    df_wt = da[da['type'] == 'WeightTraining'].copy()
+    if len(df_wt) > 0:
+        df_wt = add_tempo(df_wt); df_wt['horas'] = (pd.to_numeric(df_wt['moving_time'], errors='coerce') / 3600).fillna(0)
+        mensal = df_wt.groupby('mes').agg(horas=('horas', 'sum'), sessoes=('Data', 'count')).reset_index().sort_values('mes')
+        fig, ax = plt.subplots(figsize=(12, 5))
+        ax.bar(range(len(mensal)), mensal['horas'], color=CORES['laranja'], alpha=0.8, edgecolor='white')
+        for i, (h, s) in enumerate(zip(mensal['horas'], mensal['sessoes'])):
+            if h > 0: ax.text(i, h + 0.05, f'{h:.1f}h\n({s}x)', ha='center', va='bottom', fontsize=8)
+        ax.set_xticks(range(len(mensal))); ax.set_xticklabels(mensal['mes'], rotation=45, ha='right')
+        media_wt = mensal['horas'].mean()
+        ax.axhline(media_wt, color='red', linestyle='--', alpha=0.7, label=f'Média: {media_wt:.1f}h')
+        ax.set_ylabel('Horas', fontweight='bold'); ax.legend(); ax.grid(True, alpha=0.3, axis='y')
+        plt.tight_layout(); st.pyplot(fig); plt.close()
+    else:
+        st.info("Sem sessões de WeightTraining no período.")
+
+    st.subheader("💥 Strain Score (XSS)")
+    xss_col = next((c for c in ['xss', 'SS', 'XSS'] if c in df.columns and df[c].notna().any()), None)
+    if xss_col:
+        df_xss = df[df['type'].isin(ciclicos)].dropna(subset=[xss_col]).copy()
+        if len(df_xss) > 3:
+            df_xss = df_xss.sort_values('Data'); df_xss['xss_s'] = pd.to_numeric(df_xss[xss_col], errors='coerce').rolling(7, min_periods=1).mean()
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+            ax1.plot(df_xss['Data'], pd.to_numeric(df_xss[xss_col], errors='coerce'), alpha=0.4, label='XSS')
+            ax1.plot(df_xss['Data'], df_xss['xss_s'], linewidth=2.5, label='XSS 7d')
+            ax1.set_title('Evolução XSS', fontweight='bold'); ax1.legend(); ax1.tick_params(axis='x', rotation=45)
+            comp = [c for c in ['glycolytic', 'aerobic', 'pmax'] if c in df_xss.columns]
+            if comp:
+                med = df_xss.groupby('type')[comp].mean().fillna(0)
+                med.plot(kind='bar', stacked=True, ax=ax2, color=[CORES['vermelho'], CORES['verde'], CORES['laranja']][:len(comp)])
+                ax2.set_title('Componentes por Tipo', fontweight='bold'); ax2.tick_params(axis='x', rotation=45)
+            plt.tight_layout(); st.pyplot(fig); plt.close()
+
+    st.subheader("📊 Volume de Horas por Intensidade (Trimestral)")
+    if 'rpe' in df.columns and 'moving_time' in df.columns:
+        df_rpe = df[df['type'].isin(ciclicos)].copy()
+        df_rpe['rpe_cat'] = df_rpe['rpe'].apply(classificar_rpe); df_rpe = df_rpe.dropna(subset=['rpe_cat'])
+        if len(df_rpe) > 0:
+            piv = df_rpe.pivot_table(index='trimestre', columns='rpe_cat', values='horas', aggfunc='sum', fill_value=0).sort_index()
+            CORES_RPE = {'Leve': CORES['verde'], 'Moderado': CORES['laranja'], 'Pesado': CORES['vermelho']}
+            fig, ax = plt.subplots(figsize=(13, 5))
+            bottom = np.zeros(len(piv))
+            for cat in ['Leve', 'Moderado', 'Pesado']:
+                if cat in piv.columns:
+                    vals = piv[cat].values
+                    ax.bar(range(len(piv)), vals, bottom=bottom, label=cat, color=CORES_RPE.get(cat, 'gray'), alpha=0.85, edgecolor='white')
+                    for i, (v, b) in enumerate(zip(vals, bottom)):
+                        if v > 0.5: ax.text(i, b + v / 2, f'{v:.1f}h', ha='center', va='center', fontsize=8, fontweight='bold', color='white')
+                    bottom += vals
+            ax.set_xticks(range(len(piv))); ax.set_xticklabels(piv.index, rotation=45, ha='right')
+            ax.set_ylabel('Horas', fontweight='bold'); ax.legend(loc='upper left'); ax.grid(True, alpha=0.3, axis='y')
+            ax.set_title('Volume de Horas por Intensidade RPE (Trimestral)', fontsize=12, fontweight='bold')
+            plt.tight_layout(); st.pyplot(fig); plt.close()
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 4 — eFTP
+# ════════════════════════════════════════════════════════════════════════════════
+
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# MÓDULO: tabs/tab_eftp.py
+# ════════════════════════════════════════════════════════════════════════════
+
+def tab_eftp(da, mods_sel):
+    st.header("⚡ Evolução do eFTP por Modalidade")
+    ecol = next((c for c in ['icu_eftp', 'eFTP', 'eftp', 'EFTP'] if c in da.columns), None)
+    if ecol is None: st.warning("Coluna eFTP não encontrada."); return
+    df = filtrar_principais(da).copy(); df['Data'] = pd.to_datetime(df['Data']); df['ano'] = df['Data'].dt.year
+    df[ecol] = pd.to_numeric(df[ecol], errors='coerce'); df = df[df['type'].isin(mods_sel)].dropna(subset=[ecol]); df = df[df[ecol] > 50]
+    if len(df) == 0: st.warning("Sem dados de eFTP."); return
+    anos = sorted(df['ano'].unique()); CANO = ['#3498DB', '#E74C3C', '#2ECC71', '#9B59B6', '#F39C12']
+    mapa_cor = {a: CANO[i % len(CANO)] for i, a in enumerate(anos)}
+    anos_sel = st.multiselect("Filtrar anos", anos, default=list(anos)); df = df[df['ano'].isin(anos_sel)]
+    mods = [m for m in mods_sel if m in df['type'].values]
+    if not mods: st.info("Nenhuma modalidade com eFTP."); return
+    fig, axes = plt.subplots(1, len(mods), figsize=(7 * len(mods), 6))
+    if len(mods) == 1: axes = [axes]
+    for ax, mod in zip(axes, mods):
+        dm = df[df['type'] == mod].sort_values('Data'); cm = get_cor(mod)
+        for ano in anos_sel:
+            da_ = dm[dm['ano'] == ano]
+            if len(da_) == 0: continue
+            ax.scatter(da_['Data'], da_[ecol], color=mapa_cor[ano], alpha=0.65, s=35, label=str(ano))
+            if len(da_) >= 3:
+                xn = (da_['Data'] - da_['Data'].min()).dt.days.values; coef = np.polyfit(xn, da_[ecol].values, 1)
+                xp = np.array([xn.min(), xn.max()]); yp = np.poly1d(coef)(xp)
+                dp = [da_['Data'].min() + pd.Timedelta(days=int(x)) for x in xp]
+                ax.plot(dp, yp, color=mapa_cor[ano], linewidth=2, linestyle='--', alpha=0.9)
+                sm = coef[0] * 30
+                ax.annotate(f'{sm:+.1f}W/mês', xy=(dp[1], yp[1]), xytext=(5, 2), textcoords='offset points', fontsize=7.5, color=mapa_cor[ano], fontweight='bold')
+        if len(dm) >= 5:
+            roll = dm.set_index('Data')[ecol].resample('7D').mean().interpolate()
+            ax.plot(roll.index, roll.values, color=cm, linewidth=2, alpha=0.4, label='Média 7d')
+        if len(dm) > 0:
+            mx = dm[ecol].max()
+            ax.axhline(mx, color=cm, linestyle=':', linewidth=1.2, alpha=0.6)
+            ax.annotate(f'Máx: {mx:.0f}W', xy=(dm.loc[dm[ecol].idxmax(), 'Data'], mx), xytext=(0, 6), textcoords='offset points', fontsize=8, color=cm, fontweight='bold', ha='center')
+        ax.set_title(f'eFTP — {mod}', fontsize=13, fontweight='bold', color=cm)
+        ax.set_xlabel('Data'); ax.set_ylabel('eFTP (W)'); ax.tick_params(axis='x', rotation=45); ax.legend(fontsize=8); ax.grid(True, alpha=0.25)
+    plt.suptitle('Evolução eFTP por Modalidade', fontsize=14, fontweight='bold', y=1.02)
+    plt.tight_layout(); st.pyplot(fig); plt.close()
+
+    st.subheader("📦 RPE por Modalidade")
+    if 'rpe' in da.columns:
+        df_r = filtrar_principais(da).copy(); df_r = add_tempo(df_r); df_r = df_r[df_r['type'].isin(mods_sel)].dropna(subset=['rpe'])
+        if len(df_r) > 0:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+            tipos = [t for t in mods_sel if t in df_r['type'].values]
+            sns.boxplot(data=df_r, x='type', y='rpe', order=tipos, palette={t: get_cor(t) for t in tipos}, ax=ax1)
+            ax1.set_title('RPE por Modalidade', fontweight='bold'); ax1.tick_params(axis='x', rotation=45)
+            if 'mes' in df_r.columns:
+                meses = sorted(df_r['mes'].unique())[-12:]; df_rm = df_r[df_r['mes'].isin(meses)]
+                sns.violinplot(data=df_rm, x='mes', y='rpe', palette='Set2', ax=ax2)
+                ax2.set_title('RPE por Mês', fontweight='bold'); ax2.tick_params(axis='x', rotation=45)
+            plt.tight_layout(); st.pyplot(fig); plt.close()
+
+    st.markdown("---")
     # ── TABELAS eFTP + KM/KJ — filtro próprio + agrupamento ─────────────────────
     st.markdown("---")
     st.subheader("📅 Tabelas históricas por modalidade")
@@ -1227,28 +1444,8 @@ def tab_pmc(da):
         st.dataframe(pd.DataFrame(rows_v),
                      use_container_width=True, hide_index=True)
 
-    # ── RESUMO PMC ──
-    st.subheader("📊 Resumo PMC")
-    tsb_v = u['TSB']
-    if   tsb_v >  25: tsb_i = "🟢 Forma — pronto para competir/esforço máximo"
-    elif tsb_v >   5: tsb_i = "🟡 Fresco — bom equilíbrio treino/recuperação"
-    elif tsb_v > -10: tsb_i = "🟠 Neutro — zona de manutenção"
-    elif tsb_v > -25: tsb_i = "🔴 Fatigado — carga elevada, monitorar recuperação"
-    else:              tsb_i = "⛔ Sobrecarregado — reduzir carga imediatamente"
-    resumo = pd.DataFrame([
-        {'Métrica': 'CTL (Fitness atual)',  'Valor': f"{u['CTL']:.1f}",
-         'Interpretação': 'Capacidade aeróbica crónica (42d). Maior = melhor condição.'},
-        {'Métrica': 'ATL (Fadiga atual)',   'Valor': f"{u['ATL']:.1f}",
-         'Interpretação': 'Fadiga aguda (7d). Maior = mais fatigado recentemente.'},
-        {'Métrica': 'TSB (Forma atual)',    'Valor': f"{u['TSB']:+.1f}",
-         'Interpretação': tsb_i},
-        {'Métrica': 'CTL max histórico',    'Valor': f"{ld['CTL'].max():.1f}",
-         'Interpretação': 'Pico de fitness no período carregado.'},
-        {'Métrica': 'ATL max histórico',    'Valor': f"{ld['ATL'].max():.1f}",
-         'Interpretação': 'Pico de fadiga no período carregado.'},
-    ])
-    st.dataframe(resumo, use_container_width=True, hide_index=True)
 
+    st.markdown("---")
     # ── CORRELAÇÕES: variáveis de carga vs eFTP ─────────────────────────────────
     st.subheader("🔗 O que está correlacionado com o eFTP?")
     st.caption("Correlação semanal, mensal e anual entre variáveis de carga e eFTP. "
@@ -1366,199 +1563,6 @@ def tab_pmc(da):
     else:
         st.info("Coluna icu_eftp não disponível para análise de correlação.")
 
-    # ── FTLM — explicação + resultado atual ──
-    st.subheader("🔁 FTLM — Fast Training Load Monitor")
-    ftlm_v = u['FTLM']
-    ctl_v  = u['CTL']
-    pct    = (ftlm_v / ctl_v * 100) if ctl_v > 0 else 0
-    if   pct > 110: ftlm_i = "⚠️ Carga muito acima do crónico — risco de overreaching"
-    elif pct > 100: ftlm_i = "🔴 Carga acima do CTL — fase de acumulação/sobrecarga"
-    elif pct >  90: ftlm_i = "🟡 Ligeiramente abaixo do CTL — manutenção/tapering leve"
-    elif pct >  75: ftlm_i = "🟢 Tapering activo — carga a baixar, forma a subir"
-    else:            ftlm_i = "⬇️ Destreino — carga muito abaixo do nível crónico"
-
-    with st.expander("📖 O que é o FTLM e como interpretar", expanded=True):
-        st.markdown(f"""
-**FTLM (Fast Training Load Monitor)** é uma média exponencial da carga diária com
-um factor gamma (γ) **optimizado automaticamente** por correlação com os teus dados.
-
-| Parâmetro | Valor actual |
-|---|---|
-| Gamma (γ) | `{best_g:.3f}` |
-| FTLM actual | `{ftlm_v:.1f}` |
-| CTL actual | `{ctl_v:.1f}` |
-| FTLM / CTL | `{pct:.0f}%` |
-| Interpretação | {ftlm_i} |
-
-**Como interpretar:**
-- **FTLM > CTL (>100%)** — Carga recente **acima** da capacidade crónica. Bloco de carga intenso. Monitorar recuperação.
-- **FTLM ≈ CTL (90–110%)** — Carga estável. Manutenção do nível actual.
-- **FTLM < CTL (<90%)** — Carga recente **abaixo** do crónico. Tapering intencional ou destreino.
-
-**Diferença para o ATL:**
-O ATL usa sempre span=7 (fixo). O FTLM usa γ=`{best_g:.3f}`
-(equivalente a span≈{int(round(2/best_g - 1))}), **optimizado para os teus dados**,
-tornando-o mais sensível ao teu padrão específico de treino.
-        """)
-
-
-# ════════════════════════════════════════════════════════════════════════════════
-# TAB 3 — VOLUME & CARGA
-# ════════════════════════════════════════════════════════════════════════════════
-
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# MÓDULO: tabs/tab_volume.py
-# ════════════════════════════════════════════════════════════════════════════
-
-def tab_volume(da, dw):
-    st.header("📦 Volume & Carga")
-    if len(da) == 0: st.warning("Sem dados de atividades."); return
-    df = filtrar_principais(da).copy()
-    df = add_tempo(df); df['Data'] = pd.to_datetime(df['Data'])
-    df['horas'] = (pd.to_numeric(df['moving_time'], errors='coerce') / 3600).fillna(0)
-    ciclicos = ['Bike', 'Run', 'Row', 'Ski']
-    CORES_MOD = {'Bike': CORES['vermelho'], 'Run': CORES['verde'], 'Row': CORES['azul'], 'Ski': CORES['roxo'], 'WeightTraining': CORES['laranja']}
-
-    st.subheader("🚴 Volume Mensal — Atividades Cíclicas (horas)")
-    df_cic = df[df['type'].isin(ciclicos)].copy()
-    if len(df_cic) > 0:
-        pivot = df_cic.pivot_table(index='mes', columns='type', values='horas', aggfunc='sum', fill_value=0).sort_index()
-        fig, ax = plt.subplots(figsize=(14, 6))
-        bottom = np.zeros(len(pivot))
-        for tipo in [t for t in ciclicos if t in pivot.columns]:
-            vals = pivot[tipo].values
-            ax.bar(range(len(pivot)), vals, bottom=bottom, label=tipo, color=CORES_MOD.get(tipo, 'gray'), alpha=0.85, edgecolor='white')
-            bottom += vals
-        totais = pivot.sum(axis=1).values
-        for i, t in enumerate(totais):
-            if t > 0: ax.text(i, t + 0.1, f'{t:.1f}h', ha='center', va='bottom', fontsize=9, fontweight='bold')
-        ax.set_xticks(range(len(pivot))); ax.set_xticklabels(pivot.index, rotation=45, ha='right')
-        media = totais.mean(); ax.axhline(media, color='black', linestyle='--', alpha=0.5, label=f'Média: {media:.1f}h')
-        ax.set_ylabel('Horas', fontweight='bold'); ax.legend(loc='upper left'); ax.grid(True, alpha=0.3, axis='y')
-        plt.tight_layout(); st.pyplot(fig); plt.close()
-        c1, c2 = st.columns(2)
-        c1.metric("Total horas cíclicos", f"{pivot.values.sum():.1f}h")
-        c2.metric("Média mensal", f"{media:.1f}h")
-
-    st.subheader("🏋️ Volume Mensal — WeightTraining (horas)")
-    df_wt = da[da['type'] == 'WeightTraining'].copy()
-    if len(df_wt) > 0:
-        df_wt = add_tempo(df_wt); df_wt['horas'] = (pd.to_numeric(df_wt['moving_time'], errors='coerce') / 3600).fillna(0)
-        mensal = df_wt.groupby('mes').agg(horas=('horas', 'sum'), sessoes=('Data', 'count')).reset_index().sort_values('mes')
-        fig, ax = plt.subplots(figsize=(12, 5))
-        ax.bar(range(len(mensal)), mensal['horas'], color=CORES['laranja'], alpha=0.8, edgecolor='white')
-        for i, (h, s) in enumerate(zip(mensal['horas'], mensal['sessoes'])):
-            if h > 0: ax.text(i, h + 0.05, f'{h:.1f}h\n({s}x)', ha='center', va='bottom', fontsize=8)
-        ax.set_xticks(range(len(mensal))); ax.set_xticklabels(mensal['mes'], rotation=45, ha='right')
-        media_wt = mensal['horas'].mean()
-        ax.axhline(media_wt, color='red', linestyle='--', alpha=0.7, label=f'Média: {media_wt:.1f}h')
-        ax.set_ylabel('Horas', fontweight='bold'); ax.legend(); ax.grid(True, alpha=0.3, axis='y')
-        plt.tight_layout(); st.pyplot(fig); plt.close()
-    else:
-        st.info("Sem sessões de WeightTraining no período.")
-
-    st.subheader("💥 Strain Score (XSS)")
-    xss_col = next((c for c in ['xss', 'SS', 'XSS'] if c in df.columns and df[c].notna().any()), None)
-    if xss_col:
-        df_xss = df[df['type'].isin(ciclicos)].dropna(subset=[xss_col]).copy()
-        if len(df_xss) > 3:
-            df_xss = df_xss.sort_values('Data'); df_xss['xss_s'] = pd.to_numeric(df_xss[xss_col], errors='coerce').rolling(7, min_periods=1).mean()
-            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
-            ax1.plot(df_xss['Data'], pd.to_numeric(df_xss[xss_col], errors='coerce'), alpha=0.4, label='XSS')
-            ax1.plot(df_xss['Data'], df_xss['xss_s'], linewidth=2.5, label='XSS 7d')
-            ax1.set_title('Evolução XSS', fontweight='bold'); ax1.legend(); ax1.tick_params(axis='x', rotation=45)
-            comp = [c for c in ['glycolytic', 'aerobic', 'pmax'] if c in df_xss.columns]
-            if comp:
-                med = df_xss.groupby('type')[comp].mean().fillna(0)
-                med.plot(kind='bar', stacked=True, ax=ax2, color=[CORES['vermelho'], CORES['verde'], CORES['laranja']][:len(comp)])
-                ax2.set_title('Componentes por Tipo', fontweight='bold'); ax2.tick_params(axis='x', rotation=45)
-            plt.tight_layout(); st.pyplot(fig); plt.close()
-
-    st.subheader("📊 Volume de Horas por Intensidade (Trimestral)")
-    if 'rpe' in df.columns and 'moving_time' in df.columns:
-        df_rpe = df[df['type'].isin(ciclicos)].copy()
-        df_rpe['rpe_cat'] = df_rpe['rpe'].apply(classificar_rpe); df_rpe = df_rpe.dropna(subset=['rpe_cat'])
-        if len(df_rpe) > 0:
-            piv = df_rpe.pivot_table(index='trimestre', columns='rpe_cat', values='horas', aggfunc='sum', fill_value=0).sort_index()
-            CORES_RPE = {'Leve': CORES['verde'], 'Moderado': CORES['laranja'], 'Pesado': CORES['vermelho']}
-            fig, ax = plt.subplots(figsize=(13, 5))
-            bottom = np.zeros(len(piv))
-            for cat in ['Leve', 'Moderado', 'Pesado']:
-                if cat in piv.columns:
-                    vals = piv[cat].values
-                    ax.bar(range(len(piv)), vals, bottom=bottom, label=cat, color=CORES_RPE.get(cat, 'gray'), alpha=0.85, edgecolor='white')
-                    for i, (v, b) in enumerate(zip(vals, bottom)):
-                        if v > 0.5: ax.text(i, b + v / 2, f'{v:.1f}h', ha='center', va='center', fontsize=8, fontweight='bold', color='white')
-                    bottom += vals
-            ax.set_xticks(range(len(piv))); ax.set_xticklabels(piv.index, rotation=45, ha='right')
-            ax.set_ylabel('Horas', fontweight='bold'); ax.legend(loc='upper left'); ax.grid(True, alpha=0.3, axis='y')
-            ax.set_title('Volume de Horas por Intensidade RPE (Trimestral)', fontsize=12, fontweight='bold')
-            plt.tight_layout(); st.pyplot(fig); plt.close()
-
-# ════════════════════════════════════════════════════════════════════════════════
-# TAB 4 — eFTP
-# ════════════════════════════════════════════════════════════════════════════════
-
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# MÓDULO: tabs/tab_eftp.py
-# ════════════════════════════════════════════════════════════════════════════
-
-def tab_eftp(da, mods_sel):
-    st.header("⚡ Evolução do eFTP por Modalidade")
-    ecol = next((c for c in ['icu_eftp', 'eFTP', 'eftp', 'EFTP'] if c in da.columns), None)
-    if ecol is None: st.warning("Coluna eFTP não encontrada."); return
-    df = filtrar_principais(da).copy(); df['Data'] = pd.to_datetime(df['Data']); df['ano'] = df['Data'].dt.year
-    df[ecol] = pd.to_numeric(df[ecol], errors='coerce'); df = df[df['type'].isin(mods_sel)].dropna(subset=[ecol]); df = df[df[ecol] > 50]
-    if len(df) == 0: st.warning("Sem dados de eFTP."); return
-    anos = sorted(df['ano'].unique()); CANO = ['#3498DB', '#E74C3C', '#2ECC71', '#9B59B6', '#F39C12']
-    mapa_cor = {a: CANO[i % len(CANO)] for i, a in enumerate(anos)}
-    anos_sel = st.multiselect("Filtrar anos", anos, default=list(anos)); df = df[df['ano'].isin(anos_sel)]
-    mods = [m for m in mods_sel if m in df['type'].values]
-    if not mods: st.info("Nenhuma modalidade com eFTP."); return
-    fig, axes = plt.subplots(1, len(mods), figsize=(7 * len(mods), 6))
-    if len(mods) == 1: axes = [axes]
-    for ax, mod in zip(axes, mods):
-        dm = df[df['type'] == mod].sort_values('Data'); cm = get_cor(mod)
-        for ano in anos_sel:
-            da_ = dm[dm['ano'] == ano]
-            if len(da_) == 0: continue
-            ax.scatter(da_['Data'], da_[ecol], color=mapa_cor[ano], alpha=0.65, s=35, label=str(ano))
-            if len(da_) >= 3:
-                xn = (da_['Data'] - da_['Data'].min()).dt.days.values; coef = np.polyfit(xn, da_[ecol].values, 1)
-                xp = np.array([xn.min(), xn.max()]); yp = np.poly1d(coef)(xp)
-                dp = [da_['Data'].min() + pd.Timedelta(days=int(x)) for x in xp]
-                ax.plot(dp, yp, color=mapa_cor[ano], linewidth=2, linestyle='--', alpha=0.9)
-                sm = coef[0] * 30
-                ax.annotate(f'{sm:+.1f}W/mês', xy=(dp[1], yp[1]), xytext=(5, 2), textcoords='offset points', fontsize=7.5, color=mapa_cor[ano], fontweight='bold')
-        if len(dm) >= 5:
-            roll = dm.set_index('Data')[ecol].resample('7D').mean().interpolate()
-            ax.plot(roll.index, roll.values, color=cm, linewidth=2, alpha=0.4, label='Média 7d')
-        if len(dm) > 0:
-            mx = dm[ecol].max()
-            ax.axhline(mx, color=cm, linestyle=':', linewidth=1.2, alpha=0.6)
-            ax.annotate(f'Máx: {mx:.0f}W', xy=(dm.loc[dm[ecol].idxmax(), 'Data'], mx), xytext=(0, 6), textcoords='offset points', fontsize=8, color=cm, fontweight='bold', ha='center')
-        ax.set_title(f'eFTP — {mod}', fontsize=13, fontweight='bold', color=cm)
-        ax.set_xlabel('Data'); ax.set_ylabel('eFTP (W)'); ax.tick_params(axis='x', rotation=45); ax.legend(fontsize=8); ax.grid(True, alpha=0.25)
-    plt.suptitle('Evolução eFTP por Modalidade', fontsize=14, fontweight='bold', y=1.02)
-    plt.tight_layout(); st.pyplot(fig); plt.close()
-
-    st.subheader("📦 RPE por Modalidade")
-    if 'rpe' in da.columns:
-        df_r = filtrar_principais(da).copy(); df_r = add_tempo(df_r); df_r = df_r[df_r['type'].isin(mods_sel)].dropna(subset=['rpe'])
-        if len(df_r) > 0:
-            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
-            tipos = [t for t in mods_sel if t in df_r['type'].values]
-            sns.boxplot(data=df_r, x='type', y='rpe', order=tipos, palette={t: get_cor(t) for t in tipos}, ax=ax1)
-            ax1.set_title('RPE por Modalidade', fontweight='bold'); ax1.tick_params(axis='x', rotation=45)
-            if 'mes' in df_r.columns:
-                meses = sorted(df_r['mes'].unique())[-12:]; df_rm = df_r[df_r['mes'].isin(meses)]
-                sns.violinplot(data=df_rm, x='mes', y='rpe', palette='Set2', ax=ax2)
-                ax2.set_title('RPE por Mês', fontweight='bold'); ax2.tick_params(axis='x', rotation=45)
-            plt.tight_layout(); st.pyplot(fig); plt.close()
 
 # ════════════════════════════════════════════════════════════════════════════════
 # TAB 5 — HR ZONES + RPE ZONES + CORRELAÇÃO
