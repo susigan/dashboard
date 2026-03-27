@@ -1,6 +1,5 @@
 # tabs/tab_pmc.py — ATHELTICA Dashboard
-# PMC: CTL/ATL/FTLM (icu_training_load) + TRIMP bars
-# Tabelas: eFTP + KM/KJ/Tempo/Sessões com filtro próprio, agrupamento Ano/Mês/Semana e tendência
+# kJ: icu_joules (J) / 1000 → kJ
 
 import streamlit as st
 import pandas as pd
@@ -270,9 +269,9 @@ def tab_pmc(da):
 
         df_t_a, fmt_v = _agrupar(df_t, _agrup_vol)
 
-        # kJ: AllWorkFTP > power_avg × moving_time
-        if 'AllWorkFTP' in df_t_a.columns and df_t_a['AllWorkFTP'].notna().any():
-            df_t_a['_kj'] = pd.to_numeric(df_t_a['AllWorkFTP'], errors='coerce')
+        # kJ: icu_joules (J → kJ dividindo por 1000)
+        if 'icu_joules' in df_t_a.columns and df_t_a['icu_joules'].notna().any():
+            df_t_a['_kj'] = pd.to_numeric(df_t_a['icu_joules'], errors='coerce') / 1000
         elif 'power_avg' in df_t_a.columns and df_t_a['power_avg'].notna().any():
             df_t_a['_kj'] = (pd.to_numeric(df_t_a['power_avg'], errors='coerce') *
                               pd.to_numeric(df_t_a['moving_time'], errors='coerce') / 1000)
