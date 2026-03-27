@@ -1,13 +1,11 @@
 # tabs/tab_corporal.py — ATHELTICA Dashboard
 # Composição Corporal & Nutrição
-# Gráficos: Peso+BF | Calorias+Net | Macros% | Variação com bandas ganho/perda
-# Correlações: corpo × treino (cicl+WT+total) + corpo × corpo
-# Quartis calóricos por Peso e BF
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 from scipy.stats import spearmanr
 from datetime import datetime, timedelta
 
@@ -63,10 +61,14 @@ def tab_corporal(dc, da_full):
     def _rolling(series):
         return series.dropna().rolling(roll_w, min_periods=1).mean()
 
-    # ── GRÁFICO 1: Peso + BF ─────────────────────────────────────────────────
-    st.subheader("⚖️ Peso e % Gordura Corporal (BF)")
+    # ── GRÁFICO 1: Peso + BF + Calorias (eixo Y3) ──────────────────────────────
+    st.subheader("⚖️ Peso, % Gordura Corporal (BF) e Calorias")
     fig1, ax1 = plt.subplots(figsize=(16, 6))
     ax1b = ax1.twinx()
+    # Eixo Y3 para Calorias — offset para não sobrepor ax1b
+    ax1c = ax1.twinx()
+    ax1c.spines['right'].set_position(('axes', 1.08))
+
     if 'Peso' in agg.columns and agg['Peso'].notna().any():
         ps = agg['Peso'].dropna()
         ax1.scatter(ps.index, ps.values, color=CORES['azul'], alpha=0.35, s=30, zorder=4)
@@ -74,6 +76,7 @@ def tab_corporal(dc, da_full):
                  color=CORES['azul'], linewidth=2.5, label=f'Peso (roll {roll_w})', zorder=5)
         ax1.set_ylabel('Peso (kg)', color=CORES['azul'], fontweight='bold')
         ax1.tick_params(axis='y', labelcolor=CORES['azul'])
+
     if 'BF' in agg.columns and agg['BF'].notna().any():
         bs = agg['BF'].dropna()
         ax1b.scatter(bs.index, bs.values, color=CORES['vermelho'], alpha=0.35, s=30, zorder=4)
@@ -82,10 +85,25 @@ def tab_corporal(dc, da_full):
                   label=f'BF% (roll {roll_w})', zorder=5)
         ax1b.set_ylabel('BF (%)', color=CORES['vermelho'], fontweight='bold')
         ax1b.tick_params(axis='y', labelcolor=CORES['vermelho'])
+
+    if 'Calorias' in agg.columns and agg['Calorias'].notna().any():
+        cs = agg['Calorias'].dropna()
+        _bar_w = {'W': 4, 'M': 20, 'Q': 60}.get(agrup_code, 4)
+        ax1c.bar(cs.index, cs.values, width=_bar_w, color=CORES['laranja'],
+                 alpha=0.20, zorder=1, label='Calorias')
+        ax1c.plot(_rolling(agg['Calorias']).index, _rolling(agg['Calorias']).values,
+                  color=CORES['laranja'], linewidth=1.8, linestyle=':',
+                  alpha=0.8, label=f'Cal (roll {roll_w})', zorder=3)
+        ax1c.set_ylabel('Calorias (kcal)', color=CORES['laranja'], fontweight='bold')
+        ax1c.tick_params(axis='y', labelcolor=CORES['laranja'])
+
+    # Legenda combinada dos 3 eixos
     h1, l1 = ax1.get_legend_handles_labels()
     h2, l2 = ax1b.get_legend_handles_labels()
-    ax1.legend(h1+h2, l1+l2, loc='upper left', fontsize=9)
-    ax1.set_title(f'Peso e BF — {agrup_lbl} | rolling={roll_w}', fontsize=13, fontweight='bold')
+    h3, l3 = ax1c.get_legend_handles_labels()
+    ax1.legend(h1+h2+h3, l1+l2+l3, loc='upper left', fontsize=9)
+    ax1.set_title(f'Peso, BF e Calorias — {agrup_lbl} | rolling={roll_w}',
+                  fontsize=13, fontweight='bold')
     ax1.grid(True, alpha=0.25)
     plt.xticks(rotation=45); plt.tight_layout(); st.pyplot(fig1); plt.close()
 
@@ -167,17 +185,18 @@ def tab_corporal(dc, da_full):
 
         bar_w = {'W': 4, 'M': 20, 'Q': 60}[agrup_code]
 
-        # ── Peso: barras de variação ──
+        # ── Peso: uma barra por período (cor = ganho/perda) ──
         if 'Peso' in agg_v.columns and agg_v['Peso'].notna().sum() >= 3:
-            peso_s = agg_v['Peso'].dropna()
-            peso_delta = peso_s.diff()   # variação período a período
-
-            for dt, dv in peso_delta.dropna().items():
-                cor_p = '#27ae60' if dv >= 0 else '#e74c3c'
-                ax4p.bar(dt, dv, width=bar_w * 0.45,
-                         color=cor_p, alpha=0.75,
-                         align='center', zorder=3,
-                         label='Peso Ganho' if dv >= 0 else 'Peso Perda')
+            peso_s     = agg_v['Peso'].dropna()
+            peso_delta = peso_s.diff().dropna()
+            # Uma única chamada bar com cores por valor
+            colors_p   = ['#27ae60' if v >= 0 else '#e74c3c' for v in peso_delta.values]
+            ax4p.bar(peso_delta.index, peso_delta.values,
+                     width=bar_w * 0.45, color=colors_p,
+                     alpha=0.80, align='center', zorder=3)
+            # Proxy para legenda — uma entrada "Peso"
+            from matplotlib.patches import Patch
+            ax4p.add_patch(Patch(facecolor='#27ae60', alpha=0.80, label='Peso'))
 
             # Linhas de limite dinâmicas (baseadas no valor do período anterior)
             prev_vals_p = peso_s.shift(1).dropna()
@@ -199,17 +218,16 @@ def tab_corporal(dc, da_full):
             ax4p.axhline(0, color='black', linewidth=0.8, alpha=0.5)
             ax4p.set_ylabel('Δ Peso (kg)', fontweight='bold')
 
-        # ── BF: barras de variação (eixo secundário) ──
+        # ── BF: uma barra por período (eixo secundário) ──
         if 'BF' in agg_v.columns and agg_v['BF'].notna().sum() >= 3:
             bf_s     = agg_v['BF'].dropna()
-            bf_delta = bf_s.diff()
-
-            for dt, dv in bf_delta.dropna().items():
-                cor_b = '#f39c12' if dv >= 0 else '#2980b9'
-                ax4b.bar(dt, dv, width=bar_w * 0.40,
-                         color=cor_b, alpha=0.50,
-                         align='center', zorder=2,
-                         label='BF Ganho' if dv >= 0 else 'BF Perda')
+            bf_delta = bf_s.diff().dropna()
+            colors_b = ['#f39c12' if v >= 0 else '#2980b9' for v in bf_delta.values]
+            ax4b.bar(bf_delta.index, bf_delta.values,
+                     width=bar_w * 0.40, color=colors_b,
+                     alpha=0.55, align='center', zorder=2)
+            from matplotlib.patches import Patch as _Patch
+            ax4b.add_patch(_Patch(facecolor='#2980b9', alpha=0.55, label='BF'))
 
             prev_vals_b = bf_s.shift(1).dropna()
             lim_idx_b   = prev_vals_b.index
@@ -230,18 +248,10 @@ def tab_corporal(dc, da_full):
             ax4b.set_ylabel('Δ BF (%)', fontweight='bold', color='#2980b9')
             ax4b.tick_params(axis='y', labelcolor='#2980b9')
 
-        # Legendas sem duplicados
-        def _uniq_legend(ax):
-            h, l = ax.get_legend_handles_labels()
-            seen, hs, ls = set(), [], []
-            for hi, li in zip(h, l):
-                if li not in seen:
-                    seen.add(li); hs.append(hi); ls.append(li)
-            return hs, ls
-
-        hs1, ls1 = _uniq_legend(ax4p)
-        hs2, ls2 = _uniq_legend(ax4b)
-        ax4p.legend(hs1+hs2, ls1+ls2, loc='upper left', fontsize=8, ncol=2)
+        # Legenda simples: apenas "Peso" e "BF"
+        h_p, l_p = ax4p.get_legend_handles_labels()
+        h_b, l_b = ax4b.get_legend_handles_labels()
+        ax4p.legend(h_p + h_b, l_p + l_b, loc='upper left', fontsize=9)
         ax4p.set_title(
             f'Variação Peso e BF por {agrup_lbl} — bandas de ganho/perda esperado',
             fontsize=13, fontweight='bold')
