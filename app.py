@@ -4020,9 +4020,9 @@ def tab_corporal(dc, da_full):
             ax4p.bar(peso_delta.index, peso_delta.values,
                      width=bar_w * 0.45, color=colors_p,
                      alpha=0.80, align='center', zorder=3)
-            # Proxy para legenda — uma entrada "Peso"
-            from matplotlib.patches import Patch
-            ax4p.add_patch(Patch(facecolor='#27ae60', alpha=0.80, label='Peso'))
+            # Proxy para legenda — handle manual, sem add_patch
+            from matplotlib.patches import Patch as _PatchP
+            _proxy_peso = _PatchP(facecolor='#27ae60', alpha=0.80, label='Peso')
 
             # Linhas de limite dinâmicas (baseadas no valor do período anterior)
             prev_vals_p = peso_s.shift(1).dropna()
@@ -4052,8 +4052,8 @@ def tab_corporal(dc, da_full):
             ax4b.bar(bf_delta.index, bf_delta.values,
                      width=bar_w * 0.40, color=colors_b,
                      alpha=0.55, align='center', zorder=2)
-            from matplotlib.patches import Patch as _Patch
-            ax4b.add_patch(_Patch(facecolor='#2980b9', alpha=0.55, label='BF'))
+            from matplotlib.patches import Patch as _PatchB
+            _proxy_bf = _PatchB(facecolor='#2980b9', alpha=0.55, label='BF')
 
             prev_vals_b = bf_s.shift(1).dropna()
             lim_idx_b   = prev_vals_b.index
@@ -4074,10 +4074,14 @@ def tab_corporal(dc, da_full):
             ax4b.set_ylabel('Δ BF (%)', fontweight='bold', color='#2980b9')
             ax4b.tick_params(axis='y', labelcolor='#2980b9')
 
-        # Legenda simples: apenas "Peso" e "BF"
-        h_p, l_p = ax4p.get_legend_handles_labels()
-        h_b, l_b = ax4b.get_legend_handles_labels()
-        ax4p.legend(h_p + h_b, l_p + l_b, loc='upper left', fontsize=9)
+        # Legenda simples: apenas "Peso" e "BF" via proxies
+        _handles = []
+        _labels  = []
+        if '_proxy_peso' in dir():
+            _handles.append(_proxy_peso); _labels.append('Peso')
+        if '_proxy_bf' in dir():
+            _handles.append(_proxy_bf);   _labels.append('BF')
+        ax4p.legend(_handles, _labels, loc='upper left', fontsize=9)
         ax4p.set_title(
             f'Variação Peso e BF por {agrup_lbl} — bandas de ganho/perda esperado',
             fontsize=13, fontweight='bold')
