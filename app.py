@@ -1110,6 +1110,123 @@ def tab_pmc(da):
     ])
     st.dataframe(resumo, use_container_width=True, hide_index=True)
 
+    # ── CORRELAÇÕES: variáveis de carga vs eFTP ─────────────────────────────────
+    st.subheader("🔗 O que está correlacionado com o eFTP?")
+    st.caption("Correlação semanal, mensal e anual entre variáveis de carga e eFTP. "
+               "Apenas correlações moderadas/fortes e estatisticamente significativas são mostradas.")
+
+    if 'icu_eftp' in df.columns and df['icu_eftp'].notna().any():
+        from scipy.stats import spearmanr
+
+        def _cv_ok(series, max_cv=50):
+            """Retorna True se CV% da série for aceitável (não muito disperso)."""
+            s = series.dropna()
+            if len(s) < 3 or s.mean() == 0: return False
+            return (s.std() / s.mean() * 100) < max_cv
+
+        def _mdc_ok(eftp_series, icc=0.9):
+            """Verifica se variação de eFTP excede MDC — confirma mudança real."""
+            s = eftp_series.dropna()
+            if len(s) < 3: return False
+            std = s.std(ddof=1)
+            sem = std * np.sqrt(1 - icc)
+            mdc = sem * 1.96 * np.sqrt(2)
+            return (s.max() - s.min()) > mdc
+
+        def _forca(r):
+            ar = abs(r)
+            if ar >= 0.60: return "★★★ Forte"
+            if ar >= 0.40: return "★★ Moderada"
+            return None  # fraca — não mostrar
+
+        def _corr_periodo(df_mod, periodo_label, periodo_code):
+            """
+            Agrega por período, filtra qualidade, calcula correlação Spearman
+            entre variáveis de carga e eFTP.
+            Retorna lista de resultados significativos.
+            """
+            results = []
+            d = df_mod.copy()
+            d['_p'] = d['Data'].dt.to_period(periodo_code)
+
+            # eFTP: máximo do período
+            eftp_agg = d.groupby('_p')['icu_eftp'].max()
+            if eftp_agg.notna().sum() < 5: return results
+            if not _mdc_ok(eftp_agg.dropna()): return results
+
+            # Variáveis a testar
+            vars_test = {}
+
+            if 'icu_joules' in d.columns and d['icu_joules'].notna().any():
+                kj = d.groupby('_p')['icu_joules'].sum() / 1000
+                vars_test['KJ'] = kj
+
+            if 'moving_time' in d.columns:
+                hrs = d.groupby('_p')['moving_time'].sum() / 3600
+                vars_test['Horas'] = hrs
+
+            if 'distance' in d.columns and d['distance'].notna().any():
+                km = d.groupby('_p')['distance'].sum() / 1000
+                vars_test['KM'] = km
+
+            sess = d.groupby('_p')['Data'].count()
+            vars_test['Sessões'] = sess
+
+            for var_name, var_series in vars_test.items():
+                # Alinhar índices
+                combined = pd.DataFrame({'eftp': eftp_agg, 'var': var_series}).dropna()
+                if len(combined) < 5: continue
+                # Filtro CV
+                if not _cv_ok(combined['var']): continue
+                # Correlação Spearman
+                r, pv = spearmanr(combined['var'].values, combined['eftp'].values)
+                if pv >= 0.10: continue  # não significativo
+                forca = _forca(r)
+                if forca is None: continue  # fraca — não mostrar
+                results.append({
+                    'Período': periodo_label,
+                    'Variável': var_name,
+                    'r (Spearman)': f"{r:+.2f}",
+                    'p-value': f"{pv:.3f}",
+                    'Força': forca,
+                    'Correlação': (f"↗ {var_name} ↑ → eFTP ↑" if r > 0
+                                   else f"↘ {var_name} ↑ → eFTP ↓"),
+                })
+            return results
+
+        tipos_corr = [t for t in ['Bike', 'Run', 'Ski', 'Row']
+                      if t in df['type'].unique()]
+
+        for tipo in tipos_corr:
+            df_mod = df[df['type'] == tipo].copy()
+            if len(df_mod) < 10: continue
+
+            all_results = []
+            for label, code in [("Semanal", "W"), ("Mensal", "M"), ("Anual", "A")]:
+                all_results.extend(_corr_periodo(df_mod, label, code))
+
+            if not all_results:
+                continue  # sem correlações relevantes — não mostrar nada
+
+            st.markdown(f"**{tipo}**")
+            df_res = pd.DataFrame(all_results)
+            # Remover duplicados (mesma variável em múltiplos períodos — mostrar o mais forte)
+            df_res['_ar'] = df_res['r (Spearman)'].str.replace('+','',regex=False).astype(float).abs()
+            df_res = (df_res.sort_values('_ar', ascending=False)
+                            .drop_duplicates(subset=['Variável'], keep='first')
+                            .drop(columns=['_ar'])
+                            .sort_values('Força', ascending=True))
+            st.dataframe(df_res, use_container_width=True, hide_index=True)
+
+        if not any(
+            len(df[df['type']==t]) >= 10 and
+            'icu_eftp' in df.columns
+            for t in tipos_corr
+        ):
+            st.info("Dados insuficientes para análise de correlação.")
+    else:
+        st.info("Coluna icu_eftp não disponível para análise de correlação.")
+
     # ── FTLM — explicação + resultado atual ──
     st.subheader("🔁 FTLM — Fast Training Load Monitor")
     ftlm_v = u['FTLM']
