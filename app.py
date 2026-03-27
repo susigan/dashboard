@@ -3840,9 +3840,9 @@ def tab_aquecimento(dfs_annual, df_annual, di):
 
 def tab_corporal(dc, da_full):
     """
-    Aba de Composição Corporal.
-    dc      : DataFrame corporal (Consolidado_Comida) — pré-processado
-    da_full : DataFrame de atividades completo — para correlações com KJ/horas/distância
+    Aba Composição Corporal & Nutrição.
+    dc      : DataFrame Consolidado_Comida (pré-processado)
+    da_full : DataFrame atividades completo (para correlações)
     """
     st.header("🧬 Composição Corporal & Nutrição")
 
@@ -3853,178 +3853,244 @@ def tab_corporal(dc, da_full):
     dc = dc.copy()
     dc['Data'] = pd.to_datetime(dc['Data'])
 
-    # ── Info de cobertura ────────────────────────────────────────────────────
-    n_total  = len(dc)
-    n_peso   = dc['Peso'].notna().sum()     if 'Peso'     in dc.columns else 0
-    n_cal    = dc['Calorias'].notna().sum() if 'Calorias' in dc.columns else 0
-    n_bf     = dc['BF'].notna().sum()       if 'BF'       in dc.columns else 0
-    d_min    = dc['Data'].min().strftime('%d/%m/%Y')
-    d_max    = dc['Data'].max().strftime('%d/%m/%Y')
-    n_dias   = (dc['Data'].max() - dc['Data'].min()).days + 1
+    # ── KPIs cobertura ────────────────────────────────────────────────────────
+    n_total = len(dc)
+    n_peso  = dc['Peso'].notna().sum()     if 'Peso'     in dc.columns else 0
+    n_cal   = dc['Calorias'].notna().sum() if 'Calorias' in dc.columns else 0
+    n_bf    = dc['BF'].notna().sum()       if 'BF'       in dc.columns else 0
+    d_min   = dc['Data'].min().strftime('%d/%m/%Y')
+    d_max   = dc['Data'].max().strftime('%d/%m/%Y')
+    n_dias  = (dc['Data'].max() - dc['Data'].min()).days + 1
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("📅 Período", f"{d_min} → {d_max}")
-    c2.metric("⚖️ Peso (registos)", f"{n_peso}/{n_total}")
+    c1.metric("📅 Período",             f"{d_min} → {d_max}")
+    c2.metric("⚖️ Peso (registos)",     f"{n_peso}/{n_total}")
     c3.metric("🔥 Calorias (registos)", f"{n_cal}/{n_total}")
-    c4.metric("🫁 BF (registos)", f"{n_bf}/{n_total}")
-
-    st.caption(f"⚠️ Dados esparsos: {n_dias} dias no período, "
-               f"{n_total} entradas. Médias e correlações calculadas "
-               f"apenas com valores presentes — dias sem registo são ignorados.")
+    c4.metric("🫁 BF (registos)",       f"{n_bf}/{n_total}")
+    st.caption(f"Dados esparsos: {n_dias} dias no período, {n_total} entradas. "
+               "Dias sem registo são ignorados em médias e correlações.")
     st.markdown("---")
 
-    # ── Controlos ────────────────────────────────────────────────────────────
-    col_a, col_b, col_c = st.columns([2, 1, 1])
+    # ── Controlos globais ─────────────────────────────────────────────────────
+    ca, cb, cc = st.columns([2, 1, 1])
     agrup_opts = {"Semana": "W", "Mês": "M", "Trimestre": "Q"}
-    agrup_lbl  = col_a.selectbox("Agrupar por", list(agrup_opts.keys()),
-                                  key="corp_agrup")
+    agrup_lbl  = ca.selectbox("Agrupar por", list(agrup_opts.keys()), key="corp_agrup")
     agrup_code = agrup_opts[agrup_lbl]
-    roll_w     = col_b.slider("Rolling average (períodos)", 1, 12, 4,
-                               key="corp_roll")
-    col_c.caption(f"Granularidade: {agrup_lbl}")
+    roll_w     = cb.slider("Rolling average (períodos)", 1, 12, 4, key="corp_roll")
+    cc.caption(f"Granularidade: {agrup_lbl}")
 
-    # Agregar por período — média para Peso/BF, soma para Calorias/macros
+    # Agregação
     dc['_p'] = dc['Data'].dt.to_period(agrup_code)
-    agg_mean = dc.groupby('_p')[['Peso','BF','Calorias','Net',
-                                   'Carb','Fat','Ptn']].mean()
-    agg_sum  = dc.groupby('_p')[['Calorias','Net','Carb','Fat','Ptn']].sum()
-    # Use mean for plotting trend (more meaningful than sum for nutrients)
-    agg = agg_mean.copy()
+    agg = dc.groupby('_p')[['Peso','BF','Calorias','Net','Carb','Fat','Ptn']].mean()
     agg.index = agg.index.to_timestamp()
 
     def _rolling(series):
-        """Rolling mean com min_periods=1, só onde há dados."""
         return series.dropna().rolling(roll_w, min_periods=1).mean()
 
     # ── GRÁFICO 1: Peso + BF ─────────────────────────────────────────────────
     st.subheader("⚖️ Peso e % Gordura Corporal (BF)")
-    if 'Peso' in agg.columns or 'BF' in agg.columns:
-        fig1, ax1 = plt.subplots(figsize=(16, 6))
-        ax1b = ax1.twinx()
-
-        if 'Peso' in agg.columns and agg['Peso'].notna().any():
-            ps = agg['Peso'].dropna()
-            ax1.scatter(ps.index, ps.values,
-                        color=CORES['azul'], alpha=0.35, s=30, zorder=4)
-            pr = _rolling(agg['Peso'])
-            ax1.plot(pr.index, pr.values, color=CORES['azul'],
-                     linewidth=2.5, label=f'Peso (roll {roll_w})', zorder=5)
-            ax1.set_ylabel('Peso (kg)', color=CORES['azul'], fontweight='bold')
-            ax1.tick_params(axis='y', labelcolor=CORES['azul'])
-
-        if 'BF' in agg.columns and agg['BF'].notna().any():
-            bs = agg['BF'].dropna()
-            ax1b.scatter(bs.index, bs.values,
-                         color=CORES['vermelho'], alpha=0.35, s=30, zorder=4)
-            br = _rolling(agg['BF'])
-            ax1b.plot(br.index, br.values, color=CORES['vermelho'],
-                      linewidth=2.5, linestyle='--',
-                      label=f'BF% (roll {roll_w})', zorder=5)
-            ax1b.set_ylabel('BF (%)', color=CORES['vermelho'], fontweight='bold')
-            ax1b.tick_params(axis='y', labelcolor=CORES['vermelho'])
-
-        # Legenda combinada
-        h1, l1 = ax1.get_legend_handles_labels()
-        h2, l2 = ax1b.get_legend_handles_labels()
-        ax1.legend(h1+h2, l1+l2, loc='upper left', fontsize=9)
-        ax1.set_title(f'Peso e BF — agrupado por {agrup_lbl} | rolling={roll_w}',
-                      fontsize=13, fontweight='bold')
-        ax1.grid(True, alpha=0.25)
-        plt.xticks(rotation=45); plt.tight_layout()
-        st.pyplot(fig1); plt.close()
-    else:
-        st.info("Sem dados de Peso ou BF.")
+    fig1, ax1 = plt.subplots(figsize=(16, 6))
+    ax1b = ax1.twinx()
+    if 'Peso' in agg.columns and agg['Peso'].notna().any():
+        ps = agg['Peso'].dropna()
+        ax1.scatter(ps.index, ps.values, color=CORES['azul'], alpha=0.35, s=30, zorder=4)
+        ax1.plot(_rolling(agg['Peso']).index, _rolling(agg['Peso']).values,
+                 color=CORES['azul'], linewidth=2.5, label=f'Peso (roll {roll_w})', zorder=5)
+        ax1.set_ylabel('Peso (kg)', color=CORES['azul'], fontweight='bold')
+        ax1.tick_params(axis='y', labelcolor=CORES['azul'])
+    if 'BF' in agg.columns and agg['BF'].notna().any():
+        bs = agg['BF'].dropna()
+        ax1b.scatter(bs.index, bs.values, color=CORES['vermelho'], alpha=0.35, s=30, zorder=4)
+        ax1b.plot(_rolling(agg['BF']).index, _rolling(agg['BF']).values,
+                  color=CORES['vermelho'], linewidth=2.5, linestyle='--',
+                  label=f'BF% (roll {roll_w})', zorder=5)
+        ax1b.set_ylabel('BF (%)', color=CORES['vermelho'], fontweight='bold')
+        ax1b.tick_params(axis='y', labelcolor=CORES['vermelho'])
+    h1, l1 = ax1.get_legend_handles_labels()
+    h2, l2 = ax1b.get_legend_handles_labels()
+    ax1.legend(h1+h2, l1+l2, loc='upper left', fontsize=9)
+    ax1.set_title(f'Peso e BF — {agrup_lbl} | rolling={roll_w}', fontsize=13, fontweight='bold')
+    ax1.grid(True, alpha=0.25)
+    plt.xticks(rotation=45); plt.tight_layout(); st.pyplot(fig1); plt.close()
 
     # ── GRÁFICO 2: Calorias + Net ─────────────────────────────────────────────
     st.subheader("🔥 Calorias e Balanço Energético (Net)")
-    if 'Calorias' in agg.columns or 'Net' in agg.columns:
-        fig2, ax2 = plt.subplots(figsize=(16, 5))
-
-        if 'Calorias' in agg.columns and agg['Calorias'].notna().any():
-            cr = _rolling(agg['Calorias'])
-            ax2.bar(agg['Calorias'].dropna().index,
-                    agg['Calorias'].dropna().values,
-                    color=CORES['laranja'], alpha=0.35, width=15,
-                    label='Calorias totais')
-            ax2.plot(cr.index, cr.values, color=CORES['laranja'],
-                     linewidth=2.5, label=f'Calorias (roll {roll_w})')
-
-        if 'Net' in agg.columns and agg['Net'].notna().any():
-            ax2b = ax2.twinx()
-            nr = _rolling(agg['Net'])
-            ax2b.plot(nr.index, nr.values, color=CORES['roxo'],
-                      linewidth=2.5, linestyle='--',
-                      label=f'Net (roll {roll_w})')
-            ax2b.axhline(0, color=CORES['cinza'], linestyle=':', linewidth=1)
-            ax2b.set_ylabel('Net (kcal)', color=CORES['roxo'], fontweight='bold')
-            ax2b.tick_params(axis='y', labelcolor=CORES['roxo'])
-            h2b, l2b = ax2b.get_legend_handles_labels()
-            ax2.legend(fontsize=9, loc='upper left')
-            ax2b.legend(h2b, l2b, loc='upper right', fontsize=9)
-
+    fig2, ax2 = plt.subplots(figsize=(16, 5))
+    if 'Calorias' in agg.columns and agg['Calorias'].notna().any():
+        ax2.bar(agg['Calorias'].dropna().index, agg['Calorias'].dropna().values,
+                color=CORES['laranja'], alpha=0.35, width=15, label='Calorias')
+        ax2.plot(_rolling(agg['Calorias']).index, _rolling(agg['Calorias']).values,
+                 color=CORES['laranja'], linewidth=2.5, label=f'Calorias (roll {roll_w})')
         ax2.set_ylabel('Calorias (kcal)', color=CORES['laranja'], fontweight='bold')
-        ax2.set_title(f'Calorias e Net — agrupado por {agrup_lbl} | rolling={roll_w}',
-                      fontsize=13, fontweight='bold')
-        ax2.grid(True, alpha=0.25)
-        plt.xticks(rotation=45); plt.tight_layout()
-        st.pyplot(fig2); plt.close()
-    else:
-        st.info("Sem dados de Calorias ou Net.")
+    if 'Net' in agg.columns and agg['Net'].notna().any():
+        ax2b = ax2.twinx()
+        ax2b.plot(_rolling(agg['Net']).index, _rolling(agg['Net']).values,
+                  color=CORES['roxo'], linewidth=2.5, linestyle='--',
+                  label=f'Net (roll {roll_w})')
+        ax2b.axhline(0, color=CORES['cinza'], linestyle=':', linewidth=1)
+        ax2b.set_ylabel('Net (kcal)', color=CORES['roxo'], fontweight='bold')
+        ax2b.tick_params(axis='y', labelcolor=CORES['roxo'])
+        h2b, l2b = ax2b.get_legend_handles_labels()
+        ax2b.legend(h2b, l2b, loc='upper right', fontsize=9)
+    ax2.legend(fontsize=9, loc='upper left')
+    ax2.set_title(f'Calorias e Net — {agrup_lbl} | rolling={roll_w}', fontsize=13, fontweight='bold')
+    ax2.grid(True, alpha=0.25)
+    plt.xticks(rotation=45); plt.tight_layout(); st.pyplot(fig2); plt.close()
 
-    # ── GRÁFICO 3: Macros % (stacked) ────────────────────────────────────────
+    # ── GRÁFICO 3: Macros % stacked ───────────────────────────────────────────
     st.subheader("🥗 Distribuição de Macronutrientes (%)")
-    macro_g = [c for c in ['Carb', 'Fat', 'Ptn'] if c in agg.columns]
+    macro_g = [c for c in ['Carb','Fat','Ptn'] if c in agg.columns]
     if macro_g:
-        # Calcular % por linha a partir dos gramas (4/9/4 kcal/g)
         kcal_map = {'Carb': 4, 'Fat': 9, 'Ptn': 4}
         agg_k = agg[macro_g].copy()
         for m in macro_g:
             agg_k[m] = agg_k[m] * kcal_map.get(m, 4)
         total_k = agg_k[macro_g].sum(axis=1).replace(0, np.nan)
-        agg_pct = agg_k[macro_g].div(total_k, axis=0) * 100
-
-        agg_pct = agg_pct.dropna(how='all')
+        agg_pct = (agg_k[macro_g].div(total_k, axis=0) * 100).dropna(how='all')
         if len(agg_pct) > 0:
             fig3, ax3 = plt.subplots(figsize=(16, 5))
-            macro_cores = {'Carb': CORES['azul'], 'Fat': CORES['laranja'],
-                           'Ptn': CORES['verde']}
+            macro_cores = {'Carb': CORES['azul'], 'Fat': CORES['laranja'], 'Ptn': CORES['verde']}
             bot = np.zeros(len(agg_pct))
             for m in macro_g:
-                if m in agg_pct.columns:
-                    vals = agg_pct[m].fillna(0).values
-                    ax3.bar(agg_pct.index, vals, bottom=bot,
-                            color=macro_cores.get(m, CORES['cinza']),
-                            alpha=0.85, width=15, label=m,
-                            edgecolor='white', linewidth=0.5)
-                    bot += vals
+                vals = agg_pct[m].fillna(0).values
+                ax3.bar(agg_pct.index, vals, bottom=bot,
+                        color=macro_cores.get(m, CORES['cinza']),
+                        alpha=0.85, width=15, label=m,
+                        edgecolor='white', linewidth=0.5)
+                bot += vals
             ax3.axhline(100, color=CORES['cinza'], linestyle=':', linewidth=0.8)
-            ax3.set_ylabel('%  kcal de macros', fontweight='bold')
+            ax3.set_ylabel('% kcal de macros', fontweight='bold')
             ax3.set_ylim(0, 115)
-            ax3.set_title(f'Macros % (calculado de gramas) — {agrup_lbl}',
-                          fontsize=13, fontweight='bold')
+            ax3.set_title(f'Macros % — {agrup_lbl}', fontsize=13, fontweight='bold')
             ax3.legend(fontsize=9, ncol=3)
             ax3.grid(True, alpha=0.2, axis='y')
-            plt.xticks(rotation=45); plt.tight_layout()
-            st.pyplot(fig3); plt.close()
-    else:
-        st.info("Sem dados de macros.")
+            plt.xticks(rotation=45); plt.tight_layout(); st.pyplot(fig3); plt.close()
 
     st.markdown("---")
 
-    # ── CORRELAÇÕES ──────────────────────────────────────────────────────────
+    # ── GRÁFICO 4: Variação de Peso e BF com bandas de limites ───────────────
+    st.subheader("📊 Variação de Peso e BF — bandas de ganho/perda esperado")
+    st.caption(
+        "Barras: variação de Peso (verde=ganho, vermelho=perda) e BF (amarelo=ganho, azul=perda). "
+        "Limites calculados sobre o valor do período anterior. "
+        "Peso: ±0.30%–0.70% | BF: ±0.25%–0.65%")
+
+    # Séries de Peso e BF com índice temporal
+    dc_p   = dc.copy()
+    dc_p['_p2'] = dc_p['Data'].dt.to_period(agrup_code)
+
+    agg_v  = dc_p.groupby('_p2')[['Peso','BF']].mean()
+    agg_v.index = agg_v.index.to_timestamp()
+    agg_v  = agg_v.sort_index()
+
+    if ('Peso' in agg_v.columns and agg_v['Peso'].notna().sum() >= 3) or \
+       ('BF'   in agg_v.columns and agg_v['BF'].notna().sum() >= 3):
+
+        fig4, ax4p = plt.subplots(figsize=(16, 7))
+        ax4b = ax4p.twinx()
+
+        bar_w = {'W': 4, 'M': 20, 'Q': 60}[agrup_code]
+
+        # ── Peso: barras de variação ──
+        if 'Peso' in agg_v.columns and agg_v['Peso'].notna().sum() >= 3:
+            peso_s = agg_v['Peso'].dropna()
+            peso_delta = peso_s.diff()   # variação período a período
+
+            for dt, dv in peso_delta.dropna().items():
+                cor_p = '#27ae60' if dv >= 0 else '#e74c3c'
+                ax4p.bar(dt, dv, width=bar_w * 0.45,
+                         color=cor_p, alpha=0.75,
+                         align='center', zorder=3,
+                         label='Peso Ganho' if dv >= 0 else 'Peso Perda')
+
+            # Linhas de limite dinâmicas (baseadas no valor do período anterior)
+            prev_vals_p = peso_s.shift(1).dropna()
+            lim_idx = prev_vals_p.index
+
+            ax4p.step(lim_idx,  prev_vals_p.values * 0.0070,  color='#27ae60',
+                      linewidth=1.5, linestyle='--', alpha=0.8,
+                      where='mid', label='Peso +max (+0.70%)')
+            ax4p.step(lim_idx,  prev_vals_p.values * 0.0030,  color='#82e0aa',
+                      linewidth=1.2, linestyle=':',  alpha=0.8,
+                      where='mid', label='Peso +min (+0.30%)')
+            ax4p.step(lim_idx, -prev_vals_p.values * 0.0030,  color='#f1948a',
+                      linewidth=1.2, linestyle=':',  alpha=0.8,
+                      where='mid', label='Peso -min (-0.30%)')
+            ax4p.step(lim_idx, -prev_vals_p.values * 0.0070,  color='#e74c3c',
+                      linewidth=1.5, linestyle='--', alpha=0.8,
+                      where='mid', label='Peso -max (-0.70%)')
+
+            ax4p.axhline(0, color='black', linewidth=0.8, alpha=0.5)
+            ax4p.set_ylabel('Δ Peso (kg)', fontweight='bold')
+
+        # ── BF: barras de variação (eixo secundário) ──
+        if 'BF' in agg_v.columns and agg_v['BF'].notna().sum() >= 3:
+            bf_s     = agg_v['BF'].dropna()
+            bf_delta = bf_s.diff()
+
+            for dt, dv in bf_delta.dropna().items():
+                cor_b = '#f39c12' if dv >= 0 else '#2980b9'
+                ax4b.bar(dt, dv, width=bar_w * 0.40,
+                         color=cor_b, alpha=0.50,
+                         align='center', zorder=2,
+                         label='BF Ganho' if dv >= 0 else 'BF Perda')
+
+            prev_vals_b = bf_s.shift(1).dropna()
+            lim_idx_b   = prev_vals_b.index
+
+            ax4b.step(lim_idx_b,  prev_vals_b.values * 0.0065,  color='#f39c12',
+                      linewidth=1.5, linestyle='--', alpha=0.8,
+                      where='mid', label='BF +max (+0.65%)')
+            ax4b.step(lim_idx_b,  prev_vals_b.values * 0.0025,  color='#fad7a0',
+                      linewidth=1.2, linestyle=':',  alpha=0.8,
+                      where='mid', label='BF +min (+0.25%)')
+            ax4b.step(lim_idx_b, -prev_vals_b.values * 0.0025,  color='#aed6f1',
+                      linewidth=1.2, linestyle=':',  alpha=0.8,
+                      where='mid', label='BF -min (-0.25%)')
+            ax4b.step(lim_idx_b, -prev_vals_b.values * 0.0065,  color='#2980b9',
+                      linewidth=1.5, linestyle='--', alpha=0.8,
+                      where='mid', label='BF -max (-0.65%)')
+
+            ax4b.set_ylabel('Δ BF (%)', fontweight='bold', color='#2980b9')
+            ax4b.tick_params(axis='y', labelcolor='#2980b9')
+
+        # Legendas sem duplicados
+        def _uniq_legend(ax):
+            h, l = ax.get_legend_handles_labels()
+            seen, hs, ls = set(), [], []
+            for hi, li in zip(h, l):
+                if li not in seen:
+                    seen.add(li); hs.append(hi); ls.append(li)
+            return hs, ls
+
+        hs1, ls1 = _uniq_legend(ax4p)
+        hs2, ls2 = _uniq_legend(ax4b)
+        ax4p.legend(hs1+hs2, ls1+ls2, loc='upper left', fontsize=8, ncol=2)
+        ax4p.set_title(
+            f'Variação Peso e BF por {agrup_lbl} — bandas de ganho/perda esperado',
+            fontsize=13, fontweight='bold')
+        ax4p.grid(True, alpha=0.2, axis='y')
+        plt.xticks(rotation=45); plt.tight_layout()
+        st.pyplot(fig4); plt.close()
+    else:
+        st.info("Dados insuficientes de Peso/BF para o gráfico de variação.")
+
+    st.markdown("---")
+
+    # ── CORRELAÇÕES ───────────────────────────────────────────────────────────
     st.subheader("🔗 Correlações entre variáveis corporais e de treino")
-    st.caption("Correlação de Spearman. Apenas moderada (|r|≥0.40) ou forte (|r|≥0.60). "
-               "SEM/MDC aplicado para confirmar variação real nas variáveis-alvo. "
-               "Usa o maior período com dados disponíveis.")
+    st.caption(
+        "Correlação de Spearman semanal. Só mostra moderada (|r|≥0.40) ou forte (|r|≥0.60). "
+        "MDC aplicado para confirmar variação real na variável-alvo. "
+        "Usa o maior período com dados disponíveis.")
 
     from scipy.stats import spearmanr
 
-    def _calc_sem_mdc(series, icc=0.90):
+    def _sem_mdc(series, icc=0.90):
         s = series.dropna()
         if len(s) < 5: return None, None
         sem = s.std(ddof=1) * np.sqrt(1 - icc)
-        mdc = sem * 1.96 * np.sqrt(2)
-        return sem, mdc
+        return sem, sem * 1.96 * np.sqrt(2)
 
     def _forca(r):
         a = abs(r)
@@ -4032,153 +4098,148 @@ def tab_corporal(dc, da_full):
         if a >= 0.40: return "★★ Moderada"
         return None
 
-    # Preparar série semanal (agrupamento mais robusto para correlações)
+    # Série semanal corporal
     dc_w = dc.copy()
     dc_w['_w'] = dc_w['Data'].dt.to_period('W')
+    corp_cols = ['Peso','BF','Calorias','Net','Carb','Fat','Ptn']
+    corp_agg  = dc_w.groupby('_w')[corp_cols].mean()
 
-    # Métricas corporais por semana (média)
-    corp_cols = ['Peso', 'BF', 'Calorias', 'Net', 'Carb', 'Fat', 'Ptn']
-    corp_agg = dc_w.groupby('_w')[corp_cols].mean()
-
-    # Variáveis de treino por semana (de da_full)
+    # Variáveis de treino semanal
     train_agg = pd.DataFrame()
     if da_full is not None and len(da_full) > 0:
-        df_tr = filtrar_principais(da_full).copy()
-        df_tr = df_tr[df_tr['type'].apply(norm_tipo) != 'WeightTraining']
-        df_tr['Data'] = pd.to_datetime(df_tr['Data'])
-        df_tr['_w']   = df_tr['Data'].dt.to_period('W')
+        df_all = da_full.copy()
+        df_all['Data'] = pd.to_datetime(df_all['Data'])
+        df_all['_w']   = df_all['Data'].dt.to_period('W')
+        df_all['_mt']  = pd.to_numeric(df_all['moving_time'], errors='coerce') / 3600
 
-        # Horas cíclicas
-        df_tr['_mt'] = pd.to_numeric(df_tr['moving_time'], errors='coerce') / 3600
-        # kJ
-        if 'icu_joules' in df_tr.columns:
-            df_tr['_kj'] = pd.to_numeric(df_tr['icu_joules'], errors='coerce') / 1000
-        elif 'power_avg' in df_tr.columns and 'moving_time' in df_tr.columns:
-            df_tr['_kj'] = (pd.to_numeric(df_tr['power_avg'], errors='coerce') *
-                            pd.to_numeric(df_tr['moving_time'], errors='coerce') / 1000)
+        # ── Actividades cíclicas (excl. WeightTraining) ──
+        df_cicl = df_all[df_all['type'].apply(norm_tipo) != 'WeightTraining'].copy()
+        if 'icu_joules' in df_cicl.columns:
+            df_cicl['_kj'] = pd.to_numeric(df_cicl['icu_joules'], errors='coerce') / 1000
+        elif 'power_avg' in df_cicl.columns:
+            df_cicl['_kj'] = (pd.to_numeric(df_cicl['power_avg'], errors='coerce') *
+                              pd.to_numeric(df_cicl['moving_time'], errors='coerce') / 1000)
         else:
-            df_tr['_kj'] = np.nan
+            df_cicl['_kj'] = np.nan
+        df_cicl['_km'] = (pd.to_numeric(df_cicl.get('distance', pd.Series(dtype=float)),
+                                         errors='coerce') / 1000)
 
-        # KM
-        if 'distance' in df_tr.columns:
-            df_tr['_km'] = pd.to_numeric(df_tr['distance'], errors='coerce') / 1000
-        else:
-            df_tr['_km'] = np.nan
+        # ── WeightTraining: apenas horas ──
+        df_wt = df_all[df_all['type'].apply(norm_tipo) == 'WeightTraining'].copy()
 
-        train_agg = df_tr.groupby('_w').agg(
-            Horas_cicl=('_mt', 'sum'),
-            KJ_sem=('_kj', 'sum'),
-            KM_sem=('_km', 'sum'),
+        # ── Treino total (todas modalidades) ──
+        train_agg = df_cicl.groupby('_w').agg(
+            Horas_cicl=('_mt',  'sum'),
+            KJ_sem    =('_kj',  'sum'),
+            KM_sem    =('_km',  'sum'),
         )
+        if len(df_wt) > 0:
+            wt_agg = df_wt.groupby('_w').agg(Horas_WT=('_mt', 'sum'))
+            train_agg = train_agg.join(wt_agg, how='outer')
+        else:
+            train_agg['Horas_WT'] = np.nan
 
-    # Merge corpo + treino
-    if len(train_agg) > 0:
-        combined = corp_agg.join(train_agg, how='outer')
-    else:
-        combined = corp_agg.copy()
+        # Total treino = cíclico + WT
+        train_agg['Horas_total'] = (train_agg['Horas_cicl'].fillna(0) +
+                                     train_agg['Horas_WT'].fillna(0))
+        train_agg[train_agg == 0] = np.nan  # semanas sem treino → NaN
 
+    # Merge
+    combined = (corp_agg.join(train_agg, how='outer')
+                if len(train_agg) > 0 else corp_agg.copy())
     combined.index = combined.index.to_timestamp()
     combined = combined.sort_index()
 
-    # Calcular range mínimo com dados (para informar o utilizador)
-    def _data_range(df_c, col1, col2):
-        m = df_c[[col1, col2]].dropna()
-        if len(m) == 0: return 0, None, None
-        return len(m), m.index.min(), m.index.max()
-
-    # Variáveis alvo
-    targets = [c for c in ['Peso', 'BF', 'Net', 'Calorias'] if c in combined.columns]
-    # Variáveis preditoras
-    predictors = [c for c in ['Calorias', 'Carb', 'Fat', 'Ptn', 'Net',
-                               'Horas_cicl', 'KJ_sem', 'KM_sem']
-                  if c in combined.columns]
+    # Todas as combinações alvo × preditor
+    # Alvo: Peso, BF, Net, Calorias
+    # Preditores: Calorias, Carb, Fat, Ptn, Net, Horas_cicl, KJ_sem, KM_sem,
+    #             Horas_WT, Horas_total, Peso (para → BF), BF (para → Peso)
+    targets = [c for c in ['Peso','BF','Net','Calorias'] if c in combined.columns]
+    predictors_all = [c for c in
+        ['Calorias','Carb','Fat','Ptn','Net',
+         'Horas_cicl','KJ_sem','KM_sem',
+         'Horas_WT','Horas_total',
+         'Peso','BF']                        # Peso ↔ BF cruzado
+        if c in combined.columns]
 
     corr_rows = []
     for tgt in targets:
-        _, mdc95 = _calc_sem_mdc(combined[tgt])
+        _, mdc95 = _sem_mdc(combined[tgt])
         if mdc95 is not None:
-            var_range = combined[tgt].dropna().max() - combined[tgt].dropna().min()
-            if var_range < mdc95:
-                continue  # variação total < MDC → não há mudança real detectável
+            vr = combined[tgt].dropna()
+            if (vr.max() - vr.min()) < mdc95:
+                continue   # sem variação real detectável
 
-        for pred in predictors:
+        for pred in predictors_all:
             if pred == tgt: continue
-            n, d0, d1 = _data_range(combined, tgt, pred)
-            if n < 8: continue  # mínimo de 8 semanas em comum
             pair = combined[[tgt, pred]].dropna()
+            n    = len(pair)
+            if n < 8: continue
             r, pv = spearmanr(pair[pred].values, pair[tgt].values)
             if pv >= 0.10: continue
             forca = _forca(r)
             if forca is None: continue
+            d0 = pair.index.min(); d1 = pair.index.max()
             corr_rows.append({
-                'Alvo':       tgt,
-                'Preditor':   pred,
-                'r':          f"{r:+.2f}",
-                'p-value':    f"{pv:.3f}",
-                'N semanas':  n,
-                'Período':    f"{d0.strftime('%m/%Y')}→{d1.strftime('%m/%Y')}",
-                'Força':      forca,
-                'Efeito':     (f"↗ {pred} ↑ → {tgt} ↑" if r > 0
-                               else f"↘ {pred} ↑ → {tgt} ↓"),
+                'Alvo':      tgt,
+                'Preditor':  pred,
+                'r':         f"{r:+.2f}",
+                'p-value':   f"{pv:.3f}",
+                'N semanas': n,
+                'Período':   f"{d0.strftime('%m/%Y')}→{d1.strftime('%m/%Y')}",
+                'Força':     forca,
+                'Efeito':    (f"↗ {pred} ↑ → {tgt} ↑" if r > 0
+                              else f"↘ {pred} ↑ → {tgt} ↓"),
             })
 
     if corr_rows:
-        df_corr = pd.DataFrame(corr_rows)
-        # Deduplica: por par Alvo+Preditor, mostra só o mais forte
-        df_corr['_ar'] = df_corr['r'].str.replace('+','',regex=False).astype(float).abs()
-        df_corr = (df_corr.sort_values('_ar', ascending=False)
-                          .drop_duplicates(subset=['Alvo','Preditor'], keep='first')
-                          .drop(columns=['_ar'])
-                          .sort_values(['Alvo','Força'], ascending=[True, True]))
-        st.dataframe(df_corr, use_container_width=True, hide_index=True)
+        df_c = pd.DataFrame(corr_rows)
+        df_c['_ar'] = df_c['r'].str.replace('+','',regex=False).astype(float).abs()
+        df_c = (df_c.sort_values('_ar', ascending=False)
+                    .drop_duplicates(subset=['Alvo','Preditor'], keep='first')
+                    .drop(columns=['_ar'])
+                    .sort_values(['Alvo','Força'], ascending=[True, True]))
+        st.dataframe(df_c, use_container_width=True, hide_index=True)
     else:
-        st.info("Sem correlações moderadas/fortes encontradas com os dados disponíveis. "
+        st.info("Sem correlações moderadas/fortes encontradas. "
                 "Pode ser necessário mais semanas com registos completos.")
 
     st.markdown("---")
 
-    # ── TABELA: Calorias por quartil de Peso ─────────────────────────────────
+    # ── TABELAS: base calórica por quartil de Peso e BF ───────────────────────
     st.subheader("📊 Base calórica por quartil de Peso e BF")
-    st.caption("Cada quartil de Peso/BF agrupa as semanas nesse intervalo e "
-               "calcula o range de Calorias necessário para se manter nesse estado. "
-               "Só considera semanas com dados simultâneos de Peso/BF + Calorias.")
+    st.caption("Semanas com dados simultâneos de Peso/BF + Calorias. "
+               "MDC±  indica o erro mínimo detectável nas Calorias.")
 
-    for alvo_q, alvo_lbl, unid in [('Peso', 'Peso', 'kg'), ('BF', 'BF', '%')]:
+    for alvo_q, alvo_lbl, unid in [('Peso','Peso','kg'), ('BF','BF','%')]:
         if alvo_q not in combined.columns or 'Calorias' not in combined.columns:
             continue
-        pair_q = combined[[alvo_q, 'Calorias']].dropna()
+        pair_q = combined[[alvo_q,'Calorias']].dropna()
         if len(pair_q) < 8:
-            st.caption(f"Poucos dados para análise de quartis de {alvo_lbl} "
-                       f"({len(pair_q)} semanas).")
+            st.caption(f"Poucos dados para quartis de {alvo_lbl} ({len(pair_q)} semanas).")
             continue
-
-        pair_q[f'_q_{alvo_q}'] = pd.qcut(pair_q[alvo_q], q=4,
-                                           labels=['Q1 (baixo)', 'Q2', 'Q3', 'Q4 (alto)'])
+        pair_q = pair_q.copy()
+        pair_q['_q'] = pd.qcut(pair_q[alvo_q], q=4,
+                                labels=['Q1 (baixo)','Q2','Q3','Q4 (alto)'])
         rows_q = []
-        for q_label in ['Q1 (baixo)', 'Q2', 'Q3', 'Q4 (alto)']:
-            grp = pair_q[pair_q[f'_q_{alvo_q}'] == q_label]
-            if len(grp) < 2: continue
-            cal_v  = grp['Calorias']
-            alvo_v = grp[alvo_q]
-
-            # SEM + MDC para verificar se o range de calorias é real
-            _, mdc_c = _calc_sem_mdc(cal_v)
-
+        for ql in ['Q1 (baixo)','Q2','Q3','Q4 (alto)']:
+            g = pair_q[pair_q['_q'] == ql]
+            if len(g) < 2: continue
+            cv = g['Calorias']; av = g[alvo_q]
+            _, mdc_c = _sem_mdc(cv)
             rows_q.append({
-                f'Quartil {alvo_lbl}':  q_label,
-                f'Range {alvo_lbl} ({unid})': f"{alvo_v.min():.1f} – {alvo_v.max():.1f}",
-                f'Média {alvo_lbl}':    f"{alvo_v.mean():.1f} {unid}",
-                'N semanas':            len(grp),
-                'Cal média':            f"{cal_v.mean():.0f} kcal",
-                'Cal mediana':          f"{cal_v.median():.0f} kcal",
-                'Cal Q1–Q3':            f"{cal_v.quantile(0.25):.0f}–{cal_v.quantile(0.75):.0f} kcal",
-                'MDC Cal':              f"±{mdc_c:.0f} kcal" if mdc_c else '—',
+                f'Quartil {alvo_lbl}':        ql,
+                f'Range {alvo_lbl} ({unid})': f"{av.min():.1f}–{av.max():.1f}",
+                f'Média {alvo_lbl}':          f"{av.mean():.1f} {unid}",
+                'N semanas':                  len(g),
+                'Cal média':                  f"{cv.mean():.0f} kcal",
+                'Cal mediana':                f"{cv.median():.0f} kcal",
+                'Cal Q1–Q3':                  f"{cv.quantile(0.25):.0f}–{cv.quantile(0.75):.0f} kcal",
+                'MDC Cal':                    f"±{mdc_c:.0f} kcal" if mdc_c else '—',
             })
-
         if rows_q:
-            st.markdown(f"**Quartis de {alvo_lbl} — base calórica por estado**")
-            st.dataframe(pd.DataFrame(rows_q),
-                         use_container_width=True, hide_index=True)
+            st.markdown(f"**Quartis de {alvo_lbl} — base calórica**")
+            st.dataframe(pd.DataFrame(rows_q), use_container_width=True, hide_index=True)
 
 
 # Configuração da página — DEVE ser a primeira chamada Streamlit
