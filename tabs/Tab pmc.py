@@ -1,7 +1,7 @@
 # tabs/tab_pmc.py — ATHELTICA Dashboard
-# PMC — CTL/ATL/FTLM (icu_training_load) + Load bars (TRIMP)
-# + tabelas mensais eFTP e KM/KJ por modalidade
-# + gráfico KM semanal stacked com linha de média
+# PMC — CTL/ATL/FTLM (icu_training_load) + Load bars TRIMP
+# + Tabelas mensais eFTP e KM/KJ com filtro de período próprio + datas manuais
+# + Gráfico KM semanal stacked com avg recalculado ao mudar filtro
 
 import streamlit as st
 import pandas as pd
@@ -135,186 +135,210 @@ def tab_pmc(da):
     ax_load.tick_params(axis='x', rotation=45)
     plt.tight_layout(); st.pyplot(fig); plt.close()
 
-    # ── TABELAS MENSAIS — eFTP por modalidade ──────────────────────────────────
-    st.subheader("📅 eFTP mensal por modalidade")
-    if 'icu_eftp' in df.columns and df['icu_eftp'].notna().any():
-        df['mes'] = df['Data'].dt.to_period('M')
+    # ── TABELAS MENSAIS + GRÁFICO KM — filtro próprio ────────────────────────────
+    st.markdown("---")
+    st.subheader("📅 Tabelas e gráficos históricos por modalidade")
+
+    # Filtro de período próprio (independente do sidebar)
+    _t_col1, _t_col2, _t_col3 = st.columns([2, 1, 1])
+    _tab_periodo_opts = {
+        "Últimos 3 meses": 90, "Últimos 6 meses": 180,
+        "Último ano": 365, "Últimos 2 anos": 730,
+        "Últimos 3 anos": 1095, "Todo histórico": 9999,
+        "Datas manuais": -1,
+    }
+    _tab_periodo_sel = _t_col1.selectbox(
+        "Período das tabelas / gráfico KM",
+        list(_tab_periodo_opts.keys()), index=3,
+        key="pmc_tab_periodo")
+    _tab_dias = _tab_periodo_opts[_tab_periodo_sel]
+
+    if _tab_dias == -1:
+        _tab_di  = _t_col2.date_input("Data início", datetime(2017, 1, 1).date(),
+                                       key="pmc_tab_di")
+        _tab_df_ = _t_col3.date_input("Data fim",    datetime.now().date(),
+                                       key="pmc_tab_df")
+    else:
+        _tab_df_ = datetime.now().date()
+        _tab_di  = (_tab_df_ - timedelta(days=_tab_dias)
+                    if _tab_dias < 9999 else datetime(2017, 1, 1).date())
+        _t_col2.caption(f"De {_tab_di.strftime('%d/%m/%Y')}")
+        _t_col3.caption(f"Até {_tab_df_.strftime('%d/%m/%Y')}")
+
+    # Filtrar df pelo período das tabelas
+    df_tab = df[
+        (df['Data'] >= pd.Timestamp(_tab_di)) &
+        (df['Data'] <= pd.Timestamp(_tab_df_))
+    ].copy()
+    df_tab = df_tab[df_tab['type'] != 'WeightTraining']
+    df_tab['mes'] = df_tab['Data'].dt.to_period('M')
+
+    st.caption(f"📊 {len(df_tab)} actividades no período seleccionado "
+               f"({_tab_di.strftime('%d/%m/%Y')} → {_tab_df_.strftime('%d/%m/%Y')})")
+
+    # ── TABELA eFTP mensal por modalidade ──
+    st.markdown("**eFTP mensal por modalidade**")
+    if 'icu_eftp' in df_tab.columns and df_tab['icu_eftp'].notna().any():
         tipos_eftp = [t for t in ['Bike', 'Run', 'Ski', 'Row']
-                      if t in df['type'].unique()]
-
-        # Para cada tipo: eFTP máximo do mês (representa o melhor estimado nesse mês)
-        eftp_rows = {}
+                      if t in df_tab['type'].unique()]
+        eftp_por_tipo = {}
         for tipo in tipos_eftp:
-            df_t = df[df['type'] == tipo][['mes', 'icu_eftp']].dropna()
+            df_t = df_tab[df_tab['type'] == tipo][['mes', 'icu_eftp']].dropna()
             if len(df_t) == 0: continue
-            eftp_rows[tipo] = (df_t.groupby('mes')['icu_eftp']
-                               .max().reset_index()
-                               .rename(columns={'icu_eftp': tipo}))
+            eftp_por_tipo[tipo] = (df_t.groupby('mes')['icu_eftp']
+                                   .max().reset_index()
+                                   .rename(columns={'icu_eftp': tipo}))
 
-        if eftp_rows:
-            # Merge todos os tipos num único DataFrame
+        if eftp_por_tipo:
             df_eftp = None
-            for tipo, df_t in eftp_rows.items():
-                if df_eftp is None:
-                    df_eftp = df_t
-                else:
-                    df_eftp = df_eftp.merge(df_t, on='mes', how='outer')
+            for tipo, df_t in eftp_por_tipo.items():
+                df_eftp = df_t if df_eftp is None else df_eftp.merge(df_t, on='mes', how='outer')
             df_eftp = df_eftp.sort_values('mes', ascending=False)
 
-            # Formatar para exibição
-            df_eftp_disp = df_eftp.copy()
-            df_eftp_disp['Mês'] = df_eftp_disp['mes'].astype(str).apply(
-                lambda x: pd.to_datetime(x).strftime('%B %Y').title())
-            cols_disp = ['Mês'] + [t for t in tipos_eftp if t in df_eftp_disp.columns]
-            df_eftp_disp = df_eftp_disp[cols_disp]
+            num_cols_e = [t for t in tipos_eftp if t in df_eftp.columns]
+            rows_eftp = []
+            for _, r in df_eftp.iterrows():
+                row = {'Mês': pd.to_datetime(str(r['mes'])).strftime('%B %Y').title()}
+                for t in num_cols_e:
+                    row[f'{t} eFTP'] = f"{r[t]:.0f}w" if pd.notna(r.get(t)) else '—'
+                rows_eftp.append(row)
 
-            # Renomear colunas com "eFTP"
-            rename_eftp = {t: f"{t} eFTP (W)" for t in tipos_eftp}
-            df_eftp_disp = df_eftp_disp.rename(columns=rename_eftp)
+            # Linha de média
+            avg_e = {'Mês': 'Avg'}
+            for t in num_cols_e:
+                vals_e = df_eftp[t].dropna()
+                avg_e[f'{t} eFTP'] = f"{vals_e.mean():.0f}w" if len(vals_e) > 0 else '—'
+            rows_eftp.append(avg_e)
 
-            # Adicionar linha de média e total
-            num_cols = [f"{t} eFTP (W)" for t in tipos_eftp if f"{t} eFTP (W)" in df_eftp_disp.columns]
-            avg_row = {col: f"{df_eftp_disp[col].mean():.0f}w" if col in num_cols else 'Avg'
-                       for col in df_eftp_disp.columns}
-            avg_row['Mês'] = 'Média'
-            df_eftp_final = pd.concat(
-                [df_eftp_disp.assign(**{c: df_eftp_disp[c].apply(
-                    lambda v: f"{v:.0f}w" if pd.notna(v) else '—') for c in num_cols}),
-                 pd.DataFrame([avg_row])],
-                ignore_index=True)
-            st.dataframe(df_eftp_final, use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rows_eftp),
+                         use_container_width=True, hide_index=True)
+    else:
+        st.caption("Sem dados de eFTP disponíveis.")
 
-    # ── TABELAS MENSAIS — KM e KJ por modalidade ───────────────────────────────
-    st.subheader("📅 KM e KJ mensais por modalidade")
+    # ── TABELAS KM / Moving Time / kJ / Sessions — uma por modalidade ──
+    st.markdown("**Distância, tempo, kJ e sessões — por modalidade e mês**")
     tipos_vol = [t for t in ['Bike', 'Ski', 'Row', 'Run']
-                 if t in df['type'].unique()]
-
-    has_dist = 'distance' in df.columns and df['distance'].notna().any()
-    has_kj   = ('AllWorkFTP' in df.columns and df['AllWorkFTP'].notna().any()) or                ('power_avg'  in df.columns and df['power_avg'].notna().any())
+                 if t in df_tab['type'].unique()]
 
     for tipo in tipos_vol:
-        df_t = df[df['type'] == tipo].copy()
-        df_t['mes'] = df_t['Data'].dt.to_period('M')
+        df_t = df_tab[df_tab['type'] == tipo].copy()
         if len(df_t) == 0: continue
 
-        # Colunas da tabela: Mês | Distance | Moving Time | kJ | Sessions
         agg = df_t.groupby('mes').agg(
             Sessions=('Data', 'count'),
             moving_time_s=('moving_time', 'sum'),
         ).reset_index()
 
-        if has_dist and 'distance' in df_t.columns:
-            dist_agg = df_t.groupby('mes')['distance'].sum().reset_index()
-            dist_agg['km'] = dist_agg['distance'] / 1000
-            agg = agg.merge(dist_agg[['mes', 'km']], on='mes', how='left')
+        if 'distance' in df_t.columns and df_t['distance'].notna().any():
+            dist_agg = (df_t.groupby('mes')['distance'].sum() / 1000).reset_index()
+            dist_agg.columns = ['mes', 'km']
+            agg = agg.merge(dist_agg, on='mes', how='left')
         else:
             agg['km'] = np.nan
 
-        # KJ: usa AllWorkFTP se disponível, senão power_avg × moving_time
         kj_col = None
         if 'AllWorkFTP' in df_t.columns and df_t['AllWorkFTP'].notna().any():
             kj_col = 'AllWorkFTP'
         elif 'power_avg' in df_t.columns and df_t['power_avg'].notna().any():
-            # kJ = power_avg (W) × moving_time (s) / 1000
+            df_t = df_t.copy()
             df_t['_kj'] = (pd.to_numeric(df_t['power_avg'], errors='coerce') *
                            pd.to_numeric(df_t['moving_time'], errors='coerce') / 1000)
             kj_col = '_kj'
 
         if kj_col and kj_col in df_t.columns:
             kj_agg = df_t.groupby('mes')[kj_col].sum().reset_index()
-            agg = agg.merge(kj_agg, on='mes', how='left')
+            agg = agg.merge(kj_agg[['mes', kj_col]], on='mes', how='left')
             agg = agg.rename(columns={kj_col: 'kj'})
         else:
             agg['kj'] = np.nan
 
         agg = agg.sort_values('mes', ascending=False)
 
-        # Formatar linhas
         rows_vol = []
         for _, r in agg.iterrows():
-            mes_str = pd.to_datetime(str(r['mes'])).strftime('%B %Y').title()
             mt_h = int(r['moving_time_s'] // 3600)
             mt_m = int((r['moving_time_s'] % 3600) // 60)
             rows_vol.append({
-                'Mês': mes_str,
-                'Distance': f"{r['km']:.0f} km" if pd.notna(r.get('km')) else '—',
+                'Mês':         pd.to_datetime(str(r['mes'])).strftime('%B %Y').title(),
+                'Distance':    f"{r['km']:.0f} km" if pd.notna(r.get('km')) else '—',
                 'Moving Time': f"{mt_h}h{mt_m:02d}m",
-                'kJ': f"{r['kj']:.0f}" if pd.notna(r.get('kj')) else '—',
-                'Sessions': int(r['Sessions']),
+                'kJ':          f"{r['kj']:.0f}" if pd.notna(r.get('kj')) else '—',
+                'Sessions':    int(r['Sessions']),
             })
 
         if rows_vol:
-            df_vol_disp = pd.DataFrame(rows_vol)
             # Linha de média
             avg_km  = agg['km'].mean()  if agg['km'].notna().any()  else None
             avg_mt  = agg['moving_time_s'].mean()
             avg_kj  = agg['kj'].mean()  if agg['kj'].notna().any()  else None
             avg_ses = agg['Sessions'].mean()
-            avg_mt_h = int(avg_mt // 3600); avg_mt_m = int((avg_mt % 3600) // 60)
-            avg_row_vol = {
-                'Mês': 'Avg',
-                'Distance': f"{avg_km:.0f} km" if avg_km else '—',
-                'Moving Time': f"{avg_mt_h}h{avg_mt_m:02d}m",
-                'kJ': f"{avg_kj:.0f}" if avg_kj else '—',
-                'Sessions': f"{avg_ses:.0f}",
-            }
-            df_vol_final = pd.concat([df_vol_disp, pd.DataFrame([avg_row_vol])],
-                                     ignore_index=True)
-            st.markdown(f"**{tipo} — distância e trabalho**")
-            st.dataframe(df_vol_final, use_container_width=True, hide_index=True)
+            avg_h   = int(avg_mt // 3600); avg_m = int((avg_mt % 3600) // 60)
+            rows_vol.append({
+                'Mês':         'Avg',
+                'Distance':    f"{avg_km:.0f} km" if avg_km else '—',
+                'Moving Time': f"{avg_h}h{avg_m:02d}m",
+                'kJ':          f"{avg_kj:.0f}" if avg_kj else '—',
+                'Sessions':    f"{avg_ses:.0f}",
+            })
+            st.markdown(f"*{tipo} — distância e trabalho*")
+            st.dataframe(pd.DataFrame(rows_vol),
+                         use_container_width=True, hide_index=True)
 
-    # ── GRÁFICO 2: KM semanal stacked com linha de média por modalidade ────────
-    if 'distance' in df.columns and df['distance'].notna().any():
-        st.subheader("📏 Distância (KM) semanal por modalidade")
-        df_km = df[df['type'] != 'WeightTraining'].copy()
-        df_km['km'] = pd.to_numeric(df_km['distance'], errors='coerce') / 1000
-        df_km = df_km[df_km['km'].notna() & (df_km['km'] > 0)]
+    # ── GRÁFICO KM semanal stacked com linha de média ──
+    st.markdown("**Distância (KM) semanal — todas as modalidades**")
+    df_km = df_tab[df_tab['km_ok'] if 'km_ok' in df_tab.columns else
+                   df_tab.index >= 0].copy()
+    # Re-filter properly
+    df_km2 = df_tab.copy()
+    if 'distance' in df_km2.columns:
+        df_km2['km'] = pd.to_numeric(df_km2['distance'], errors='coerce') / 1000
+        df_km2 = df_km2[df_km2['km'].notna() & (df_km2['km'] > 0)]
 
-        if len(df_km) > 0:
-            km_day = df_km.groupby(['Data', 'type'])['km'].sum().reset_index()
-            km_day['Data'] = pd.to_datetime(km_day['Data'])
-            km_day = km_day[km_day['Data'] >= ld_plot['Data'].min()]
-            km_day['Semana'] = km_day['Data'].dt.to_period('W').dt.start_time
-            km_sem = km_day.groupby(['Semana', 'type'])['km'].sum().reset_index()
-            tipos_km = [t for t in ['Bike', 'Row', 'Ski', 'Run']
-                        if t in km_sem['type'].unique()]
+    if len(df_km2) > 0 and 'distance' in df_tab.columns:
+        km_day = df_km2.groupby(['Data', 'type'])['km'].sum().reset_index()
+        km_day['Semana'] = km_day['Data'].dt.to_period('W').dt.start_time
+        km_sem = km_day.groupby(['Semana', 'type'])['km'].sum().reset_index()
+        tipos_km = [t for t in ['Bike', 'Row', 'Ski', 'Run']
+                    if t in km_sem['type'].unique()]
 
-            if len(km_sem) > 0 and tipos_km:
-                fig2, ax_km = plt.subplots(figsize=(16, 6))
-                semanas = sorted(km_sem['Semana'].unique())
-                sem_arr = np.array(semanas)
-                bot_km = np.zeros(len(semanas))
+        if len(km_sem) > 0 and tipos_km:
+            fig2, ax_km = plt.subplots(figsize=(16, 6))
+            semanas  = sorted(km_sem['Semana'].unique())
+            sem_arr  = np.array(semanas)
+            bot_km   = np.zeros(len(semanas))
 
-                # Barras stacked
-                for tipo in tipos_km:
-                    vals_km = np.array([
-                        float(km_sem[(km_sem['Semana']==s) & (km_sem['type']==tipo)
-                                     ]['km'].values[0])
-                        if len(km_sem[(km_sem['Semana']==s) & (km_sem['type']==tipo)]) > 0
-                        else 0.0
-                        for s in semanas])
-                    ax_km.bar(sem_arr, vals_km, bottom=bot_km,
-                              color=get_cor(tipo), alpha=0.80, width=5,
-                              label=tipo, edgecolor='white', linewidth=0.3)
-                    bot_km += vals_km
+            for tipo in tipos_km:
+                vals_km = np.array([
+                    float(km_sem[(km_sem['Semana']==s) & (km_sem['type']==tipo)
+                                 ]['km'].values[0])
+                    if len(km_sem[(km_sem['Semana']==s) & (km_sem['type']==tipo)]) > 0
+                    else 0.0
+                    for s in semanas])
+                ax_km.bar(sem_arr, vals_km, bottom=bot_km,
+                          color=get_cor(tipo), alpha=0.80, width=5,
+                          label=tipo, edgecolor='white', linewidth=0.3)
+                bot_km += vals_km
 
-                    # Linha horizontal de média por modalidade
-                    media_tipo = km_sem[km_sem['type'] == tipo]['km'].mean()
-                    if media_tipo > 0:
-                        ax_km.axhline(
-                            media_tipo,
-                            color=get_cor(tipo), linestyle='--',
-                            linewidth=1.8, alpha=0.9,
-                            label=f'{tipo} avg {media_tipo:.0f} km/sem')
+                # Linha horizontal de média — calculada no período filtrado
+                media_tipo = km_sem[km_sem['type'] == tipo]['km'].mean()
+                if media_tipo > 0:
+                    ax_km.axhline(
+                        media_tipo,
+                        color=get_cor(tipo), linestyle='--', linewidth=1.8,
+                        alpha=0.9,
+                        label=f'{tipo} avg {media_tipo:.0f} km/sem')
 
-                ax_km.set_ylabel('Distância (km)', fontweight='bold')
-                ax_km.set_title('Distância semanal por modalidade — com média por modalidade',
-                                fontsize=13, fontweight='bold')
-                ax_km.legend(fontsize=8, ncol=min(4, len(tipos_km)*2),
-                             loc='upper left')
-                ax_km.grid(True, alpha=0.2, axis='y')
-                plt.xticks(rotation=45); plt.tight_layout()
-                st.pyplot(fig2); plt.close()
+            ax_km.set_ylabel('Distância (km)', fontweight='bold')
+            ax_km.set_title(
+                f'Distância semanal por modalidade — avg recalculado para o período '
+                f'({_tab_di.strftime("%d/%m/%y")} → {_tab_df_.strftime("%d/%m/%y")})',
+                fontsize=12, fontweight='bold')
+            ax_km.legend(fontsize=8, ncol=min(4, len(tipos_km)*2), loc='upper left')
+            ax_km.grid(True, alpha=0.2, axis='y')
+            plt.xticks(rotation=45); plt.tight_layout()
+            st.pyplot(fig2); plt.close()
+    else:
+        st.caption("Sem dados de distância disponíveis.")
 
     # ── RESUMO PMC ──
     st.subheader("📊 Resumo PMC")
