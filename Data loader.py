@@ -1,5 +1,4 @@
 # data_loader.py — ATHELTICA Dashboard
-# Google Sheets auth + carregamento + preprocessing + Annual
 
 import streamlit as st
 import pandas as pd
@@ -15,17 +14,6 @@ from config import (WELLNESS_URL, TRAINING_URL, SCOPES,
 from utils.helpers import (detectar_col, br_float, parse_date, norm_tipo,
                             remove_zscore, remove_zeros, fill_missing)
 
-# MÓDULO: data_loader.py
-# ════════════════════════════════════════════════════════════════════════════
-
-# ════════════════════════════════════════════════════════════════════════════════
-# data_loader.py — ATHELTICA Dashboard
-# Autenticação Google Sheets, carregamento e preprocessing.
-# ════════════════════════════════════════════════════════════════════════════════
-
-# ── Autenticação ──────────────────────────────────────────────────────────────
-
-@st.cache_resource
 def get_gc():
     """Autentica Google Sheets com Service Account em st.secrets."""
     try:
@@ -166,8 +154,8 @@ def preproc_ativ(df):
     # [4] Z-score picos icu_eftp e AllWorkFTP (threshold=3.5, igual ao original)
     if 'icu_eftp'    in df.columns: df['icu_eftp']    = remove_zscore(df['icu_eftp'],    3.5)
     if 'AllWorkFTP'  in df.columns: df['AllWorkFTP']  = remove_zscore(df['AllWorkFTP'],  3.5)
-    # [5] Zeros → NaN
-    df = remove_zeros(df, ['moving_time', 'icu_eftp', 'AllWorkFTP'])
+    # [5] Zeros → NaN (rpe=0 também é inválido — sem esforço não é sessão)
+    df = remove_zeros(df, ['moving_time', 'icu_eftp', 'AllWorkFTP', 'rpe'])
     # [6] Remover duração ≤ 60s
     if 'moving_time' in df.columns:
         df = df[pd.to_numeric(df['moving_time'], errors='coerce') > 60]
@@ -252,3 +240,35 @@ def carregar_annual():
     validos = [d for d in dfs.values() if len(d) > 0]
     df_all = pd.concat(validos, ignore_index=True) if validos else pd.DataFrame()
     return dfs, df_all
+
+
+def carregar_corporal():
+    """Carrega aba Consolidado_Comida. Lida com vírgula decimal (PT-BR)."""
+    gc = get_gc()
+    if gc is None: return pd.DataFrame()
+    try:
+        ws  = gc.open_by_url(FOOD_URL).worksheet("Consolidado_Comida")
+        df  = get_as_dataframe(ws, evaluate_formulas=True, header=0)
+        if df.columns.duplicated().any(): df = df.loc[:, ~df.columns.duplicated()]
+        df  = df.dropna(how='all')
+        df.columns = [c.strip() for c in df.columns]
+        cd  = detectar_col(df, ['Data', 'data', 'Date'])
+        if not cd: return pd.DataFrame()
+        df['Data'] = df[cd].apply(parse_date)
+        df = df.dropna(subset=['Data']).sort_values('Data')
+        for col in ['Peso','BF','Calorias','Carb','Fat','Ptn',
+                    'Carb_perc','Fat_perc','Ptn_perc','Net']:
+            if col in df.columns: df[col] = df[col].apply(br_float)
+        # Ranges fisiológicos
+        for col, lo, hi in [('Peso',30,200),('BF',3,50),('Calorias',500,6000),
+                             ('Carb',0,800),('Fat',0,400),('Ptn',0,400),
+                             ('Net',-2000,4000)]:
+            if col in df.columns:
+                df.loc[~df[col].between(lo, hi, inclusive='both'), col] = np.nan
+        # Z-score 3.0 nos campos principais
+        for col in ['Peso','BF','Calorias','Net']:
+            if col in df.columns: df[col] = remove_zscore(df[col], 3.0)
+        return df.reset_index(drop=True)
+    except Exception as e:
+        st.error(f"Erro ao carregar dados corporais: {e}")
+        return pd.DataFrame()
