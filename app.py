@@ -4391,10 +4391,12 @@ def _cell_atividade(df_p, dia_num):
         return f'Rest (100%)'
 
     # Conta por tipo (inclui Rest para dias sem actividade)
-    contagem = sub['type'].apply(norm_tipo).value_counts()
+    # Só actividades cíclicas (excluir WeightTraining)
+    sub_cicl = sub[sub['type'].apply(norm_tipo) != 'WeightTraining']
+    contagem = sub_cicl['type'].apply(norm_tipo).value_counts()
 
-    # Dias sem actividade
-    datas_com_ativ = sub['Data'].dt.normalize().nunique()
+    # Dias sem actividade cíclica
+    datas_com_ativ = sub_cicl['Data'].dt.normalize().nunique()
     datas_sem_ativ = total_datas - datas_com_ativ
     if datas_sem_ativ > 0:
         contagem['Rest'] = datas_sem_ativ
@@ -4453,9 +4455,9 @@ def _cell_rpe(df_p, dia_num):
 
 def _contagem_zonas_padrao(df_p):
     """
-    Para cada semana do período, determina o padrão por dia da semana,
-    depois conta quantos dias têm cada zona como dominante.
-    Retorna dict {zona: count}.
+    Contagem de dias com cada zona dominante (pelo padrão semanal),
+    mais a média de sessões Z3 por semana real.
+    Retorna dict {zona: count, 'z3_por_semana': float}.
     """
     if df_p is None or len(df_p) == 0:
         return {}
@@ -4468,8 +4470,8 @@ def _contagem_zonas_padrao(df_p):
 
     d['_zona'] = pd.to_numeric(d['rpe'], errors='coerce').apply(_zona_rpe)
 
+    # Padrão dominante por dia da semana
     contagem = {'Z1 (Leve)': 0, 'Z2 (Mod.)': 0, 'Z3 (Pesado)': 0, 'Rest': 0}
-
     for dia_num in range(7):
         zona_dom = _cell_rpe(d, dia_num)
         if zona_dom in contagem:
@@ -4477,6 +4479,17 @@ def _contagem_zonas_padrao(df_p):
         else:
             contagem['Rest'] += 1
 
+    # Z3 por semana real: conta sessões Z3 por semana e tira a média
+    d['_semana'] = d['Data'].dt.to_period('W')
+    d_z3 = d[d['_zona'] == 'Z3 (Pesado)']
+    n_semanas = d['_semana'].nunique()
+    if n_semanas > 0:
+        z3_por_sem = d_z3.groupby('_semana')['_zona'].count()
+        media_z3 = z3_por_sem.reindex(d['_semana'].unique(), fill_value=0).mean()
+    else:
+        media_z3 = 0.0
+
+    contagem['z3_por_semana'] = round(media_z3, 1)
     return contagem
 
 
@@ -4654,12 +4667,13 @@ def tab_padrao(da_full, dw_full):
             row = {'Período': lbl}
             for n, dia in enumerate(DIAS_SEMANA):
                 row[dia] = _cell_rpe(da_p, n)
-            # Contagem de zonas pelo padrão
+            # Contagem de zonas pelo padrão + Z3 real por semana
             cnt = _contagem_zonas_padrao(da_p)
-            row['Z1'] = cnt.get('Z1 (Leve)', 0)
-            row['Z2'] = cnt.get('Z2 (Mod.)', 0)
-            row['Z3'] = cnt.get('Z3 (Pesado)', 0)
-            row['Rest'] = cnt.get('Rest', 0)
+            row['Z1 dias'] = cnt.get('Z1 (Leve)', 0)
+            row['Z2 dias'] = cnt.get('Z2 (Mod.)', 0)
+            row['Z3 dias'] = cnt.get('Z3 (Pesado)', 0)
+            row['Rest dias'] = cnt.get('Rest', 0)
+            row['Z3/semana'] = cnt.get('z3_por_semana', 0.0)
             rows_rpe.append(row)
 
         if rows_rpe:
@@ -4742,7 +4756,6 @@ def tab_padrao(da_full, dw_full):
             st.info("Sem dados de HRV suficientes.")
     else:
         st.info("Sem dados de HRV/RHR.")
-
 
 def main():
     days_back, di, df_, mods_sel = render_sidebar()
