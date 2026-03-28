@@ -4659,9 +4659,11 @@ def tab_padrao(da_full, dw_full):
         "Contagem = nº de dias da semana com cada zona como dominante.")
 
     if len(da) > 0 and 'rpe' in da.columns:
+        # RPE: usar só dados a partir de 2023
+        da_rpe = da[pd.to_datetime(da['Data']).dt.year >= 2023].copy()
         rows_rpe = []
         for lbl, d_ini, d_fim in periodos:
-            da_p = _filtrar(da, d_ini, d_fim)
+            da_p = _filtrar(da_rpe, d_ini, d_fim)
             if len(da_p) == 0:
                 continue
             row = {'Período': lbl}
