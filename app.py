@@ -519,7 +519,14 @@ def analisar_falta_estimulo(df_act_full, janela_dias=14, baseline_dias=90):
         if len(ftlm_base_series) >= 10:
             ftlm_ini = float(ftlm_base_series.iloc[0])
             ftlm_fim = float(ftlm_base_series.iloc[-1])
-            if ftlm_ini > 0:
+            # Floor: só calcular slope se FTLM ini for significativo
+            # Protege contra divisão por quase-zero em modalidades com início recente
+            threshold_ini = max(1.0, ftlm_fim * 0.05)
+            if ftlm_ini < threshold_ini:
+                # Modalidade a começar/reiniciar no período — slope não é fiável
+                slope_pct = 0.0
+                D = 0.0
+            elif ftlm_ini > 0:
                 slope_pct = (ftlm_fim - ftlm_ini) / ftlm_ini  # variação % total
                 if slope_pct < 0:
                     # Queda → need sobe
@@ -2738,7 +2745,8 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
                         'Overload':     '⚠️' if d.get('overload') else '—',
                         'A Share%':     f"{d['share_actual']*100:.1f}→{d['share_hist']*100:.1f}%",
                         'B Quality%':   f"{d['quality_actual']*100:.1f}→{d['quality_hist']*100:.1f}%",
-                        'C Load%':      f"{d['load_jan']:.0f}→{d['load_tipico']:.0f}",
+                        'C Load':       (f"{(1-(d['load_jan']/d['load_tipico']))*100:+.0f}%"
+                                         if d['load_tipico'] > 0 else '—'),
                         'D slope_pct':  f"{d['ftlm_slope_pct']*100:+.1f}%",
                     })
                 st.dataframe(pd.DataFrame(rows_fe), width="stretch", hide_index=True)
