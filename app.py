@@ -2821,6 +2821,32 @@ def _yaxis(title='', color='#333', secondary=False):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
+PLOTLY_WHITE = dict(paper_bgcolor='white', plot_bgcolor='white',
+                    font=dict(family='Arial', size=12, color='#333333'))
+
+LEGEND_STYLE = dict(orientation='h', y=1.02, x=0,
+                    bgcolor='rgba(255,255,255,0.9)',
+                    bordercolor='#aaa', borderwidth=1,
+                    font=dict(color='#111111', size=11))
+
+def _xaxis(title='Data', color='#333'):
+    return dict(title=dict(text=title, font=dict(color=color, size=12)),
+                tickfont=dict(color=color),
+                showgrid=True, gridcolor='#e8e8e8',
+                linecolor='#ccc', linewidth=1, showline=True)
+
+def _yaxis(title='', color='#333', secondary=False):
+    d = dict(title=dict(text=title, font=dict(color=color, size=12)),
+             tickfont=dict(color=color),
+             showgrid=True, gridcolor='#e8e8e8',
+             linecolor='#ccc', linewidth=1, showline=True)
+    if secondary:
+        d.update({'overlaying':'y','side':'right','showgrid':False})
+    return d
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
 def _extrair_pot(col):
     m = re.search(r'(\d+)[_\s]*W', str(col).upper())
     return int(m.group(1)) if m else None
@@ -2832,12 +2858,13 @@ def _detectar_drag_col(df):
         if 'DRAG' in str(c).upper(): return c
     return None
 
-def _calcular_icc_sem_mdc(valores):
+def _calcular_icc_sem_mdc(valores, tipo='HR'):
     """
-    ICC(1,1) one-way random — medições repetidas do mesmo atleta.
-    SEM calculado dos próprios dados: SEM = SD × √(1 - ICC)
-    MDC₉₅ = SEM × 1.96 × √2
-    Retorna dict com todos os valores ou None se N < 3.
+    ICC calculado dos próprios dados via diferenças consecutivas.
+    SEM de curto prazo: CV_curto = min(CV_dados_consec, CV_max_literatura)
+      HR:   CV_max = 4%  (literatura: 1-3%, Achten & Jeukendrup 2003)
+      SmO2: CV_max = 8%  (literatura: 3-8% NIRS, Davie 2018)
+    MDC₉₅ = CV_curto × média × 1.96
     """
     v = np.array(valores, dtype=float)
     v = v[~np.isnan(v)]
@@ -2849,28 +2876,29 @@ def _calcular_icc_sem_mdc(valores):
     if media == 0:
         return None
 
-    # ICC(1,1) via ANOVA one-way com cada observação como "grupo" de 1
-    # Para medições repetidas do mesmo sujeito ao longo do tempo:
-    # ICC = (MSb - MSw) / (MSb + (k-1)*MSw)  onde k=1 → ICC = (MSb-MSw)/MSb
-    # Com n=1 por sessão, usamos a variância total vs variância residual
-    # Estimativa robusta: ICC = 1 - (SEM_naive² / VAR_total)
-    # onde SEM_naive = std / √2  (estimativa de erro intra-sessão)
-    # Esta é a abordagem padrão para séries temporais n=1
-
-    # Variância entre sessões (MS_between) usando blocos de 2 sessões consecutivas
-    # para estimar variância intra (erro de medição)
+    # ICC via variância intra (diferenças consecutivas) vs variância total
     if n >= 4:
-        diffs = np.diff(v)          # diferenças consecutivas
-        var_intra = np.var(diffs, ddof=1) / 2  # variância intra estimada
+        diffs    = np.diff(v)
+        var_intra = np.var(diffs, ddof=1) / 2
         var_total = np.var(v, ddof=1)
         icc = max(0.0, min(1.0, (var_total - var_intra) / var_total))
     else:
-        # Fallback para N pequeno: estimativa conservadora
         icc = max(0.0, 1.0 - (1.0 / max(n, 2)))
 
-    sem    = std * np.sqrt(1 - icc)
-    sem_pc = (sem / media) * 100
-    mdc95  = sem * 1.96 * np.sqrt(2)
+    # CV de curto prazo: dos próprios dados (diferenças consecutivas)
+    if n >= 4:
+        cv_curto_dados = (np.std(np.diff(v), ddof=1) / np.sqrt(2)) / media
+    else:
+        cv_curto_dados = std / media
+
+    # Limitar pelo máximo da literatura
+    cv_max = 0.04 if tipo == 'HR' else 0.08  # 4% HR | 8% SmO2
+    cv_curto = min(cv_curto_dados, cv_max)
+
+    # SEM e MDC baseados no CV de curto prazo
+    sem    = cv_curto * media / np.sqrt(2)
+    sem_pc = cv_curto * 100
+    mdc95  = cv_curto * media * 1.96
     mdc_pc = (mdc95 / media) * 100
 
     if   icc >= 0.90: icc_qual = "✅ Excelente (≥0.90)"
@@ -2880,6 +2908,7 @@ def _calcular_icc_sem_mdc(valores):
 
     return dict(n=n, media=media, std=std,
                 icc=icc, icc_qual=icc_qual,
+                cv_curto=cv_curto, cv_dados=cv_curto_dados, cv_max=cv_max,
                 sem=sem, sem_pc=sem_pc,
                 mdc95=mdc95, mdc_pc=mdc_pc)
 
@@ -3085,11 +3114,14 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                 continue
 
             # Pré-calcular ICC/SEM/MDC para todo o histórico (uma vez por coluna)
+            # Passa tipo para usar CV_max correcto: HR=4%, SmO2=8%
             icc_cache = {}
-            for col in hr_cols + o2_cols:
+            for col in hr_cols:
                 if col in df_a.columns:
-                    vals = df_a[col].dropna().values
-                    icc_cache[col] = _calcular_icc_sem_mdc(vals)
+                    icc_cache[col] = _calcular_icc_sem_mdc(df_a[col].dropna().values, tipo='HR')
+            for col in o2_cols:
+                if col in df_a.columns:
+                    icc_cache[col] = _calcular_icc_sem_mdc(df_a[col].dropna().values, tipo='SmO2')
 
             # ════════════════════════════════════════════════════════════
             # 1. HR e O2 vs Potência — Z-Score, SEM, MDC
@@ -3306,15 +3338,18 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                             'Média':'—','SEM':'—','SEM%':'—',
                             'MDC₉₅':'—','MDC%':'—','ICC':'—','Qualidade ICC':'— (N insuf.)'})
                         continue
+                    cv_src = ("dados" if icd['cv_dados'] <= icd['cv_max']
+                              else f"cap {icd['cv_max']*100:.0f}% lit.")
                     rows_icc.append({
-                        'Potência':    f'{pw}W',
-                        'N':           icd['n'],
-                        'Média':       f"{icd['media']:.1f} {unid_t}",
-                        'SEM':         f"{icd['sem']:.2f} {unid_t}",
-                        'SEM%':        f"{icd['sem_pc']:.1f}%",
-                        'MDC₉₅':       f"{icd['mdc95']:.2f} {unid_t}",
-                        'MDC%':        f"{icd['mdc_pc']:.1f}%",
-                        'ICC':         f"{icd['icc']:.3f}",
+                        'Potência':      f'{pw}W',
+                        'N':             icd['n'],
+                        'Média':         f"{icd['media']:.1f} {unid_t}",
+                        'CV curto':      f"{icd['cv_curto']*100:.1f}% ({cv_src})",
+                        'SEM':           f"{icd['sem']:.2f} {unid_t}",
+                        'SEM%':          f"{icd['sem_pc']:.1f}%",
+                        'MDC₉₅':         f"{icd['mdc95']:.1f} {unid_t}",
+                        'MDC%':          f"{icd['mdc_pc']:.1f}%",
+                        'ICC':           f"{icd['icc']:.3f}",
                         'Qualidade ICC': icd['icc_qual'],
                     })
                 if rows_icc:
@@ -3585,46 +3620,27 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                             row[lbl] = (f"{np.mean(vals):.1f} {unid_d}"
                                         if len(vals) >= 1 else '—')
 
-                        # Comparações estatísticas
+                        # Comparações estatísticas — saída compacta
+                        def _comp(v1, v2, lbl, ud):
+                            if len(v1) < 3 or len(v2) < 3: return None
+                            try:
+                                _, p = mannwhitneyu(v1, v2, alternative='two-sided')
+                                delta = np.mean(v1) - np.mean(v2)
+                                if p < 0.05:
+                                    return f"{lbl}: {delta:+.1f} {ud}"
+                                else:
+                                    return f"{lbl}: sem mudança"
+                            except Exception: return None
+
                         comps = []
+                        r = _comp(com_v, sem_v, "Com treino", unid_d)
+                        if r: comps.append(r)
+                        r2 = _comp(pesos_v, cicl_v, "Pesos vs Cíclicos", unid_d)
+                        if r2: comps.append(r2)
+                        r3 = _comp(pesos_v, sem_v, "Pesos vs Sem", unid_d)
+                        if r3 and r2 is None: comps.append(r3)
 
-                        # 1. Sem treino vs Com treino
-                        if len(sem_v) >= 3 and len(com_v) >= 3:
-                            _, p = mannwhitneyu(sem_v, com_v, alternative='two-sided')
-                            delta = np.mean(com_v) - np.mean(sem_v)
-                            if p < 0.05:
-                                dir_s = 'mais alto' if delta > 0 else 'mais baixo'
-                                comps.append(f"Com vs Sem: {dir_s} ({delta:+.1f} {unid_d}, p={p:.3f})")
-                            else:
-                                comps.append(f"Com vs Sem: sem diferença (p={p:.3f})")
-
-                        # 2. Pesos vs Cíclicos
-                        if len(pesos_v) >= 3 and len(cicl_v) >= 3:
-                            _, p2 = mannwhitneyu(pesos_v, cicl_v, alternative='two-sided')
-                            delta2 = np.mean(pesos_v) - np.mean(cicl_v)
-                            if p2 < 0.05:
-                                dir_s2 = 'mais alto' if delta2 > 0 else 'mais baixo'
-                                comps.append(f"Pesos vs Cíclicos: Pesos {dir_s2} ({delta2:+.1f} {unid_d}, p={p2:.3f})")
-                            else:
-                                comps.append(f"Pesos vs Cíclicos: sem diferença (p={p2:.3f})")
-
-                        # 3. Pesos vs Sem treino
-                        if len(pesos_v) >= 3 and len(sem_v) >= 3:
-                            _, p3 = mannwhitneyu(pesos_v, sem_v, alternative='two-sided')
-                            delta3 = np.mean(pesos_v) - np.mean(sem_v)
-                            if p3 < 0.05:
-                                dir_s3 = 'mais alto' if delta3 > 0 else 'mais baixo'
-                                comps.append(f"Pesos vs Sem: {dir_s3} ({delta3:+.1f} {unid_d}, p={p3:.3f})")
-
-                        # 4. Cíclicos vs Sem treino
-                        if len(cicl_v) >= 3 and len(sem_v) >= 3:
-                            _, p4 = mannwhitneyu(cicl_v, sem_v, alternative='two-sided')
-                            delta4 = np.mean(cicl_v) - np.mean(sem_v)
-                            if p4 < 0.05:
-                                dir_s4 = 'mais alto' if delta4 > 0 else 'mais baixo'
-                                comps.append(f"Cíclicos vs Sem: {dir_s4} ({delta4:+.1f} {unid_d}, p={p4:.3f})")
-
-                        row['Comparações'] = " | ".join(comps) if comps else '— (N insuficiente)'
+                        row['Resultado'] = "  |  ".join(comps) if comps else '— (N insuf.)'
                         treino_rows.append(row)
 
                     if treino_rows:
