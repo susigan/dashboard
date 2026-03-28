@@ -422,33 +422,131 @@ def calcular_polinomios_carga(df_act_full):
                     except Exception: pass
     return res
 
-def analisar_falta_estimulo(df_act_full, janela_dias=14):
-    """Need Score por modalidade — quanto estímulo está em falta."""
-    ld, _ = calcular_series_carga(df_act_full)
-    if len(ld) == 0: return None
-    df = filtrar_principais(df_act_full).copy()
+def analisar_falta_estimulo(df_act_full, janela_dias=14, baseline_dias=90):
+    """
+    Need Score v2 por modalidade.
+    Load = duração_min × RPE
+    A(25%) Share deficit | B(25%) Quality deficit | C(20%) Gap dias
+    D(15%) FTLM slope | E(15%) Interacção A×B
+    """
+    MODS = ['Bike', 'Row', 'Ski', 'Run']
+    df   = filtrar_principais(df_act_full).copy()
     df['Data'] = pd.to_datetime(df['Data'])
-    data_lim = pd.Timestamp.now() - pd.Timedelta(days=janela_dias)
-    cr = ld[ld['Data'] >= data_lim].copy()
-    if len(cr) == 0: return None
-    res = {}
-    for mod in ['Bike', 'Run', 'Row', 'Ski']:
-        dm = df[(df['type'] == mod) & (df['Data'] >= data_lim)]
-        dias_a = dm['Data'].nunique(); freq = dias_a / max(janela_dias, 1)
-        atl_m = cr['ATL'].mean(); ctl_m = cr['CTL'].mean()
-        gap = ((ctl_m - atl_m) / ctl_m * 100) if ctl_m > 0 else 0
-        dias_b = (cr['ATL'] < cr['CTL']).sum()
-        sl = np.polyfit(np.arange(len(cr)), cr['ATL'].values, 1)[0] if len(cr) > 1 else 0
-        sl_n = max(0, min(1, (sl + 5) / 10))
-        need = (min(1, max(0, gap / 50)) * 100 * 0.4 +
-                min(1, dias_b / max(len(cr), 1)) * 100 * 0.3 +
-                (1 - sl_n) * 100 * 0.2 +
-                (1 - freq) * 100 * 0.1)
-        prio = 'ALTA' if need >= 70 else 'MÉDIA' if need >= 40 else 'BAIXA'
-        res[mod] = {'need_score': need, 'prioridade': prio, 'gap_relativo': gap,
-                    'dias_atl_menor_ctl': int(dias_b), 'dias_com_atividade': dias_a,
-                    'atl_medio': atl_m, 'ctl_medio': ctl_m}
-    return dict(sorted(res.items(), key=lambda x: x[1]['need_score'], reverse=True))
+    if 'moving_time' not in df.columns or 'rpe' not in df.columns:
+        return None, None
+    df['dur_min']  = pd.to_numeric(df['moving_time'], errors='coerce') / 60
+    df['rpe_n']    = pd.to_numeric(df['rpe'], errors='coerce')
+    df['load']     = df['dur_min'] * df['rpe_n']
+    df['load_z3']  = np.where(df['rpe_n'] >= 7, df['load'], 0)
+
+    hoje     = pd.Timestamp.now().normalize()
+    ini_jan  = hoje - pd.Timedelta(days=janela_dias)
+    ini_base = hoje - pd.Timedelta(days=baseline_dias)
+
+    # FTLM por modalidade (EMA spans)
+    all_dates = pd.date_range(df['Data'].min(), hoje, freq='D')
+    ftlm_mods = {}
+    for mod in MODS:
+        dm = df[df['type'] == mod].copy()
+        ld = (dm.groupby('Data')['load'].sum()
+                .reindex(all_dates, fill_value=0)
+                .reset_index())
+        ld.columns = ['Data', 'load']
+        ld['FTLM'] = ld['load'].ewm(span=28, adjust=False).mean()
+        ftlm_mods[mod] = ld.set_index('Data')
+
+    ftlm_total = sum(ftlm_mods[m]['FTLM'] for m in MODS).replace(0, np.nan)
+
+    results = {}
+    debug_rows = []
+
+    for mod in MODS:
+        fm = ftlm_mods[mod]
+
+        # A — Share deficit
+        share_jan  = float((fm.loc[ini_jan:hoje,  'FTLM'] / ftlm_total.loc[ini_jan:hoje]).mean())
+        share_base = float((fm.loc[ini_base:hoje, 'FTLM'] / ftlm_total.loc[ini_base:hoje]).mean())
+        share_jan  = 0.0 if np.isnan(share_jan)  else share_jan
+        share_base = 0.0 if np.isnan(share_base) else share_base
+        floor_peso = min(1.0, share_base / 0.10) if share_base < 0.10 else 1.0
+        A_raw = max(0.0, (share_base - share_jan) / share_base) if share_base > 0 else 0.0
+        A     = min(A_raw, 1.0) * floor_peso
+
+        # B — Quality deficit (carga_Z3 / carga_total)
+        dm_jan  = df[(df['type']==mod) & (df['Data']>=ini_jan)]
+        dm_base = df[(df['type']==mod) & (df['Data']>=ini_base)]
+        def _q(d_): ct = d_['load'].sum(); return float(d_['load_z3'].sum()/ct) if ct>0 else 0.0
+        q_jan  = _q(dm_jan)
+        q_base = _q(dm_base)
+        B_raw  = max(0.0, (q_base - q_jan) / q_base) if q_base > 0 else 0.0
+        B      = min(B_raw, 1.0)
+
+        # C — Gap dias vs intervalo típico
+        datas_mod  = df[df['type']==mod]['Data'].sort_values()
+        ultima     = datas_mod.max() if len(datas_mod) > 0 else pd.NaT
+        gap_dias   = int((hoje - ultima).days) if pd.notna(ultima) else janela_dias
+        datas_base = datas_mod[datas_mod >= ini_base]
+        gap_tipico = float(max(1, datas_base.diff().dt.days.dropna().median())) if len(datas_base)>=2 else 7.0
+        C = min(1.0, gap_dias / (gap_tipico * 2))
+
+        # D — FTLM slope polinomial
+        ftlm_base = fm.loc[ini_base:hoje, 'FTLM'].dropna().values
+        slope_n = 0.0
+        if len(ftlm_base) >= 10:
+            x = np.arange(len(ftlm_base), dtype=float)
+            coeffs = np.polyfit(x, ftlm_base, 2)
+            slope  = 2 * coeffs[0] * len(ftlm_base) + coeffs[1]
+            slope_n = slope / (np.mean(ftlm_base) + 1e-9)
+            if slope_n < 0:
+                D = min(1.0, abs(slope_n) * 20)
+            elif slope_n > 0.05:
+                D = min(0.5, (slope_n - 0.05) * 10)
+            else:
+                D = 0.0
+        else:
+            D = 0.0
+
+        # E — Interacção A×B
+        if A_raw > 0 and B_raw > 0:   fator = 1.3
+        elif A_raw > 0 or B_raw > 0:  fator = 0.7
+        else:                           fator = 0.0
+        E = float(np.clip((A_raw + B_raw) / 2 * fator, 0, 1))
+
+        need = min(100.0, A*100*0.25 + B*100*0.25 + C*100*0.20 + D*100*0.15 + E*100*0.15)
+        prio = 'ALTA' if need>=70 else 'MÉDIA' if need>=40 else 'BAIXA'
+
+        results[mod] = dict(
+            need_score=need, prioridade=prio,
+            share_actual=share_jan, share_hist=share_base,
+            quality_actual=q_jan, quality_hist=q_base,
+            gap_dias=gap_dias, gap_tipico=gap_tipico,
+            ftlm_slope_n=slope_n, A=A, B=B, C=C, D=D, E=E,
+            floor_peso=floor_peso)
+
+        debug_rows.append({
+            'Modalidade':          mod,
+            'Need Score':          round(need,1),
+            'Prioridade':          prio,
+            'A Share actual%':     round(share_jan*100,1),
+            'A Share hist90d%':    round(share_base*100,1),
+            'A Deficit%':          round(A_raw*100,1),
+            'A Floor peso':        round(floor_peso,2),
+            'A contribuição':      round(A*100*0.25,1),
+            'B Quality actual%':   round(q_jan*100,1),
+            'B Quality hist90d%':  round(q_base*100,1),
+            'B Deficit%':          round(B_raw*100,1),
+            'B contribuição':      round(B*100*0.25,1),
+            'C Gap dias':          gap_dias,
+            'C Gap típico(d)':     round(gap_tipico,1),
+            'C contribuição':      round(C*100*0.20,1),
+            'D FTLM slope_n':      round(slope_n,4),
+            'D contribuição':      round(D*100*0.15,1),
+            'E Fator VQ':          fator,
+            'E contribuição':      round(E*100*0.15,1),
+        })
+
+    results_sorted = dict(sorted(results.items(), key=lambda x: x[1]['need_score'], reverse=True))
+    return results_sorted, pd.DataFrame(debug_rows)
 
 
 
@@ -2619,24 +2717,42 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
 
     # ── Secção 5: Falta de Estímulo ─────────────────────────────────────────
     st.subheader("🎯 Análise de Falta de Estímulo por Modalidade")
+    st.caption(
+        "Need Score v2 — A=Share volume (25%) | B=Qualidade RPE≥7 (25%) | "
+        "C=Gap dias (20%) | D=FTLM slope (15%) | E=Interacção A×B (15%)")
     c1, c2 = st.columns(2)
     for col_w, janela, label in [(c1, 7, "7 dias"), (c2, 14, "14 dias")]:
-        res = analisar_falta_estimulo(da_full, janela)
+        res, df_debug = analisar_falta_estimulo(da_full, janela_dias=janela)
         with col_w:
             st.markdown(f"**📅 Janela {label}**")
             if res:
                 rows_fe = []
                 for mod, d in res.items():
                     pe = "🔴" if d['prioridade']=='ALTA' else "🟡" if d['prioridade']=='MÉDIA' else "🟢"
-                    rows_fe.append({'Modalidade': mod, 'Need Score': f"{d['need_score']:.1f}",
-                                    'Prioridade': f"{pe} {d['prioridade']}",
-                                    'Gap CTL-ATL': f"{d['gap_relativo']:.1f}%",
-                                    'Dias ATL<CTL': d['dias_atl_menor_ctl'],
-                                    'Dias c/ Ativ.': d['dias_com_atividade']})
+                    rows_fe.append({
+                        'Modalidade':  mod,
+                        'Need Score':  f"{d['need_score']:.1f}",
+                        'Prioridade':  f"{pe} {d['prioridade']}",
+                        'A Share%':    f"{d['share_actual']*100:.1f}→{d['share_hist']*100:.1f}%",
+                        'B Quality%':  f"{d['quality_actual']*100:.1f}→{d['quality_hist']*100:.1f}%",
+                        'C Gap':       f"{d['gap_dias']}d (típ {d['gap_tipico']:.0f}d)",
+                        'D slope':     f"{d['ftlm_slope_n']:.3f}",
+                    })
                 st.dataframe(pd.DataFrame(rows_fe), width="stretch", hide_index=True)
                 top = list(res.keys())[0]
-                pe = "🔴" if res[top]['prioridade']=='ALTA' else "🟡" if res[top]['prioridade']=='MÉDIA' else "🟢"
+                pe  = "🔴" if res[top]['prioridade']=='ALTA' else "🟡" if res[top]['prioridade']=='MÉDIA' else "🟢"
                 st.info(f"{pe} Foco recomendado: **{top}** (Score: {res[top]['need_score']:.1f})")
+                if df_debug is not None and len(df_debug) > 0:
+                    with st.expander(f"🔬 Debug componentes — {label}"):
+                        st.caption("Componentes intermédios para validação. Cada coluna mostra o valor calculado antes da ponderação.")
+                        st.dataframe(df_debug, width="stretch", hide_index=True)
+                        csv_bytes = df_debug.to_csv(index=False).encode('utf-8')
+                        st.download_button(
+                            label=f"⬇️ Download debug CSV ({label})",
+                            data=csv_bytes,
+                            file_name=f"need_score_debug_{label.replace(' ','_')}.csv",
+                            mime="text/csv",
+                            key=f"dl_debug_{janela}")
             else:
                 st.info("Dados insuficientes.")
 
