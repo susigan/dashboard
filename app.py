@@ -1841,12 +1841,7 @@ def tab_zones(da, mods_sel):
             rows_anual.append(row)
 
     if rows_anual:
-        df_anual = pd.DataFrame(rows_anual)
-
-        # Render com HTML para destacar linha Geral
-        display_cols = ['Ano','Modalidade',
-                        'Z1 (HR|RPE)','Z2 (HR|RPE)','Z3 (HR|RPE)']
-        # Combinar HR e RPE numa só coluna por zona
+        # 1. Combinar HR|RPE ANTES de criar DataFrame
         for row in rows_anual:
             for z_hr, z_rpe, z_lbl in [
                 ('HR Z1+Z2%','RPE Z1%','Z1 (HR|RPE)'),
@@ -1855,16 +1850,22 @@ def tab_zones(da, mods_sel):
             ]:
                 row[z_lbl] = f"{row.get(z_hr,'—')} | {row.get(z_rpe,'—')}"
 
-        html = ('<table style="border-collapse:collapse;width:100%;'
-                'font-size:12px;background:#fff;color:#222">')
+        # 2. Criar DataFrame depois da combinação
+        df_anual     = pd.DataFrame(rows_anual)
+        display_cols = ['Ano','Modalidade',
+                        'Z1 (HR|RPE)','Z2 (HR|RPE)','Z3 (HR|RPE)']
+
+        # 3. Render HTML com linha Geral em cinza
+        html  = ('<table style="border-collapse:collapse;width:100%;'
+                 'font-size:12px;background:#fff;color:#222">')
         html += '<tr style="background:#e0e0e0">'
         for c in display_cols:
             html += (f'<th style="border:1px solid #ccc;padding:6px 10px;'
                      f'text-align:center;color:#111;font-weight:bold">{c}</th>')
         html += '</tr>'
         for _, row in df_anual.iterrows():
-            bg = '#f0f0f0' if row['_geral'] else '#ffffff'
-            fw = 'bold'    if row['_geral'] else 'normal'
+            bg = '#f0f0f0' if row.get('_geral', False) else '#ffffff'
+            fw = 'bold'    if row.get('_geral', False) else 'normal'
             html += f'<tr style="background:{bg}">'
             for c in display_cols:
                 html += (f'<td style="border:1px solid #ddd;padding:5px 10px;'
