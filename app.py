@@ -3841,7 +3841,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
 def tab_corporal(dc, da_full):
     """
     Aba Composição Corporal & Nutrição.
-    dc      : DataFrame Consolidado_Comida (pré-processado)
+    dc      : DataFrame Consolidado_Comida (pré-processado, todo o histórico)
     da_full : DataFrame atividades completo (para correlações)
     """
     st.header("🧬 Composição Corporal & Nutrição")
@@ -3869,45 +3869,38 @@ def tab_corporal(dc, da_full):
     c4.metric("🫁 BF (registos)",       f"{n_bf}/{n_total}")
     st.caption(f"Dados esparsos: {n_dias} dias no período, {n_total} entradas. "
                "Dias sem registo são ignorados em médias e correlações.")
+    st.markdown("---")
 
     # ════════════════════════════════════════════════════════════════════════
-    # 🎯 MINI-CALCULADORA — usa TODO o histórico, baseada nos dados reais
+    # 🎯 MINI-CALCULADORA — usa TODO o histórico independente de filtros
     # ════════════════════════════════════════════════════════════════════════
     with st.expander("🎯 Calculadora de Metas — Peso, BF e Calorias", expanded=True):
-        from scipy.stats import linregress as _linreg, t as _t_dist
 
-        # ── Dados históricos completos (todo dc, independente de filtros) ──
+        # Série semanal sobre TODO o histórico
         _dc_all = dc.copy()
-        _dc_all['Data'] = pd.to_datetime(_dc_all['Data'])
-        _dc_all = _dc_all.sort_values('Data')
-
-        # Série semanal — médias para Peso/BF, média para Calorias
         _dc_all['_w'] = _dc_all['Data'].dt.to_period('W')
         _wk = _dc_all.groupby('_w')[['Peso','BF','Calorias','Net']].mean()
         _wk.index = _wk.index.to_timestamp()
         _wk = _wk.sort_index()
 
-        # Valores actuais (último registo disponível)
+        # Peso/BF actuais = mediana das últimas 4 semanas com dados
         _peso_atual = (float(_wk['Peso'].dropna().tail(4).median())
-            if 'Peso' in _wk.columns and _wk['Peso'].notna().any() else None)
+                       if 'Peso' in _wk.columns and _wk['Peso'].notna().any() else None)
         _bf_atual   = (float(_wk['BF'].dropna().tail(4).median())
-            if 'BF'   in _wk.columns and _wk['BF'].notna().any()   else None)
+                       if 'BF'   in _wk.columns and _wk['BF'].notna().any()   else None)
 
         st.caption(
-            "Estimativas **baseadas nos teus dados históricos reais**. "
-            "A taxa de variação semanal e as calorias associadas são calculadas "
-            "por regressão linear sobre o histórico completo. "
-            "Intervalo de confiança 95% e 3 cenários.")
+            "Valores actuais = **mediana das últimas 4 semanas** com dados disponíveis. "
+            "Calorias estimadas pela relação histórica real Calorias ↔ Peso/BF.")
 
-        # ── Inputs ──
         _ci1, _ci2, _ci3 = st.columns(3)
         _peso_alvo = _ci1.number_input(
-            f"⚖️ Peso-alvo (kg)  {'[mediana 4 sem: ' + str(round(_peso_atual,1)) + ' kg]' if _peso_atual else ''}",
+            f"⚖️ Peso-alvo (kg)  {'[actual: ' + str(round(_peso_atual,1)) + ' kg]' if _peso_atual else ''}",
             min_value=30.0, max_value=200.0,
             value=float(round(_peso_atual,1)) if _peso_atual else 75.0,
             step=0.1, key="calc_peso_alvo")
         _bf_alvo = _ci2.number_input(
-            f"🫁 BF-alvo (%)  {'[mediana 4 sem: ' + str(round(_bf_atual,1)) + '%]' if _bf_atual else ''}",
+            f"🫁 BF-alvo (%)  {'[actual: ' + str(round(_bf_atual,1)) + '%]' if _bf_atual else ''}",
             min_value=3.0, max_value=50.0,
             value=float(round(_bf_atual,1)) if _bf_atual else 15.0,
             step=0.1, key="calc_bf_alvo")
@@ -3917,80 +3910,33 @@ def tab_corporal(dc, da_full):
         if not _usar_peso and not _usar_bf:
             st.info("Selecciona pelo menos uma meta (Peso ou BF).")
         else:
-            # ════════════════════════════════════════════════════════
-            # Funções auxiliares
-            # ════════════════════════════════════════════════════════
-
-            def _regressao(series):
+            def _cal_historicas(target_col):
                 """
-                Regressão linear sobre série semanal.
-                Retorna slope, IC95, R², p-value, N.
+                Regressão linear Calorias ~ target_col sobre dados históricos reais.
+                Retorna dict com slope, intercept, R², p, N, std, quartis.
                 """
-                s = series.dropna().reset_index(drop=True)
-                if len(s) < 6: return None
-                x = np.arange(len(s), dtype=float)
-                sl, ic, rv, pv, se = _linreg(x, s.values)
-                tc = _t_dist.ppf(0.975, df=len(s)-2)
-                return {
-                    'slope': sl, 'lo': sl - tc*se, 'hi': sl + tc*se,
-                    'r2': rv**2, 'pv': pv, 'n': len(s), 'se': se,
-                    'intercept': ic, 'y': s.values,
-                }
-
-            def _calorias_historicas_para_variacao(target_col, cal_col='Calorias'):
-                """
-                Usa os dados históricos reais para estimar as calorias
-                associadas a subir/descer na variável target.
-
-                Método:
-                1. Agrupa semanas em quartis de target_col
-                2. Calcula a mediana de Calorias em cada quartil
-                3. Calcula o slope de calorias vs target (regressão)
-                → Dá a relação real observada entre calorias e a variável
-                """
-                df_pair = _wk[[target_col, cal_col]].dropna()
-                if len(df_pair) < 8: return None
-
-                # Mediana de Calorias por nível da variável (quartis)
+                df_p = _wk[[target_col, 'Calorias']].dropna()
+                if len(df_p) < 8: return None
+                sl, ic, rv, pv, _ = linregress(df_p[target_col].values,
+                                                df_p['Calorias'].values)
                 try:
-                    df_pair = df_pair.copy()
-                    df_pair['_q'] = pd.qcut(df_pair[target_col], q=4,
-                                            labels=['Q1','Q2','Q3','Q4'],
-                                            duplicates='drop')
-                    quart_cal = df_pair.groupby('_q', observed=True)['Calorias'].agg(
-                        ['median','mean','std','count']).reset_index()
-                    quart_tgt = df_pair.groupby('_q', observed=True)[target_col].median().reset_index()
+                    df_p = df_p.copy()
+                    df_p['_q'] = pd.qcut(df_p[target_col], q=4,
+                                         labels=['Q1','Q2','Q3','Q4'],
+                                         duplicates='drop')
+                    qcal = df_p.groupby('_q', observed=True)['Calorias'].agg(
+                        ['median','mean','count']).reset_index()
+                    qtgt = df_p.groupby('_q', observed=True)[target_col].median()
                 except Exception:
-                    return None
-
-                # Regressão linear Calorias ~ target
-                sl_c, ic_c, rv_c, pv_c, se_c = _linreg(
-                    df_pair[target_col].values,
-                    df_pair[cal_col].values)
-
+                    qcal, qtgt = None, None
                 return {
-                    'slope_cal_per_unit': sl_c,   # kcal por 1 unidade de target
-                    'intercept': ic_c,
-                    'r2': rv_c**2, 'pv': pv_c,
-                    'cal_media': df_pair[cal_col].mean(),
-                    'cal_std':   df_pair[cal_col].std(),
-                    'n': len(df_pair),
-                    'quart_cal': quart_cal,
-                    'quart_tgt': quart_tgt,
-                    'df_pair':   df_pair,
+                    'slope': sl, 'intercept': ic,
+                    'r2': rv**2, 'pv': pv,
+                    'cal_std': df_p['Calorias'].std(),
+                    'cal_media': df_p['Calorias'].mean(),
+                    'n': len(df_p),
+                    'qcal': qcal, 'qtgt': qtgt,
                 }
-
-            def _qualidade(reg):
-                if reg is None: return "⛔ Dados insuficientes (< 6 semanas)"
-                if reg['n'] < 10: return f"⚠️ Poucos dados ({reg['n']} semanas)"
-                if reg['pv'] > 0.10: return f"⚠️ Tendência não significativa (p={reg['pv']:.2f})"
-                if reg['r2'] < 0.10: return f"⚠️ R²={reg['r2']:.2f} — tendência fraca"
-                return f"✅ Tendência confiável (R²={reg['r2']:.2f}, p={reg['pv']:.3f}, N={reg['n']})"
-
-            # ════════════════════════════════════════════════════════
-            # Calcular para cada meta seleccionada
-            # ════════════════════════════════════════════════════════
-            results = []
 
             for _var, _alvo, _atual, _usar in [
                 ('Peso', _peso_alvo, _peso_atual, _usar_peso),
@@ -4004,157 +3950,101 @@ def tab_corporal(dc, da_full):
                     st.success(f"✅ {_var}: já está no alvo ({_atual:.1f})!")
                     continue
 
-                unid   = 'kg' if _var == 'Peso' else '%'
+                unid    = 'kg' if _var == 'Peso' else '%'
                 dir_lbl = ('⬆️ ganhar ' if diff_val > 0 else '⬇️ perder ') + f"{abs(diff_val):.1f} {unid}"
 
-                reg   = _regressao(_wk[_var])
-                c_rel = _calorias_historicas_para_variacao(_var)
+                st.markdown(f"#### {_var} — actual: **{_atual:.1f}** → alvo: **{_alvo:.1f}** ({dir_lbl})")
 
-                # Tempo estimado (semanas)
-                tempo = None
-                if reg and abs(reg['slope']) > 1e-5:
-                    t_esp  = diff_val / reg['slope']
-                    # Usa IC95: slope_hi = taxa mais rápida se diff>0, mais lenta se diff<0
-                    t_opt  = diff_val / reg['hi'] if np.sign(reg['hi']) == np.sign(diff_val) else None
-                    t_pes  = diff_val / reg['lo'] if np.sign(reg['lo']) == np.sign(diff_val) else None
-                    if t_esp > 0:
-                        tempo = {
-                            'esperado':  round(t_esp),
-                            'optimista': round(t_opt) if t_opt and t_opt > 0 else None,
-                            'pessimista':round(t_pes) if t_pes and t_pes > 0 else None,
-                        }
+                c_rel = _cal_historicas(_var)
+                if c_rel:
+                    qual = ("✅ Confiável" if c_rel['r2'] > 0.10 and c_rel['pv'] < 0.10
+                            else "⚠️ Tendência fraca" if c_rel['n'] >= 8
+                            else "⛔ Dados insuficientes")
+                    st.caption(f"{qual} — R²={c_rel['r2']:.2f} | p={c_rel['pv']:.3f} | "
+                               f"N={c_rel['n']} semanas | "
+                               f"Relação: cada 1 {unid} de {_var} ↔ "
+                               f"{c_rel['slope']:+.0f} kcal (histórico)")
 
-                results.append({
-                    'var': _var, 'atual': _atual, 'alvo': _alvo,
-                    'diff': diff_val, 'dir_lbl': dir_lbl, 'unid': unid,
-                    'reg': reg, 'c_rel': c_rel, 'tempo': tempo,
-                })
+                    cal_atual = c_rel['intercept'] + c_rel['slope'] * _atual
+                    cal_alvo  = c_rel['intercept'] + c_rel['slope'] * _alvo
+                    ajuste    = cal_alvo - cal_atual
 
-            # ════════════════════════════════════════════════════════
-            # Mostrar resultados
-            # ════════════════════════════════════════════════════════
-            for res in results:
-                st.markdown(f"#### {res['var']} — actual: **{res['atual']:.1f}** → alvo: **{res['alvo']:.1f}** ({res['dir_lbl']})")
-                st.caption(f"Qualidade: {_qualidade(res['reg'])}")
+                    dir_lbl2 = "défice" if diff_val < 0 else "superávit"
+                    st.dataframe(pd.DataFrame([
+                        {'Métrica': '📊 Cal. históricas associadas ao estado actual',
+                         'Valor': f"{cal_atual:.0f} kcal"},
+                        {'Métrica': f'{"➕" if diff_val > 0 else "➖"} Ajuste necessário ({dir_lbl2})',
+                         'Valor': f"{ajuste:+.0f} kcal/dia"},
+                        {'Métrica': '🎯 Cal. alvo — central (dos dados)',
+                         'Valor': f"{cal_alvo:.0f} kcal"},
+                        {'Métrica': '📉 Cal. alvo — mínimo (–1σ histórico)',
+                         'Valor': f"{cal_alvo - c_rel['cal_std']:.0f} kcal"},
+                        {'Métrica': '📈 Cal. alvo — máximo (+1σ histórico)',
+                         'Valor': f"{cal_alvo + c_rel['cal_std']:.0f} kcal"},
+                    ]), use_container_width=True, hide_index=True)
 
-                if res['reg']:
-                    reg = res['reg']
-                    st.caption(
-                        f"Taxa histórica: **{reg['slope']:+.3f} {res['unid']}/semana** "
-                        f"(IC95: {reg['lo']:+.3f} → {reg['hi']:+.3f}) | "
-                        f"N={reg['n']} semanas")
-
-                _rc1, _rc2 = st.columns(2)
-
-                # ── Tempo estimado ──
-                with _rc1:
-                    st.markdown("**⏱️ Tempo estimado (baseado na taxa histórica)**")
-                    if res['tempo']:
-                        t = res['tempo']
-                        rows_t = []
-                        for lbl, key, icon in [
-                            ("Esperado (slope central)",   'esperado',   "🎯"),
-                            ("Optimista (IC95 mais rápido)","optimista",  "⚡"),
-                            ("Pessimista (IC95 mais lento)","pessimista", "🐢"),
-                        ]:
-                            v = t.get(key)
-                            rows_t.append({
-                                'Cenário': f"{icon} {lbl}",
-                                'Semanas': str(v) if v else '—',
-                                'Meses':   f"~{v/4.3:.1f}" if v else '—',
-                            })
-                        st.dataframe(pd.DataFrame(rows_t),
-                                     use_container_width=True, hide_index=True)
-                    else:
-                        st.info("Taxa histórica insuficiente para estimar tempo.")
-
-                # ── Calorias recomendadas (dos dados históricos) ──
-                with _rc2:
-                    st.markdown("**🔥 Calorias recomendadas (dos teus dados)**")
-                    if res['c_rel']:
-                        c = res['c_rel']
-                        # Calorias alvo = intercept + slope * alvo
-                        # = calorias históricas associadas ao peso/BF alvo
-                        cal_alvo  = c['intercept'] + c['slope_cal_per_unit'] * res['alvo']
-                        cal_atual = c['intercept'] + c['slope_cal_per_unit'] * res['atual']
-                        ajuste    = cal_alvo - cal_atual
-                        cal_min   = cal_alvo - c['cal_std']
-                        cal_max   = cal_alvo + c['cal_std']
-
-                        dir_lbl2 = "défice" if res['diff'] < 0 else "superávit"
-                        st.dataframe(pd.DataFrame([
-                            {'Métrica': '📊 Cal. históricas (estado actual)',
-                             'Valor': f"{cal_atual:.0f} kcal"},
-                            {'Métrica': f'{"➕" if res["diff"]>0 else "➖"} Ajuste ({dir_lbl2}) para atingir alvo',
-                             'Valor': f"{ajuste:+.0f} kcal/dia"},
-                            {'Métrica': '🎯 Cal. alvo — central (histórico)',
-                             'Valor': f"{cal_alvo:.0f} kcal"},
-                            {'Métrica': '📉 Cal. alvo — mínimo (–1σ histórico)',
-                             'Valor': f"{cal_min:.0f} kcal"},
-                            {'Métrica': '📈 Cal. alvo — máximo (+1σ histórico)',
-                             'Valor': f"{cal_max:.0f} kcal"},
-                        ]), use_container_width=True, hide_index=True)
-
-                        # Tabela extra: calorias por quartil de alvo
-                        if c.get('quart_cal') is not None and len(c['quart_cal']) > 0:
-                            with st.expander(f"📊 Calorias históricas por quartil de {res['var']}"):
-                                qrows = []
-                                for _, qr in c['quart_cal'].iterrows():
-                                    tgt_med = c['quart_tgt'][
-                                        c['quart_tgt']['_q'] == qr['_q']][res['var']].values
-                                    tgt_str = f"{tgt_med[0]:.1f}" if len(tgt_med) > 0 else '—'
-                                    qrows.append({
-                                        f'Quartil {res["var"]}': str(qr['_q']),
-                                        f'{res["var"]} mediana': f"{tgt_str} {res['unid']}",
-                                        'Cal. mediana': f"{qr['median']:.0f} kcal",
-                                        'Cal. média':   f"{qr['mean']:.0f} kcal",
-                                        'N semanas':    int(qr['count']),
-                                    })
-                                st.dataframe(pd.DataFrame(qrows),
-                                             use_container_width=True, hide_index=True)
-                                st.caption(
-                                    f"Relação histórica: cada 1 {res['unid']} de {res['var']} "
-                                    f"corresponde a {c['slope_cal_per_unit']:+.0f} kcal "
-                                    f"(R²={c['r2']:.2f}, p={c['pv']:.3f}, N={c['n']} semanas)")
-                    else:
-                        st.info("Sem dados suficientes de Calorias para estimar.")
+                    if c_rel['qcal'] is not None:
+                        with st.expander(f"📊 Calorias históricas por quartil de {_var}"):
+                            qrows = []
+                            for _, qr in c_rel['qcal'].iterrows():
+                                tgt_v = (c_rel['qtgt'].get(qr['_q'], float('nan'))
+                                         if c_rel['qtgt'] is not None else float('nan'))
+                                qrows.append({
+                                    f'Quartil {_var}': str(qr['_q']),
+                                    f'{_var} mediana': f"{tgt_v:.1f} {unid}" if not np.isnan(tgt_v) else '—',
+                                    'Cal. mediana': f"{qr['median']:.0f} kcal",
+                                    'Cal. média':   f"{qr['mean']:.0f} kcal",
+                                    'N semanas':    int(qr['count']),
+                                })
+                            st.dataframe(pd.DataFrame(qrows),
+                                         use_container_width=True, hide_index=True)
+                else:
+                    st.info(f"Sem dados suficientes de Calorias para estimar ({_var}).")
 
                 st.markdown("---")
 
-            # Nota combinada se ambas as metas activas
-            if _usar_peso and _usar_bf and len(results) == 2:
-                rp = next((r for r in results if r['var']=='Peso'), None)
-                rb = next((r for r in results if r['var']=='BF'),   None)
-                if rp and rb and rp['tempo'] and rb['tempo']:
-                    tp = rp['tempo'].get('esperado')
-                    tb = rb['tempo'].get('esperado')
-                    if tp and tb:
-                        t_max = max(tp, tb)
-                        btlnk = 'Peso' if tp >= tb else 'BF'
-                        st.info(f"💡 Para atingir **ambas**: ~**{t_max} semanas** — limitado pelo **{btlnk}**.")
-
             st.caption(
-                "⚠️ Estimativas por regressão linear sobre dados históricos reais. "
-                "A taxa de variação pode mudar com o tempo. "
-                "Resultados não fiáveis com menos de 10 semanas de dados.")
+                "⚠️ Calorias estimadas por regressão linear Calorias ~ Peso/BF sobre "
+                "o histórico real. Não usa regras genéricas externas.")
 
-    # ── Controlos globais ─────────────────────────────────────────────────────
-    ca, cb, cc = st.columns([2, 1, 1])
-    agrup_opts = {"Semana": "W", "Mês": "M", "Trimestre": "Q"}
-    agrup_lbl  = ca.selectbox("Agrupar por", list(agrup_opts.keys()), key="corp_agrup")
-    agrup_code = agrup_opts[agrup_lbl]
-    roll_w     = cb.slider("Rolling average (períodos)", 1, 12, 4, key="corp_roll")
-    cc.caption(f"Granularidade: {agrup_lbl}")
+    st.markdown("---")
+
+    # ── Controlos: agrupamento + filtro de datas próprio ─────────────────────
+    st.subheader("⚙️ Filtros dos gráficos")
+    _fc1, _fc2, _fc3, _fc4 = st.columns([1, 1, 1, 1])
+
+    agrup_opts  = {"Semana": "W", "Mês": "M", "Trimestre": "Q"}
+    agrup_lbl   = _fc1.selectbox("Agrupar por", list(agrup_opts.keys()), key="corp_agrup")
+    agrup_code  = agrup_opts[agrup_lbl]
+    roll_w      = _fc2.slider("Rolling (períodos)", 1, 12, 4, key="corp_roll")
+
+    _d_min_hist = dc['Data'].min().date()
+    _d_max_hist = dc['Data'].max().date()
+    _tab_di = _fc3.date_input("Data início", value=_d_min_hist,
+                               min_value=_d_min_hist, max_value=_d_max_hist,
+                               key="corp_di")
+    _tab_df = _fc4.date_input("Data fim",    value=_d_max_hist,
+                               min_value=_d_min_hist, max_value=_d_max_hist,
+                               key="corp_df")
+
+    # Filtrar dc pelo período seleccionado (só para gráficos)
+    dc_f = dc[(dc['Data'].dt.date >= _tab_di) & (dc['Data'].dt.date <= _tab_df)].copy()
+    if len(dc_f) == 0:
+        st.warning("Sem dados no período seleccionado.")
+        return
+
+    st.caption(f"📊 {len(dc_f)} registos no período | "
+               f"{_tab_di.strftime('%d/%m/%Y')} → {_tab_df.strftime('%d/%m/%Y')}")
 
     # Agregação por período
-    dc['_p'] = dc['Data'].dt.to_period(agrup_code)
-    agg = dc.groupby('_p')[['Peso','BF','Calorias','Net','Carb','Fat','Ptn']].mean()
+    dc_f['_p'] = dc_f['Data'].dt.to_period(agrup_code)
+    agg = dc_f.groupby('_p')[['Peso','BF','Calorias','Net','Carb','Fat','Ptn']].mean()
     agg.index = agg.index.to_timestamp()
 
     def _rolling(series):
         return series.dropna().rolling(roll_w, min_periods=1).mean()
 
-    # ── GRÁFICO 1: Peso + BF + Calorias (eixo Y3) ──────────────────────────────
+    # ── GRÁFICO 1: Peso + BF + Calorias ──────────────────────────────────────
     st.subheader("⚖️ Peso, % Gordura Corporal (BF) e Calorias")
     fig1, ax1 = plt.subplots(figsize=(16, 6))
     ax1b = ax1.twinx()
@@ -4179,13 +4069,12 @@ def tab_corporal(dc, da_full):
         ax1b.tick_params(axis='y', labelcolor=CORES['vermelho'])
 
     if 'Calorias' in agg.columns and agg['Calorias'].notna().any():
-        cs = agg['Calorias'].dropna()
-        _bar_w = {'W': 4, 'M': 20, 'Q': 60}.get(agrup_code, 4)
-        ax1c.bar(cs.index, cs.values, width=_bar_w, color=CORES['laranja'],
-                 alpha=0.20, zorder=1, label='Calorias')
+        _bw = {'W': 4, 'M': 20, 'Q': 60}.get(agrup_code, 4)
+        ax1c.bar(agg['Calorias'].dropna().index, agg['Calorias'].dropna().values,
+                 width=_bw, color=CORES['laranja'], alpha=0.20, zorder=1, label='Calorias')
         ax1c.plot(_rolling(agg['Calorias']).index, _rolling(agg['Calorias']).values,
-                  color=CORES['laranja'], linewidth=1.8, linestyle=':',
-                  alpha=0.8, label=f'Cal (roll {roll_w})', zorder=3)
+                  color=CORES['laranja'], linewidth=1.8, linestyle=':', alpha=0.8,
+                  label=f'Cal (roll {roll_w})', zorder=3)
         ax1c.set_ylabel('Calorias (kcal)', color=CORES['laranja'], fontweight='bold')
         ax1c.tick_params(axis='y', labelcolor=CORES['laranja'])
 
@@ -4241,8 +4130,7 @@ def tab_corporal(dc, da_full):
                 vals = agg_pct[m].fillna(0).values
                 ax3.bar(agg_pct.index, vals, bottom=bot,
                         color=macro_cores.get(m, CORES['cinza']),
-                        alpha=0.85, width=15, label=m,
-                        edgecolor='white', linewidth=0.5)
+                        alpha=0.85, width=15, label=m, edgecolor='white', linewidth=0.5)
                 bot += vals
             ax3.axhline(100, color=CORES['cinza'], linestyle=':', linewidth=0.8)
             ax3.set_ylabel('% kcal de macros', fontweight='bold')
@@ -4256,16 +4144,15 @@ def tab_corporal(dc, da_full):
 
     # ── GRÁFICO 4: Variação Peso e BF com bandas ─────────────────────────────
     st.subheader("📊 Variação de Peso e BF — bandas de ganho/perda esperado")
-    st.caption(
-        "Peso (verde) e BF (azul) lado a lado. "
-        "Linhas: limites calculados sobre o valor do período anterior. "
-        "Peso: ±0.30%–0.70% | BF: ±0.25%–0.65%")
+    st.caption("Peso (verde) e BF (azul) lado a lado. "
+               "Linhas: limites calculados sobre o valor do período anterior. "
+               "Peso: ±0.30%–0.70% | BF: ±0.25%–0.65%")
 
-    dc_p       = dc.copy()
-    dc_p['_p2'] = dc_p['Data'].dt.to_period(agrup_code)
-    agg_v       = dc_p.groupby('_p2')[['Peso','BF']].mean()
-    agg_v.index = agg_v.index.to_timestamp()
-    agg_v       = agg_v.sort_index()
+    dc_f2        = dc_f.copy()
+    dc_f2['_p2'] = dc_f2['Data'].dt.to_period(agrup_code)
+    agg_v        = dc_f2.groupby('_p2')[['Peso','BF']].mean()
+    agg_v.index  = agg_v.index.to_timestamp()
+    agg_v        = agg_v.sort_index()
 
     if (('Peso' in agg_v.columns and agg_v['Peso'].notna().sum() >= 3) or
         ('BF'   in agg_v.columns and agg_v['BF'].notna().sum()   >= 3)):
@@ -4279,19 +4166,18 @@ def tab_corporal(dc, da_full):
             peso_s     = agg_v['Peso'].dropna()
             peso_delta = peso_s.diff().dropna()
             ax4p.bar(peso_delta.index - _off, peso_delta.values,
-                     width=bar_w * 0.42, color='#27ae60',
-                     alpha=0.85, align='center', zorder=3, label='_nolegend_')
-            from matplotlib.patches import Patch as _PatchP
-            _proxy_peso = _PatchP(facecolor='#27ae60', alpha=0.85, label='Peso')
-            prev_vals_p = peso_s.shift(1).dropna()
-            ax4p.step(prev_vals_p.index,  prev_vals_p.values * 0.0070, color='#27ae60',
-                      linewidth=1.5, linestyle='--', alpha=0.8, where='mid', label='Peso +max (+0.70%)')
-            ax4p.step(prev_vals_p.index,  prev_vals_p.values * 0.0030, color='#82e0aa',
-                      linewidth=1.2, linestyle=':', alpha=0.8, where='mid', label='Peso +min (+0.30%)')
-            ax4p.step(prev_vals_p.index, -prev_vals_p.values * 0.0030, color='#f1948a',
-                      linewidth=1.2, linestyle=':', alpha=0.8, where='mid', label='Peso -min (-0.30%)')
-            ax4p.step(prev_vals_p.index, -prev_vals_p.values * 0.0070, color='#e74c3c',
-                      linewidth=1.5, linestyle='--', alpha=0.8, where='mid', label='Peso -max (-0.70%)')
+                     width=bar_w * 0.42, color='#27ae60', alpha=0.85,
+                     align='center', zorder=3, label='_nolegend_')
+            _proxy_peso = Patch(facecolor='#27ae60', alpha=0.85, label='Peso')
+            pv = peso_s.shift(1).dropna()
+            ax4p.step(pv.index,  pv.values * 0.0070, color='#27ae60',
+                      linewidth=1.5, linestyle='--', alpha=0.8, where='mid')
+            ax4p.step(pv.index,  pv.values * 0.0030, color='#82e0aa',
+                      linewidth=1.2, linestyle=':', alpha=0.8, where='mid')
+            ax4p.step(pv.index, -pv.values * 0.0030, color='#f1948a',
+                      linewidth=1.2, linestyle=':', alpha=0.8, where='mid')
+            ax4p.step(pv.index, -pv.values * 0.0070, color='#e74c3c',
+                      linewidth=1.5, linestyle='--', alpha=0.8, where='mid')
             ax4p.axhline(0, color='black', linewidth=0.8, alpha=0.5)
             ax4p.set_ylabel('Δ Peso (kg)', fontweight='bold')
 
@@ -4299,29 +4185,27 @@ def tab_corporal(dc, da_full):
             bf_s     = agg_v['BF'].dropna()
             bf_delta = bf_s.diff().dropna()
             ax4b.bar(bf_delta.index + _off, bf_delta.values,
-                     width=bar_w * 0.42, color='#2980b9',
-                     alpha=0.65, align='center', zorder=2, label='_nolegend_')
-            from matplotlib.patches import Patch as _PatchB
-            _proxy_bf = _PatchB(facecolor='#2980b9', alpha=0.65, label='BF')
-            prev_vals_b = bf_s.shift(1).dropna()
-            ax4b.step(prev_vals_b.index,  prev_vals_b.values * 0.0065, color='#f39c12',
-                      linewidth=1.5, linestyle='--', alpha=0.8, where='mid', label='BF +max (+0.65%)')
-            ax4b.step(prev_vals_b.index,  prev_vals_b.values * 0.0025, color='#fad7a0',
-                      linewidth=1.2, linestyle=':', alpha=0.8, where='mid', label='BF +min (+0.25%)')
-            ax4b.step(prev_vals_b.index, -prev_vals_b.values * 0.0025, color='#aed6f1',
-                      linewidth=1.2, linestyle=':', alpha=0.8, where='mid', label='BF -min (-0.25%)')
-            ax4b.step(prev_vals_b.index, -prev_vals_b.values * 0.0065, color='#2980b9',
-                      linewidth=1.5, linestyle='--', alpha=0.8, where='mid', label='BF -max (-0.65%)')
+                     width=bar_w * 0.42, color='#2980b9', alpha=0.65,
+                     align='center', zorder=2, label='_nolegend_')
+            _proxy_bf = Patch(facecolor='#2980b9', alpha=0.65, label='BF')
+            bv = bf_s.shift(1).dropna()
+            ax4b.step(bv.index,  bv.values * 0.0065, color='#f39c12',
+                      linewidth=1.5, linestyle='--', alpha=0.8, where='mid')
+            ax4b.step(bv.index,  bv.values * 0.0025, color='#fad7a0',
+                      linewidth=1.2, linestyle=':', alpha=0.8, where='mid')
+            ax4b.step(bv.index, -bv.values * 0.0025, color='#aed6f1',
+                      linewidth=1.2, linestyle=':', alpha=0.8, where='mid')
+            ax4b.step(bv.index, -bv.values * 0.0065, color='#2980b9',
+                      linewidth=1.5, linestyle='--', alpha=0.8, where='mid')
             ax4b.set_ylabel('Δ BF (%)', fontweight='bold', color='#2980b9')
             ax4b.tick_params(axis='y', labelcolor='#2980b9')
 
-        _handles, _labels = [], []
-        if '_proxy_peso' in dir(): _handles.append(_proxy_peso); _labels.append('Peso')
-        if '_proxy_bf'   in dir(): _handles.append(_proxy_bf);   _labels.append('BF')
-        ax4p.legend(_handles, _labels, loc='upper left', fontsize=9)
-        ax4p.set_title(
-            f'Variação Peso e BF por {agrup_lbl} — bandas de ganho/perda esperado',
-            fontsize=13, fontweight='bold')
+        _hl, _ll = [], []
+        if '_proxy_peso' in dir(): _hl.append(_proxy_peso); _ll.append('Peso')
+        if '_proxy_bf'   in dir(): _hl.append(_proxy_bf);   _ll.append('BF')
+        ax4p.legend(_hl, _ll, loc='upper left', fontsize=9)
+        ax4p.set_title(f'Variação Peso e BF por {agrup_lbl} — bandas de ganho/perda esperado',
+                       fontsize=13, fontweight='bold')
         ax4p.grid(True, alpha=0.2, axis='y')
         plt.xticks(rotation=45); plt.tight_layout()
         st.pyplot(fig4); plt.close()
@@ -4333,11 +4217,8 @@ def tab_corporal(dc, da_full):
     # ── CORRELAÇÕES ───────────────────────────────────────────────────────────
     st.subheader("🔗 Correlações entre variáveis corporais e de treino")
     st.caption(
-        "Correlação de Spearman semanal. Só mostra moderada (|r|≥0.40) ou forte (|r|≥0.60). "
-        "MDC aplicado para confirmar variação real na variável-alvo. "
-        "Usa o maior período com dados disponíveis.")
-
-    from scipy.stats import spearmanr
+        "Correlação de Spearman semanal sobre **todo o histórico** (independente do filtro de datas). "
+        "Só mostra moderada (|r|≥0.40) ou forte (|r|≥0.60). MDC confirma variação real.")
 
     def _sem_mdc(series, icc=0.90):
         s = series.dropna()
@@ -4351,21 +4232,17 @@ def tab_corporal(dc, da_full):
         if a >= 0.40: return "★★ Moderada"
         return None
 
-    # Série semanal corporal
-    dc_w = dc.copy()
-    dc_w['_w'] = dc_w['Data'].dt.to_period('W')
-    corp_cols = ['Peso','BF','Calorias','Net','Carb','Fat','Ptn']
-    corp_agg  = dc_w.groupby('_w')[corp_cols].mean()
+    # Série semanal corporal — TODO o histórico
+    _dc_all2 = dc.copy()
+    _dc_all2['_w'] = _dc_all2['Data'].dt.to_period('W')
+    corp_agg = _dc_all2.groupby('_w')[['Peso','BF','Calorias','Net','Carb','Fat','Ptn']].mean()
 
-    # Variáveis de treino semanal
     train_agg = pd.DataFrame()
     if da_full is not None and len(da_full) > 0:
         df_all = da_full.copy()
         df_all['Data'] = pd.to_datetime(df_all['Data'])
         df_all['_w']   = df_all['Data'].dt.to_period('W')
         df_all['_mt']  = pd.to_numeric(df_all['moving_time'], errors='coerce') / 3600
-
-        # ── Actividades cíclicas (excl. WeightTraining) ──
         df_cicl = df_all[df_all['type'].apply(norm_tipo) != 'WeightTraining'].copy()
         if 'icu_joules' in df_cicl.columns:
             df_cicl['_kj'] = pd.to_numeric(df_cicl['icu_joules'], errors='coerce') / 1000
@@ -4376,43 +4253,26 @@ def tab_corporal(dc, da_full):
             df_cicl['_kj'] = np.nan
         df_cicl['_km'] = (pd.to_numeric(df_cicl.get('distance', pd.Series(dtype=float)),
                                          errors='coerce') / 1000)
-
-        # ── WeightTraining: apenas horas ──
         df_wt = df_all[df_all['type'].apply(norm_tipo) == 'WeightTraining'].copy()
-
-        # ── Treino total (todas modalidades) ──
         train_agg = df_cicl.groupby('_w').agg(
-            Horas_cicl=('_mt',  'sum'),
-            KJ_sem    =('_kj',  'sum'),
-            KM_sem    =('_km',  'sum'),
-        )
+            Horas_cicl=('_mt', 'sum'), KJ_sem=('_kj', 'sum'), KM_sem=('_km', 'sum'))
         if len(df_wt) > 0:
-            wt_agg = df_wt.groupby('_w').agg(Horas_WT=('_mt', 'sum'))
-            train_agg = train_agg.join(wt_agg, how='outer')
+            train_agg = train_agg.join(df_wt.groupby('_w').agg(Horas_WT=('_mt','sum')), how='outer')
         else:
             train_agg['Horas_WT'] = np.nan
-
-        # Total treino = cíclico + WT
         train_agg['Horas_total'] = (train_agg['Horas_cicl'].fillna(0) +
                                      train_agg['Horas_WT'].fillna(0))
-        train_agg[train_agg == 0] = np.nan  # semanas sem treino → NaN
+        train_agg[train_agg == 0] = np.nan
 
-    # Merge
     combined = (corp_agg.join(train_agg, how='outer')
                 if len(train_agg) > 0 else corp_agg.copy())
     combined.index = combined.index.to_timestamp()
     combined = combined.sort_index()
 
-    # Todas as combinações alvo × preditor
-    # Alvo: Peso, BF, Net, Calorias
-    # Preditores: Calorias, Carb, Fat, Ptn, Net, Horas_cicl, KJ_sem, KM_sem,
-    #             Horas_WT, Horas_total, Peso (para → BF), BF (para → Peso)
     targets = [c for c in ['Peso','BF','Net','Calorias'] if c in combined.columns]
     predictors_all = [c for c in
         ['Calorias','Carb','Fat','Ptn','Net',
-         'Horas_cicl','KJ_sem','KM_sem',
-         'Horas_WT','Horas_total',
-         'Peso','BF']                        # Peso ↔ BF cruzado
+         'Horas_cicl','KJ_sem','KM_sem','Horas_WT','Horas_total','Peso','BF']
         if c in combined.columns]
 
     corr_rows = []
@@ -4420,29 +4280,23 @@ def tab_corporal(dc, da_full):
         _, mdc95 = _sem_mdc(combined[tgt])
         if mdc95 is not None:
             vr = combined[tgt].dropna()
-            if (vr.max() - vr.min()) < mdc95:
-                continue   # sem variação real detectável
-
+            if (vr.max() - vr.min()) < mdc95: continue
         for pred in predictors_all:
             if pred == tgt: continue
             pair = combined[[tgt, pred]].dropna()
-            n    = len(pair)
-            if n < 8: continue
+            if len(pair) < 8: continue
             r, pv = spearmanr(pair[pred].values, pair[tgt].values)
             if pv >= 0.10: continue
-            forca = _forca(r)
-            if forca is None: continue
+            f = _forca(r)
+            if f is None: continue
             d0 = pair.index.min(); d1 = pair.index.max()
             corr_rows.append({
-                'Alvo':      tgt,
-                'Preditor':  pred,
-                'r':         f"{r:+.2f}",
-                'p-value':   f"{pv:.3f}",
-                'N semanas': n,
-                'Período':   f"{d0.strftime('%m/%Y')}→{d1.strftime('%m/%Y')}",
-                'Força':     forca,
-                'Efeito':    (f"↗ {pred} ↑ → {tgt} ↑" if r > 0
-                              else f"↘ {pred} ↑ → {tgt} ↓"),
+                'Alvo': tgt, 'Preditor': pred,
+                'r': f"{r:+.2f}", 'p-value': f"{pv:.3f}",
+                'N semanas': len(pair),
+                'Período': f"{d0.strftime('%m/%Y')}→{d1.strftime('%m/%Y')}",
+                'Força': f,
+                'Efeito': (f"↗ {pred} ↑ → {tgt} ↑" if r > 0 else f"↘ {pred} ↑ → {tgt} ↓"),
             })
 
     if corr_rows:
@@ -4454,19 +4308,17 @@ def tab_corporal(dc, da_full):
                     .sort_values(['Alvo','Força'], ascending=[True, True]))
         st.dataframe(df_c, use_container_width=True, hide_index=True)
     else:
-        st.info("Sem correlações moderadas/fortes encontradas. "
-                "Pode ser necessário mais semanas com registos completos.")
+        st.info("Sem correlações moderadas/fortes. Pode ser necessário mais semanas com registos.")
 
     st.markdown("---")
 
     # ── TABELAS: base calórica por quartil de Peso e BF ───────────────────────
     st.subheader("📊 Base calórica por quartil de Peso e BF")
-    st.caption("Semanas com dados simultâneos de Peso/BF + Calorias. "
-               "MDC±  indica o erro mínimo detectável nas Calorias.")
+    st.caption("Semanas com dados simultâneos de Peso/BF + Calorias (todo o histórico). "
+               "MDC± indica o erro mínimo detectável nas Calorias.")
 
     for alvo_q, alvo_lbl, unid in [('Peso','Peso','kg'), ('BF','BF','%')]:
-        if alvo_q not in combined.columns or 'Calorias' not in combined.columns:
-            continue
+        if alvo_q not in combined.columns or 'Calorias' not in combined.columns: continue
         pair_q = combined[[alvo_q,'Calorias']].dropna()
         if len(pair_q) < 8:
             st.caption(f"Poucos dados para quartis de {alvo_lbl} ({len(pair_q)} semanas).")
