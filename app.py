@@ -1844,8 +1844,17 @@ def tab_zones(da, mods_sel):
         df_anual = pd.DataFrame(rows_anual)
 
         # Render com HTML para destacar linha Geral
-        display_cols = ['Ano','Modalidade','HR Z1+Z2%','HR Z3+Z4%','HR Z5+%',
-                        'RPE Z1%','RPE Z2%','RPE Z3%']
+        display_cols = ['Ano','Modalidade',
+                        'Z1 (HR|RPE)','Z2 (HR|RPE)','Z3 (HR|RPE)']
+        # Combinar HR e RPE numa só coluna por zona
+        for row in rows_anual:
+            for z_hr, z_rpe, z_lbl in [
+                ('HR Z1+Z2%','RPE Z1%','Z1 (HR|RPE)'),
+                ('HR Z3+Z4%','RPE Z2%','Z2 (HR|RPE)'),
+                ('HR Z5+%',  'RPE Z3%','Z3 (HR|RPE)'),
+            ]:
+                row[z_lbl] = f"{row.get(z_hr,'—')} | {row.get(z_rpe,'—')}"
+
         html = ('<table style="border-collapse:collapse;width:100%;'
                 'font-size:12px;background:#fff;color:#222">')
         html += '<tr style="background:#e0e0e0">'
@@ -1890,11 +1899,11 @@ def tab_zones(da, mods_sel):
                                    'Forte'       if abs(r) >= 0.5 else
                                    'Moderada'    if abs(r) >= 0.3 else 'Fraca')
 
-            mods_corr = [m for m in mods_sel if m in dh_ok['type'].values]
+            mods_corr = sorted(dh_ok['type'].unique().tolist())  # todos os tipos com dados
             rows_corr = []
             for mod in mods_corr:
                 dm = dh_ok[dh_ok['type'] == mod]
-                if len(dm) < 5: continue
+                if len(dm) < 3: continue
                 for hv, hr_lbl, rpe_lbl in HR_VARS:
                     x = dm[rpe_col].values
                     y = dm[hv].values
