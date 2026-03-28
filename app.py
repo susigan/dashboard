@@ -2795,6 +2795,32 @@ def _axis(title='', color='#333333', secondary=False):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
+PLOTLY_WHITE = dict(paper_bgcolor='white', plot_bgcolor='white',
+                    font=dict(family='Arial', size=12, color='#333333'))
+
+LEGEND_STYLE = dict(orientation='h', y=1.02, x=0,
+                    bgcolor='rgba(255,255,255,0.9)',
+                    bordercolor='#aaa', borderwidth=1,
+                    font=dict(color='#111111', size=11))
+
+def _xaxis(title='Data', color='#333'):
+    return dict(title=dict(text=title, font=dict(color=color, size=12)),
+                tickfont=dict(color=color),
+                showgrid=True, gridcolor='#e8e8e8',
+                linecolor='#ccc', linewidth=1, showline=True)
+
+def _yaxis(title='', color='#333', secondary=False):
+    d = dict(title=dict(text=title, font=dict(color=color, size=12)),
+             tickfont=dict(color=color),
+             showgrid=True, gridcolor='#e8e8e8',
+             linecolor='#ccc', linewidth=1, showline=True)
+    if secondary:
+        d.update({'overlaying':'y','side':'right','showgrid':False})
+    return d
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
 def _extrair_pot(col):
     m = re.search(r'(\d+)[_\s]*W', str(col).upper())
     return int(m.group(1)) if m else None
@@ -2806,89 +2832,130 @@ def _detectar_drag_col(df):
         if 'DRAG' in str(c).upper(): return c
     return None
 
-def _calcular_sem_mdc(valores):
-    if len(valores) < 2: return None
-    media = np.mean(valores); std = np.std(valores, ddof=1)
-    if media == 0: return None
-    sem = std * np.sqrt(1 - 0.9); mdc95 = sem * 1.96 * np.sqrt(2)
-    mdc90 = sem * 1.645 * np.sqrt(2)
-    q1, q3 = np.percentile(valores, 25), np.percentile(valores, 75); iqr = q3 - q1
-    return dict(mean=media, std=std, SEM=sem, MDC_95=mdc95, MDC_90=mdc90,
-                cv=(std/media*100), n=len(valores),
-                z_up=media+2*std, z_dn=media-2*std,
-                mdc_up=media+mdc95, mdc_dn=media-mdc95,
-                iqr_up=q3+1.5*iqr, iqr_dn=q1-1.5*iqr)
-
-def _classificar_tendencia(values, dias):
+def _calcular_icc_sem_mdc(valores):
     """
-    Aplica 4 métodos e devolve classificação final.
-    Usado internamente — não mostrado ao utilizador.
+    ICC(1,1) one-way random — medições repetidas do mesmo atleta.
+    SEM calculado dos próprios dados: SEM = SD × √(1 - ICC)
+    MDC₉₅ = SEM × 1.96 × √2
+    Retorna dict com todos os valores ou None se N < 3.
+    """
+    v = np.array(valores, dtype=float)
+    v = v[~np.isnan(v)]
+    n = len(v)
+    if n < 3:
+        return None
+    media = np.mean(v)
+    std   = np.std(v, ddof=1)
+    if media == 0:
+        return None
+
+    # ICC(1,1) via ANOVA one-way com cada observação como "grupo" de 1
+    # Para medições repetidas do mesmo sujeito ao longo do tempo:
+    # ICC = (MSb - MSw) / (MSb + (k-1)*MSw)  onde k=1 → ICC = (MSb-MSw)/MSb
+    # Com n=1 por sessão, usamos a variância total vs variância residual
+    # Estimativa robusta: ICC = 1 - (SEM_naive² / VAR_total)
+    # onde SEM_naive = std / √2  (estimativa de erro intra-sessão)
+    # Esta é a abordagem padrão para séries temporais n=1
+
+    # Variância entre sessões (MS_between) usando blocos de 2 sessões consecutivas
+    # para estimar variância intra (erro de medição)
+    if n >= 4:
+        diffs = np.diff(v)          # diferenças consecutivas
+        var_intra = np.var(diffs, ddof=1) / 2  # variância intra estimada
+        var_total = np.var(v, ddof=1)
+        icc = max(0.0, min(1.0, (var_total - var_intra) / var_total))
+    else:
+        # Fallback para N pequeno: estimativa conservadora
+        icc = max(0.0, 1.0 - (1.0 / max(n, 2)))
+
+    sem    = std * np.sqrt(1 - icc)
+    sem_pc = (sem / media) * 100
+    mdc95  = sem * 1.96 * np.sqrt(2)
+    mdc_pc = (mdc95 / media) * 100
+
+    if   icc >= 0.90: icc_qual = "✅ Excelente (≥0.90)"
+    elif icc >= 0.75: icc_qual = "🟢 Boa (0.75–0.90)"
+    elif icc >= 0.50: icc_qual = "🟡 Moderada (0.50–0.75)"
+    else:              icc_qual = "⚠️ Fraca (<0.50)"
+
+    return dict(n=n, media=media, std=std,
+                icc=icc, icc_qual=icc_qual,
+                sem=sem, sem_pc=sem_pc,
+                mdc95=mdc95, mdc_pc=mdc_pc)
+
+def _limpar_ruido_sem(series, icc_dict, limiar_multiplo=2.0):
+    """
+    Remove pontos que desviam > limiar × SEM da média local (rolling 5).
+    Retorna série limpa e máscara de ruído.
+    """
+    if icc_dict is None or len(series) < 4:
+        return series, np.zeros(len(series), dtype=bool)
+    sem   = icc_dict['sem']
+    media_local = series.rolling(5, min_periods=2, center=True).mean().fillna(series.mean())
+    ruido = (series - media_local).abs() > limiar_multiplo * sem
+    limpa = series.copy()
+    limpa[ruido] = np.nan
+    return limpa, ruido.values
+
+def _calcular_tendencia_com_mdc(df_col, col_data, col_val, mdc95):
+    """
+    Calcula tendência para uma janela temporal.
+    Valida com MDC: |Δ| > MDC → usa 4 métodos para confirmar direcção.
+    Retorna dict com classificação, delta, N, passa_mdc.
     """
     from scipy.stats import theilslopes
-    if len(values) < 3 or len(np.unique(dias)) < 2:
-        return "→ Estável"
-    try:
-        sl, ic, rv, pv, se = linregress(dias, values)
-        tau, p_k = spearmanr(dias, values)
-        th_sl, _, _, _ = theilslopes(values, dias)
-        mid = max(1, len(values)//2)
-        _, p_t = scipy_stats.ttest_ind(values[:mid], values[mid:]) if mid >= 2 else (0, 1)
-        # Confiança: soma de evidências
-        conf = 0
-        if pv   < 0.05 and abs(sl)   > 0: conf += 2
-        if p_k  < 0.05:                    conf += 2
-        if (th_sl > 0 and sl > 0) or (th_sl < 0 and sl < 0): conf += 1
-        if p_t  < 0.05:                    conf += 1
-        if conf < 2: return "→ Estável"
-        if sl > 0:   return "↗ Aumentando"
-        return "↘ Diminuindo"
-    except Exception:
-        return "→ Estável"
-
-def _tendencia_por_periodos(df_col, col_data, col_val):
-    """
-    Calcula classificação de tendência para 5 janelas temporais.
-    Devolve dict {label: classificação}.
-    """
     df = df_col[[col_data, col_val]].dropna().sort_values(col_data)
     df[col_data] = pd.to_datetime(df[col_data])
-    hoje = df[col_data].max()
-    janelas = [
-        ("30 dias",       30),
-        ("60 dias",       60),
-        ("90 dias",       90),
-        ("1 ano",         365),
-        ("Todo histórico", None),
-    ]
-    resultado = {}
-    for lbl, dias in janelas:
-        if dias:
-            sub = df[df[col_data] >= hoje - pd.Timedelta(days=dias)]
+    n = len(df)
+    if n < 3:
+        return {'classif': '— (N<3)', 'delta': None, 'passa_mdc': None, 'n': n}
+
+    y   = df[col_val].values.astype(float)
+    x   = (df[col_data] - df[col_data].min()).dt.days.values.astype(float)
+    delta = y[-1] - y[0]  # mudança observada: último - primeiro
+
+    # Valida com MDC
+    if mdc95 is not None and abs(delta) <= mdc95:
+        return {'classif': f'→ Estável (Δ{delta:+.1f} ≤ MDC{mdc95:.1f})',
+                'delta': delta, 'passa_mdc': False, 'n': n}
+
+    # 4 métodos
+    try:
+        sl, _, _, pv, _   = linregress(x, y)
+        tau, p_k           = spearmanr(x, y)
+        th_sl, _, _, _     = theilslopes(y, x)
+        mid                = max(1, n // 2)
+        _, p_t             = scipy_stats.ttest_ind(y[:mid], y[mid:]) if mid >= 2 else (0, 1)
+
+        conf = 0
+        if pv  < 0.05 and abs(sl) > 0:                              conf += 2
+        if p_k < 0.05:                                               conf += 2
+        if (th_sl > 0 and sl > 0) or (th_sl < 0 and sl < 0):        conf += 1
+        if p_t < 0.05:                                               conf += 1
+
+        if conf < 2:
+            classif = f'→ Estável (Δ{delta:+.1f}, conf insuf.)'
+        elif sl > 0:
+            classif = f'↗ Aumentando (Δ{delta:+.1f} > MDC)'
         else:
-            sub = df
-        if len(sub) < 3:
-            resultado[lbl] = "— (poucos dados)"
-            continue
-        x = (sub[col_data] - sub[col_data].min()).dt.days.values.astype(float)
-        y = sub[col_val].values.astype(float)
-        resultado[lbl] = _classificar_tendencia(y, x)
-    return resultado
+            classif = f'↘ Diminuindo (Δ{delta:+.1f} > MDC)'
+    except Exception:
+        classif = f'→ Estável (Δ{delta:+.1f})'
+
+    return {'classif': classif, 'delta': delta, 'passa_mdc': True, 'n': n}
 
 def _controles_grafico(aba, secao, n_data):
-    """Controlos de agrupamento + rolling para cada gráfico."""
     c1, c2 = st.columns([2, 1])
-    agrup_lbl = c1.selectbox(
-        "Agrupar por",
+    agrup_lbl = c1.selectbox("Agrupar por",
         ["Sessão (sem agrup.)", "Mês", "Trimestre", "Ano"],
         key=f"agrup_{aba}_{secao}")
-    agrup_map = {"Sessão (sem agrup.)": None, "Mês": "M", "Trimestre": "Q", "Ano": "A"}
+    agrup_map = {"Sessão (sem agrup.)": None, "Mês":"M", "Trimestre":"Q", "Ano":"A"}
     agrup_code = agrup_map[agrup_lbl]
     roll = c2.slider("Rolling (sessões)", 1, min(12, max(1, n_data-1)), 3,
                      key=f"roll_{aba}_{secao}")
     return agrup_code, agrup_lbl, roll
 
 def _agrupar_serie(df, col_data, col_val, agrup_code):
-    """Agrega série por período, devolve DataFrame com _ts, _lbl, mean, std, count."""
     d = df[[col_data, col_val]].dropna().copy()
     d[col_data] = pd.to_datetime(d[col_data])
     d['_p'] = d[col_data].dt.to_period(agrup_code)
@@ -2916,7 +2983,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
         st.warning("Planilha Annual não carregada.")
         return
 
-    ABAS = [("🎿 Ski", "AquecSki"), ("🚴 Bike", "AquecBike"), ("🚣 Row", "AquecRow")]
+    ABAS = [("🎿 Ski","AquecSki"),("🚴 Bike","AquecBike"),("🚣 Row","AquecRow")]
     tabs_aq = st.tabs([a[0] for a in ABAS])
 
     for tab_aq, (label, aba) in zip(tabs_aq, ABAS):
@@ -2927,7 +2994,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                 continue
             df_a = df_a.copy()
 
-            # ── Filtro de período global ───────────────────────────────
+            # ── Filtro de período global (só para gráficos) ───────────
             if 'DATA' in df_a.columns and df_a['DATA'].notna().any():
                 d_min_h = df_a['DATA'].min().date()
                 d_max_h = df_a['DATA'].max().date()
@@ -2936,9 +3003,9 @@ def tab_aquecimento(dfs_annual, df_annual, di):
             else:
                 d_min_h = d_max_h = None
 
-            cf1, cf2 = st.columns([2, 2])
+            cf1, cf2 = st.columns([2,2])
             with cf1:
-                opcao = st.selectbox("📅 Período",
+                opcao = st.selectbox("📅 Período para gráficos",
                     ["Todo o histórico","Últimos 60 dias","Últimos 90 dias",
                      "Últimos 180 dias","Último ano (365 dias)","Datas manuais"],
                     index=0, key=f"periodo_sel_{aba}")
@@ -2980,9 +3047,9 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                 cols_info = []
                 for c in df_a.columns:
                     cols_info.append({
-                        'Coluna': c, 'Tipo': str(df_a[c].dtype),
-                        'N não-nulos': int(df_a[c].notna().sum()),
-                        'Detecção': (
+                        'Coluna':c, 'Tipo':str(df_a[c].dtype),
+                        'N não-nulos':int(df_a[c].notna().sum()),
+                        'Detecção':(
                             'HR'    if ('HR' in c.upper() and 'PWR' not in c.upper()
                                         and 'DRAG' not in c.upper() and _extrair_pot(c))
                             else 'O2'     if ('O2' in c.upper() and _extrair_pot(c))
@@ -2999,16 +3066,13 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                 st.dataframe(df_show.head(20), width="stretch")
 
             # Detectar colunas
-            hr_cols  = sorted([c for c in df_a.columns
-                                if 'HR' in c.upper() and 'PWR' not in c.upper()
-                                and 'DRAG' not in c.upper() and _extrair_pot(c)],
-                               key=lambda c: _extrair_pot(c) or 0)
-            o2_cols  = sorted([c for c in df_a.columns
-                                if 'O2' in c.upper() and _extrair_pot(c)],
-                               key=lambda c: _extrair_pot(c) or 0)
-            pwr_cols = sorted([c for c in df_a.columns
-                                if 'PWR' in c.upper() and _extrair_pot(c)],
-                               key=lambda c: _extrair_pot(c) or 0)
+            hr_cols  = sorted([c for c in df_a.columns if 'HR' in c.upper()
+                                and 'PWR' not in c.upper() and 'DRAG' not in c.upper()
+                                and _extrair_pot(c)], key=lambda c: _extrair_pot(c) or 0)
+            o2_cols  = sorted([c for c in df_a.columns if 'O2' in c.upper()
+                                and _extrair_pot(c)], key=lambda c: _extrair_pot(c) or 0)
+            pwr_cols = sorted([c for c in df_a.columns if 'PWR' in c.upper()
+                                and _extrair_pot(c)], key=lambda c: _extrair_pot(c) or 0)
             drag_col   = _detectar_drag_col(df_a)
             treino_col = next((c for c in df_a.columns
                                if 'treino' in c.lower() or 'antes' in c.lower()), None)
@@ -3020,18 +3084,24 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                 st.warning("Sem colunas HR/O2 detectadas.")
                 continue
 
+            # Pré-calcular ICC/SEM/MDC para todo o histórico (uma vez por coluna)
+            icc_cache = {}
+            for col in hr_cols + o2_cols:
+                if col in df_a.columns:
+                    vals = df_a[col].dropna().values
+                    icc_cache[col] = _calcular_icc_sem_mdc(vals)
+
             # ════════════════════════════════════════════════════════════
             # 1. HR e O2 vs Potência — Z-Score, SEM, MDC
             # ════════════════════════════════════════════════════════════
             st.subheader("📊 HR e O2 vs Potência — Z-Score (±2σ), SEM e MDC")
 
-            rows_hr = [{'Power': _extrair_pot(c), 'Value': float(v)}
+            rows_hr = [{'Power':_extrair_pot(c),'Value':float(v)}
                        for c in hr_cols for v in df_plot[c].dropna()]
-            rows_o2 = [{'Power': _extrair_pot(c), 'Value': float(v)}
+            rows_o2 = [{'Power':_extrair_pot(c),'Value':float(v)}
                        for c in o2_cols for v in df_plot[c].dropna()]
             df_hr_l = pd.DataFrame(rows_hr)
             df_o2_l = pd.DataFrame(rows_o2)
-            res_hr_stat, res_o2_stat = {}, {}
 
             if len(df_hr_l) > 0 or len(df_o2_l) > 0:
                 rng = np.random.default_rng(42)
@@ -3039,45 +3109,38 @@ def tab_aquecimento(dfs_annual, df_annual, di):
 
                 if len(df_hr_l) > 0:
                     jit = rng.normal(0, 0.3, len(df_hr_l))
-                    fig_s.add_trace(go.Scatter(
-                        x=df_hr_l['Power']+jit, y=df_hr_l['Value'],
+                    fig_s.add_trace(go.Scatter(x=df_hr_l['Power']+jit, y=df_hr_l['Value'],
                         mode='markers', name='HR pontos',
                         marker=dict(color='#e74c3c', opacity=0.3, size=6),
-                        hovertemplate='%{x:.0f}W  HR: <b>%{y:.0f} bpm</b><extra></extra>',
-                        yaxis='y'))
+                        hovertemplate='%{x:.0f}W  HR: <b>%{y:.0f} bpm</b><extra></extra>'))
                     agg_hr = df_hr_l.groupby('Power')['Value'].mean().reset_index()
-                    fig_s.add_trace(go.Scatter(
-                        x=agg_hr['Power'], y=agg_hr['Value'],
+                    fig_s.add_trace(go.Scatter(x=agg_hr['Power'], y=agg_hr['Value'],
                         mode='lines+markers', name='HR média',
-                        line=dict(color='#c0392b', width=3),
-                        marker=dict(size=10),
-                        hovertemplate='%{x:.0f}W  HR média: <b>%{y:.0f} bpm</b><extra></extra>',
-                        yaxis='y'))
+                        line=dict(color='#c0392b', width=3), marker=dict(size=10),
+                        hovertemplate='%{x:.0f}W  HR média: <b>%{y:.0f} bpm</b><extra></extra>'))
                     for pw in sorted(df_hr_l['Power'].unique()):
                         vals = df_hr_l[df_hr_l['Power']==pw]['Value'].values
                         if len(vals) < 2: continue
-                        s = _calcular_sem_mdc(vals)
+                        s = _calcular_icc_sem_mdc(vals)
                         if not s: continue
-                        res_hr_stat[pw] = s
+                        m = s['media']
                         fig_s.add_shape(type='rect', x0=pw-2, x1=pw+2,
-                            y0=s['z_dn'], y1=s['z_up'],
+                            y0=m-2*s['std'], y1=m+2*s['std'],
                             fillcolor='rgba(231,76,60,0.07)', line=dict(width=0))
-                        for yv, dash in [(s['z_up'],'dash'),(s['z_dn'],'dash'),
-                                         (s['mdc_up'],'dot'),(s['mdc_dn'],'dot')]:
+                        for yv, dash in [(m+2*s['std'],'dash'),(m-2*s['std'],'dash'),
+                                         (m+s['mdc95'],'dot'),(m-s['mdc95'],'dot')]:
                             fig_s.add_shape(type='line', x0=pw-2, x1=pw+2, y0=yv, y1=yv,
                                 line=dict(color='#c0392b', width=1.5, dash=dash))
 
                 if len(df_o2_l) > 0:
                     jit2 = rng.normal(0, 0.3, len(df_o2_l))
-                    fig_s.add_trace(go.Scatter(
-                        x=df_o2_l['Power']+jit2, y=df_o2_l['Value'],
+                    fig_s.add_trace(go.Scatter(x=df_o2_l['Power']+jit2, y=df_o2_l['Value'],
                         mode='markers', name='O2 pontos',
                         marker=dict(color='#3498db', opacity=0.3, size=6),
                         hovertemplate='%{x:.0f}W  SmO2: <b>%{y:.1f}%</b><extra></extra>',
                         yaxis='y2'))
                     agg_o2 = df_o2_l.groupby('Power')['Value'].mean().reset_index()
-                    fig_s.add_trace(go.Scatter(
-                        x=agg_o2['Power'], y=agg_o2['Value'],
+                    fig_s.add_trace(go.Scatter(x=agg_o2['Power'], y=agg_o2['Value'],
                         mode='lines+markers', name='O2 média',
                         line=dict(color='#2471a3', width=3),
                         marker=dict(size=10, symbol='square'),
@@ -3086,56 +3149,27 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                     for pw in sorted(df_o2_l['Power'].unique()):
                         vals = df_o2_l[df_o2_l['Power']==pw]['Value'].values
                         if len(vals) < 2: continue
-                        s = _calcular_sem_mdc(vals)
+                        s = _calcular_icc_sem_mdc(vals)
                         if not s: continue
-                        res_o2_stat[pw] = s
+                        m = s['media']
                         fig_s.add_shape(type='rect', x0=pw-2, x1=pw+2,
-                            y0=s['z_dn'], y1=s['z_up'],
-                            fillcolor='rgba(52,152,219,0.07)', line=dict(width=0),
-                            yref='y2')
+                            y0=m-2*s['std'], y1=m+2*s['std'],
+                            fillcolor='rgba(52,152,219,0.07)', line=dict(width=0), yref='y2')
 
-                fig_s.update_layout(
-                    **PLOTLY_WHITE,
+                fig_s.update_layout(**PLOTLY_WHITE,
                     title=dict(text=f'{aba} — HR e O2 vs Potência | Z-Score (±2σ) e MDC-95',
                                font=dict(size=14, color='#222')),
                     height=500, hovermode='x unified',
-                    xaxis=dict(title=dict(text='Potência (W)', font=dict(color='#333')),
-                               tickfont=dict(color='#333'),
-                               showgrid=True, gridcolor='#e8e8e8',
-                               linecolor='#ccc', showline=True),
-                    yaxis=dict(title=dict(text='HR (bpm)', font=dict(color='#c0392b')),
-                               tickfont=dict(color='#c0392b'),
-                               showgrid=True, gridcolor='#e8e8e8',
-                               linecolor='#ccc', showline=True),
-                    yaxis2=dict(title=dict(text='SmO2 (%)', font=dict(color='#2471a3')),
-                                tickfont=dict(color='#2471a3'),
-                                overlaying='y', side='right', showgrid=False,
-                                linecolor='#ccc', showline=True),
-                    legend=dict(orientation='h', y=1.02, x=0,
-                                bgcolor='rgba(255,255,255,0.9)',
-                                bordercolor='#aaa', borderwidth=1,
-                                font=dict(color='#111111', size=11)),
-                )
+                    xaxis=_xaxis('Potência (W)'),
+                    yaxis=_yaxis('HR (bpm)', '#c0392b'),
+                    yaxis2=_yaxis('SmO2 (%)', '#2471a3', secondary=True),
+                    legend=LEGEND_STYLE)
                 st.plotly_chart(fig_s, use_container_width=True)
-
-                with st.expander("📊 Limites estatísticos (SEM, MDC, Z-Score)"):
-                    rows_stat = []
-                    for tipo_s, res_d, unid_s in [('HR',res_hr_stat,'bpm'),('SmO2',res_o2_stat,'%')]:
-                        for pw, s in sorted(res_d.items()):
-                            rows_stat.append({
-                                'Tipo':tipo_s, 'Potência (W)':pw, 'N':s['n'],
-                                'Média':f"{s['mean']:.1f}", 'STD':f"{s['std']:.1f}",
-                                'CV%':f"{s['cv']:.1f}%", 'SEM':f"±{s['SEM']:.2f}",
-                                'MDC-90':f"±{s['MDC_90']:.2f}", 'MDC-95':f"±{s['MDC_95']:.2f}",
-                                'Z inf':f"{s['z_dn']:.1f}", 'Z sup':f"{s['z_up']:.1f}",
-                            })
-                    if rows_stat:
-                        st.dataframe(pd.DataFrame(rows_stat), width="stretch", hide_index=True)
 
             st.markdown("---")
 
             # ════════════════════════════════════════════════════════════
-            # 2+3. Evolução temporal HR e SmO2
+            # 2+3. Evolução temporal HR e SmO2 — com ICC/SEM/MDC
             # ════════════════════════════════════════════════════════════
             for tipo_t, cols_t, cores_t, sec_key, unid_t, cor_eixo in [
                 ('HR',   hr_cols, CORES_PW, 'hr', 'bpm', '#c0392b'),
@@ -3158,17 +3192,35 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                     df_t = df_plot[['DATA', col]].dropna().sort_values('DATA')
                     if len(df_t) < 2: continue
 
+                    # Limpeza de ruído com SEM (usando ICC do histórico completo)
+                    icc_d = icc_cache.get(col)
+                    serie_limpa, mascara_ruido = _limpar_ruido_sem(df_t[col], icc_d)
+                    df_t = df_t.copy()
+                    df_t['_limpa'] = serie_limpa
+
+                    # Pontos marcados como ruído (mais transparentes)
+                    if mascara_ruido.any():
+                        df_ruido = df_t[mascara_ruido]
+                        fig_t.add_trace(go.Scatter(
+                            x=df_ruido['DATA'], y=df_ruido[col],
+                            mode='markers', name=f'{pw}W ruído',
+                            marker=dict(color=cor, opacity=0.15, size=5,
+                                        symbol='x'),
+                            hovertemplate=f'%{{x|%d/%m/%Y}}  {tipo_t} {pw}W (ruído): <b>%{{y:.1f}} {unid_t}</b><extra></extra>',
+                            showlegend=False))
+
                     if agrup_code:
-                        # Agrupado: média por período + scatter dos pontos originais + tendência
-                        agg = _agrupar_serie(df_t, 'DATA', col, agrup_code)
-                        # Pontos originais (transparentes)
+                        # Agrupa sobre dados limpos
+                        df_t_limpa = df_t[['DATA','_limpa']].rename(columns={'_limpa': col})
+                        agg = _agrupar_serie(df_t_limpa, 'DATA', col, agrup_code)
+                        # Pontos originais (fundo)
                         fig_t.add_trace(go.Scatter(
                             x=df_t['DATA'], y=df_t[col],
                             mode='markers', name=f'{pw}W pontos',
-                            marker=dict(color=cor, opacity=0.2, size=5),
-                            hovertemplate=f'%{{x|%d/%m/%Y}}  {tipo_t} {pw}W: <b>%{{y:.1f}} {unid_t}</b><extra></extra>',
-                            showlegend=False))
-                        # Média por período (linha principal)
+                            marker=dict(color=cor, opacity=0.15, size=4),
+                            showlegend=False,
+                            hovertemplate=f'%{{x|%d/%m/%Y}}  {tipo_t} {pw}W: <b>%{{y:.1f}} {unid_t}</b><extra></extra>'))
+                        # Média por período
                         fig_t.add_trace(go.Scatter(
                             x=agg['_ts'], y=agg['mean'],
                             mode='lines+markers', name=f'{pw}W ({agrup_lbl})',
@@ -3180,7 +3232,6 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                                            f'<b>%{{y:.1f}} {unid_t}</b><br>'
                                            f'±%{{customdata[2]:.1f}} | N=%{{customdata[1]}}'
                                            f'<extra></extra>')))
-                        # Tendência sobre médias
                         if len(agg) >= 3:
                             xn = np.arange(len(agg), dtype=float)
                             try:
@@ -3188,83 +3239,137 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                                 y_tr = ic + sl * xn
                                 sig = '✓' if pv < 0.05 else '—'
                                 classif = ('↗' if sl > 0 else '↘') if pv < 0.05 else '→'
-                                lbl_trend = f'{pw}W {classif} ({sig})'
                                 fig_t.add_trace(go.Scatter(
                                     x=agg['_ts'], y=y_tr,
-                                    mode='lines', name=lbl_trend,
+                                    mode='lines', name=f'{pw}W {classif} ({sig})',
                                     line=dict(color=cor, width=1.2, dash='dash'),
                                     hovertemplate=f'Tendência {pw}W: <b>%{{y:.1f}} {unid_t}</b><extra></extra>'))
                             except Exception:
                                 pass
                     else:
-                        # Sessão a sessão: scatter + rolling
+                        # Sessão a sessão: dados limpos + rolling + tendência
                         fig_t.add_trace(go.Scatter(
                             x=df_t['DATA'], y=df_t[col],
-                            mode='markers', name=f'{pw}W pontos',
+                            mode='markers', name=f'{pw}W',
                             marker=dict(color=cor, opacity=0.3, size=6),
-                            hovertemplate=f'%{{x|%d/%m/%Y}}  {tipo_t} {pw}W: <b>%{{y:.1f}} {unid_t}</b><extra></extra>',
-                            showlegend=False))
-                        roll_s = df_t[col].rolling(roll, min_periods=1).mean()
+                            showlegend=False,
+                            hovertemplate=f'%{{x|%d/%m/%Y}}  {tipo_t} {pw}W: <b>%{{y:.1f}} {unid_t}</b><extra></extra>'))
+                        # Rolling sobre dados limpos
+                        roll_s = df_t['_limpa'].rolling(roll, min_periods=1).mean()
                         fig_t.add_trace(go.Scatter(
                             x=df_t['DATA'], y=roll_s,
                             mode='lines', name=f'{pw}W roll({roll})',
                             line=dict(color=cor, width=2.5),
                             hovertemplate=f'%{{x|%d/%m/%Y}}  {tipo_t} {pw}W roll: <b>%{{y:.1f}} {unid_t}</b><extra></extra>'))
-                        # Tendência linear
                         if len(df_t) >= 3:
                             xd = (df_t['DATA'] - df_t['DATA'].min()).dt.days.values.astype(float)
-                            try:
-                                sl, ic, _, pv, _ = linregress(xd, df_t[col].values)
-                                y_tr = ic + sl * xd
-                                sig = '✓' if pv < 0.05 else '—'
-                                classif = ('↗' if sl > 0 else '↘') if pv < 0.05 else '→'
-                                lbl_trend = f'{pw}W {classif} ({sig})'
-                                fig_t.add_trace(go.Scatter(
-                                    x=df_t['DATA'], y=y_tr,
-                                    mode='lines', name=lbl_trend,
-                                    line=dict(color=cor, width=1.2, dash='dash'),
-                                    hovertemplate=f'Tendência {pw}W: <b>%{{y:.1f}} {unid_t}</b><extra></extra>'))
-                            except Exception:
-                                pass
+                            y_limpa = df_t['_limpa'].values
+                            mask = ~np.isnan(y_limpa)
+                            if mask.sum() >= 3:
+                                try:
+                                    sl, ic, _, pv, _ = linregress(xd[mask], y_limpa[mask])
+                                    y_tr = ic + sl * xd
+                                    sig = '✓' if pv < 0.05 else '—'
+                                    classif = ('↗' if sl > 0 else '↘') if pv < 0.05 else '→'
+                                    fig_t.add_trace(go.Scatter(
+                                        x=df_t['DATA'], y=y_tr,
+                                        mode='lines', name=f'{pw}W {classif} ({sig})',
+                                        line=dict(color=cor, width=1.2, dash='dash'),
+                                        hovertemplate=f'Tendência {pw}W: <b>%{{y:.1f}} {unid_t}</b><extra></extra>'))
+                                except Exception:
+                                    pass
 
-                title_suf = f" — agrupado por {agrup_lbl}" if agrup_code else f" — sessão a sessão | roll={roll}"
-                fig_t.update_layout(
-                    **PLOTLY_WHITE,
+                title_suf = (f" — agrupado por {agrup_lbl}"
+                             if agrup_code else f" — sessão a sessão | roll={roll}")
+                fig_t.update_layout(**PLOTLY_WHITE,
                     title=dict(text=f'{aba} — {tipo_t} evolução temporal{title_suf}',
                                font=dict(size=14, color='#222')),
                     height=420, hovermode='x unified',
-                    xaxis=dict(title=dict(text='Data', font=dict(color='#333')),
-                               tickfont=dict(color='#333'),
-                               showgrid=True, gridcolor='#e8e8e8',
-                               linecolor='#ccc', showline=True),
-                    yaxis=dict(title=dict(text=f'{tipo_t} ({unid_t})',
-                                          font=dict(color=cor_eixo)),
-                               tickfont=dict(color=cor_eixo),
-                               showgrid=True, gridcolor='#e8e8e8',
-                               linecolor='#ccc', showline=True),
-                    legend=dict(orientation='h', y=1.02, x=0,
-                                bgcolor='rgba(255,255,255,0.9)',
-                                bordercolor='#aaa', borderwidth=1,
-                                font=dict(color='#111111', size=11)),
-                )
+                    xaxis=_xaxis('Data'),
+                    yaxis=_yaxis(f'{tipo_t} ({unid_t})', cor_eixo),
+                    legend=LEGEND_STYLE)
                 st.plotly_chart(fig_t, use_container_width=True)
 
-                # ── Tabela compacta: tendência por período ──────────────
-                with st.expander(f"📊 Tendência {tipo_t} por potência e período"):
-                    st.caption("Classificação baseada em 4 métodos (Linear, Mann-Kendall, "
-                               "Theil-Sen, Teste-T) — resultados internos não mostrados.")
-                    tend_rows = []
-                    for col in cols_t:
-                        if col not in df_a.columns: continue
-                        pw = _extrair_pot(col)
-                        # Usa TODO o histórico para os períodos
-                        res_prd = _tendencia_por_periodos(df_a, 'DATA', col)
-                        row = {'Potência': f'{pw}W'}
-                        row.update(res_prd)
-                        tend_rows.append(row)
-                    if tend_rows:
-                        st.dataframe(pd.DataFrame(tend_rows),
-                                     width="stretch", hide_index=True)
+                # ════════════════════════════════════════════
+                # TABELAS ICC/SEM/MDC + Tendência por período
+                # ════════════════════════════════════════════
+                st.markdown(f"**📊 Análise {tipo_t} — Confiabilidade e Tendências por Potência**")
+
+                # SECÇÃO A: ICC / SEM / MDC — todo o histórico
+                rows_icc = []
+                for col in cols_t:
+                    if col not in df_a.columns: continue
+                    pw  = _extrair_pot(col)
+                    icd = icc_cache.get(col)
+                    if icd is None:
+                        rows_icc.append({'Potência':f'{pw}W','N':'<3',
+                            'Média':'—','SEM':'—','SEM%':'—',
+                            'MDC₉₅':'—','MDC%':'—','ICC':'—','Qualidade ICC':'— (N insuf.)'})
+                        continue
+                    rows_icc.append({
+                        'Potência':    f'{pw}W',
+                        'N':           icd['n'],
+                        'Média':       f"{icd['media']:.1f} {unid_t}",
+                        'SEM':         f"{icd['sem']:.2f} {unid_t}",
+                        'SEM%':        f"{icd['sem_pc']:.1f}%",
+                        'MDC₉₅':       f"{icd['mdc95']:.2f} {unid_t}",
+                        'MDC%':        f"{icd['mdc_pc']:.1f}%",
+                        'ICC':         f"{icd['icc']:.3f}",
+                        'Qualidade ICC': icd['icc_qual'],
+                    })
+                if rows_icc:
+                    st.caption("**Secção A — Confiabilidade (todo o histórico):** "
+                               "SEM = erro esperado entre medições | "
+                               "MDC₉₅ = mudança mínima real (95% confiança) | "
+                               "ICC = consistência das medições (≠ capacidade preditiva)")
+                    st.dataframe(pd.DataFrame(rows_icc), width="stretch", hide_index=True)
+
+                # SECÇÃO B: Tendência por período, validada pelo MDC
+                janelas = [("30 dias",30),("60 dias",60),("90 dias",90),
+                           ("1 ano",365),("Todo histórico",None)]
+                rows_tend = []
+                for col in cols_t:
+                    if col not in df_a.columns: continue
+                    pw  = _extrair_pot(col)
+                    icd = icc_cache.get(col)
+                    mdc = icd['mdc95'] if icd else None
+                    df_col = df_a[['DATA', col]].dropna().copy()
+                    df_col['DATA'] = pd.to_datetime(df_col['DATA'])
+                    hoje = df_col['DATA'].max()
+
+                    row = {'Potência': f'{pw}W'}
+                    for lbl, dias in janelas:
+                        sub = (df_col[df_col['DATA'] >= hoje - pd.Timedelta(days=dias)]
+                               if dias else df_col)
+                        if len(sub) < 3:
+                            row[lbl] = '— (N<3)'
+                            continue
+                        # Limpeza de ruído com SEM antes de calcular tendência
+                        if icd:
+                            serie_l, _ = _limpar_ruido_sem(sub[col], icd)
+                            sub = sub.copy(); sub[col] = serie_l
+                            sub = sub.dropna(subset=[col])
+                        if len(sub) < 3:
+                            row[lbl] = '— (N<3 após limpeza)'
+                            continue
+                        res = _calcular_tendencia_com_mdc(sub, 'DATA', col, mdc)
+                        row[lbl] = res['classif']
+                    rows_tend.append(row)
+
+                if rows_tend:
+                    st.caption("**Secção B — Tendência por período (validada pelo MDC):** "
+                               "Δ ≤ MDC → Estável (dentro do erro de medição) | "
+                               "Δ > MDC + evidência estatística → mudança provavelmente real")
+                    st.dataframe(pd.DataFrame(rows_tend), width="stretch", hide_index=True)
+
+                # Rodapé interpretação
+                st.caption(
+                    "⚠️ **Guia:** "
+                    "1) SEM = erro esperado nas mesmas condições  "
+                    "2) MDC₉₅ = mudança mínima para ser considerada real  "
+                    "3) ICC = fiabilidade das medições ao longo do tempo  "
+                    "4) Δ ≤ MDC = provavelmente ruído | Δ > MDC = provavelmente real  "
+                    "⚠️ ICC alto = medições consistentes, NÃO significa que uma variável prediz outra")
 
                 st.markdown("---")
 
@@ -3285,8 +3390,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                         fig_pwr.add_trace(go.Scatter(
                             x=agg_p['_ts'], y=agg_p['mean'],
                             mode='lines+markers', name=f'{pw}W',
-                            line=dict(color=cor, width=2.5),
-                            marker=dict(size=8),
+                            line=dict(color=cor, width=2.5), marker=dict(size=8),
                             customdata=np.stack([agg_p['_lbl']], axis=-1),
                             hovertemplate=f'%{{customdata[0]}}  HR/Pwr {pw}W: <b>%{{y:.3f}} bpm/W</b><extra></extra>'))
                     else:
@@ -3294,27 +3398,21 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                             x=df_p['DATA'], y=df_p[col],
                             mode='markers', name=f'{pw}W',
                             marker=dict(color=cor, opacity=0.35, size=6),
-                            hovertemplate=f'%{{x|%d/%m/%Y}}  HR/Pwr {pw}W: <b>%{{y:.3f}}</b><extra></extra>',
-                            showlegend=False))
+                            showlegend=False,
+                            hovertemplate=f'%{{x|%d/%m/%Y}}  HR/Pwr {pw}W: <b>%{{y:.3f}}</b><extra></extra>'))
                         fig_pwr.add_trace(go.Scatter(
                             x=df_p['DATA'],
                             y=df_p[col].rolling(roll_pwr, min_periods=1).mean(),
                             mode='lines', name=f'{pw}W roll({roll_pwr})',
                             line=dict(color=cor, width=2.5),
                             hovertemplate=f'%{{x|%d/%m/%Y}}  HR/Pwr {pw}W roll: <b>%{{y:.3f}}</b><extra></extra>'))
-                fig_pwr.update_layout(
-                    **PLOTLY_WHITE,
+                fig_pwr.update_layout(**PLOTLY_WHITE,
                     title=dict(text=f'{aba} — HR/Pwr ratio{(" — "+agrup_pwr_lbl) if agrup_pwr else ""}',
                                font=dict(size=14, color='#222')),
                     height=380, hovermode='x unified',
-                    xaxis=dict(title=dict(text='Data', font=dict(color='#333')),
-                               tickfont=dict(color='#333'),
-                               showgrid=True, gridcolor='#e8e8e8', linecolor='#ccc'),
-                    yaxis=dict(title=dict(text='HR/Pwr (bpm/W)', font=dict(color='#333')),
-                               tickfont=dict(color='#333'),
-                               showgrid=True, gridcolor='#e8e8e8', linecolor='#ccc'),
-                    legend=dict(orientation='h', y=1.02, x=0,
-                    font=dict(color='#111111', size=11)))
+                    xaxis=_xaxis('Data'),
+                    yaxis=_yaxis('HR/Pwr (bpm/W)'),
+                    legend=LEGEND_STYLE)
                 st.plotly_chart(fig_pwr, use_container_width=True)
                 st.markdown("---")
 
@@ -3325,23 +3423,21 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                 df_drag = df_plot[['DATA', drag_col]].dropna().sort_values('DATA')
                 if len(df_drag) >= 2:
                     st.subheader(f"⚙️ Drag Factor — evolução temporal ({aba})")
-                    agrup_drag, agrup_drag_lbl, roll_drag = _controles_grafico(aba, 'drag', len(df_drag))
+                    agrup_drag, agrup_drag_lbl, roll_drag = _controles_grafico(aba,'drag',len(df_drag))
                     mu_d = df_drag[drag_col].mean(); sd_d = df_drag[drag_col].std()
                     fig_drag = go.Figure()
-
                     if agrup_drag:
                         agg_d = _agrupar_serie(df_drag, 'DATA', drag_col, agrup_drag)
                         fig_drag.add_trace(go.Scatter(
                             x=df_drag['DATA'], y=df_drag[drag_col],
                             mode='markers', name='Medições',
                             marker=dict(color='#3498db', opacity=0.2, size=5),
-                            hovertemplate='%{x|%d/%m/%Y}  Drag: <b>%{y:.0f}</b><extra></extra>',
-                            showlegend=False))
+                            showlegend=False,
+                            hovertemplate='%{x|%d/%m/%Y}  Drag: <b>%{y:.0f}</b><extra></extra>'))
                         fig_drag.add_trace(go.Scatter(
                             x=agg_d['_ts'], y=agg_d['mean'],
                             mode='lines+markers', name=f'Drag ({agrup_drag_lbl})',
-                            line=dict(color='#3498db', width=2.5),
-                            marker=dict(size=8),
+                            line=dict(color='#3498db', width=2.5), marker=dict(size=8),
                             customdata=np.stack([agg_d['_lbl'], agg_d['count']], axis=-1),
                             hovertemplate='%{customdata[0]}  Drag: <b>%{y:.0f}</b>  N=%{customdata[1]}<extra></extra>'))
                     else:
@@ -3356,25 +3452,18 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                             mode='lines', name=f'Rolling ({roll_drag})',
                             line=dict(color='#2471a3', width=2.5),
                             hovertemplate='%{x|%d/%m/%Y}  Drag roll: <b>%{y:.0f}</b><extra></extra>'))
-
                     fig_drag.add_hline(y=mu_d, line_dash='dash', line_color='red',
                                        annotation_text=f'Média: {mu_d:.0f}',
                                        annotation_font=dict(color='red'))
                     fig_drag.add_hrect(y0=mu_d-sd_d, y1=mu_d+sd_d,
                                        fillcolor='rgba(52,152,219,0.08)', line_width=0)
-                    fig_drag.update_layout(
-                        **PLOTLY_WHITE,
+                    fig_drag.update_layout(**PLOTLY_WHITE,
                         title=dict(text=f'Drag Factor — {aba}{(" — "+agrup_drag_lbl) if agrup_drag else ""}',
                                    font=dict(size=14, color='#222')),
                         height=360, hovermode='x unified',
-                        xaxis=dict(title=dict(text='Data', font=dict(color='#333')),
-                                   tickfont=dict(color='#333'),
-                                   showgrid=True, gridcolor='#e8e8e8', linecolor='#ccc'),
-                        yaxis=dict(title=dict(text='Drag Factor', font=dict(color='#333')),
-                                   tickfont=dict(color='#333'),
-                                   showgrid=True, gridcolor='#e8e8e8', linecolor='#ccc'),
-                        legend=dict(orientation='h', y=1.02, x=0,
-                    font=dict(color='#111111', size=11)))
+                        xaxis=_xaxis('Data'),
+                        yaxis=_yaxis('Drag Factor'),
+                        legend=LEGEND_STYLE)
                     st.plotly_chart(fig_drag, use_container_width=True)
                     c1d, c2d, c3d = st.columns(3)
                     c1d.metric("Drag médio", f"{mu_d:.0f}")
@@ -3386,158 +3475,161 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                         f"Colunas: `{', '.join(df_a.columns.tolist())}`")
 
             # ════════════════════════════════════════════════════════════
-            # 6. Quartis de Drag Factor vs HR/O2
+            # 6. Quartis de Drag Factor vs HR/O2 — todo histórico
             # ════════════════════════════════════════════════════════════
             if drag_col and (hr_cols or o2_cols):
                 st.subheader(f"🔗 Drag Factor (quartis) vs HR / SmO2 — {aba}")
-                st.caption("Divisão do Drag Factor em 4 quartis. "
-                           "Kruskal-Wallis testa se há diferença global; "
-                           "Mann-Whitney entre pares adjacentes.")
+                st.caption("Todo o histórico. Quartis de DF com range real. "
+                           "Kruskal-Wallis testa diferença global entre quartis.")
 
-                df_db = df_a.dropna(subset=[drag_col]).copy()  # todo o histórico
+                df_db = df_a.dropna(subset=[drag_col]).copy()
                 if len(df_db) >= 8:
                     try:
                         df_db['_q'], bins = pd.qcut(df_db[drag_col], q=4,
-                                                     labels=False, retbins=True,
-                                                     duplicates='drop')
-                        q_labels = [
-                            f"Q{i+1} ({bins[i]:.0f}–{bins[i+1]:.0f})"
-                            for i in range(len(bins)-1)]
+                            labels=False, retbins=True, duplicates='drop')
+                        q_labels = [f"Q{i+1} ({bins[i]:.0f}–{bins[i+1]:.0f})"
+                                    for i in range(len(bins)-1)]
                         df_db['_qlbl'] = df_db['_q'].apply(
                             lambda x: q_labels[int(x)] if pd.notna(x) else None)
                     except Exception:
                         df_db['_qlbl'] = 'Único'; q_labels = ['Único']
 
-                    for tipo_d, cols_d, unid_d in [('HR', hr_cols, 'bpm'),
-                                                    ('SmO2', o2_cols, '%')]:
+                    for tipo_d, cols_d, unid_d in [('HR',hr_cols,'bpm'),('SmO2',o2_cols,'%')]:
                         if not cols_d: continue
                         drag_rows = []
                         for col in cols_d:
                             if col not in df_db.columns: continue
                             pw_d = _extrair_pot(col)
-                            df_col = df_db[[col, '_qlbl']].dropna()
+                            df_col = df_db[[col,'_qlbl']].dropna()
                             if len(df_col) < 4: continue
-
-                            grupos = sorted(df_col['_qlbl'].unique())
                             medias = {g: df_col[df_col['_qlbl']==g][col].values
-                                      for g in grupos}
-
-                            # Kruskal-Wallis global
+                                      for g in q_labels if g in df_col['_qlbl'].values}
                             vals_list = [v for v in medias.values() if len(v) >= 2]
                             if len(vals_list) >= 2:
                                 try:
                                     _, p_kw = kruskal(*vals_list)
-                                    sig_global = '✓ SIG' if p_kw < 0.05 else '✗ ns'
+                                    sig_g = '✓ SIG' if p_kw < 0.05 else '✗ ns'
                                 except Exception:
-                                    p_kw = 1.0; sig_global = '✗ ns'
+                                    p_kw = 1.0; sig_g = '✗ ns'
                             else:
-                                p_kw = 1.0; sig_global = '— (poucos dados)'
+                                p_kw = 1.0; sig_g = '— (poucos dados)'
 
-                            row = {
-                                'Potência': f'{pw_d}W',
-                                'Tipo': tipo_d,
-                                'Dif. global': f"{sig_global} (p={p_kw:.3f})",
-                            }
-                            # Média por quartil
+                            row = {'Potência':f'{pw_d}W','Tipo':tipo_d,
+                                   'Dif. global':f"{sig_g} (p={p_kw:.3f})"}
                             for g in q_labels:
-                                if g in medias and len(medias[g]) >= 1:
-                                    row[g] = f"{np.mean(medias[g]):.1f} {unid_d}"
-                                else:
-                                    row[g] = '—'
-
-                            # Tendência: Q1 → Q4 sobe, desce ou igual?
+                                row[g] = (f"{np.mean(medias[g]):.1f} {unid_d}"
+                                          if g in medias and len(medias[g]) >= 1 else '—')
                             medias_ord = [np.mean(medias[g]) for g in q_labels
                                           if g in medias and len(medias[g]) >= 1]
                             if len(medias_ord) >= 2:
                                 delta = medias_ord[-1] - medias_ord[0]
-                                if p_kw < 0.05:
-                                    row['Tendência Q1→Q4'] = (
-                                        f"↗ +{delta:+.1f} {unid_d} com DF↑"
-                                        if delta > 0
-                                        else f"↘ {delta:+.1f} {unid_d} com DF↑")
-                                else:
-                                    row['Tendência Q1→Q4'] = "→ sem diferença significativa"
+                                row['Q1→Q4'] = (f"↗ {delta:+.1f} {unid_d} com DF↑"
+                                                if (p_kw<0.05 and delta>0)
+                                                else f"↘ {delta:+.1f} {unid_d} com DF↑"
+                                                if (p_kw<0.05 and delta<0)
+                                                else "→ sem diferença significativa")
                             drag_rows.append(row)
-
                         if drag_rows:
                             st.markdown(f"**{tipo_d} ({unid_d}) por quartil de Drag Factor**")
-                            st.dataframe(pd.DataFrame(drag_rows),
-                                         width="stretch", hide_index=True)
+                            st.dataframe(pd.DataFrame(drag_rows), width="stretch", hide_index=True)
                 else:
-                    st.info("Poucos dados para análise por quartis de Drag Factor.")
+                    st.info("Poucos dados para análise por quartis (N < 8).")
                 st.markdown("---")
 
             # ════════════════════════════════════════════════════════════
-            # 7. Treino Antes
+            # 7. Treino Antes — todo histórico
             # ════════════════════════════════════════════════════════════
             if treino_col and (hr_cols or o2_cols):
                 st.subheader(f"🏋️ Treino Antes — impacto no HR/SmO2 ({aba})")
-                st.caption("Comparação estatística (Mann-Whitney U) entre grupos. "
-                           "Mostra apenas diferenças com interpretação clara.")
+                st.caption("Todo o histórico. Mann-Whitney U entre grupos. "
+                           "Grupos: Sem treino | Com treino (todos) | Pesos | Cíclicos.")
 
-                df_ta = df_a.copy()  # todo o histórico
+                df_ta = df_a.copy()
                 df_ta[treino_col] = (df_ta[treino_col].astype(str).str.strip().str.lower()
                                      .replace({'nan':None,'none':None,'':None,'n/a':None}))
-                # Recalcular após normalização
-                df_ta['_sem_treino'] = df_ta[treino_col].isna()
-                cats_raw = sorted(df_ta[treino_col].dropna().unique().tolist())
-                todos_grupos = ['Sem treino'] + [c.capitalize() for c in cats_raw]
-                st.caption(f"Grupos: {', '.join(todos_grupos)}")
+                df_ta['_sem'] = df_ta[treino_col].isna()
 
-                for tipo_d, cols_d, unid_d in [('HR', hr_cols, 'bpm'),
-                                                ('SmO2', o2_cols, '%')]:
+                # Classificar categorias como 'pesos' ou 'ciclicos'
+                cats_raw = sorted(df_ta[treino_col].dropna().unique().tolist())
+                pesos_kws   = ['peso','weight','gym','musculação','musculacao','strength']
+                ciclicos_kws= ['bike','run','row','ski','ciclico','aerob','swim']
+
+                def _cat_tipo(c):
+                    cl = c.lower()
+                    if any(k in cl for k in pesos_kws):   return 'pesos'
+                    if any(k in cl for k in ciclicos_kws): return 'ciclicos'
+                    return 'outros'
+
+                df_ta['_tipo_treino'] = df_ta[treino_col].apply(
+                    lambda x: _cat_tipo(x) if pd.notna(x) else None)
+
+                for tipo_d, cols_d, unid_d in [('HR',hr_cols,'bpm'),('SmO2',o2_cols,'%')]:
                     if not cols_d: continue
                     treino_rows = []
                     for col in cols_d:
                         if col not in df_ta.columns: continue
                         pw_d = _extrair_pot(col)
-                        df_col = df_ta[[treino_col, col, '_sem_treino']].dropna(subset=[col])
+                        df_col = df_ta[[treino_col, col, '_sem','_tipo_treino']].dropna(subset=[col])
                         if len(df_col) < 4: continue
 
-                        # Valores por grupo
-                        grupos_vals = {}
-                        sem_v = df_col[df_col['_sem_treino']][col].values
-                        if len(sem_v) >= 2:
-                            grupos_vals['Sem treino'] = sem_v
-                        for cat in cats_raw:
-                            v = df_col[df_col[treino_col]==cat][col].values
-                            if len(v) >= 2:
-                                grupos_vals[cat.capitalize()] = v
-
-                        if len(grupos_vals) < 2: continue
+                        sem_v    = df_col[df_col['_sem']][col].values
+                        com_v    = df_col[~df_col['_sem']][col].values
+                        pesos_v  = df_col[df_col['_tipo_treino']=='pesos'][col].values
+                        cicl_v   = df_col[df_col['_tipo_treino']=='ciclicos'][col].values
 
                         row = {'Potência': f'{pw_d}W', 'Tipo': tipo_d}
-                        # Média por grupo
-                        for g, v in grupos_vals.items():
-                            row[g] = f"{np.mean(v):.1f} {unid_d}"
 
-                        # Comparações par a par com "Sem treino" como referência
-                        interpretacoes = []
-                        ref_v = grupos_vals.get('Sem treino')
-                        if ref_v is not None:
-                            for g, v in grupos_vals.items():
-                                if g == 'Sem treino': continue
-                                try:
-                                    _, pval = mannwhitneyu(ref_v, v, alternative='two-sided')
-                                    delta = np.mean(v) - np.mean(ref_v)
-                                    if pval < 0.05:
-                                        dir_str = ('mais alto' if delta > 0 else 'mais baixo')
-                                        interpretacoes.append(
-                                            f"{g}: {dir_str} ({delta:+.1f} {unid_d}, p={pval:.3f})")
-                                    else:
-                                        interpretacoes.append(
-                                            f"{g}: sem diferença (p={pval:.3f})")
-                                except Exception:
-                                    pass
+                        # Médias por grupo
+                        for lbl, vals in [('Sem treino',sem_v),('Com treino',com_v),
+                                          ('Pesos',pesos_v),('Cíclicos',cicl_v)]:
+                            row[lbl] = (f"{np.mean(vals):.1f} {unid_d}"
+                                        if len(vals) >= 1 else '—')
 
-                        row['vs Sem treino'] = " | ".join(interpretacoes) if interpretacoes else '—'
+                        # Comparações estatísticas
+                        comps = []
+
+                        # 1. Sem treino vs Com treino
+                        if len(sem_v) >= 3 and len(com_v) >= 3:
+                            _, p = mannwhitneyu(sem_v, com_v, alternative='two-sided')
+                            delta = np.mean(com_v) - np.mean(sem_v)
+                            if p < 0.05:
+                                dir_s = 'mais alto' if delta > 0 else 'mais baixo'
+                                comps.append(f"Com vs Sem: {dir_s} ({delta:+.1f} {unid_d}, p={p:.3f})")
+                            else:
+                                comps.append(f"Com vs Sem: sem diferença (p={p:.3f})")
+
+                        # 2. Pesos vs Cíclicos
+                        if len(pesos_v) >= 3 and len(cicl_v) >= 3:
+                            _, p2 = mannwhitneyu(pesos_v, cicl_v, alternative='two-sided')
+                            delta2 = np.mean(pesos_v) - np.mean(cicl_v)
+                            if p2 < 0.05:
+                                dir_s2 = 'mais alto' if delta2 > 0 else 'mais baixo'
+                                comps.append(f"Pesos vs Cíclicos: Pesos {dir_s2} ({delta2:+.1f} {unid_d}, p={p2:.3f})")
+                            else:
+                                comps.append(f"Pesos vs Cíclicos: sem diferença (p={p2:.3f})")
+
+                        # 3. Pesos vs Sem treino
+                        if len(pesos_v) >= 3 and len(sem_v) >= 3:
+                            _, p3 = mannwhitneyu(pesos_v, sem_v, alternative='two-sided')
+                            delta3 = np.mean(pesos_v) - np.mean(sem_v)
+                            if p3 < 0.05:
+                                dir_s3 = 'mais alto' if delta3 > 0 else 'mais baixo'
+                                comps.append(f"Pesos vs Sem: {dir_s3} ({delta3:+.1f} {unid_d}, p={p3:.3f})")
+
+                        # 4. Cíclicos vs Sem treino
+                        if len(cicl_v) >= 3 and len(sem_v) >= 3:
+                            _, p4 = mannwhitneyu(cicl_v, sem_v, alternative='two-sided')
+                            delta4 = np.mean(cicl_v) - np.mean(sem_v)
+                            if p4 < 0.05:
+                                dir_s4 = 'mais alto' if delta4 > 0 else 'mais baixo'
+                                comps.append(f"Cíclicos vs Sem: {dir_s4} ({delta4:+.1f} {unid_d}, p={p4:.3f})")
+
+                        row['Comparações'] = " | ".join(comps) if comps else '— (N insuficiente)'
                         treino_rows.append(row)
 
                     if treino_rows:
-                        st.markdown(f"**{tipo_d} ({unid_d}) — diferenças por grupo de treino**")
-                        st.dataframe(pd.DataFrame(treino_rows),
-                                     width="stretch", hide_index=True)
-
+                        st.markdown(f"**{tipo_d} ({unid_d}) — impacto do treino anterior**")
+                        st.dataframe(pd.DataFrame(treino_rows), width="stretch", hide_index=True)
 
 
 def tab_corporal(dc, da_full):
