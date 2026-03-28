@@ -1,11 +1,13 @@
 # tabs/tab_corporal.py — ATHELTICA Dashboard
+# Composição Corporal & Nutrição
+# Calculadora de metas no topo (todo o histórico, regressão linear, IC95, 3 cenários)
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
-from scipy.stats import spearmanr
+from scipy.stats import spearmanr, linregress
 from datetime import datetime, timedelta
 
 from config import CORES
@@ -42,6 +44,245 @@ def tab_corporal(dc, da_full):
     c4.metric("🫁 BF (registos)",       f"{n_bf}/{n_total}")
     st.caption(f"Dados esparsos: {n_dias} dias no período, {n_total} entradas. "
                "Dias sem registo são ignorados em médias e correlações.")
+
+    # ════════════════════════════════════════════════════════════════════════
+    # 🎯 MINI-CALCULADORA — usa TODO o histórico independente de filtros
+    # ════════════════════════════════════════════════════════════════════════
+    with st.expander("🎯 Calculadora de Metas — Peso, BF e Calorias", expanded=True):
+        st.caption(
+            "Estimativas baseadas em **todo o histórico disponível** "
+            "(independente dos filtros da aba). "
+            "Preenche Peso-alvo, BF-alvo, ou ambos. "
+            "Resultados com intervalo de confiança 95% e 3 cenários.")
+
+        from scipy.stats import linregress as _linreg
+
+        # ── Dados históricos completos (todo o histórico de dc) ──────────────
+        _dc_all = dc.copy()
+        _dc_all['Data'] = pd.to_datetime(_dc_all['Data'])
+        _dc_all = _dc_all.sort_values('Data')
+
+        # Série semanal — mais estável que diária para regressão
+        _dc_all['_w'] = _dc_all['Data'].dt.to_period('W')
+        _wk = _dc_all.groupby('_w')[['Peso','BF','Calorias','Net']].mean()
+        _wk.index = _wk.index.to_timestamp()
+        _wk = _wk.sort_index()
+
+        # Valores actuais (último registo disponível)
+        _peso_atual = float(_dc_all['Peso'].dropna().iloc[-1])             if 'Peso' in _dc_all.columns and _dc_all['Peso'].notna().any() else None
+        _bf_atual   = float(_dc_all['BF'].dropna().iloc[-1])             if 'BF'   in _dc_all.columns and _dc_all['BF'].notna().any() else None
+
+        # ── Inputs da calculadora ─────────────────────────────────────────────
+        _ci1, _ci2, _ci3 = st.columns(3)
+        _peso_alvo = _ci1.number_input(
+            f"⚖️ Peso-alvo (kg)  {'— actual: ' + str(round(_peso_atual,1)) + ' kg' if _peso_atual else ''}",
+            min_value=30.0, max_value=200.0, value=float(round(_peso_atual,1)) if _peso_atual else 75.0,
+            step=0.1, key="calc_peso_alvo")
+        _bf_alvo   = _ci2.number_input(
+            f"🫁 BF-alvo (%)  {'— actual: ' + str(round(_bf_atual,1)) + '%' if _bf_atual else ''}",
+            min_value=3.0,  max_value=50.0,  value=float(round(_bf_atual,1))  if _bf_atual else 15.0,
+            step=0.1, key="calc_bf_alvo")
+        _usar_peso = _ci3.checkbox("Calcular meta Peso", value=True,  key="calc_use_peso")
+        _usar_bf   = _ci3.checkbox("Calcular meta BF",   value=False, key="calc_use_bf")
+
+        if not _usar_peso and not _usar_bf:
+            st.info("Selecciona pelo menos uma meta (Peso ou BF).")
+        else:
+            # ── Funções auxiliares ──────────────────────────────────────────────
+            def _taxa_semanal(series):
+                """
+                Calcula taxa de variação semanal média via regressão linear.
+                Retorna: slope (unid/sem), IC95 slope, R², p-value, N, série limpa.
+                """
+                s = series.dropna().reset_index(drop=True)
+                if len(s) < 6:
+                    return None
+                x = np.arange(len(s), dtype=float)
+                sl, inter, r, pv, se = _linreg(x, s.values)
+                # IC95 do slope: ±t(0.975, df=n-2) × SE
+                from scipy.stats import t as _t
+                tc = _t.ppf(0.975, df=len(s)-2)
+                return {
+                    'slope': sl, 'slope_lo': sl - tc*se, 'slope_hi': sl + tc*se,
+                    'r2': r**2, 'pv': pv, 'n': len(s), 'se': se,
+                    'intercept': inter, 'x': x, 'y': s.values,
+                }
+
+            def _tempo_semanas(diff, taxa_dict):
+                """
+                Estima semanas para atingir 'diff' à taxa histórica.
+                Retorna: esperado, optimista (taxa max), pessimista (taxa min).
+                """
+                sl   = taxa_dict['slope']
+                sl_h = taxa_dict['slope_hi']  # taxa mais rápida (IC alto)
+                sl_l = taxa_dict['slope_lo']  # taxa mais lenta (IC baixo)
+
+                def _sem(d, t):
+                    if abs(t) < 1e-6: return None
+                    v = d / t
+                    return round(v) if v > 0 else None
+
+                return {
+                    'esperado':    _sem(diff, sl),
+                    'optimista':   _sem(diff, sl_h) if np.sign(sl_h) == np.sign(diff) else None,
+                    'pessimista':  _sem(diff, sl_l) if np.sign(sl_l) == np.sign(diff) else None,
+                }
+
+            def _calorias_para_meta(alvo, atual, taxa_dict, var='Peso'):
+                """
+                Estima calorias necessárias para atingir meta.
+                Usa correlação histórica Calorias ↔ variação semanal.
+                """
+                # Calorias médias históricas
+                cal_media = _wk['Calorias'].dropna().mean() if 'Calorias' in _wk.columns else None
+                cal_std   = _wk['Calorias'].dropna().std()  if 'Calorias' in _wk.columns else None
+
+                if cal_media is None:
+                    return None
+
+                diff = alvo - atual
+                # Regra empírica: ~7700 kcal ≈ 1kg peso; ~200 kcal ≈ 1% BF (aproximação)
+                kcal_por_unidade = 7700 if var == 'Peso' else 200
+
+                # Taxa de variação semanal necessária (unid/sem)
+                if taxa_dict and abs(taxa_dict['slope']) > 0:
+                    semanas = abs(diff / taxa_dict['slope'])
+                    deficit_ou_superavit = (diff * kcal_por_unidade) / max(semanas, 1)
+                else:
+                    deficit_ou_superavit = diff * kcal_por_unidade / 12  # assume 12 semanas default
+
+                cal_alvo   = cal_media + deficit_ou_superavit
+                # Range ± 1 desvio padrão histórico das calorias
+                cal_std_v  = cal_std if cal_std and not np.isnan(cal_std) else 150
+                return {
+                    'cal_alvo':  round(cal_alvo),
+                    'cal_min':   round(cal_alvo - cal_std_v),
+                    'cal_max':   round(cal_alvo + cal_std_v),
+                    'cal_media_historica': round(cal_media),
+                    'deficit_superavit':   round(deficit_ou_superavit),
+                }
+
+            def _qualidade_dados(taxa_dict):
+                if taxa_dict is None: return "⛔ Dados insuficientes"
+                if taxa_dict['n'] < 10: return "⚠️ Poucos dados"
+                if taxa_dict['pv'] > 0.10: return "⚠️ Tendência não significativa (p>0.10)"
+                if taxa_dict['r2'] < 0.20: return "⚠️ R² baixo — tendência fraca"
+                return "✅ Tendência confiável"
+
+            # ── Calcular para as metas seleccionadas ───────────────────────────
+            results = []
+
+            for _var, _alvo, _atual, _usar, _col in [
+                ('Peso', _peso_alvo, _peso_atual, _usar_peso, 'Peso'),
+                ('BF',   _bf_alvo,   _bf_atual,   _usar_bf,   'BF'),
+            ]:
+                if not _usar or _atual is None: continue
+                if _var not in _wk.columns: continue
+
+                diff_val = _alvo - _atual
+                dir_lbl  = ("⬆️ ganhar" if diff_val > 0 else "⬇️ perder") + f" {abs(diff_val):.1f}"
+                dir_lbl += " kg" if _var == 'Peso' else "%"
+
+                taxa = _taxa_semanal(_wk[_col])
+                cal  = _calorias_para_meta(_alvo, _atual, taxa, _var)
+                qual = _qualidade_dados(taxa)
+
+                if diff_val == 0:
+                    st.success(f"✅ {_var}: já está no alvo ({_atual:.1f})!")
+                    continue
+
+                # Tempo
+                tempo = _tempo_semanas(diff_val, taxa) if taxa else None
+
+                results.append({
+                    'var': _var, 'atual': _atual, 'alvo': _alvo,
+                    'diff': diff_val, 'dir_lbl': dir_lbl,
+                    'taxa': taxa, 'cal': cal, 'tempo': tempo, 'qual': qual,
+                })
+
+            # ── Mostrar resultados ─────────────────────────────────────────────
+            for res in results:
+                st.markdown(f"#### {res['var']} — actual: **{res['atual']:.1f}** → alvo: **{res['alvo']:.1f}** ({res['dir_lbl']})")
+
+                # Qualidade dos dados
+                st.caption(f"Qualidade estimativa: {res['qual']}")
+                if res['taxa']:
+                    st.caption(
+                        f"Taxa histórica: **{res['taxa']['slope']:+.3f} {('kg' if res['var']=='Peso' else '%')}/sem** "
+                        f"(IC95: {res['taxa']['slope_lo']:+.3f} → {res['taxa']['slope_hi']:+.3f}) | "
+                        f"R²={res['taxa']['r2']:.2f} | p={res['taxa']['pv']:.3f} | N={res['taxa']['n']} semanas")
+
+                _rc1, _rc2 = st.columns(2)
+
+                # Tempo estimado
+                with _rc1:
+                    st.markdown("**⏱️ Tempo estimado**")
+                    if res['tempo']:
+                        t = res['tempo']
+                        rows_t = []
+                        for lbl, key, icon in [
+                            ("Esperado (tendência central)", 'esperado',   "🎯"),
+                            ("Optimista (taxa mais rápida)", 'optimista',  "⚡"),
+                            ("Pessimista (taxa mais lenta)", 'pessimista', "🐢"),
+                        ]:
+                            val = t.get(key)
+                            if val is None:
+                                rows_t.append({'Cenário': f"{icon} {lbl}", 'Semanas': '—', 'Meses': '—'})
+                            else:
+                                rows_t.append({
+                                    'Cenário':  f"{icon} {lbl}",
+                                    'Semanas':  f"{val}",
+                                    'Meses':    f"~{val/4.3:.1f}",
+                                })
+                        st.dataframe(pd.DataFrame(rows_t),
+                                     use_container_width=True, hide_index=True)
+                    else:
+                        st.info("Taxa insuficiente para estimar tempo.")
+
+                # Calorias recomendadas
+                with _rc2:
+                    st.markdown("**🔥 Calorias recomendadas**")
+                    if res['cal']:
+                        c = res['cal']
+                        dir_lbl2 = "défice" if res['diff'] < 0 else "superávit"
+                        st.dataframe(pd.DataFrame([
+                            {'Métrica': '📊 Histórico médio',
+                             'Valor': f"{c['cal_media_historica']} kcal"},
+                            {'Métrica': f'{"➕" if res["diff"]>0 else "➖"} Ajuste necessário ({dir_lbl2})',
+                             'Valor': f"{c['deficit_superavit']:+.0f} kcal/dia"},
+                            {'Métrica': '🎯 Calorias alvo (central)',
+                             'Valor': f"{c['cal_alvo']} kcal"},
+                            {'Métrica': '📉 Range mínimo (–1σ histórico)',
+                             'Valor': f"{c['cal_min']} kcal"},
+                            {'Métrica': '📈 Range máximo (+1σ histórico)',
+                             'Valor': f"{c['cal_max']} kcal"},
+                        ]), use_container_width=True, hide_index=True)
+                    else:
+                        st.info("Sem dados de Calorias suficientes.")
+
+                st.markdown("---")
+
+            # ── Se os dois seleccionados: nota combinada ───────────────────────
+            if _usar_peso and _usar_bf and len(results) == 2:
+                rp = next((r for r in results if r['var']=='Peso'), None)
+                rb = next((r for r in results if r['var']=='BF'),   None)
+                if rp and rb and rp['tempo'] and rb['tempo']:
+                    t_p = rp['tempo'].get('esperado')
+                    t_b = rb['tempo'].get('esperado')
+                    if t_p and t_b:
+                        t_max = max(t_p, t_b)
+                        bottleneck = 'Peso' if t_p >= t_b else 'BF'
+                        st.info(
+                            f"💡 Para atingir **ambas** as metas: ~**{t_max} semanas** "
+                            f"(limitado pelo **{bottleneck}** que demora mais). "
+                            f"Prioriza a dieta para o {bottleneck}.")
+
+            # ── Aviso estatístico ──────────────────────────────────────────────
+            st.caption(
+                "⚠️ Estimativas baseadas em regressão linear sobre dados históricos reais. "
+                "O corpo adapta-se e a taxa pode variar. "
+                "Sem dados suficientes (N<6 semanas com registo) os resultados não são fiáveis.")
+
     st.markdown("---")
 
     # ── Controlos globais ─────────────────────────────────────────────────────
