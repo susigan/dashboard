@@ -2779,6 +2779,22 @@ def _axis(title='', color='#333333', secondary=False):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
+PLOTLY_WHITE = dict(paper_bgcolor='white', plot_bgcolor='white',
+                    font=dict(family='Arial', size=12, color='#333333'))
+
+def _axis(title='', color='#333333', secondary=False):
+    d = dict(title=dict(text=title, font=dict(color=color, size=12)),
+             tickfont=dict(color=color),
+             showgrid=True, gridcolor='#e8e8e8',
+             linecolor='#cccccc', linewidth=1, showline=True,
+             zeroline=False)
+    if secondary:
+        d['overlaying'] = 'y'; d['side'] = 'right'; d['showgrid'] = False
+    return d
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
 def _extrair_pot(col):
     m = re.search(r'(\d+)[_\s]*W', str(col).upper())
     return int(m.group(1)) if m else None
@@ -3096,8 +3112,9 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                                 overlaying='y', side='right', showgrid=False,
                                 linecolor='#ccc', showline=True),
                     legend=dict(orientation='h', y=1.02, x=0,
-                                bgcolor='rgba(255,255,255,0.8)',
-                                bordercolor='#ddd', borderwidth=1),
+                                bgcolor='rgba(255,255,255,0.9)',
+                                bordercolor='#aaa', borderwidth=1,
+                                font=dict(color='#111111', size=11)),
                 )
                 st.plotly_chart(fig_s, use_container_width=True)
 
@@ -3170,12 +3187,13 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                                 sl, ic, _, pv, _ = linregress(xn, agg['mean'].values)
                                 y_tr = ic + sl * xn
                                 sig = '✓' if pv < 0.05 else '—'
+                                classif = ('↗' if sl > 0 else '↘') if pv < 0.05 else '→'
+                                lbl_trend = f'{pw}W {classif} ({sig})'
                                 fig_t.add_trace(go.Scatter(
                                     x=agg['_ts'], y=y_tr,
-                                    mode='lines', name=f'{pw}W tendência ({sig})',
+                                    mode='lines', name=lbl_trend,
                                     line=dict(color=cor, width=1.2, dash='dash'),
-                                    hovertemplate=f'Tendência {pw}W: <b>%{{y:.1f}} {unid_t}</b><extra></extra>',
-                                    showlegend=False))
+                                    hovertemplate=f'Tendência {pw}W: <b>%{{y:.1f}} {unid_t}</b><extra></extra>'))
                             except Exception:
                                 pass
                     else:
@@ -3199,12 +3217,13 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                                 sl, ic, _, pv, _ = linregress(xd, df_t[col].values)
                                 y_tr = ic + sl * xd
                                 sig = '✓' if pv < 0.05 else '—'
+                                classif = ('↗' if sl > 0 else '↘') if pv < 0.05 else '→'
+                                lbl_trend = f'{pw}W {classif} ({sig})'
                                 fig_t.add_trace(go.Scatter(
                                     x=df_t['DATA'], y=y_tr,
-                                    mode='lines', name=f'{pw}W tendência ({sig})',
+                                    mode='lines', name=lbl_trend,
                                     line=dict(color=cor, width=1.2, dash='dash'),
-                                    hovertemplate=f'Tendência {pw}W: <b>%{{y:.1f}} {unid_t}</b><extra></extra>',
-                                    showlegend=False))
+                                    hovertemplate=f'Tendência {pw}W: <b>%{{y:.1f}} {unid_t}</b><extra></extra>'))
                             except Exception:
                                 pass
 
@@ -3224,8 +3243,9 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                                showgrid=True, gridcolor='#e8e8e8',
                                linecolor='#ccc', showline=True),
                     legend=dict(orientation='h', y=1.02, x=0,
-                                bgcolor='rgba(255,255,255,0.8)',
-                                bordercolor='#ddd', borderwidth=1),
+                                bgcolor='rgba(255,255,255,0.9)',
+                                bordercolor='#aaa', borderwidth=1,
+                                font=dict(color='#111111', size=11)),
                 )
                 st.plotly_chart(fig_t, use_container_width=True)
 
@@ -3293,7 +3313,8 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                     yaxis=dict(title=dict(text='HR/Pwr (bpm/W)', font=dict(color='#333')),
                                tickfont=dict(color='#333'),
                                showgrid=True, gridcolor='#e8e8e8', linecolor='#ccc'),
-                    legend=dict(orientation='h', y=1.02, x=0))
+                    legend=dict(orientation='h', y=1.02, x=0,
+                    font=dict(color='#111111', size=11)))
                 st.plotly_chart(fig_pwr, use_container_width=True)
                 st.markdown("---")
 
@@ -3352,7 +3373,8 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                         yaxis=dict(title=dict(text='Drag Factor', font=dict(color='#333')),
                                    tickfont=dict(color='#333'),
                                    showgrid=True, gridcolor='#e8e8e8', linecolor='#ccc'),
-                        legend=dict(orientation='h', y=1.02, x=0))
+                        legend=dict(orientation='h', y=1.02, x=0,
+                    font=dict(color='#111111', size=11)))
                     st.plotly_chart(fig_drag, use_container_width=True)
                     c1d, c2d, c3d = st.columns(3)
                     c1d.metric("Drag médio", f"{mu_d:.0f}")
@@ -3372,7 +3394,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                            "Kruskal-Wallis testa se há diferença global; "
                            "Mann-Whitney entre pares adjacentes.")
 
-                df_db = df_plot.dropna(subset=[drag_col]).copy()
+                df_db = df_a.dropna(subset=[drag_col]).copy()  # todo o histórico
                 if len(df_db) >= 8:
                     try:
                         df_db['_q'], bins = pd.qcut(df_db[drag_col], q=4,
@@ -3453,9 +3475,10 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                 st.caption("Comparação estatística (Mann-Whitney U) entre grupos. "
                            "Mostra apenas diferenças com interpretação clara.")
 
-                df_ta = df_plot.copy()
+                df_ta = df_a.copy()  # todo o histórico
                 df_ta[treino_col] = (df_ta[treino_col].astype(str).str.strip().str.lower()
                                      .replace({'nan':None,'none':None,'':None,'n/a':None}))
+                # Recalcular após normalização
                 df_ta['_sem_treino'] = df_ta[treino_col].isna()
                 cats_raw = sorted(df_ta[treino_col].dropna().unique().tolist())
                 todos_grupos = ['Sem treino'] + [c.capitalize() for c in cats_raw]
