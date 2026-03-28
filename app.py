@@ -2470,54 +2470,6 @@ def calcular_polinomios_carga(df_act_full):
     resultados['_ld'] = ld
     return resultados
 
-def analisar_falta_estimulo(df_act_full, janela_dias=14):
-    """Análise de falta de estímulo por modalidade — igual ao original."""
-    df = filtrar_principais(df_act_full).copy()
-    df['Data'] = pd.to_datetime(df['Data'])
-    if 'moving_time' not in df.columns or 'rpe' not in df.columns:
-        return None
-    df['rpe_fill'] = df['rpe'].fillna(df['rpe'].median())
-    df['load_val'] = (df['moving_time'] / 60) * df['rpe_fill']
-    ld = df.groupby('Data')['load_val'].sum().reset_index().sort_values('Data')
-    idx = pd.date_range(ld['Data'].min(), datetime.now().date())
-    ld = ld.set_index('Data').reindex(idx, fill_value=0).reset_index(); ld.columns = ['Data', 'load_val']
-    ld['CTL'] = ld['load_val'].ewm(span=42, adjust=False).mean()
-    ld['ATL'] = ld['load_val'].ewm(span=7, adjust=False).mean()
-
-    data_limite = pd.Timestamp.now() - pd.Timedelta(days=janela_dias)
-    carga_rec = ld[ld['Data'] >= data_limite].copy()
-    if len(carga_rec) == 0:
-        return None
-
-    resultados = {}
-    for mod in ['Bike', 'Run', 'Row', 'Ski']:
-        df_mod = df[(df['type'] == mod) & (df['Data'] >= data_limite)]
-        dias_ativ = df_mod['Data'].nunique()
-        freq = dias_ativ / max(janela_dias, 1)
-
-        atl_m = carga_rec['ATL'].mean()
-        ctl_m = carga_rec['CTL'].mean()
-        gap = ((ctl_m - atl_m) / ctl_m * 100) if ctl_m > 0 else 0
-        dias_atl_baixo = (carga_rec['ATL'] < carga_rec['CTL']).sum()
-
-        x_s = np.arange(len(carga_rec))
-        slope = np.polyfit(x_s, carga_rec['ATL'].values, 1)[0] if len(carga_rec) > 1 else 0
-        slope_norm = max(0, min(1, (slope + 5) / 10))
-
-        need = (
-            min(1, max(0, gap / 50)) * 100 * 0.4 +
-            min(1, dias_atl_baixo / max(len(carga_rec), 1)) * 100 * 0.3 +
-            (1 - slope_norm) * 100 * 0.2 +
-            (1 - freq) * 100 * 0.1
-        )
-        prio = 'ALTA' if need >= 70 else 'MÉDIA' if need >= 40 else 'BAIXA'
-        resultados[mod] = {
-            'need_score': need, 'prioridade': prio,
-            'gap_relativo': gap, 'dias_atl_menor_ctl': int(dias_atl_baixo),
-            'dias_com_atividade': dias_ativ, 'atl_medio': atl_m, 'ctl_medio': ctl_m
-        }
-    return dict(sorted(resultados.items(), key=lambda x: x[1]['need_score'], reverse=True))
-
 def tabela_resumo_por_tipo_df(da):
     """Tabela resumo por tipo igual ao original."""
     df = filtrar_principais(da).copy()
