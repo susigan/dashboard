@@ -268,22 +268,27 @@ def _render_hrv_rhr_table(rows_hrv):
     cols = ['Período'] + DIAS_SEMANA
 
     def _cell_html(hrv_txt, rhr_txt, c_h, c_r):
-        cor_h = '#27ae60' if c_h == 'green' else '#e74c3c' if c_h == 'red' else '#555'
-        cor_r = '#27ae60' if c_r == 'green' else '#e74c3c' if c_r == 'red' else '#555'
+        cor_h = '#27ae60' if c_h == 'green' else '#e74c3c' if c_h == 'red' else '#333333'
+        cor_r = '#27ae60' if c_r == 'green' else '#e74c3c' if c_r == 'red' else '#333333'
         return (f'<span style="color:{cor_h};font-weight:bold">{hrv_txt}</span>'
-                f'<span style="color:#999"> | </span>'
+                f'<span style="color:#666666"> | </span>'
                 f'<span style="color:{cor_r};font-weight:bold">{rhr_txt}</span>')
 
-    html = '<table style="border-collapse:collapse;width:100%;font-size:12px">'
+    html = ('<table style="border-collapse:collapse;width:100%;font-size:12px;'
+             'background:#ffffff;color:#222222">')
     # Header
-    html += '<tr style="background:#f0f0f0">'
+    html += ('<tr style="background:#e8e8e8">')
     for c in cols:
-        html += f'<th style="border:1px solid #ddd;padding:6px 8px;text-align:center">{c}</th>'
+        html += (f'<th style="border:1px solid #ccc;padding:6px 8px;'
+                 f'text-align:center;color:#111111;font-weight:bold">{c}</th>')
     html += '</tr>'
 
-    for row in rows_hrv:
-        html += '<tr>'
-        html += f'<td style="border:1px solid #ddd;padding:5px 8px;font-weight:bold;white-space:nowrap">{row["Período"]}</td>'
+    for i, row in enumerate(rows_hrv):
+        bg = '#ffffff' if i % 2 == 0 else '#f9f9f9'
+        html += f'<tr style="background:{bg}">'
+        html += (f'<td style="border:1px solid #ccc;padding:5px 8px;'
+                 f'font-weight:bold;white-space:nowrap;color:#111111">'
+                 f'{row["Período"]}</td>')
         for dia in DIAS_SEMANA:
             val = row.get(dia, ('—','—','normal','normal'))
             if isinstance(val, tuple):
@@ -291,7 +296,8 @@ def _render_hrv_rhr_table(rows_hrv):
                 cell = _cell_html(h, r, ch, cr)
             else:
                 cell = str(val)
-            html += f'<td style="border:1px solid #ddd;padding:5px 8px;text-align:center">{cell}</td>'
+            html += (f'<td style="border:1px solid #ccc;padding:5px 8px;'
+                     f'text-align:center;color:#222222">{cell}</td>')
         html += '</tr>'
     html += '</table>'
     return html
@@ -401,7 +407,7 @@ def tab_padrao(da_full, dw_full):
         rows_rec = []
         for lbl, d_ini, d_fim in periodos:
             dw_p = _filtrar(dw, d_ini, d_fim)
-            if len(dw_p) < 7:
+            if len(dw_p) < 3:
                 continue
             row = {'Período': lbl}
             for n, dia in enumerate(DIAS_SEMANA):
@@ -430,7 +436,7 @@ def tab_padrao(da_full, dw_full):
         rows_hrv = []
         for lbl, d_ini, d_fim in periodos:
             dw_p = _filtrar(dw, d_ini, d_fim)
-            if len(dw_p) < 7:
+            if len(dw_p) < 3:
                 continue
 
             # Baseline = média e DP do período
