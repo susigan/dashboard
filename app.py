@@ -4190,7 +4190,8 @@ def tab_corporal(dc, da_full):
             ax4p.bar(peso_delta.index - _off, peso_delta.values,
                      width=bar_w * 0.42, color='#27ae60', alpha=0.85,
                      align='center', zorder=3, label='_nolegend_')
-            _proxy_peso = Patch(facecolor='#27ae60', alpha=0.85, label='Peso')
+            from matplotlib.patches import Patch as _P
+            _proxy_peso = _P(facecolor='#27ae60', alpha=0.85, label='Peso')
             pv = peso_s.shift(1).dropna()
             ax4p.step(pv.index,  pv.values * 0.0070, color='#27ae60',
                       linewidth=1.5, linestyle='--', alpha=0.8, where='mid')
@@ -4209,7 +4210,8 @@ def tab_corporal(dc, da_full):
             ax4b.bar(bf_delta.index + _off, bf_delta.values,
                      width=bar_w * 0.42, color='#2980b9', alpha=0.65,
                      align='center', zorder=2, label='_nolegend_')
-            _proxy_bf = Patch(facecolor='#2980b9', alpha=0.65, label='BF')
+            from matplotlib.patches import Patch as _P2
+            _proxy_bf = _P2(facecolor='#2980b9', alpha=0.65, label='BF')
             bv = bf_s.shift(1).dropna()
             ax4b.step(bv.index,  bv.values * 0.0065, color='#f39c12',
                       linewidth=1.5, linestyle='--', alpha=0.8, where='mid')
