@@ -162,7 +162,7 @@ def tab_corporal(dc, da_full):
                          'Valor': f"{cal_alvo - c_rel['cal_std']:.0f} kcal"},
                         {'Métrica': '📈 Cal. alvo — máximo (+1σ histórico)',
                          'Valor': f"{cal_alvo + c_rel['cal_std']:.0f} kcal"},
-                    ]), use_container_width=True, hide_index=True)
+                    ]), width='stretch', hide_index=True)
 
                     if c_rel['qcal'] is not None:
                         with st.expander(f"📊 Calorias históricas por quartil de {_var}"):
@@ -178,7 +178,7 @@ def tab_corporal(dc, da_full):
                                     'N semanas':    int(qr['count']),
                                 })
                             st.dataframe(pd.DataFrame(qrows),
-                                         use_container_width=True, hide_index=True)
+                                         width='stretch', hide_index=True)
                 else:
                     st.info(f"Sem dados suficientes de Calorias para estimar ({_var}).")
 
@@ -290,19 +290,19 @@ def tab_corporal(dc, da_full):
         height=420,
         hovermode='x unified',
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
-        yaxis=dict(title='Peso (kg)', titlefont=dict(color=CORES['azul']),
+        yaxis=dict(title='Peso (kg)', title_font=dict(color=CORES['azul']),
                    tickfont=dict(color=CORES['azul'])),
-        yaxis2=dict(title='BF (%)', titlefont=dict(color=CORES['vermelho']),
+        yaxis2=dict(title='BF (%)', title_font=dict(color=CORES['vermelho']),
                     tickfont=dict(color=CORES['vermelho']),
                     overlaying='y', side='right'),
-        yaxis3=dict(title='Calorias (kcal)', titlefont=dict(color=CORES['laranja']),
+        yaxis3=dict(title='Calorias (kcal)', title_font=dict(color=CORES['laranja']),
                     tickfont=dict(color=CORES['laranja']),
                     overlaying='y', side='right', anchor='free', position=1.0,
                     showgrid=False),
         xaxis=dict(showgrid=True),
         margin=dict(r=80),
     )
-    st.plotly_chart(fig1, use_container_width=True)
+    st.plotly_chart(fig1, width='stretch')
 
     # ── GRÁFICO 2: Calorias + Net ─────────────────────────────────────────────
     st.subheader("🔥 Calorias e Balanço Energético (Net)")
@@ -341,13 +341,13 @@ def tab_corporal(dc, da_full):
         height=380,
         hovermode='x unified',
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
-        yaxis=dict(title='Calorias (kcal)', titlefont=dict(color=CORES['laranja']),
+        yaxis=dict(title='Calorias (kcal)', title_font=dict(color=CORES['laranja']),
                    tickfont=dict(color=CORES['laranja'])),
-        yaxis2=dict(title='Net (kcal)', titlefont=dict(color=CORES['roxo']),
+        yaxis2=dict(title='Net (kcal)', title_font=dict(color=CORES['roxo']),
                     tickfont=dict(color=CORES['roxo']),
                     overlaying='y', side='right'),
     )
-    st.plotly_chart(fig2, use_container_width=True)
+    st.plotly_chart(fig2, width='stretch')
 
     # ── GRÁFICO 3: Macros % stacked ───────────────────────────────────────────
     st.subheader("🥗 Distribuição de Macronutrientes (%)")
@@ -380,7 +380,7 @@ def tab_corporal(dc, da_full):
                 yaxis=dict(title='% kcal de macros', range=[0, 115]),
             )
             fig3.add_hline(y=100, line_dash='dot', line_color=CORES['cinza'])
-            st.plotly_chart(fig3, use_container_width=True)
+            st.plotly_chart(fig3, width='stretch')
 
     st.markdown("---")
 
@@ -470,13 +470,13 @@ def tab_corporal(dc, da_full):
             height=450,
             hovermode='x unified',
             legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
-            yaxis=dict(title='Δ Peso (kg)', titlefont=dict(color='#27ae60'),
+            yaxis=dict(title='Δ Peso (kg)', title_font=dict(color='#27ae60'),
                        tickfont=dict(color='#27ae60'), zeroline=True),
-            yaxis2=dict(title='Δ BF (%)', titlefont=dict(color='#2980b9'),
+            yaxis2=dict(title='Δ BF (%)', title_font=dict(color='#2980b9'),
                         tickfont=dict(color='#2980b9'),
                         overlaying='y', side='right', zeroline=True),
         )
-        st.plotly_chart(fig4, use_container_width=True)
+        st.plotly_chart(fig4, width='stretch')
     else:
         st.info("Dados insuficientes de Peso/BF para o gráfico de variação.")
 
@@ -575,7 +575,7 @@ def tab_corporal(dc, da_full):
                     .drop_duplicates(subset=['Alvo','Preditor'], keep='first')
                     .drop(columns=['_ar'])
                     .sort_values(['Alvo','Força'], ascending=[True, True]))
-        st.dataframe(df_c, use_container_width=True, hide_index=True)
+        st.dataframe(df_c, width='stretch', hide_index=True)
     else:
         st.info("Sem correlações moderadas/fortes. Pode ser necessário mais semanas.")
 
@@ -613,4 +613,4 @@ def tab_corporal(dc, da_full):
             })
         if rows_q:
             st.markdown(f"**Quartis de {alvo_lbl} — base calórica**")
-            st.dataframe(pd.DataFrame(rows_q), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rows_q), width='stretch', hide_index=True)
