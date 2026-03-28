@@ -4184,7 +4184,6 @@ def tab_corporal(dc, da_full):
         bar_w = {'W': 4, 'M': 20, 'Q': 60}[agrup_code]
         _off  = pd.Timedelta(days={'W': 1, 'M': 5, 'Q': 12}[agrup_code])
 
-        import matplotlib.patches as _mpatches
         _hl, _ll = [], []
 
         if 'Peso' in agg_v.columns and agg_v['Peso'].notna().sum() >= 3:
@@ -4193,7 +4192,7 @@ def tab_corporal(dc, da_full):
             ax4p.bar(peso_delta.index - _off, peso_delta.values,
                      width=bar_w * 0.42, color='#27ae60', alpha=0.85,
                      align='center', zorder=3)
-            _hl.append(_mpatches.Patch(facecolor='#27ae60', alpha=0.85))
+            _hl.append(mpatches.Patch(facecolor='#27ae60', alpha=0.85))
             _ll.append('Peso')
             pv = peso_s.shift(1).dropna()
             ax4p.step(pv.index,  pv.values * 0.0070, color='#27ae60',
@@ -4213,7 +4212,7 @@ def tab_corporal(dc, da_full):
             ax4b.bar(bf_delta.index + _off, bf_delta.values,
                      width=bar_w * 0.42, color='#2980b9', alpha=0.65,
                      align='center', zorder=2)
-            _hl.append(_mpatches.Patch(facecolor='#2980b9', alpha=0.65))
+            _hl.append(mpatches.Patch(facecolor='#2980b9', alpha=0.65))
             _ll.append('BF')
             bv = bf_s.shift(1).dropna()
             ax4b.step(bv.index,  bv.values * 0.0065, color='#f39c12',
