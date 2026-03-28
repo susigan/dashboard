@@ -9,6 +9,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import plotly.graph_objects as go
 from matplotlib.lines import Line2D
 from matplotlib.colors import LinearSegmentedColormap
 import seaborn as sns
@@ -3861,16 +3862,12 @@ def tab_corporal(dc, da_full):
     dc['Data'] = pd.to_datetime(dc['Data'])
 
     # ── Limitar cada coluna até ao seu último registo válido ─────────────────
-    # Evita que datas futuras sem dados distorçam gráficos e regressões.
-    # Cada coluna é truncada individualmente na sua última data com dado real.
     _num_cols = ['Peso','BF','Calorias','Carb','Fat','Ptn','Net']
     for _col in _num_cols:
         if _col not in dc.columns: continue
         _last_valid = dc.loc[dc[_col].notna(), 'Data'].max()
         if pd.isna(_last_valid): continue
-        # Zerar valores desta coluna após a última data válida (ficam NaN)
         dc.loc[dc['Data'] > _last_valid, _col] = np.nan
-    # Remover linhas onde TODOS os campos numéricos são NaN (linhas futuras vazias)
     _nc = [c for c in _num_cols if c in dc.columns]
     if _nc:
         dc = dc[dc[_nc].notna().any(axis=1)].copy()
@@ -3898,14 +3895,12 @@ def tab_corporal(dc, da_full):
     # ════════════════════════════════════════════════════════════════════════
     with st.expander("🎯 Calculadora de Metas — Peso, BF e Calorias", expanded=True):
 
-        # Série semanal sobre TODO o histórico
         _dc_all = dc.copy()
         _dc_all['_w'] = _dc_all['Data'].dt.to_period('W')
         _wk = _dc_all.groupby('_w')[['Peso','BF','Calorias','Net']].mean()
         _wk.index = _wk.index.to_timestamp()
         _wk = _wk.sort_index()
 
-        # Peso/BF actuais = mediana das últimas 4 semanas com dados
         _peso_atual = (float(_wk['Peso'].dropna().tail(4).median())
                        if 'Peso' in _wk.columns and _wk['Peso'].notna().any() else None)
         _bf_atual   = (float(_wk['BF'].dropna().tail(4).median())
@@ -3933,10 +3928,6 @@ def tab_corporal(dc, da_full):
             st.info("Selecciona pelo menos uma meta (Peso ou BF).")
         else:
             def _cal_historicas(target_col):
-                """
-                Regressão linear Calorias ~ target_col sobre dados históricos reais.
-                Retorna dict com slope, intercept, R², p, N, std, quartis.
-                """
                 df_p = _wk[[target_col, 'Calorias']].dropna()
                 if len(df_p) < 8: return None
                 sl, ic, rv, pv, _ = linregress(df_p[target_col].values,
@@ -3990,8 +3981,8 @@ def tab_corporal(dc, da_full):
                     cal_atual = c_rel['intercept'] + c_rel['slope'] * _atual
                     cal_alvo  = c_rel['intercept'] + c_rel['slope'] * _alvo
                     ajuste    = cal_alvo - cal_atual
+                    dir_lbl2  = "défice" if diff_val < 0 else "superávit"
 
-                    dir_lbl2 = "défice" if diff_val < 0 else "superávit"
                     st.dataframe(pd.DataFrame([
                         {'Métrica': '📊 Cal. históricas associadas ao estado actual',
                          'Valor': f"{cal_atual:.0f} kcal"},
@@ -4031,31 +4022,30 @@ def tab_corporal(dc, da_full):
 
     st.markdown("---")
 
-    # ── Controlos: agrupamento + filtro de datas próprio ─────────────────────
+    # ── Controlos: agrupamento + filtro de datas ──────────────────────────────
     st.subheader("⚙️ Filtros dos gráficos")
     _fc1, _fc2, _fc3, _fc4 = st.columns([1, 1, 1, 1])
 
-    agrup_opts  = {"Semana": "W", "Mês": "M", "Trimestre": "Q"}
-    agrup_lbl   = _fc1.selectbox("Agrupar por", list(agrup_opts.keys()), key="corp_agrup")
-    agrup_code  = agrup_opts[agrup_lbl]
-    roll_w      = _fc2.slider("Rolling (períodos)", 1, 12, 4, key="corp_roll")
+    agrup_opts = {"Semana": "W", "Mês": "M", "Trimestre": "Q"}
+    agrup_lbl  = _fc1.selectbox("Agrupar por", list(agrup_opts.keys()), key="corp_agrup")
+    agrup_code = agrup_opts[agrup_lbl]
+    roll_w     = _fc2.slider("Rolling (períodos)", 1, 12, 4, key="corp_roll")
 
     _d_min_hist = dc['Data'].min().date()
     _d_max_hist = dc['Data'].max().date()
     _tab_di = _fc3.date_input("Data início", value=_d_min_hist,
                                min_value=_d_min_hist, max_value=_d_max_hist,
                                key="corp_di")
-    _tab_df = _fc4.date_input("Data fim",    value=_d_max_hist,
+    _tab_df = _fc4.date_input("Data fim", value=_d_max_hist,
                                min_value=_d_min_hist, max_value=_d_max_hist,
                                key="corp_df")
 
-    # Filtrar dc pelo período seleccionado (só para gráficos)
     dc_f = dc[(dc['Data'].dt.date >= _tab_di) & (dc['Data'].dt.date <= _tab_df)].copy()
     if len(dc_f) == 0:
         st.warning("Sem dados no período seleccionado.")
         return
 
-    st.caption(f"📊 {len(dc_f)} registos no período | "
+    st.caption(f"📊 {len(dc_f)} registos | "
                f"{_tab_di.strftime('%d/%m/%Y')} → {_tab_df.strftime('%d/%m/%Y')}")
 
     # Agregação por período
@@ -4063,76 +4053,133 @@ def tab_corporal(dc, da_full):
     agg = dc_f.groupby('_p')[['Peso','BF','Calorias','Net','Carb','Fat','Ptn']].mean()
     agg.index = agg.index.to_timestamp()
 
-    def _rolling(series):
+    def _roll(series):
         return series.dropna().rolling(roll_w, min_periods=1).mean()
+
+    # ── helper: formato tooltip de data por agrupamento ───────────────────────
+    def _fmt_dates(idx):
+        if agrup_code == 'W':
+            return [d.strftime('Sem %d/%m/%y') for d in idx]
+        elif agrup_code == 'M':
+            return [d.strftime('%b %Y') for d in idx]
+        else:
+            return [f"Q{((d.month-1)//3)+1} {d.year}" for d in idx]
 
     # ── GRÁFICO 1: Peso + BF + Calorias ──────────────────────────────────────
     st.subheader("⚖️ Peso, % Gordura Corporal (BF) e Calorias")
-    fig1, ax1 = plt.subplots(figsize=(16, 6))
-    ax1b = ax1.twinx()
-    ax1c = ax1.twinx()
-    ax1c.spines['right'].set_position(('axes', 1.08))
+    fig1 = go.Figure()
 
     if 'Peso' in agg.columns and agg['Peso'].notna().any():
         ps = agg['Peso'].dropna()
-        ax1.scatter(ps.index, ps.values, color=CORES['azul'], alpha=0.35, s=30, zorder=4)
-        ax1.plot(_rolling(agg['Peso']).index, _rolling(agg['Peso']).values,
-                 color=CORES['azul'], linewidth=2.5, label=f'Peso (roll {roll_w})', zorder=5)
-        ax1.set_ylabel('Peso (kg)', color=CORES['azul'], fontweight='bold')
-        ax1.tick_params(axis='y', labelcolor=CORES['azul'])
+        pr = _roll(agg['Peso'])
+        fig1.add_trace(go.Scatter(
+            x=ps.index, y=ps.values,
+            mode='markers', name='Peso (pontos)',
+            marker=dict(color=CORES['azul'], size=6, opacity=0.4),
+            hovertemplate='%{x|%d/%m/%Y}<br>Peso: <b>%{y:.1f} kg</b><extra></extra>',
+            yaxis='y1'))
+        fig1.add_trace(go.Scatter(
+            x=pr.index, y=pr.values,
+            mode='lines', name=f'Peso roll({roll_w})',
+            line=dict(color=CORES['azul'], width=2.5),
+            hovertemplate='%{x|%d/%m/%Y}<br>Peso roll: <b>%{y:.1f} kg</b><extra></extra>',
+            yaxis='y1'))
 
     if 'BF' in agg.columns and agg['BF'].notna().any():
         bs = agg['BF'].dropna()
-        ax1b.scatter(bs.index, bs.values, color=CORES['vermelho'], alpha=0.35, s=30, zorder=4)
-        ax1b.plot(_rolling(agg['BF']).index, _rolling(agg['BF']).values,
-                  color=CORES['vermelho'], linewidth=2.5, linestyle='--',
-                  label=f'BF% (roll {roll_w})', zorder=5)
-        ax1b.set_ylabel('BF (%)', color=CORES['vermelho'], fontweight='bold')
-        ax1b.tick_params(axis='y', labelcolor=CORES['vermelho'])
+        br = _roll(agg['BF'])
+        fig1.add_trace(go.Scatter(
+            x=bs.index, y=bs.values,
+            mode='markers', name='BF% (pontos)',
+            marker=dict(color=CORES['vermelho'], size=6, opacity=0.4),
+            hovertemplate='%{x|%d/%m/%Y}<br>BF: <b>%{y:.1f}%</b><extra></extra>',
+            yaxis='y2'))
+        fig1.add_trace(go.Scatter(
+            x=br.index, y=br.values,
+            mode='lines', name=f'BF roll({roll_w})',
+            line=dict(color=CORES['vermelho'], width=2.5, dash='dash'),
+            hovertemplate='%{x|%d/%m/%Y}<br>BF roll: <b>%{y:.1f}%</b><extra></extra>',
+            yaxis='y2'))
 
     if 'Calorias' in agg.columns and agg['Calorias'].notna().any():
-        _bw = {'W': 4, 'M': 20, 'Q': 60}.get(agrup_code, 4)
-        ax1c.bar(agg['Calorias'].dropna().index, agg['Calorias'].dropna().values,
-                 width=_bw, color=CORES['laranja'], alpha=0.20, zorder=1, label='Calorias')
-        ax1c.plot(_rolling(agg['Calorias']).index, _rolling(agg['Calorias']).values,
-                  color=CORES['laranja'], linewidth=1.8, linestyle=':', alpha=0.8,
-                  label=f'Cal (roll {roll_w})', zorder=3)
-        ax1c.set_ylabel('Calorias (kcal)', color=CORES['laranja'], fontweight='bold')
-        ax1c.tick_params(axis='y', labelcolor=CORES['laranja'])
+        cs = agg['Calorias'].dropna()
+        cr = _roll(agg['Calorias'])
+        fig1.add_trace(go.Bar(
+            x=cs.index, y=cs.values,
+            name='Calorias',
+            marker=dict(color=CORES['laranja'], opacity=0.25),
+            hovertemplate='%{x|%d/%m/%Y}<br>Calorias: <b>%{y:.0f} kcal</b><extra></extra>',
+            yaxis='y3'))
+        fig1.add_trace(go.Scatter(
+            x=cr.index, y=cr.values,
+            mode='lines', name=f'Cal roll({roll_w})',
+            line=dict(color=CORES['laranja'], width=1.8, dash='dot'),
+            hovertemplate='%{x|%d/%m/%Y}<br>Cal roll: <b>%{y:.0f} kcal</b><extra></extra>',
+            yaxis='y3'))
 
-    h1, l1 = ax1.get_legend_handles_labels()
-    h2, l2 = ax1b.get_legend_handles_labels()
-    h3, l3 = ax1c.get_legend_handles_labels()
-    ax1.legend(h1+h2+h3, l1+l2+l3, loc='upper left', fontsize=9)
-    ax1.set_title(f'Peso, BF e Calorias — {agrup_lbl} | rolling={roll_w}',
-                  fontsize=13, fontweight='bold')
-    ax1.grid(True, alpha=0.25)
-    plt.xticks(rotation=45); plt.tight_layout(); st.pyplot(fig1); plt.close()
+    fig1.update_layout(
+        title=f'Peso, BF e Calorias — {agrup_lbl} | rolling={roll_w}',
+        height=420,
+        hovermode='x unified',
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
+        yaxis=dict(title='Peso (kg)', titlefont=dict(color=CORES['azul']),
+                   tickfont=dict(color=CORES['azul'])),
+        yaxis2=dict(title='BF (%)', titlefont=dict(color=CORES['vermelho']),
+                    tickfont=dict(color=CORES['vermelho']),
+                    overlaying='y', side='right'),
+        yaxis3=dict(title='Calorias (kcal)', titlefont=dict(color=CORES['laranja']),
+                    tickfont=dict(color=CORES['laranja']),
+                    overlaying='y', side='right', anchor='free', position=1.0,
+                    showgrid=False),
+        xaxis=dict(showgrid=True),
+        margin=dict(r=80),
+    )
+    st.plotly_chart(fig1, use_container_width=True)
 
     # ── GRÁFICO 2: Calorias + Net ─────────────────────────────────────────────
     st.subheader("🔥 Calorias e Balanço Energético (Net)")
-    fig2, ax2 = plt.subplots(figsize=(16, 5))
+    fig2 = go.Figure()
+
     if 'Calorias' in agg.columns and agg['Calorias'].notna().any():
-        ax2.bar(agg['Calorias'].dropna().index, agg['Calorias'].dropna().values,
-                color=CORES['laranja'], alpha=0.35, width=15, label='Calorias')
-        ax2.plot(_rolling(agg['Calorias']).index, _rolling(agg['Calorias']).values,
-                 color=CORES['laranja'], linewidth=2.5, label=f'Calorias (roll {roll_w})')
-        ax2.set_ylabel('Calorias (kcal)', color=CORES['laranja'], fontweight='bold')
+        cs2 = agg['Calorias'].dropna()
+        cr2 = _roll(agg['Calorias'])
+        fig2.add_trace(go.Bar(
+            x=cs2.index, y=cs2.values,
+            name='Calorias',
+            marker=dict(color=CORES['laranja'], opacity=0.4),
+            hovertemplate='%{x|%d/%m/%Y}<br>Calorias: <b>%{y:.0f} kcal</b><extra></extra>',
+            yaxis='y1'))
+        fig2.add_trace(go.Scatter(
+            x=cr2.index, y=cr2.values,
+            mode='lines', name=f'Cal roll({roll_w})',
+            line=dict(color=CORES['laranja'], width=2.5),
+            hovertemplate='%{x|%d/%m/%Y}<br>Cal roll: <b>%{y:.0f} kcal</b><extra></extra>',
+            yaxis='y1'))
+
     if 'Net' in agg.columns and agg['Net'].notna().any():
-        ax2b = ax2.twinx()
-        ax2b.plot(_rolling(agg['Net']).index, _rolling(agg['Net']).values,
-                  color=CORES['roxo'], linewidth=2.5, linestyle='--',
-                  label=f'Net (roll {roll_w})')
-        ax2b.axhline(0, color=CORES['cinza'], linestyle=':', linewidth=1)
-        ax2b.set_ylabel('Net (kcal)', color=CORES['roxo'], fontweight='bold')
-        ax2b.tick_params(axis='y', labelcolor=CORES['roxo'])
-        h2b, l2b = ax2b.get_legend_handles_labels()
-        ax2b.legend(h2b, l2b, loc='upper right', fontsize=9)
-    ax2.legend(fontsize=9, loc='upper left')
-    ax2.set_title(f'Calorias e Net — {agrup_lbl} | rolling={roll_w}',
-                  fontsize=13, fontweight='bold')
-    ax2.grid(True, alpha=0.25)
-    plt.xticks(rotation=45); plt.tight_layout(); st.pyplot(fig2); plt.close()
+        nr = _roll(agg['Net'])
+        fig2.add_trace(go.Scatter(
+            x=nr.index, y=nr.values,
+            mode='lines', name=f'Net roll({roll_w})',
+            line=dict(color=CORES['roxo'], width=2.5, dash='dash'),
+            hovertemplate='%{x|%d/%m/%Y}<br>Net: <b>%{y:.0f} kcal</b><extra></extra>',
+            yaxis='y2'))
+        fig2.add_hline(y=0, line_dash='dot', line_color=CORES['cinza'],
+                       annotation_text='Net = 0', annotation_position='bottom right',
+                       yref='y2')
+
+    fig2.update_layout(
+        title=f'Calorias e Net — {agrup_lbl} | rolling={roll_w}',
+        height=380,
+        hovermode='x unified',
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
+        yaxis=dict(title='Calorias (kcal)', titlefont=dict(color=CORES['laranja']),
+                   tickfont=dict(color=CORES['laranja'])),
+        yaxis2=dict(title='Net (kcal)', titlefont=dict(color=CORES['roxo']),
+                    tickfont=dict(color=CORES['roxo']),
+                    overlaying='y', side='right'),
+    )
+    st.plotly_chart(fig2, use_container_width=True)
 
     # ── GRÁFICO 3: Macros % stacked ───────────────────────────────────────────
     st.subheader("🥗 Distribuição de Macronutrientes (%)")
@@ -4144,30 +4191,35 @@ def tab_corporal(dc, da_full):
             agg_k[m] = agg_k[m] * kcal_map.get(m, 4)
         total_k = agg_k[macro_g].sum(axis=1).replace(0, np.nan)
         agg_pct = (agg_k[macro_g].div(total_k, axis=0) * 100).dropna(how='all')
+
         if len(agg_pct) > 0:
-            fig3, ax3 = plt.subplots(figsize=(16, 5))
             macro_cores = {'Carb': CORES['azul'], 'Fat': CORES['laranja'], 'Ptn': CORES['verde']}
-            bot = np.zeros(len(agg_pct))
+            fig3 = go.Figure()
             for m in macro_g:
-                vals = agg_pct[m].fillna(0).values
-                ax3.bar(agg_pct.index, vals, bottom=bot,
-                        color=macro_cores.get(m, CORES['cinza']),
-                        alpha=0.85, width=15, label=m, edgecolor='white', linewidth=0.5)
-                bot += vals
-            ax3.axhline(100, color=CORES['cinza'], linestyle=':', linewidth=0.8)
-            ax3.set_ylabel('% kcal de macros', fontweight='bold')
-            ax3.set_ylim(0, 115)
-            ax3.set_title(f'Macros % — {agrup_lbl}', fontsize=13, fontweight='bold')
-            ax3.legend(fontsize=9, ncol=3)
-            ax3.grid(True, alpha=0.2, axis='y')
-            plt.xticks(rotation=45); plt.tight_layout(); st.pyplot(fig3); plt.close()
+                vals = agg_pct[m].fillna(0)
+                fig3.add_trace(go.Bar(
+                    x=agg_pct.index, y=vals.values,
+                    name=m,
+                    marker=dict(color=macro_cores.get(m, CORES['cinza'])),
+                    hovertemplate=f'%{{x|%d/%m/%Y}}<br>{m}: <b>%{{y:.1f}}%</b><extra></extra>',
+                ))
+            fig3.update_layout(
+                barmode='stack',
+                title=f'Macros % (Carb/Fat/Ptn em kcal) — {agrup_lbl}',
+                height=360,
+                hovermode='x unified',
+                legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
+                yaxis=dict(title='% kcal de macros', range=[0, 115]),
+            )
+            fig3.add_hline(y=100, line_dash='dot', line_color=CORES['cinza'])
+            st.plotly_chart(fig3, use_container_width=True)
 
     st.markdown("---")
 
     # ── GRÁFICO 4: Variação Peso e BF com bandas ─────────────────────────────
     st.subheader("📊 Variação de Peso e BF — bandas de ganho/perda esperado")
     st.caption("Peso (verde) e BF (azul) lado a lado. "
-               "Linhas: limites calculados sobre o valor do período anterior. "
+               "Bandas: limites calculados sobre o valor do período anterior. "
                "Peso: ±0.30%–0.70% | BF: ±0.25%–0.65%")
 
     dc_f2        = dc_f.copy()
@@ -4176,63 +4228,87 @@ def tab_corporal(dc, da_full):
     agg_v.index  = agg_v.index.to_timestamp()
     agg_v        = agg_v.sort_index()
 
-    if (('Peso' in agg_v.columns and agg_v['Peso'].notna().sum() >= 3) or
-        ('BF'   in agg_v.columns and agg_v['BF'].notna().sum()   >= 3)):
+    has_peso = 'Peso' in agg_v.columns and agg_v['Peso'].notna().sum() >= 3
+    has_bf   = 'BF'   in agg_v.columns and agg_v['BF'].notna().sum()   >= 3
 
-        fig4, ax4p = plt.subplots(figsize=(16, 7))
-        ax4b = ax4p.twinx()
-        bar_w = {'W': 4, 'M': 20, 'Q': 60}[agrup_code]
-        _off  = pd.Timedelta(days={'W': 1, 'M': 5, 'Q': 12}[agrup_code])
+    if has_peso or has_bf:
+        fig4 = go.Figure()
 
-        _hl, _ll = [], []
-
-        if 'Peso' in agg_v.columns and agg_v['Peso'].notna().sum() >= 3:
+        if has_peso:
             peso_s     = agg_v['Peso'].dropna()
             peso_delta = peso_s.diff().dropna()
-            ax4p.bar(peso_delta.index - _off, peso_delta.values,
-                     width=bar_w * 0.42, color='#27ae60', alpha=0.85,
-                     align='center', zorder=3)
-            _hl.append(mpatches.Patch(facecolor='#27ae60', alpha=0.85))
-            _ll.append('Peso')
-            pv = peso_s.shift(1).dropna()
-            ax4p.step(pv.index,  pv.values * 0.0070, color='#27ae60',
-                      linewidth=1.5, linestyle='--', alpha=0.8, where='mid')
-            ax4p.step(pv.index,  pv.values * 0.0030, color='#82e0aa',
-                      linewidth=1.2, linestyle=':', alpha=0.8, where='mid')
-            ax4p.step(pv.index, -pv.values * 0.0030, color='#f1948a',
-                      linewidth=1.2, linestyle=':', alpha=0.8, where='mid')
-            ax4p.step(pv.index, -pv.values * 0.0070, color='#e74c3c',
-                      linewidth=1.5, linestyle='--', alpha=0.8, where='mid')
-            ax4p.axhline(0, color='black', linewidth=0.8, alpha=0.5)
-            ax4p.set_ylabel('Δ Peso (kg)', fontweight='bold')
+            prev_p     = peso_s.shift(1).dropna()
+            xlbls      = _fmt_dates(peso_delta.index)
 
-        if 'BF' in agg_v.columns and agg_v['BF'].notna().sum() >= 3:
+            fig4.add_trace(go.Bar(
+                x=peso_delta.index, y=peso_delta.values,
+                name='Δ Peso',
+                marker=dict(color='#27ae60', opacity=0.85),
+                width=1000*3600*24 * {'W':2,'M':8,'Q':20}[agrup_code],
+                offset=-1000*3600*24 * {'W':1.2,'M':5,'Q':14}[agrup_code],
+                customdata=np.stack([xlbls, peso_s.reindex(peso_delta.index).values], axis=-1),
+                hovertemplate='%{customdata[0]}<br>Δ Peso: <b>%{y:+.2f} kg</b><br>Peso: %{customdata[1]:.1f} kg<extra></extra>',
+                yaxis='y1'))
+
+            for pct, col, lbl in [
+                (0.0070, '#27ae60', '+max (+0.70%)'),
+                (0.0030, '#82e0aa', '+min (+0.30%)'),
+                (-0.0030, '#f1948a', '-min (-0.30%)'),
+                (-0.0070, '#e74c3c', '-max (-0.70%)'),
+            ]:
+                fig4.add_trace(go.Scatter(
+                    x=prev_p.index, y=prev_p.values * pct,
+                    mode='lines', name=f'Peso {lbl}',
+                    line=dict(color=col, width=1.5,
+                              dash='dash' if abs(pct)==0.0070 else 'dot'),
+                    hovertemplate=f'Limite Peso {lbl}: <b>%{{y:+.3f}} kg</b><extra></extra>',
+                    yaxis='y1', showlegend=False))
+
+            fig4.add_hline(y=0, line_color='black', line_width=0.8, opacity=0.5, yref='y')
+
+        if has_bf:
             bf_s     = agg_v['BF'].dropna()
             bf_delta = bf_s.diff().dropna()
-            ax4b.bar(bf_delta.index + _off, bf_delta.values,
-                     width=bar_w * 0.42, color='#2980b9', alpha=0.65,
-                     align='center', zorder=2)
-            _hl.append(mpatches.Patch(facecolor='#2980b9', alpha=0.65))
-            _ll.append('BF')
-            bv = bf_s.shift(1).dropna()
-            ax4b.step(bv.index,  bv.values * 0.0065, color='#f39c12',
-                      linewidth=1.5, linestyle='--', alpha=0.8, where='mid')
-            ax4b.step(bv.index,  bv.values * 0.0025, color='#fad7a0',
-                      linewidth=1.2, linestyle=':', alpha=0.8, where='mid')
-            ax4b.step(bv.index, -bv.values * 0.0025, color='#aed6f1',
-                      linewidth=1.2, linestyle=':', alpha=0.8, where='mid')
-            ax4b.step(bv.index, -bv.values * 0.0065, color='#2980b9',
-                      linewidth=1.5, linestyle='--', alpha=0.8, where='mid')
-            ax4b.set_ylabel('Δ BF (%)', fontweight='bold', color='#2980b9')
-            ax4b.tick_params(axis='y', labelcolor='#2980b9')
+            prev_b   = bf_s.shift(1).dropna()
+            xlbls_b  = _fmt_dates(bf_delta.index)
 
-        if _hl:
-            ax4p.legend(_hl, _ll, loc='upper left', fontsize=9)
-        ax4p.set_title(f'Variação Peso e BF por {agrup_lbl} — bandas de ganho/perda esperado',
-                       fontsize=13, fontweight='bold')
-        ax4p.grid(True, alpha=0.2, axis='y')
-        plt.xticks(rotation=45); plt.tight_layout()
-        st.pyplot(fig4); plt.close()
+            fig4.add_trace(go.Bar(
+                x=bf_delta.index, y=bf_delta.values,
+                name='Δ BF',
+                marker=dict(color='#2980b9', opacity=0.65),
+                width=1000*3600*24 * {'W':2,'M':8,'Q':20}[agrup_code],
+                offset=1000*3600*24 * {'W':0,'M':0,'Q':0}[agrup_code],
+                customdata=np.stack([xlbls_b, bf_s.reindex(bf_delta.index).values], axis=-1),
+                hovertemplate='%{customdata[0]}<br>Δ BF: <b>%{y:+.2f}%</b><br>BF: %{customdata[1]:.1f}%<extra></extra>',
+                yaxis='y2'))
+
+            for pct, col, lbl in [
+                (0.0065, '#f39c12', '+max (+0.65%)'),
+                (0.0025, '#fad7a0', '+min (+0.25%)'),
+                (-0.0025, '#aed6f1', '-min (-0.25%)'),
+                (-0.0065, '#2980b9', '-max (-0.65%)'),
+            ]:
+                fig4.add_trace(go.Scatter(
+                    x=prev_b.index, y=prev_b.values * pct,
+                    mode='lines', name=f'BF {lbl}',
+                    line=dict(color=col, width=1.5,
+                              dash='dash' if abs(pct)==0.0065 else 'dot'),
+                    hovertemplate=f'Limite BF {lbl}: <b>%{{y:+.3f}}%</b><extra></extra>',
+                    yaxis='y2', showlegend=False))
+
+        fig4.update_layout(
+            barmode='group',
+            title=f'Variação Peso e BF por {agrup_lbl} — bandas de ganho/perda',
+            height=450,
+            hovermode='x unified',
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
+            yaxis=dict(title='Δ Peso (kg)', titlefont=dict(color='#27ae60'),
+                       tickfont=dict(color='#27ae60'), zeroline=True),
+            yaxis2=dict(title='Δ BF (%)', titlefont=dict(color='#2980b9'),
+                        tickfont=dict(color='#2980b9'),
+                        overlaying='y', side='right', zeroline=True),
+        )
+        st.plotly_chart(fig4, use_container_width=True)
     else:
         st.info("Dados insuficientes de Peso/BF para o gráfico de variação.")
 
@@ -4241,7 +4317,7 @@ def tab_corporal(dc, da_full):
     # ── CORRELAÇÕES ───────────────────────────────────────────────────────────
     st.subheader("🔗 Correlações entre variáveis corporais e de treino")
     st.caption(
-        "Correlação de Spearman semanal sobre **todo o histórico** (independente do filtro de datas). "
+        "Correlação de Spearman semanal sobre **todo o histórico**. "
         "Só mostra moderada (|r|≥0.40) ou forte (|r|≥0.60). MDC confirma variação real.")
 
     def _sem_mdc(series, icc=0.90):
@@ -4256,7 +4332,6 @@ def tab_corporal(dc, da_full):
         if a >= 0.40: return "★★ Moderada"
         return None
 
-    # Série semanal corporal — TODO o histórico
     _dc_all2 = dc.copy()
     _dc_all2['_w'] = _dc_all2['Data'].dt.to_period('W')
     corp_agg = _dc_all2.groupby('_w')[['Peso','BF','Calorias','Net','Carb','Fat','Ptn']].mean()
@@ -4281,7 +4356,8 @@ def tab_corporal(dc, da_full):
         train_agg = df_cicl.groupby('_w').agg(
             Horas_cicl=('_mt', 'sum'), KJ_sem=('_kj', 'sum'), KM_sem=('_km', 'sum'))
         if len(df_wt) > 0:
-            train_agg = train_agg.join(df_wt.groupby('_w').agg(Horas_WT=('_mt','sum')), how='outer')
+            train_agg = train_agg.join(
+                df_wt.groupby('_w').agg(Horas_WT=('_mt','sum')), how='outer')
         else:
             train_agg['Horas_WT'] = np.nan
         train_agg['Horas_total'] = (train_agg['Horas_cicl'].fillna(0) +
@@ -4320,7 +4396,8 @@ def tab_corporal(dc, da_full):
                 'N semanas': len(pair),
                 'Período': f"{d0.strftime('%m/%Y')}→{d1.strftime('%m/%Y')}",
                 'Força': f,
-                'Efeito': (f"↗ {pred} ↑ → {tgt} ↑" if r > 0 else f"↘ {pred} ↑ → {tgt} ↓"),
+                'Efeito': (f"↗ {pred} ↑ → {tgt} ↑" if r > 0
+                           else f"↘ {pred} ↑ → {tgt} ↓"),
             })
 
     if corr_rows:
@@ -4332,13 +4409,13 @@ def tab_corporal(dc, da_full):
                     .sort_values(['Alvo','Força'], ascending=[True, True]))
         st.dataframe(df_c, use_container_width=True, hide_index=True)
     else:
-        st.info("Sem correlações moderadas/fortes. Pode ser necessário mais semanas com registos.")
+        st.info("Sem correlações moderadas/fortes. Pode ser necessário mais semanas.")
 
     st.markdown("---")
 
     # ── TABELAS: base calórica por quartil de Peso e BF ───────────────────────
     st.subheader("📊 Base calórica por quartil de Peso e BF")
-    st.caption("Semanas com dados simultâneos de Peso/BF + Calorias (todo o histórico). "
+    st.caption("Semanas com dados simultâneos (todo o histórico). "
                "MDC± indica o erro mínimo detectável nas Calorias.")
 
     for alvo_q, alvo_lbl, unid in [('Peso','Peso','kg'), ('BF','BF','%')]:
