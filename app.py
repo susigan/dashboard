@@ -706,9 +706,16 @@ def carregar_corporal():
         if not cd: return pd.DataFrame()
         df['Data'] = df[cd].apply(parse_date)
         df = df.dropna(subset=['Data']).sort_values('Data')
+        # Remover datas futuras — dados só até hoje
+        df = df[df['Data'] <= pd.Timestamp.now().normalize()]
         for col in ['Peso','BF','Calorias','Carb','Fat','Ptn',
                     'Carb_perc','Fat_perc','Ptn_perc','Net']:
             if col in df.columns: df[col] = df[col].apply(br_float)
+        # Remover linhas sem nenhum dado numérico (linhas futuras vazias)
+        num_cols = [c for c in ['Peso','BF','Calorias','Carb','Fat','Ptn','Net']
+                    if c in df.columns]
+        if num_cols:
+            df = df[df[num_cols].notna().any(axis=1)]
         # Ranges fisiológicos
         for col, lo, hi in [('Peso',30,200),('BF',3,50),('Calorias',500,6000),
                              ('Carb',0,800),('Fat',0,400),('Ptn',0,400),
@@ -3852,6 +3859,21 @@ def tab_corporal(dc, da_full):
 
     dc = dc.copy()
     dc['Data'] = pd.to_datetime(dc['Data'])
+
+    # ── Limitar cada coluna até ao seu último registo válido ─────────────────
+    # Evita que datas futuras sem dados distorçam gráficos e regressões.
+    # Cada coluna é truncada individualmente na sua última data com dado real.
+    _num_cols = ['Peso','BF','Calorias','Carb','Fat','Ptn','Net']
+    for _col in _num_cols:
+        if _col not in dc.columns: continue
+        _last_valid = dc.loc[dc[_col].notna(), 'Data'].max()
+        if pd.isna(_last_valid): continue
+        # Zerar valores desta coluna após a última data válida (ficam NaN)
+        dc.loc[dc['Data'] > _last_valid, _col] = np.nan
+    # Remover linhas onde TODOS os campos numéricos são NaN (linhas futuras vazias)
+    _nc = [c for c in _num_cols if c in dc.columns]
+    if _nc:
+        dc = dc[dc[_nc].notna().any(axis=1)].copy()
 
     # ── KPIs cobertura ────────────────────────────────────────────────────────
     n_total = len(dc)
