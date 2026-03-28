@@ -29,6 +29,17 @@ def tab_corporal(dc, da_full):
     dc = dc.copy()
     dc['Data'] = pd.to_datetime(dc['Data'])
 
+    # ── Limitar cada coluna até ao seu último registo válido ─────────────────
+    _num_cols = ['Peso','BF','Calorias','Carb','Fat','Ptn','Net']
+    for _col in _num_cols:
+        if _col not in dc.columns: continue
+        _last_valid = dc.loc[dc[_col].notna(), 'Data'].max()
+        if pd.isna(_last_valid): continue
+        dc.loc[dc['Data'] > _last_valid, _col] = np.nan
+    _nc = [c for c in _num_cols if c in dc.columns]
+    if _nc:
+        dc = dc[dc[_nc].notna().any(axis=1)].copy()
+
     # ── KPIs cobertura ────────────────────────────────────────────────────────
     n_total = len(dc)
     n_peso  = dc['Peso'].notna().sum()     if 'Peso'     in dc.columns else 0
