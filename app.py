@@ -17,7 +17,7 @@ import gspread
 from gspread_dataframe import get_as_dataframe
 from google.oauth2.service_account import Credentials
 from scipy import stats as scipy_stats
-from scipy.stats import pearsonr, linregress, spearmanr, theilslopes
+from scipy.stats import pearsonr, linregress, spearmanr, theilslopes, kruskal, mannwhitneyu
 from itertools import combinations
 from datetime import datetime, timedelta
 import re
