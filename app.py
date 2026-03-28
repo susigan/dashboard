@@ -2829,9 +2829,9 @@ def _analisar_tendencia(df_long):
 PLOTLY_WHITE = dict(
     paper_bgcolor='white', plot_bgcolor='white',
     font=dict(family='Arial', size=12),
-    xaxis=dict(showgrid=True, gridcolor='#eeeeee', linecolor='#cccccc'),
-    yaxis=dict(showgrid=True, gridcolor='#eeeeee', linecolor='#cccccc'),
 )
+# Grid style applied per-chart to avoid duplicate keyword conflicts
+_AXIS_STYLE = dict(showgrid=True, gridcolor='#eeeeee', linecolor='#cccccc')
 
 def _agrupar_df(df, col_data, col_val, agrup_code):
     """Agrega série temporal por Mês/Trimestre/Ano, retorna DataFrame."""
