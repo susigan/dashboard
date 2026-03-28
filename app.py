@@ -891,7 +891,7 @@ def tab_visao_geral(dw, da, di, df_):
 
             if rows_km:
                 st.dataframe(pd.DataFrame(rows_km),
-                             use_container_width=True, hide_index=True)
+                             width="stretch", hide_index=True)
 
     st.markdown("---")
 
@@ -907,7 +907,7 @@ def tab_visao_geral(dw, da, di, df_):
                 lambda x: f"{int(x/3600)}h{int((x%3600)/60):02d}m"
                 if pd.notna(x) else '—')
         ds.columns = [c.replace('_', ' ').title() for c in ds.columns]
-        st.dataframe(ds, use_container_width=True, hide_index=True)
+        st.dataframe(ds, width="stretch", hide_index=True)
 
     st.markdown("---")
 
@@ -931,7 +931,7 @@ def tab_visao_geral(dw, da, di, df_):
             ['Data', 'type', 'name', 'power_avg', 'rpe']].copy()
         top['Data'] = pd.to_datetime(top['Data']).dt.strftime('%Y-%m-%d')
         top.columns = ['Data', 'Tipo', 'Nome', 'Power (W)', 'RPE']
-        st.dataframe(top, use_container_width=True, hide_index=True)
+        st.dataframe(top, width="stretch", hide_index=True)
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -1087,7 +1087,7 @@ def tab_pmc(da):
         {'Métrica': 'ATL max histórico',    'Valor': f"{ld['ATL'].max():.1f}",
          'Interpretação': 'Pico de fadiga no período carregado.'},
     ])
-    st.dataframe(resumo, use_container_width=True, hide_index=True)
+    st.dataframe(resumo, width="stretch", hide_index=True)
 
     # ── FTLM — explicação + resultado atual ──
     st.subheader("🔁 FTLM — Fast Training Load Monitor")
@@ -1405,7 +1405,7 @@ def tab_eftp(da, mods_sel, da_full=None):
             rows_e.append(tend_e)
 
             st.dataframe(pd.DataFrame(rows_e),
-                         use_container_width=True, hide_index=True)
+                         width="stretch", hide_index=True)
     else:
         st.caption("Sem dados de eFTP disponíveis.")
 
@@ -1457,7 +1457,7 @@ def tab_eftp(da, mods_sel, da_full=None):
                 'Distance':      f"{r['_km_s']:.0f} km" if pd.notna(r['_km_s']) and r['_km_s'] > 0 else '—',
                 'Moving Time':   f"{mt_h}h{mt_m:02d}m",
                 'kJ':            f"{r['_kj_s']:.0f}" if pd.notna(r['_kj_s']) and r['_kj_s'] > 0 else '—',
-                'Sessions':      int(r['_ses']),
+                'Sessions':      str(int(r['_ses'])),
             })
 
         if not rows_v: continue
@@ -1491,7 +1491,7 @@ def tab_eftp(da, mods_sel, da_full=None):
         })
 
         st.dataframe(pd.DataFrame(rows_v),
-                     use_container_width=True, hide_index=True)
+                     width="stretch", hide_index=True)
 
 
     st.markdown("---")
@@ -1603,7 +1603,7 @@ def tab_eftp(da, mods_sel, da_full=None):
                             .drop_duplicates(subset=['Variável'], keep='first')
                             .drop(columns=['_ar'])
                             .sort_values('Força', ascending=True))
-            st.dataframe(df_res, use_container_width=True, hide_index=True)
+            st.dataframe(df_res, width="stretch", hide_index=True)
 
         if not any(
             len(df[df['type']==t]) >= 10 and
@@ -1733,7 +1733,7 @@ def tab_zones(da, mods_sel):
                                      'Sig': '***' if p < 0.001 else ('**' if p < 0.01 else ('*' if p < 0.05 else 'ns')), 'Força': forca(r)})
             if rows:
                 st.subheader("📋 Tabela de Correlações")
-                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 # ════════════════════════════════════════════════════════════════════════════════
 # TAB 6 — CORRELAÇÕES & IMPACTO RPE
@@ -1787,7 +1787,7 @@ def tab_correlacoes(da, dw):
                     dhrv = ((sub['hrv'].mean() - baseline_hrv) / baseline_hrv * 100)
                     drhr = (sub['rhr'].mean() - (merged['rhr'].mean() if 'rhr' in merged.columns else 0)) if 'rhr' in sub.columns else 0
                     tabela.append({'Categoria': cat, 'Δ HRV (%)': f'{dhrv:+.1f}%', 'Δ RHR (bpm)': f'{drhr:+.1f}', 'n': len(sub)})
-            if tabela: st.dataframe(pd.DataFrame(tabela), use_container_width=True, hide_index=True)
+            if tabela: st.dataframe(pd.DataFrame(tabela), width="stretch", hide_index=True)
 
     st.subheader("🔍 Scatter: RPE → HRV | HRV → RHR")
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
@@ -2114,7 +2114,7 @@ def tab_wellness(dw):
         for m in mets:
             col = pd.to_numeric(u7[m], errors='coerce')
             rows.append({'Métrica': m.replace('_', ' ').title(), 'Média': f"{col.mean():.1f}", 'Mín': f"{col.min():.0f}", 'Máx': f"{col.max():.0f}"})
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
 
@@ -2288,12 +2288,12 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
     st.subheader("📋 Resumo de Atividades por Modalidade")
     df_res = tabela_resumo_por_tipo_df(da_full)
     if len(df_res) > 0:
-        st.dataframe(df_res, use_container_width=True, hide_index=True)
+        st.dataframe(df_res, width="stretch", hide_index=True)
 
     st.subheader("🏆 Top 10 Sessões por Potência Média")
     df_rank = tabela_ranking_power_df(da_full, n=10)
     if len(df_rank) > 0:
-        st.dataframe(df_rank, use_container_width=True, hide_index=True)
+        st.dataframe(df_rank, width="stretch", hide_index=True)
 
     st.markdown("---")
 
@@ -2442,7 +2442,7 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
                                     'Gap CTL-ATL': f"{d['gap_relativo']:.1f}%",
                                     'Dias ATL<CTL': d['dias_atl_menor_ctl'],
                                     'Dias c/ Ativ.': d['dias_com_atividade']})
-                st.dataframe(pd.DataFrame(rows_fe), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(rows_fe), width="stretch", hide_index=True)
                 top = list(res.keys())[0]
                 pe = "🔴" if res[top]['prioridade']=='ALTA' else "🟡" if res[top]['prioridade']=='MÉDIA' else "🟢"
                 st.info(f"{pe} Foco recomendado: **{top}** (Score: {res[top]['need_score']:.1f})")
@@ -2528,7 +2528,7 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
                     cv_rows.append({'Variável': label, 'Média': f"{s.mean():.2f}",
                                     'STD': f"{s.std():.2f}", 'CV%': f"{cv:.1f}%", 'Interpretação': interp})
                 if cv_rows:
-                    st.dataframe(pd.DataFrame(cv_rows), use_container_width=True, hide_index=True)
+                    st.dataframe(pd.DataFrame(cv_rows), width="stretch", hide_index=True)
                 else:
                     st.info("Sem dados suficientes para CV.")
 
@@ -2550,7 +2550,7 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
                     else:               tendencia = "→ Platô"
                     trend_rows.append({'Variável': label, f'Slope ({unid})': f"{slope:+.4f}", 'Tendência': tendencia})
                 if trend_rows:
-                    st.dataframe(pd.DataFrame(trend_rows), use_container_width=True, hide_index=True)
+                    st.dataframe(pd.DataFrame(trend_rows), width="stretch", hide_index=True)
 
                 # Correlações por trimestre (eFTP vs AllWorkFTP)
                 if 'icu_eftp' in df_mod.columns and 'AllWorkFTP' in df_mod.columns and len(trimestres) > 0:
@@ -2564,7 +2564,7 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
                                           'AllWorkFTP mediana (kJ)': f"{dt['AllWorkFTP'].median():.1f}" if dt['AllWorkFTP'].notna().any() else '—',
                                           'N': len(dt)})
                     if trim_rows:
-                        st.dataframe(pd.DataFrame(trim_rows), use_container_width=True, hide_index=True)
+                        st.dataframe(pd.DataFrame(trim_rows), width="stretch", hide_index=True)
 
             # ── PASSO 3: Correlações |r| > 0.4 ─────────────────────────────
             with st.expander("🔗 PASSO 3 — Correlações Avançadas (|r| > 0.4)"):
@@ -2585,7 +2585,7 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
                                     corr_rows.append({'Var 1': v1, 'Var 2': v2,
                                                       'r': f"{cv:.3f}", 'Força': forca, 'Direção': direcao})
                         if corr_rows:
-                            st.dataframe(pd.DataFrame(corr_rows), use_container_width=True, hide_index=True)
+                            st.dataframe(pd.DataFrame(corr_rows), width="stretch", hide_index=True)
                         else:
                             st.info("Nenhuma correlação > 0.4 encontrada.")
                     else:
@@ -2607,7 +2607,7 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
                             row['Horas/sessão']    = f"{dt['duration_hours'].mean():.2f}h"
                         saz_rows.append(row)
                     if saz_rows:
-                        st.dataframe(pd.DataFrame(saz_rows), use_container_width=True, hide_index=True)
+                        st.dataframe(pd.DataFrame(saz_rows), width="stretch", hide_index=True)
                 else:
                     st.info("Apenas 1 trimestre de dados — sem análise sazonal.")
 
@@ -2621,7 +2621,7 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
                         n_cat = dist.get(cat, 0)
                         rpe_rows.append({'Categoria': cat.capitalize(),
                                          'N': n_cat, '%': f"{n_cat/total*100:.1f}%"})
-                    st.dataframe(pd.DataFrame(rpe_rows), use_container_width=True, hide_index=True)
+                    st.dataframe(pd.DataFrame(rpe_rows), width="stretch", hide_index=True)
 
                     # Por trimestre
                     if len(trimestres) > 1:
@@ -2638,7 +2638,7 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
                                 row[cat.capitalize()+' %'] = f"{pct:.0f}%"
                             trim_rpe.append(row)
                         if trim_rpe:
-                            st.dataframe(pd.DataFrame(trim_rpe), use_container_width=True, hide_index=True)
+                            st.dataframe(pd.DataFrame(trim_rpe), width="stretch", hide_index=True)
                 else:
                     st.info("Sem dados de RPE para análise de categorias.")
 
@@ -3022,7 +3022,7 @@ def _secao_temporal(df_a, cols, tipo_label, unidade, aba, di,
                  'Sig.': '✓' if r['p_teste_t'] < 0.05 else '✗'},
             ]
             st.dataframe(pd.DataFrame(rows_tb),
-                         use_container_width=True, hide_index=True)
+                         width="stretch", hide_index=True)
             if r['mudanca_real']:
                 if '↗' in r['classificacao']:
                     st.warning(f"⚠️ {tipo_label} AUMENTANDO em {pw}W → "
@@ -3175,7 +3175,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                         )
                     })
                 st.dataframe(pd.DataFrame(cols_info),
-                             use_container_width=True, hide_index=True)
+                             width="stretch", hide_index=True)
 
             # ── Tabela de dados ──────────────────────────────────────────
             with st.expander("📋 Dados (mais recentes primeiro)"):
@@ -3185,7 +3185,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                 df_show = (df_plot[cols_ok].sort_values('DATA', ascending=False)
                            if 'DATA' in df_plot.columns
                            else df_plot[cols_ok].iloc[::-1])
-                st.dataframe(df_show.head(20), use_container_width=True)
+                st.dataframe(df_show.head(20), width="stretch")
 
             # Detectar colunas por tipo (detecção robusta)
             hr_cols = sorted(
@@ -3359,7 +3359,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                             })
                     if rows_stat:
                         st.dataframe(pd.DataFrame(rows_stat),
-                                     use_container_width=True, hide_index=True)
+                                     width="stretch", hide_index=True)
 
             st.markdown("---")
 
@@ -3520,7 +3520,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
 
                 if corr_rows:
                     st.dataframe(pd.DataFrame(corr_rows),
-                                 use_container_width=True, hide_index=True)
+                                 width="stretch", hide_index=True)
 
                     n_sc = len(corr_rows)
                     if n_sc > 0:
@@ -3633,7 +3633,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                                 })
                         if sem_rows:
                             st.dataframe(pd.DataFrame(sem_rows),
-                                         use_container_width=True,
+                                         width="stretch",
                                          hide_index=True)
 
                         # PARTE 2: Mudanças reais vs erro de medição
@@ -3674,7 +3674,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                                 })
                         if comp_rows:
                             st.dataframe(pd.DataFrame(comp_rows),
-                                         use_container_width=True,
+                                         width="stretch",
                                          hide_index=True)
 
                         # PARTE 3: Tendência excede MDC?
@@ -3726,7 +3726,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                                 })
                         if tend_rows:
                             st.dataframe(pd.DataFrame(tend_rows),
-                                         use_container_width=True,
+                                         width="stretch",
                                          hide_index=True)
 
                     with st.expander("📚 Explicação SEM/MDC"):
@@ -3804,7 +3804,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
 
                     if rows_ta:
                         st.dataframe(pd.DataFrame(rows_ta),
-                                     use_container_width=True, hide_index=True)
+                                     width="stretch", hide_index=True)
 
                     # Mann-Whitney: com vs sem + entre categorias
                     comp_rows = []
@@ -3843,7 +3843,7 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                     if comp_rows:
                         st.markdown("*Testes estatísticos (Mann-Whitney U):*")
                         st.dataframe(pd.DataFrame(comp_rows),
-                                     use_container_width=True, hide_index=True)
+                                     width="stretch", hide_index=True)
 
 
 def tab_corporal(dc, da_full):
@@ -3994,7 +3994,7 @@ def tab_corporal(dc, da_full):
                          'Valor': f"{cal_alvo - c_rel['cal_std']:.0f} kcal"},
                         {'Métrica': '📈 Cal. alvo — máximo (+1σ histórico)',
                          'Valor': f"{cal_alvo + c_rel['cal_std']:.0f} kcal"},
-                    ]), use_container_width=True, hide_index=True)
+                    ]), width="stretch", hide_index=True)
 
                     if c_rel['qcal'] is not None:
                         with st.expander(f"📊 Calorias históricas por quartil de {_var}"):
@@ -4010,7 +4010,7 @@ def tab_corporal(dc, da_full):
                                     'N semanas':    int(qr['count']),
                                 })
                             st.dataframe(pd.DataFrame(qrows),
-                                         use_container_width=True, hide_index=True)
+                                         width="stretch", hide_index=True)
                 else:
                     st.info(f"Sem dados suficientes de Calorias para estimar ({_var}).")
 
@@ -4122,19 +4122,19 @@ def tab_corporal(dc, da_full):
         height=420,
         hovermode='x unified',
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
-        yaxis=dict(title='Peso (kg)', titlefont=dict(color=CORES['azul']),
+        yaxis=dict(title='Peso (kg)', title_font=dict(color=CORES['azul']),
                    tickfont=dict(color=CORES['azul'])),
-        yaxis2=dict(title='BF (%)', titlefont=dict(color=CORES['vermelho']),
+        yaxis2=dict(title='BF (%)', title_font=dict(color=CORES['vermelho']),
                     tickfont=dict(color=CORES['vermelho']),
                     overlaying='y', side='right'),
-        yaxis3=dict(title='Calorias (kcal)', titlefont=dict(color=CORES['laranja']),
+        yaxis3=dict(title='Calorias (kcal)', title_font=dict(color=CORES['laranja']),
                     tickfont=dict(color=CORES['laranja']),
                     overlaying='y', side='right', anchor='free', position=1.0,
                     showgrid=False),
         xaxis=dict(showgrid=True),
         margin=dict(r=80),
     )
-    st.plotly_chart(fig1, use_container_width=True)
+    st.plotly_chart(fig1, width="stretch")
 
     # ── GRÁFICO 2: Calorias + Net ─────────────────────────────────────────────
     st.subheader("🔥 Calorias e Balanço Energético (Net)")
@@ -4173,13 +4173,13 @@ def tab_corporal(dc, da_full):
         height=380,
         hovermode='x unified',
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
-        yaxis=dict(title='Calorias (kcal)', titlefont=dict(color=CORES['laranja']),
+        yaxis=dict(title='Calorias (kcal)', title_font=dict(color=CORES['laranja']),
                    tickfont=dict(color=CORES['laranja'])),
-        yaxis2=dict(title='Net (kcal)', titlefont=dict(color=CORES['roxo']),
+        yaxis2=dict(title='Net (kcal)', title_font=dict(color=CORES['roxo']),
                     tickfont=dict(color=CORES['roxo']),
                     overlaying='y', side='right'),
     )
-    st.plotly_chart(fig2, use_container_width=True)
+    st.plotly_chart(fig2, width="stretch")
 
     # ── GRÁFICO 3: Macros % stacked ───────────────────────────────────────────
     st.subheader("🥗 Distribuição de Macronutrientes (%)")
@@ -4212,7 +4212,7 @@ def tab_corporal(dc, da_full):
                 yaxis=dict(title='% kcal de macros', range=[0, 115]),
             )
             fig3.add_hline(y=100, line_dash='dot', line_color=CORES['cinza'])
-            st.plotly_chart(fig3, use_container_width=True)
+            st.plotly_chart(fig3, width="stretch")
 
     st.markdown("---")
 
@@ -4302,13 +4302,13 @@ def tab_corporal(dc, da_full):
             height=450,
             hovermode='x unified',
             legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
-            yaxis=dict(title='Δ Peso (kg)', titlefont=dict(color='#27ae60'),
+            yaxis=dict(title='Δ Peso (kg)', title_font=dict(color='#27ae60'),
                        tickfont=dict(color='#27ae60'), zeroline=True),
-            yaxis2=dict(title='Δ BF (%)', titlefont=dict(color='#2980b9'),
+            yaxis2=dict(title='Δ BF (%)', title_font=dict(color='#2980b9'),
                         tickfont=dict(color='#2980b9'),
                         overlaying='y', side='right', zeroline=True),
         )
-        st.plotly_chart(fig4, use_container_width=True)
+        st.plotly_chart(fig4, width="stretch")
     else:
         st.info("Dados insuficientes de Peso/BF para o gráfico de variação.")
 
@@ -4407,7 +4407,7 @@ def tab_corporal(dc, da_full):
                     .drop_duplicates(subset=['Alvo','Preditor'], keep='first')
                     .drop(columns=['_ar'])
                     .sort_values(['Alvo','Força'], ascending=[True, True]))
-        st.dataframe(df_c, use_container_width=True, hide_index=True)
+        st.dataframe(df_c, width="stretch", hide_index=True)
     else:
         st.info("Sem correlações moderadas/fortes. Pode ser necessário mais semanas.")
 
@@ -4445,7 +4445,7 @@ def tab_corporal(dc, da_full):
             })
         if rows_q:
             st.markdown(f"**Quartis de {alvo_lbl} — base calórica**")
-            st.dataframe(pd.DataFrame(rows_q), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rows_q), width="stretch", hide_index=True)
 
 
 # Configuração da página — DEVE ser a primeira chamada Streamlit
