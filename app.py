@@ -947,7 +947,7 @@ def carregar_corporal():
         return pd.DataFrame()
 
 
-def tab_visao_geral(dw, da, di, df_, da_full=None):
+def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
     st.header("📊 Visão Geral")
 
     # ── KPIs ──
@@ -959,6 +959,95 @@ def tab_visao_geral(dw, da, di, df_, da_full=None):
     c2.metric("⏱️ Horas",     f"{horas:.1f}h" if horas else "—")
     c3.metric("💚 HRV (7d)", f"{hrv_m:.0f} ms" if hrv_m else "—")
     c4.metric("❤️ RHR",       f"{rhr_u:.0f} bpm" if rhr_u else "—")
+    st.markdown("---")
+
+    # ── HRV-Guided + Recovery Score + Peso/BF ────────────────────────────
+    vg_r1, vg_r2, vg_r3, vg_r4, vg_r5 = st.columns(5)
+
+    # ── HRV-Guided Training (LnrMSSD, baseline 14d, ±0.5 SD) ────────────
+    hrv_hoje    = None
+    hrv_class   = "Sem dados"
+    hrv_emoji   = "⚪"
+    rec_score   = None
+    rec_trend   = ""
+
+    if wc_full is not None and len(wc_full) > 0 and 'hrv' in wc_full.columns:
+        _wc = wc_full.copy()
+        _wc['Data'] = pd.to_datetime(_wc['Data'])
+        _wc = _wc.sort_values('Data')
+        _wc['LnrMSSD'] = np.where(_wc['hrv'] > 0, np.log(_wc['hrv']), np.nan)
+        _wc = _wc.dropna(subset=['LnrMSSD'])
+        if len(_wc) >= 7:
+            _wc['bm']  = _wc['LnrMSSD'].rolling(14, min_periods=7).mean()
+            _wc['bs']  = _wc['LnrMSSD'].rolling(14, min_periods=7).std()
+            _wc['linf']= _wc['bm'] - 0.5 * _wc['bs']
+            _wc['lsup']= _wc['bm'] + 0.5 * _wc['bs']
+            last = _wc.dropna(subset=['bm']).iloc[-1]
+            hrv_hoje = last['hrv'] if 'hrv' in last else None
+            if pd.notna(last['bm']) and pd.notna(last['LnrMSSD']):
+                if last['linf'] <= last['LnrMSSD'] <= last['lsup']:
+                    hrv_class = "HIIT"; hrv_emoji = "🟢"
+                else:
+                    hrv_class = "Recuperação"; hrv_emoji = "🔴"
+
+        # Recovery Score trend (7d)
+        _rec = calcular_recovery(_wc.rename(columns={'Data':'Data'}))
+        if len(_rec) >= 7:
+            rec_vals = _rec['recovery_score'].dropna()
+            if len(rec_vals) >= 7:
+                rec_score = rec_vals.iloc[-1]
+                rec_mean7 = rec_vals.tail(7).mean()
+                rec_mean_prev = rec_vals.iloc[-14:-7].mean() if len(rec_vals) >= 14 else rec_vals.mean()
+                if rec_mean7 > rec_mean_prev * 1.03:
+                    rec_trend = "↗"
+                elif rec_mean7 < rec_mean_prev * 0.97:
+                    rec_trend = "↘"
+                else:
+                    rec_trend = "→"
+
+    with vg_r1:
+        st.metric("🧠 HRV-Guided",
+                  f"{hrv_emoji} {hrv_class}",
+                  f"HRV {hrv_hoje:.0f} ms" if hrv_hoje else None)
+    with vg_r2:
+        st.metric("🔋 Recovery Score",
+                  f"{rec_score:.0f}/100" if rec_score else "—",
+                  rec_trend if rec_score else None)
+
+    # ── Peso e BF (rolling 7d vs média 30d, ignorar dias sem dados) ──────
+    peso_7d = peso_trend = bf_7d = bf_trend = None
+    if dc is not None and len(dc) > 0:
+        _dc = dc.copy()
+        _dc['Data'] = pd.to_datetime(_dc['Data'])
+        _dc = _dc.sort_values('Data')
+        hoje_dc = _dc['Data'].max()
+
+        for col, var_7, var_t in [('Peso','peso_7d','peso_trend'),
+                                   ('BF',  'bf_7d',  'bf_trend')]:
+            if col not in _dc.columns: continue
+            serie = _dc[['Data',col]].dropna(subset=[col]).copy()
+            if len(serie) < 3: continue
+            v7  = serie[serie['Data'] >= hoje_dc - pd.Timedelta(days=7)][col].mean()
+            v30 = serie[serie['Data'] >= hoje_dc - pd.Timedelta(days=30)][col].mean()
+            if pd.notna(v7) and pd.notna(v30) and v30 > 0:
+                diff_pct = (v7 - v30) / v30 * 100
+                if   diff_pct >  0.5: trend = f"↗ +{diff_pct:.1f}%"
+                elif diff_pct < -0.5: trend = f"↘ {diff_pct:.1f}%"
+                else:                 trend = "→ estável"
+                if col == 'Peso': peso_7d = v7; peso_trend = trend
+                else:             bf_7d   = v7; bf_trend   = trend
+
+    with vg_r3:
+        st.metric("⚖️ Peso (7d)",
+                  f"{peso_7d:.1f} kg" if peso_7d else "—",
+                  peso_trend)
+    with vg_r4:
+        st.metric("🫁 BF (7d)",
+                  f"{bf_7d:.1f}%" if bf_7d else "—",
+                  bf_trend)
+    with vg_r5:
+        pass  # coluna vazia para espaçamento
+
     st.markdown("---")
 
     # ── Prioridades + Need Score (visão rápida) ──────────────────────────
@@ -5376,7 +5465,7 @@ def main():
         "🔄 Padrão",
     ])
 
-    with tab1:  tab_visao_geral(dw, da_filt, di, df_, da_full=ac_full)
+    with tab1:  tab_visao_geral(dw, da_filt, di, df_, da_full=ac_full, wc_full=wc, dc=dc)
     with tab2:  tab_pmc(da_filt)
     with tab3:  tab_volume(da_filt, dw)
     with tab4:  tab_eftp(da_filt, mods_sel, ac_full)
