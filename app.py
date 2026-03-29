@@ -545,6 +545,27 @@ def analisar_falta_estimulo(df_act_full, janela_dias=14, baseline_dias=90):
         need_vol = min(100.0, A * 100 * 0.60 + C * 100 * 0.40)
         need_int = min(100.0, B * 100 * 0.70 + D * 100 * 0.30)
 
+        prio_base = 'ALTA' if need >= 70 else 'MÉDIA' if need >= 40 else 'BAIXA'
+
+        # ── Overload por score acumulado ────────────────────────────────────
+        share_ratio   = share_jan / share_base if share_base > 0 else 0.0
+        quality_ratio = q_jan / q_base         if q_base    > 0 else 0.0
+
+        # slope_pct na janela activa (para overload — diferente do D que usa baseline)
+        ftlm_jan_series = fm.loc[ini_jan:hoje, 'FTLM'].dropna()
+        slope_pct_jan = 0.0
+        if len(ftlm_jan_series) >= 3:
+            fi = float(ftlm_jan_series.iloc[0])
+            ff = float(ftlm_jan_series.iloc[-1])
+            if fi > 0:
+                slope_pct_jan = (ff - fi) / fi
+
+        score_overload = 0
+        if share_ratio   > 1.4: score_overload += 1
+        if quality_ratio > 1.4: score_overload += 1
+        if slope_pct_jan > 0.15: score_overload += 1
+        overload = score_overload >= 2
+
         # Overload → reduzir intensidade (não zerar, não remover)
         need_int_prescr = min(100.0, need_int * 0.5) if overload else need_int
 
@@ -571,27 +592,6 @@ def analisar_falta_estimulo(df_act_full, janela_dias=14, baseline_dias=90):
             prescricao = "🔵 Sessão de volume/base (défice de carga)"
         else:
             prescricao = "⚪ Manutenção ou descanso"
-
-        prio_base = 'ALTA' if need >= 70 else 'MÉDIA' if need >= 40 else 'BAIXA'
-
-        # ── Overload por score acumulado ────────────────────────────────────
-        share_ratio   = share_jan / share_base if share_base > 0 else 0.0
-        quality_ratio = q_jan / q_base         if q_base    > 0 else 0.0
-
-        # slope_pct na janela activa (para overload — diferente do D que usa baseline)
-        ftlm_jan_series = fm.loc[ini_jan:hoje, 'FTLM'].dropna()
-        slope_pct_jan = 0.0
-        if len(ftlm_jan_series) >= 3:
-            fi = float(ftlm_jan_series.iloc[0])
-            ff = float(ftlm_jan_series.iloc[-1])
-            if fi > 0:
-                slope_pct_jan = (ff - fi) / fi
-
-        score_overload = 0
-        if share_ratio   > 1.4: score_overload += 1
-        if quality_ratio > 1.4: score_overload += 1
-        if slope_pct_jan > 0.15: score_overload += 1
-        overload = score_overload >= 2
 
         results[mod] = dict(
             need_score=need, prioridade=prio_base, overload=overload,
