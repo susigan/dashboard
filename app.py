@@ -424,19 +424,25 @@ def calcular_polinomios_carga(df_act_full):
 
 def analisar_falta_estimulo(df_act_full, janela_dias=14, baseline_dias=90):
     """
-    Need Score v3 por modalidade.
+    Need Score v4 por modalidade.
     Load = duração_min × RPE
 
-    Componentes:
+    Componentes base:
       A (25%) — Share FTLM deficit vs baseline 90d  [floor 10%]
       B (25%) — Quality deficit: carga_Z3/carga_total vs baseline
       C (20%) — Load deficit na janela vs load típico baseline
-                 usa CARGA (dur×RPE) em vez de contagem — consistente com modelo
-      D (20%) — FTLM slope_pct: variação % total no baseline (ftlm[-1]-ftlm[0])/ftlm[0]
-                 lido do FTLM histórico completo — não recalculado na janela curta
-      E (10%) — Interacção A×B normalizada: amplifica se ambos em falta
+      D (20%) — FTLM slope_pct variação total no baseline [floor FTLM ini]
+      E (10%) — Interacção A×B normalizada
 
-    Overload flag: share_actual > hist×1.5 E quality_actual > quality_hist×1.5
+    Scores derivados (coerentes com A/B/C/D):
+      Need_volume    = A + C  (défice de carga total)
+      Need_intensity = B + D×0.5  (défice de qualidade; D penaliza queda fitness)
+
+    Overload por score acumulado (≥2 de 3 critérios):
+      share_ratio > 1.4  → +1
+      quality_ratio > 1.4 → +1
+      slope_pct_janela > 0.15 → +1 (crescimento rápido na janela activa)
+    Se overload: Need_final × 0.5, flag ⚠️, intensidade=LOW
     """
     MODS = ['Bike', 'Row', 'Ski', 'Run']
     df   = filtrar_principais(df_act_full).copy()
@@ -447,15 +453,14 @@ def analisar_falta_estimulo(df_act_full, janela_dias=14, baseline_dias=90):
 
     df['dur_min']  = pd.to_numeric(df['moving_time'], errors='coerce') / 60
     df['rpe_n']    = pd.to_numeric(df['rpe'], errors='coerce')
-    df['load']     = df['dur_min'] * df['rpe_n']    # duração × RPE
+    df['load']     = df['dur_min'] * df['rpe_n']
     df['load_z3']  = np.where(df['rpe_n'] >= 7, df['load'], 0.0)
 
     hoje     = pd.Timestamp.now().normalize()
     ini_jan  = hoje - pd.Timedelta(days=janela_dias)
     ini_base = hoje - pd.Timedelta(days=baseline_dias)
 
-    # ── FTLM por modalidade — calculado sobre HISTÓRICO COMPLETO ─────────────
-    # Não recalcular sobre janela curta: usar EMA estável e apenas ler o valor
+    # ── FTLM por modalidade — histórico completo (não recalcular na janela curta)
     all_dates = pd.date_range(df['Data'].min(), hoje, freq='D')
     ftlm_mods = {}
     for mod in MODS:
@@ -475,76 +480,58 @@ def analisar_falta_estimulo(df_act_full, janela_dias=14, baseline_dias=90):
     for mod in MODS:
         fm = ftlm_mods[mod]
 
-        # ── A — Share FTLM deficit ───────────────────────────────────────────
+        # ── A — Share FTLM deficit ──────────────────────────────────────────
         share_jan  = float((fm.loc[ini_jan:hoje,  'FTLM'] /
                             ftlm_total.loc[ini_jan:hoje]).mean())
         share_base = float((fm.loc[ini_base:hoje, 'FTLM'] /
                             ftlm_total.loc[ini_base:hoje]).mean())
         share_jan  = 0.0 if np.isnan(share_jan)  else share_jan
         share_base = 0.0 if np.isnan(share_base) else share_base
-
-        # Floor: modalidade com share histórica < 10% → peso reduzido
         floor_peso = min(1.0, share_base / 0.10) if share_base < 0.10 else 1.0
         A_raw = max(0.0, (share_base - share_jan) / share_base) if share_base > 0 else 0.0
         A     = min(A_raw, 1.0) * floor_peso
 
-        # ── B — Quality deficit (carga_Z3 / carga_total) ─────────────────────
+        # ── B — Quality deficit (carga_Z3 / carga_total) ───────────────────
         dm_jan  = df[(df['type']==mod) & (df['Data'] >= ini_jan)]
         dm_base = df[(df['type']==mod) & (df['Data'] >= ini_base)]
-
         def _q(d_):
             ct = d_['load'].sum()
             return float(d_['load_z3'].sum() / ct) if ct > 0 else 0.0
-
         q_jan  = _q(dm_jan)
         q_base = _q(dm_base)
         B_raw  = max(0.0, (q_base - q_jan) / q_base) if q_base > 0 else 0.0
         B      = min(B_raw, 1.0)
 
-        # ── C — Load deficit na janela vs load típico (carga, não contagem) ──
-        # Load típico = média semanal de load no baseline × (janela/7)
-        load_jan  = dm_jan['load'].sum()
-        load_base = dm_base['load'].sum()
-        # Normalizar: load_típico = load médio por dia no baseline × janela_dias
+        # ── C — Load deficit na janela vs load típico ───────────────────────
+        load_jan    = dm_jan['load'].sum()
+        load_base   = dm_base['load'].sum()
         n_dias_base = max(1, (hoje - ini_base).days)
         load_tipico = (load_base / n_dias_base) * janela_dias
         C_raw = max(0.0, (load_tipico - load_jan) / load_tipico) if load_tipico > 0 else 0.0
         C     = min(C_raw, 1.0)
 
-        # ── D — FTLM slope_pct (variação % total no baseline) ────────────────
-        # Ler do FTLM histórico completo — estável, não ruidoso
+        # ── D — FTLM slope_pct (variação % total no baseline) ──────────────
         ftlm_base_series = fm.loc[ini_base:hoje, 'FTLM'].dropna()
         slope_pct = 0.0
         D = 0.0
         if len(ftlm_base_series) >= 10:
             ftlm_ini = float(ftlm_base_series.iloc[0])
             ftlm_fim = float(ftlm_base_series.iloc[-1])
-            # Floor: só calcular slope se FTLM ini for significativo
-            # Protege contra divisão por quase-zero em modalidades com início recente
             threshold_ini = max(1.0, ftlm_fim * 0.05)
-            if ftlm_ini < threshold_ini:
-                # Modalidade a começar/reiniciar no período — slope não é fiável
-                slope_pct = 0.0
-                D = 0.0
-            elif ftlm_ini > 0:
-                slope_pct = (ftlm_fim - ftlm_ini) / ftlm_ini  # variação % total
+            if ftlm_ini >= threshold_ini and ftlm_ini > 0:
+                slope_pct = (ftlm_fim - ftlm_ini) / ftlm_ini
                 if slope_pct < 0:
-                    # Queda → need sobe
                     D = min(1.0, abs(slope_pct) * 2)
                 elif slope_pct > 0.30:
-                    # Crescimento > 30% no período → possível overload
                     D = min(0.5, (slope_pct - 0.30) * 2)
-                else:
-                    D = 0.0
 
-        # ── E — Interacção A×B (peso reduzido 10%) ────────────────────────────
-        if A_raw > 0 and B_raw > 0:    fator_e = 1.3   # ambos em falta
-        elif A_raw > 0 or B_raw > 0:   fator_e = 0.7   # só um
+        # ── E — Interacção A×B ──────────────────────────────────────────────
+        if A_raw > 0 and B_raw > 0:    fator_e = 1.3
+        elif A_raw > 0 or B_raw > 0:   fator_e = 0.7
         else:                           fator_e = 0.0
         E = float(np.clip((A_raw + B_raw) / 2 * fator_e, 0.0, 1.0))
 
-        # ── Need Score (pesos rebalanceados) ─────────────────────────────────
-        # A=0.25, B=0.25, C=0.20, D=0.20, E=0.10
+        # ── Need Score base ─────────────────────────────────────────────────
         need = min(100.0,
                    A * 100 * 0.25 +
                    B * 100 * 0.25 +
@@ -552,51 +539,70 @@ def analisar_falta_estimulo(df_act_full, janela_dias=14, baseline_dias=90):
                    D * 100 * 0.20 +
                    E * 100 * 0.10)
 
-        prio = 'ALTA' if need >= 70 else 'MÉDIA' if need >= 40 else 'BAIXA'
+        # ── Need_volume e Need_intensity (coerentes com A/B/C/D) ─────────
+        # Need_volume = A + C  (défice de carga total)
+        need_vol = min(100.0, A * 100 * 0.25 + C * 100 * 0.20) / 0.45 * 0.45
+        need_vol = min(100.0, (A * 100 * 0.55 + C * 100 * 0.45))  # normalizado 0-100
+        # Need_intensity = B + D×0.5 (défice de qualidade + tendência de queda)
+        need_int = min(100.0, B * 100 * 0.70 + D * 100 * 0.30)
 
-        # ── Overload flag ─────────────────────────────────────────────────────
-        overload = (share_jan > share_base * 1.5 and
-                    q_jan > q_base * 1.5 and
-                    share_base > 0 and q_base > 0)
+        prio_base = 'ALTA' if need >= 70 else 'MÉDIA' if need >= 40 else 'BAIXA'
+
+        # ── Overload por score acumulado ────────────────────────────────────
+        share_ratio   = share_jan / share_base if share_base > 0 else 0.0
+        quality_ratio = q_jan / q_base         if q_base    > 0 else 0.0
+
+        # slope_pct na janela activa (para overload — diferente do D que usa baseline)
+        ftlm_jan_series = fm.loc[ini_jan:hoje, 'FTLM'].dropna()
+        slope_pct_jan = 0.0
+        if len(ftlm_jan_series) >= 3:
+            fi = float(ftlm_jan_series.iloc[0])
+            ff = float(ftlm_jan_series.iloc[-1])
+            if fi > 0:
+                slope_pct_jan = (ff - fi) / fi
+
+        score_overload = 0
+        if share_ratio   > 1.4: score_overload += 1
+        if quality_ratio > 1.4: score_overload += 1
+        if slope_pct_jan > 0.15: score_overload += 1
+        overload = score_overload >= 2
 
         results[mod] = dict(
-            need_score=need, prioridade=prio, overload=overload,
+            need_score=need, prioridade=prio_base, overload=overload,
+            overload_score=score_overload,
+            need_vol=round(need_vol, 1), need_int=round(need_int, 1),
             share_actual=share_jan, share_hist=share_base,
             quality_actual=q_jan, quality_hist=q_base,
             load_jan=load_jan, load_tipico=load_tipico,
-            ftlm_slope_pct=slope_pct,
-            A=A, B=B, C=C, D=D, E=E,
-            floor_peso=floor_peso)
+            ftlm_slope_pct=slope_pct, ftlm_slope_jan=slope_pct_jan,
+            A=A, B=B, C=C, D=D, E=E, floor_peso=floor_peso)
 
         debug_rows.append({
             'Modalidade':           mod,
             'Need Score':           round(need, 1),
-            'Prioridade':           prio,
-            'Overload ⚠️':          '⚠️ SIM' if overload else 'não',
-            # A
+            'Need Volume':          round(need_vol, 1),
+            'Need Intensity':       round(need_int, 1),
+            'Prioridade base':      prio_base,
+            'Overload score':       score_overload,
+            'Overload':             '⚠️ SIM' if overload else 'não',
             'A Share actual%':      round(share_jan  * 100, 1),
             'A Share hist90d%':     round(share_base * 100, 1),
             'A Deficit%':           round(A_raw * 100, 1),
             'A Floor peso':         round(floor_peso, 2),
             'A contribuição':       round(A * 100 * 0.25, 1),
-            # B
             'B Quality actual%':    round(q_jan  * 100, 1),
             'B Quality hist90d%':   round(q_base * 100, 1),
             'B Deficit%':           round(B_raw * 100, 1),
             'B contribuição':       round(B * 100 * 0.25, 1),
-            # C
             'C Load janela':        round(load_jan, 1),
             'C Load típico':        round(load_tipico, 1),
             'C Deficit%':           round(C_raw * 100, 1),
             'C contribuição':       round(C * 100 * 0.20, 1),
-            # D
-            'D FTLM ini':           round(float(ftlm_base_series.iloc[0])
-                                          if len(ftlm_base_series)>=10 else 0, 1),
-            'D FTLM fim':           round(float(ftlm_base_series.iloc[-1])
-                                          if len(ftlm_base_series)>=10 else 0, 1),
+            'D FTLM ini':           round(ftlm_ini if len(ftlm_base_series)>=10 else 0, 1),
+            'D FTLM fim':           round(ftlm_fim if len(ftlm_base_series)>=10 else 0, 1),
             'D slope_pct%':         round(slope_pct * 100, 1),
+            'D slope_jan%':         round(slope_pct_jan * 100, 1),
             'D contribuição':       round(D * 100 * 0.20, 1),
-            # E
             'E Fator VQ':           fator_e,
             'E contribuição':       round(E * 100 * 0.10, 1),
         })
@@ -2727,46 +2733,125 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
     # ── Secção 5: Falta de Estímulo ─────────────────────────────────────────
     st.subheader("🎯 Análise de Falta de Estímulo por Modalidade")
     st.caption(
-        "Need Score v2 — A=Share volume (25%) | B=Qualidade RPE≥7 (25%) | "
-        "C=Gap dias (20%) | D=FTLM slope (15%) | E=Interacção A×B (15%)")
+        "Need Score v4 — A=Share(25%) B=Quality(25%) C=Load(20%) D=FTLM(20%) E=A×B(10%) | "
+        "Need_volume=A+C | Need_intensity=B+D | Overload por score acumulado (≥2/3)")
+
+    # ── Controlos de prioridade e preset K ───────────────────────────────────
+    st.markdown("**⚙️ Configuração de Prioridades**")
+    col_k, col_sp = st.columns([1, 3])
+    with col_k:
+        preset_k = st.selectbox("Preset influência",
+            ["Conservador (K=6)", "Balanceado (K=10)", "Agressivo (K=15)"],
+            index=1, key="prio_preset")
+        K = {"Conservador (K=6)": 6, "Balanceado (K=10)": 10,
+             "Agressivo (K=15)": 15}[preset_k]
+        st.caption(f"K={K} — quanto a preferência influencia a ordenação")
+
+    with col_sp:
+        _mods_disp = ['Bike', 'Row', 'Ski', 'Run']
+        pc1, pc2, pc3, pc4 = st.columns(4)
+        prio_1 = pc1.selectbox("🥇 Prioridade 1 (Foco)", _mods_disp, index=0, key="prio1")
+        prio_2 = pc2.selectbox("🥈 Prioridade 2 (Foco)", _mods_disp, index=1, key="prio2")
+        prio_3 = pc3.selectbox("🥉 Prioridade 3 (Manutenção)", _mods_disp, index=2, key="prio3")
+        prio_4 = pc4.selectbox("4️⃣  Prioridade 4 (Manutenção)", _mods_disp, index=3, key="prio4")
+
+    prio_rank = {prio_1: 1, prio_2: 2, prio_3: 3, prio_4: 4}
+    max_rank  = 4
+    grupo_foco = {prio_1, prio_2}
+    grupo_man  = {prio_3, prio_4}
+
+    st.markdown("---")
     c1, c2 = st.columns(2)
     for col_w, janela, label in [(c1, 7, "7 dias"), (c2, 14, "14 dias")]:
         res, df_debug = analisar_falta_estimulo(da_full, janela_dias=janela)
         with col_w:
             st.markdown(f"**📅 Janela {label}**")
-            if res:
-                rows_fe = []
-                for mod, d in res.items():
-                    pe = "🔴" if d['prioridade']=='ALTA' else "🟡" if d['prioridade']=='MÉDIA' else "🟢"
-                    rows_fe.append({
-                        'Modalidade':   mod,
-                        'Need Score':   f"{d['need_score']:.1f}",
-                        'Prioridade':   f"{pe} {d['prioridade']}",
-                        'Overload':     '⚠️' if d.get('overload') else '—',
-                        'A Share%':     f"{d['share_actual']*100:.1f}→{d['share_hist']*100:.1f}%",
-                        'B Quality%':   f"{d['quality_actual']*100:.1f}→{d['quality_hist']*100:.1f}%",
-                        'C Load':       (f"{(1-(d['load_jan']/d['load_tipico']))*100:+.0f}%"
-                                         if d['load_tipico'] > 0 else '—'),
-                        'D slope_pct':  f"{d['ftlm_slope_pct']*100:+.1f}%",
-                    })
-                st.dataframe(pd.DataFrame(rows_fe), width="stretch", hide_index=True)
-                top = list(res.keys())[0]
-                pe  = "🔴" if res[top]['prioridade']=='ALTA' else "🟡" if res[top]['prioridade']=='MÉDIA' else "🟢"
-                st.info(f"{pe} Foco recomendado: **{top}** (Score: {res[top]['need_score']:.1f})")
-                if df_debug is not None and len(df_debug) > 0:
-                    with st.expander(f"🔬 Debug componentes — {label}"):
-                        st.caption("Componentes intermédios para validação. Cada coluna mostra o valor calculado antes da ponderação.")
-                        st.dataframe(df_debug, width="stretch", hide_index=True)
-                        csv_bytes = df_debug.to_csv(index=False).encode('utf-8')
-                        st.download_button(
-                            label=f"⬇️ Download debug CSV ({label})",
-                            data=csv_bytes,
-                            file_name=f"need_score_debug_{label.replace(' ','_')}.csv",
-                            mime="text/csv",
-                            key=f"dl_debug_{janela}")
-            else:
+            if not res:
                 st.info("Dados insuficientes.")
+                continue
 
+            # ── Calcular Need_final com bónus de prioridade ────────────────
+            rows_foco = []
+            rows_man  = []
+            for mod, d in res.items():
+                rank  = prio_rank.get(mod, 4)
+                peso  = (max_rank + 1 - rank) / max_rank
+                bonus = peso * K * (1 - d['need_score'] / 100)
+
+                need_final = d['need_score'] + bonus
+
+                # Overload: Need_final × 0.5
+                ol_flag = ""
+                intens  = "NORMAL"
+                if d['overload']:
+                    need_final *= 0.5
+                    ol_flag = " ⚠️"
+                    intens  = "LOW — reduzir intensidade"
+
+                # Cap manutenção: nunca passa de 40
+                if mod in grupo_man:
+                    need_final = min(need_final, 40)
+
+                # Piso mínimo
+                need_final = max(need_final, 10)
+
+                # Prioridade final
+                pf = ('ALTA' if need_final >= 70 else
+                      'MÉDIA' if need_final >= 40 else 'BAIXA')
+
+                row_d = {
+                    'Modalidade':   f"{'🎯' if mod in grupo_foco else '🔧'} {mod}{ol_flag}",
+                    'Need base':    f"{d['need_score']:.1f}",
+                    'Bónus prio':   f"+{bonus:.1f}",
+                    'Need final':   f"{need_final:.1f}",
+                    'Prioridade':   pf,
+                    'Vol/Int':      f"{d['need_vol']:.0f} / {d['need_int']:.0f}",
+                    'Intensidade':  intens,
+                }
+                if mod in grupo_foco:
+                    rows_foco.append((need_final, row_d))
+                else:
+                    rows_man.append((need_final, row_d))
+
+            # Ordenar cada grupo por Need_final
+            rows_foco.sort(key=lambda x: x[0], reverse=True)
+            rows_man.sort( key=lambda x: x[0], reverse=True)
+
+            # Mostrar separado por grupo
+            if rows_foco:
+                st.markdown("🎯 **Foco**")
+                st.dataframe(pd.DataFrame([r for _, r in rows_foco]),
+                             width="stretch", hide_index=True)
+            if rows_man:
+                st.markdown("🔧 **Manutenção**")
+                st.dataframe(pd.DataFrame([r for _, r in rows_man]),
+                             width="stretch", hide_index=True)
+
+            # Recomendação: top do grupo foco
+            if rows_foco:
+                top_mod  = rows_foco[0][1]['Modalidade'].replace('🎯 ','').replace('🔧 ','').replace(' ⚠️','')
+                top_need = rows_foco[0][0]
+                top_ol   = res.get(top_mod, {}).get('overload', False)
+                if top_ol:
+                    st.warning(f"⚠️ **{top_mod}**: overload detectado — treinar com baixa intensidade")
+                else:
+                    top_vi   = res.get(top_mod, {})
+                    foco_dim = "volume" if top_vi.get('need_vol',0) > top_vi.get('need_int',0) else "intensidade"
+                    st.info(f"🎯 Próxima sessão sugerida: **{top_mod}** — foco em **{foco_dim}** (score {top_need:.1f})")
+
+            # Debug expandível
+            if df_debug is not None and len(df_debug) > 0:
+                with st.expander(f"🔬 Debug componentes — {label}"):
+                    st.dataframe(df_debug, width="stretch", hide_index=True)
+                    csv_b = df_debug.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label=f"⬇️ Download debug CSV ({label})",
+                        data=csv_b,
+                        file_name=f"need_score_debug_{label.replace(' ','_')}.csv",
+                        mime="text/csv",
+                        key=f"dl_debug_{janela}")
+
+    st.markdown("---")
     st.markdown("---")
 
 
