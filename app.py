@@ -580,16 +580,34 @@ def analisar_falta_estimulo(df_act_full, janela_dias=14, baseline_dias=90):
         gap_score      = min(1.0, dias_sem / (gap_tipico_dbg * 2))
         c_reforcado    = max(C, gap_score)  # debug — observação apenas
 
-        # ── Prescrição textual (threshold=50) ──────────────────────────────
+        # ── Prescrição textual com contexto temporal ───────────────────────
         ALTO = 50
+        # gap_ratio: quanto tempo passou vs padrão (cap 3.0 para evitar distorções)
+        gap_ratio = min(dias_sem / gap_tipico_dbg, 3.0) if gap_tipico_dbg > 0 else 0.0
+
         if overload:
             prescricao = "🟢 Treino leve/moderado (overload — reduzir intensidade)"
+
         elif need_int_prescr >= ALTO and need_vol >= ALTO:
+            # Ambos altos → sessão completa independentemente do gap
+            # gap_ratio NÃO reduz prescrição quando ambos são críticos
             prescricao = "🔴 Sessão completa (volume + intensidade)"
+
         elif need_int_prescr >= ALTO and need_vol < ALTO:
-            prescricao = "🟠 Sessão intensa/curta (défice de qualidade)"
+            # Intensidade alta + volume baixo → modular pelo gap_ratio
+            if gap_ratio <= 1.0:
+                # Treinou recentemente → pode aguentar intensidade
+                prescricao = "🟠 Sessão intensa/curta (fresco — défice qualidade)"
+            elif gap_ratio <= 2.0:
+                # Algum tempo sem treinar → reentrée gradual
+                prescricao = "🟡 Sessão mista vol+int (reentrée gradual)"
+            else:
+                # Gap longo (>2× padrão, cap 3×) → base primeiro
+                prescricao = "🔵 Sessão de base/reentrée (gap longo — não forçar intensidade)"
+
         elif need_vol >= ALTO and need_int_prescr < ALTO:
             prescricao = "🔵 Sessão de volume/base (défice de carga)"
+
         else:
             prescricao = "⚪ Manutenção ou descanso"
 
