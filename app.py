@@ -1263,6 +1263,271 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 })
             st.dataframe(pd.DataFrame(rows_mes), width="stretch", hide_index=True)
 
+
+    # ── Camada de Progressão de Carga ────────────────────────────────────
+    if da_full is not None and len(da_full) > 0:
+        st.subheader("📈 Progressão de Carga Semanal")
+        st.caption(
+            "Camada independente do Need Score — controla QUANTO treinar. "
+            "Fator modulado pelo Need (leitura apenas). Cap +12% vs ano anterior.")
+
+        _pf = da_full.copy()
+        _pf['Data'] = pd.to_datetime(_pf['Data'])
+        _pf = _pf[_pf['type'].apply(norm_tipo) != 'WeightTraining']
+
+        # KJ
+        if 'icu_joules' in _pf.columns:
+            _pf['_kj'] = pd.to_numeric(_pf['icu_joules'], errors='coerce') / 1000
+        elif 'power_avg' in _pf.columns and 'moving_time' in _pf.columns:
+            _pf['_kj'] = (pd.to_numeric(_pf['power_avg'], errors='coerce') *
+                          pd.to_numeric(_pf['moving_time'], errors='coerce') / 1000)
+        else:
+            _pf['_kj'] = np.nan
+        _pf['_km']  = pd.to_numeric(_pf['distance'], errors='coerce') / 1000                       if 'distance' in _pf.columns else np.nan
+        _pf['_mt']  = pd.to_numeric(_pf['moving_time'], errors='coerce') / 3600
+
+        hoje_pf   = pd.Timestamp.now().normalize()
+        ano_atual = hoje_pf.year
+        ano_ant   = ano_atual - 1
+        dia_ano   = hoje_pf.timetuple().tm_yday
+        # Semana actual: segunda até hoje
+        dow_pf    = hoje_pf.weekday()
+        sem_ini_pf= hoje_pf - pd.Timedelta(days=dow_pf)
+
+        # Buscar Need scores e overload do modelo (se disponível)
+        _need_cache = {}
+        _ol_cache   = {}
+        _ni_cache   = {}
+        try:
+            _res_prog, _ = analisar_falta_estimulo(_pf, janela_dias=14)
+            if _res_prog:
+                for _m, _d in _res_prog.items():
+                    _need_cache[_m] = _d.get('need_score', 40)
+                    _ol_cache[_m]   = _d.get('overload', False)
+                    _ni_cache[_m]   = _d.get('need_int_prescr', 50)
+        except Exception:
+            pass
+
+        # eFTP por modalidade (último valor disponível)
+        _eftp = {}
+        if 'icu_eftp' in _pf.columns:
+            for _m in ['Bike','Row','Ski','Run']:
+                _s = _pf[_pf['type'].apply(norm_tipo)==_m]['icu_eftp']
+                _s = pd.to_numeric(_s, errors='coerce').dropna()
+                if len(_s) > 0: _eftp[_m] = float(_s.iloc[-1])
+
+        def _med_semanas(df, col, n_sem=8):
+            """Mediana das últimas n semanas com dados (col > 0)."""
+            df = df.copy()
+            df['_sem'] = df['Data'].dt.to_period('W')
+            agg = df.groupby('_sem')[col].sum().reset_index()
+            agg = agg.sort_values('_sem').tail(n_sem)
+            vals = agg[col][agg[col] > 0]
+            return float(vals.median()) if len(vals) > 0 else 0.0
+
+        def _sugestao_sessao(kj_rest, h_rest, km_rest, mod, eftp, ni, ol):
+            """
+            Gera sugestão de sessão com:
+            - Zona baseada em Need_intensity
+            - Cap de 75min por sessão em Z4+ (dividir em intervalos)
+            - Dividir em múltiplas sessões se KJ_restante > 150% da sessão típica
+            - RPE equivalente à zona
+            """
+            sugs = []
+
+            # Zona e RPE por Need_intensity
+            if ol:
+                zona_pct, zona_nome, rpe_z = 0.65, "Z2 recuperação", 4
+            elif ni < 30:
+                zona_pct, zona_nome, rpe_z = 0.68, "Z2 base", 5
+            elif ni < 60:
+                zona_pct, zona_nome, rpe_z = 0.83, "Z3-Z4 tempo", 6
+            else:
+                zona_pct, zona_nome, rpe_z = 0.95, "Z4-Z5 HIIT", 8
+
+            if mod == 'Bike' and eftp and kj_rest > 0:
+                watts  = eftp * zona_pct
+                t_min  = kj_rest * 1000 / (watts * 60)
+
+                # Cap: Z4+ → max 75min contínuos → dividir em intervalos
+                if zona_pct >= 0.90 and t_min > 45:
+                    # Estrutura de intervalos
+                    int_dur = 8 if zona_pct >= 0.95 else 10
+                    n_int   = min(6, max(3, int(t_min / int_dur)))
+                    # Cap sessões: max 2 sessões se muito alto
+                    n_sess  = 1 if t_min <= 90 else 2
+                    if n_sess == 1:
+                        sugs.append(f"🚴 {n_int}×{int_dur}min @ {watts:.0f}W "
+                                    f"({zona_nome}, RPE {rpe_z}) — {kj_rest:.0f} kJ restante")
+                    else:
+                        kj_s   = kj_rest / n_sess
+                        t_s    = kj_s * 1000 / (watts * 60)
+                        n_i_s  = max(2, int(t_s / int_dur))
+                        sugs.append(f"🚴 2 sessões: {n_i_s}×{int_dur}min @ {watts:.0f}W "
+                                    f"({zona_nome}, RPE {rpe_z}) — {kj_rest:.0f} kJ total")
+                elif t_min > 0:
+                    n_sess = 1 if t_min <= 90 else 2
+                    if n_sess == 2:
+                        sugs.append(f"🚴 2 sessões × {t_min/2:.0f}min @ {watts:.0f}W "
+                                    f"({zona_nome}, RPE {rpe_z}) — {kj_rest:.0f} kJ total")
+                    else:
+                        sugs.append(f"🚴 {t_min:.0f}min @ {watts:.0f}W "
+                                    f"({zona_nome}, RPE {rpe_z}) — {kj_rest:.0f} kJ")
+
+            elif mod == 'Row' and h_rest > 0:
+                h_sess = min(h_rest, 1.5)
+                n_sess = max(1, int(np.ceil(h_rest / 1.5)))
+                sugs.append(f"🚣 {n_sess}× {h_sess*60:.0f}min ({zona_nome}, RPE {rpe_z})")
+
+            elif mod == 'Ski' and (h_rest > 0 or km_rest > 0):
+                if km_rest > 0:
+                    n_sess = max(1, int(np.ceil(km_rest / 12)))
+                    sugs.append(f"🎿 {n_sess}× ~{km_rest/n_sess:.0f}km ({zona_nome}, RPE {rpe_z})")
+                else:
+                    sugs.append(f"🎿 {h_rest*60:.0f}min ({zona_nome}, RPE {rpe_z})")
+
+            elif mod == 'Run' and (h_rest > 0 or km_rest > 0):
+                if km_rest > 0:
+                    n_sess = max(1, int(np.ceil(km_rest / 10)))
+                    sugs.append(f"🏃 {n_sess}× ~{km_rest/n_sess:.0f}km ({zona_nome}, RPE {rpe_z})")
+                else:
+                    sugs.append(f"🏃 {h_rest*60:.0f}min ({zona_nome}, RPE {rpe_z})")
+
+            return sugs[0] if sugs else "—"
+
+        rows_prog = []
+        for mod in ['Bike','Row','Ski','Run']:
+            _sub = _pf[_pf['type'].apply(norm_tipo)==mod].copy()
+            if len(_sub) == 0: continue
+
+            need  = _need_cache.get(mod, 40)
+            ol    = _ol_cache.get(mod, False)
+            ni    = _ni_cache.get(mod, 50)
+            eftp  = _eftp.get(mod)
+
+            # Baseline mediana 8 semanas (só semanas com dados)
+            kj_base  = _med_semanas(_sub, '_kj')
+            h_base   = _med_semanas(_sub, '_mt')
+            km_base  = _med_semanas(_sub, '_km') if '_km' in _sub.columns else 0.0
+            has_kj   = kj_base > 0
+            has_km   = km_base > 0
+
+            # Fator progressão
+            if ol:                fator = 0.98
+            elif need > 60:       fator = 1.04
+            elif need < 30:       fator = 1.01
+            else:                 fator = 1.02
+
+            # Sem anterior (última semana completa)
+            sem_ant_ini = sem_ini_pf - pd.Timedelta(weeks=1)
+            sem_ant_fim = sem_ini_pf - pd.Timedelta(days=1)
+            _sem_ant = _sub[(_sub['Data']>=sem_ant_ini)&(_sub['Data']<=sem_ant_fim)]
+            kj_sem_ant = float(_sem_ant['_kj'].sum()) if has_kj else 0.0
+            h_sem_ant  = float(_sem_ant['_mt'].sum())
+
+            # Meta semana (com suavização anti-salto)
+            kj_meta = min(kj_base * fator, max(kj_sem_ant, kj_base) * 1.08) if has_kj else 0.0
+            h_meta  = min(h_base  * fator, max(h_sem_ant,  h_base)  * 1.08)
+            km_meta = km_base * fator if has_km else 0.0
+
+            # Cap anual pro-rated (+12% com margem 5%)
+            _ano_ant = _sub[_sub['Data'].dt.year == ano_ant]
+            kj_2025  = float(_ano_ant['_kj'].sum()) if has_kj else 0.0
+            h_2025   = float(_ano_ant['_mt'].sum())
+            km_2025  = float(_ano_ant['_km'].sum()) if has_km else 0.0
+
+            kj_max   = kj_2025 * 1.12
+            h_max    = h_2025  * 1.12
+            _ano_cur = _sub[_sub['Data'].dt.year == ano_atual]
+            kj_acum  = float(_ano_cur['_kj'].sum()) if has_kj else 0.0
+            h_acum   = float(_ano_cur['_mt'].sum())
+            km_acum  = float(_ano_cur['_km'].sum()) if has_km else 0.0
+
+            kj_esperado = kj_max * (dia_ano/365) if kj_max > 0 else 0
+            h_esperado  = h_max  * (dia_ano/365) if h_max  > 0 else 0
+
+            cap_atingido= ((kj_acum > kj_esperado * 1.05) if has_kj
+                           else (h_acum > h_esperado * 1.05))
+            if cap_atingido: fator = min(fator, 1.0)
+
+            # Projecção anual
+            kj_proj = kj_acum / dia_ano * 365 if has_kj and kj_acum > 0 else 0
+            h_proj  = h_acum  / dia_ano * 365 if h_acum  > 0 else 0
+
+            # Status anual
+            ref_acum = kj_acum if has_kj else h_acum
+            ref_esp  = kj_esperado if has_kj else h_esperado
+            ref_max  = kj_max if has_kj else h_max
+            if ref_max == 0:
+                status_ano = "— (sem 2025)"
+            elif ref_acum > ref_esp * 1.05:
+                status_ano = "🔴 Acima cap"
+            elif ref_acum >= ref_esp * 0.90:
+                status_ano = "✅ No ritmo"
+            else:
+                status_ano = "⚠️ Abaixo"
+
+            # Semana actual (Seg → hoje)
+            _sem_cur = _sub[_sub['Data'] >= sem_ini_pf]
+            kj_feito = float(_sem_cur['_kj'].sum()) if has_kj else 0.0
+            h_feito  = float(_sem_cur['_mt'].sum())
+            km_feito = float(_sem_cur['_km'].sum()) if has_km else 0.0
+
+            kj_rest  = max(0.0, kj_meta - kj_feito) if has_kj else 0.0
+            h_rest   = max(0.0, h_meta  - h_feito)
+            km_rest  = max(0.0, km_meta - km_feito) if has_km else 0.0
+
+            # Sugestão
+            sug = _sugestao_sessao(kj_rest, h_rest, km_rest, mod, eftp, ni, ol)
+
+            # Fator label
+            if ol:       fl = "↓ 0.98 overload"
+            elif cap_atingido: fl = "→ 1.00 cap"
+            elif need>60: fl = "↑ 1.04"
+            elif need<30: fl = "↑ 1.01"
+            else:         fl = "↑ 1.02"
+
+            row = {
+                'Modalidade':    mod,
+                'Métrica':       'KJ' if has_kj else ('KM' if has_km else 'Horas'),
+                'Base (med.8s)': f"{kj_base:.0f} kJ" if has_kj else
+                                  (f"{km_base:.0f} km | {h_base:.1f}h" if has_km
+                                   else f"{h_base:.1f}h"),
+                'Fator':         fl,
+                'Meta semana':   f"{kj_meta:.0f} kJ" if has_kj else
+                                  (f"{km_meta:.0f} km | {h_meta:.1f}h" if has_km
+                                   else f"{h_meta:.1f}h"),
+                'Feito':         f"{kj_feito:.0f} kJ" if has_kj else
+                                  (f"{km_feito:.0f} km | {h_feito:.1f}h" if has_km
+                                   else f"{h_feito:.1f}h"),
+                'Restante':      (f"✅ 0" if kj_rest==0 and has_kj else
+                                   f"{kj_rest:.0f} kJ") if has_kj else
+                                  (f"✅ 0" if km_rest==0 and h_rest==0 else
+                                   f"{km_rest:.0f} km | {h_rest:.1f}h" if has_km
+                                   else f"{h_rest:.1f}h"),
+                'Projecção 2026':f"{kj_proj:.0f} kJ" if has_kj and kj_proj>0 else
+                                   (f"{h_proj:.0f}h" if h_proj>0 else "—"),
+                'Cap (+12%)':    f"{kj_max:.0f} kJ" if has_kj and kj_max>0 else
+                                   (f"{h_max:.0f}h" if h_max>0 else "—"),
+                'Status 2026':   status_ano,
+                'Sugestão sessão': sug,
+            }
+            rows_prog.append(row)
+
+        if rows_prog:
+            df_prog = pd.DataFrame(rows_prog)
+            st.dataframe(df_prog.drop(columns=['Sugestão sessão']),
+                         width="stretch", hide_index=True)
+            st.markdown("**💡 Sugestões de sessão (semana actual)**")
+            for r in rows_prog:
+                if r['Sugestão sessão'] != '—':
+                    st.caption(f"**{r['Modalidade']}:** {r['Sugestão sessão']}")
+            st.caption(
+                "⚠️ Esta camada controla apenas a QUANTIDADE de carga. "
+                "O tipo de treino (intensidade/volume) é definido pelo Need Score acima. "
+                "Fator ≤ 1.0 quando overload. Cap pro-rated +12% vs " +
+                str(ano_ant) + " (margem 5%).")
+
     st.markdown("---")
 
     # ── Performance Overview + pizza Sessões ──
