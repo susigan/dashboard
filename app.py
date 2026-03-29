@@ -1375,9 +1375,11 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                                     f"({zona_nome}, RPE {rpe_z}) — {kj_rest:.0f} kJ")
 
             elif mod == 'Row' and h_rest > 0:
-                h_sess = min(h_rest, 1.5)
-                n_sess = max(1, int(np.ceil(h_rest / 1.5)))
-                sugs.append(f"🚣 {n_sess}× {h_sess*60:.0f}min ({zona_nome}, RPE {rpe_z})")
+                max_h_row = 1.0 if ol else 1.5   # overload → max 60min
+                n_sess    = max(1, int(np.ceil(h_rest / max_h_row)))
+                h_sess    = h_rest / n_sess
+                sugs.append(f"🚣 {n_sess}× {h_sess*60:.0f}min "
+                            f"({zona_nome}, RPE {rpe_z})")
 
             elif mod == 'Ski' and (h_rest > 0 or km_rest > 0):
                 if km_rest > 0:
@@ -1387,11 +1389,17 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                     sugs.append(f"🎿 {h_rest*60:.0f}min ({zona_nome}, RPE {rpe_z})")
 
             elif mod == 'Run' and (h_rest > 0 or km_rest > 0):
+                # Cap por sessão baseado na intensidade
+                max_km_sess = 8  if ni >= 60 else 15   # intenso=8km, base=15km
+                max_h_sess  = 1.0 if ni >= 60 else 2.0  # intenso=60min, base=120min
                 if km_rest > 0:
-                    n_sess = max(1, int(np.ceil(km_rest / 10)))
-                    sugs.append(f"🏃 {n_sess}× ~{km_rest/n_sess:.0f}km ({zona_nome}, RPE {rpe_z})")
+                    n_sess = max(1, int(np.ceil(km_rest / max_km_sess)))
+                    sugs.append(f"🏃 {n_sess}× ~{km_rest/n_sess:.0f}km "
+                                f"({zona_nome}, RPE {rpe_z})")
                 else:
-                    sugs.append(f"🏃 {h_rest*60:.0f}min ({zona_nome}, RPE {rpe_z})")
+                    n_sess = max(1, int(np.ceil(h_rest / max_h_sess)))
+                    sugs.append(f"🏃 {n_sess}× {h_rest/n_sess*60:.0f}min "
+                                f"({zona_nome}, RPE {rpe_z})")
 
             return sugs[0] if sugs else "—"
 
@@ -1436,8 +1444,29 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             h_2025   = float(_ano_ant['_mt'].sum())
             km_2025  = float(_ano_ant['_km'].sum()) if has_km else 0.0
 
-            kj_max   = kj_2025 * 1.12
-            h_max    = h_2025  * 1.12
+            # Cap adaptativo: se 2025 < 12 semanas de dados → usar base×52×1.12
+            # Evita cap artificialmente baixo para modalidades novas/reduzidas em 2025
+            # Count weeks in 2025 with actual data (not just rows)
+            if len(_ano_ant) > 0:
+                _sem_grp = _ano_ant.groupby(_ano_ant['Data'].dt.to_period('W'))
+                _n_sem_2025 = sum(
+                    1 for _, g in _sem_grp
+                    if (g['_kj'].sum() > 0 if has_kj else g['_mt'].sum() > 0))
+            else:
+                _n_sem_2025 = 0
+            _threshold_kj = kj_base * 4   # mínimo de 4 semanas de dados em 2025
+            _threshold_h  = h_base  * 4
+
+            if has_kj and (kj_2025 < _threshold_kj or _n_sem_2025 < 12):
+                kj_max = kj_base * 52 * 1.12   # cap baseado no ritmo actual
+            else:
+                kj_max = kj_2025 * 1.12
+
+            if h_2025 < _threshold_h or _n_sem_2025 < 12:
+                h_max = h_base * 52 * 1.12
+            else:
+                h_max = h_2025 * 1.12
+
             _ano_cur = _sub[_sub['Data'].dt.year == ano_atual]
             kj_acum  = float(_ano_cur['_kj'].sum()) if has_kj else 0.0
             h_acum   = float(_ano_cur['_mt'].sum())
@@ -1507,8 +1536,12 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                                    else f"{h_rest:.1f}h"),
                 'Projecção 2026':f"{kj_proj:.0f} kJ" if has_kj and kj_proj>0 else
                                    (f"{h_proj:.0f}h" if h_proj>0 else "—"),
-                'Cap (+12%)':    f"{kj_max:.0f} kJ" if has_kj and kj_max>0 else
-                                   (f"{h_max:.0f}h" if h_max>0 else "—"),
+                'Cap (+12%)':    (f"{kj_max:.0f} kJ"
+                                   + (" (base)" if has_kj and (kj_2025 < kj_base*4 or _n_sem_2025 < 12) else "")
+                                   ) if has_kj and kj_max>0 else
+                                   (f"{h_max:.0f}h"
+                                   + (" (base)" if h_2025 < h_base*4 or _n_sem_2025 < 12 else "")
+                                   if h_max>0 else "—"),
                 'Status 2026':   status_ano,
                 'Sugestão sessão': sug,
             }
