@@ -947,7 +947,7 @@ def carregar_corporal():
         return pd.DataFrame()
 
 
-def tab_visao_geral(dw, da, di, df_):
+def tab_visao_geral(dw, da, di, df_, da_full=None):
     st.header("📊 Visão Geral")
 
     # ── KPIs ──
@@ -959,6 +959,84 @@ def tab_visao_geral(dw, da, di, df_):
     c2.metric("⏱️ Horas",     f"{horas:.1f}h" if horas else "—")
     c3.metric("💚 HRV (7d)", f"{hrv_m:.0f} ms" if hrv_m else "—")
     c4.metric("❤️ RHR",       f"{rhr_u:.0f} bpm" if rhr_u else "—")
+    st.markdown("---")
+
+    # ── Prioridades + Need Score (visão rápida) ──────────────────────────
+    st.subheader("🎯 Próxima Sessão — Prioridades e Necessidade")
+
+    # Controlos de prioridade — partilhados com a aba Análises via keys únicas
+    _mods_vg = ['Bike', 'Row', 'Ski', 'Run']
+    vg_c0, vg_c1, vg_c2, vg_c3, vg_c4 = st.columns([1, 1, 1, 1, 1])
+    with vg_c0:
+        vg_preset = st.selectbox("Preset K",
+            ["Conservador (K=6)", "Balanceado (K=10)", "Agressivo (K=15)"],
+            index=1, key="vg_prio_preset")
+        vg_K = {"Conservador (K=6)":6,"Balanceado (K=10)":10,"Agressivo (K=15)":15}[vg_preset]
+    with vg_c1:
+        vg_p1 = st.selectbox("🥇 P1 Foco",       _mods_vg, index=0, key="vg_prio1")
+    with vg_c2:
+        vg_p2 = st.selectbox("🥈 P2 Foco",       _mods_vg, index=1, key="vg_prio2")
+    with vg_c3:
+        vg_p3 = st.selectbox("🥉 P3 Manutenção", _mods_vg, index=2, key="vg_prio3")
+    with vg_c4:
+        vg_p4 = st.selectbox("4️⃣  P4 Manutenção", _mods_vg, index=3, key="vg_prio4")
+
+    vg_prio_rank  = {vg_p1:1, vg_p2:2, vg_p3:3, vg_p4:4}
+    vg_grupo_foco = {vg_p1, vg_p2}
+    vg_grupo_man  = {vg_p3, vg_p4}
+
+    if da_full is not None and len(da_full) > 0:
+        vg_res, _ = analisar_falta_estimulo(da_full, janela_dias=14)
+        if vg_res:
+            rows_f, rows_m = [], []
+            for mod, d in vg_res.items():
+                rank   = vg_prio_rank.get(mod, 4)
+                peso   = (4 + 1 - rank) / 4
+                bonus  = peso * vg_K * (1 - d['need_score'] / 100)
+                nf     = d['need_score'] + bonus
+                ol_flag= d.get('overload', False)
+                if ol_flag:   nf *= 0.5
+                if mod in vg_grupo_man: nf = min(nf, 40)
+                nf = max(nf, 10)
+                pf = ('ALTA' if nf>=70 else 'MÉDIA' if nf>=40 else 'BAIXA')
+                row_d = {
+                    'Modalidade': f"{'🎯' if mod in vg_grupo_foco else '🔧'} {mod}"
+                                  + (' ⚠️' if ol_flag else ''),
+                    'Need':       f"{d['need_score']:.0f}",
+                    'Final':      f"{nf:.0f}",
+                    'Vol/Int':    f"{d.get('need_vol',0):.0f}/{d.get('need_int_prescr',0):.0f}",
+                    'Prescrição': d.get('prescricao','—'),
+                }
+                if mod in vg_grupo_foco: rows_f.append((nf, row_d))
+                else:                    rows_m.append((nf, row_d))
+
+            rows_f.sort(key=lambda x: x[0], reverse=True)
+            rows_m.sort(key=lambda x: x[0], reverse=True)
+
+            col_f, col_m = st.columns(2)
+            with col_f:
+                st.markdown("**🎯 Foco**")
+                if rows_f:
+                    st.dataframe(pd.DataFrame([r for _,r in rows_f]),
+                                 width="stretch", hide_index=True)
+                    # Sugestão principal
+                    top    = rows_f[0]
+                    top_mod= top[1]['Modalidade'].replace('🎯 ','').replace('🔧 ','').replace(' ⚠️','')
+                    top_d  = vg_res.get(top_mod, {})
+                    if top_d.get('overload'):
+                        st.warning(f"⚠️ **{top_mod}**: {top_d.get('prescricao','—')}")
+                    else:
+                        st.info(f"🎯 **{top_mod}** — {top_d.get('prescricao','—')}")
+            with col_m:
+                st.markdown("**🔧 Manutenção**")
+                if rows_m:
+                    st.dataframe(pd.DataFrame([r for _,r in rows_m]),
+                                 width="stretch", hide_index=True)
+        else:
+            st.info("Dados insuficientes para análise de necessidade.")
+    else:
+        st.info("Dados de actividade completos não disponíveis.")
+
     st.markdown("---")
 
     # ── Performance Overview + pizza Sessões ──
@@ -5298,7 +5376,7 @@ def main():
         "🔄 Padrão",
     ])
 
-    with tab1:  tab_visao_geral(dw, da_filt, di, df_)
+    with tab1:  tab_visao_geral(dw, da_filt, di, df_, da_full=ac_full)
     with tab2:  tab_pmc(da_filt)
     with tab3:  tab_volume(da_filt, dw)
     with tab4:  tab_eftp(da_filt, mods_sel, ac_full)
