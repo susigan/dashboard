@@ -539,12 +539,38 @@ def analisar_falta_estimulo(df_act_full, janela_dias=14, baseline_dias=90):
                    D * 100 * 0.20 +
                    E * 100 * 0.10)
 
-        # ── Need_volume e Need_intensity (coerentes com A/B/C/D) ─────────
-        # Need_volume = A + C  (défice de carga total)
-        need_vol = min(100.0, A * 100 * 0.25 + C * 100 * 0.20) / 0.45 * 0.45
-        need_vol = min(100.0, (A * 100 * 0.55 + C * 100 * 0.45))  # normalizado 0-100
-        # Need_intensity = B + D×0.5 (défice de qualidade + tendência de queda)
+        # ── Need_volume e Need_intensity — camada de prescrição (read-only) ──
+        # NÃO alteram Need_score. Apenas interpretam A/B/C/D.
+        # Pesos: A×0.6+C×0.4 para volume | B×0.7+D×0.3 para intensidade
+        need_vol = min(100.0, A * 100 * 0.60 + C * 100 * 0.40)
         need_int = min(100.0, B * 100 * 0.70 + D * 100 * 0.30)
+
+        # Overload → reduzir intensidade (não zerar, não remover)
+        need_int_prescr = min(100.0, need_int * 0.5) if overload else need_int
+
+        # C_reforçado — debug, NÃO substitui C original
+        datas_mod_dbg  = df[df['type']==mod]['Data'].sort_values()
+        ultima_dbg     = datas_mod_dbg.max() if len(datas_mod_dbg) > 0 else pd.NaT
+        dias_sem       = int((hoje - ultima_dbg).days) if pd.notna(ultima_dbg) else 999
+        gap_tipico_dbg = float(max(1, datas_mod_dbg[datas_mod_dbg >= ini_base]
+                                   .diff().dt.days.dropna().median())
+                               if len(datas_mod_dbg[datas_mod_dbg >= ini_base]) >= 2
+                               else 7.0)
+        gap_score      = min(1.0, dias_sem / (gap_tipico_dbg * 2))
+        c_reforcado    = max(C, gap_score)  # debug — observação apenas
+
+        # ── Prescrição textual (threshold=50) ──────────────────────────────
+        ALTO = 50
+        if overload:
+            prescricao = "🟢 Treino leve/moderado (overload — reduzir intensidade)"
+        elif need_int_prescr >= ALTO and need_vol >= ALTO:
+            prescricao = "🔴 Sessão completa (volume + intensidade)"
+        elif need_int_prescr >= ALTO and need_vol < ALTO:
+            prescricao = "🟠 Sessão intensa/curta (défice de qualidade)"
+        elif need_vol >= ALTO and need_int_prescr < ALTO:
+            prescricao = "🔵 Sessão de volume/base (défice de carga)"
+        else:
+            prescricao = "⚪ Manutenção ou descanso"
 
         prio_base = 'ALTA' if need >= 70 else 'MÉDIA' if need >= 40 else 'BAIXA'
 
@@ -570,7 +596,12 @@ def analisar_falta_estimulo(df_act_full, janela_dias=14, baseline_dias=90):
         results[mod] = dict(
             need_score=need, prioridade=prio_base, overload=overload,
             overload_score=score_overload,
-            need_vol=round(need_vol, 1), need_int=round(need_int, 1),
+            need_vol=round(need_vol, 1),
+            need_int=round(need_int, 1),
+            need_int_prescr=round(need_int_prescr, 1),
+            prescricao=prescricao,
+            dias_sem=dias_sem, gap_score=round(gap_score, 2),
+            c_reforcado=round(c_reforcado, 3),
             share_actual=share_jan, share_hist=share_base,
             quality_actual=q_jan, quality_hist=q_base,
             load_jan=load_jan, load_tipico=load_tipico,
@@ -582,6 +613,11 @@ def analisar_falta_estimulo(df_act_full, janela_dias=14, baseline_dias=90):
             'Need Score':           round(need, 1),
             'Need Volume':          round(need_vol, 1),
             'Need Intensity':       round(need_int, 1),
+            'Need Int (prescrição)':round(need_int_prescr, 1),
+            'Prescrição':           prescricao,
+            'dias_sem_sessao':      dias_sem,
+            'gap_score':            round(gap_score, 2),
+            'C_reforçado':          round(c_reforcado, 3),
             'Prioridade base':      prio_base,
             'Overload score':       score_overload,
             'Overload':             '⚠️ SIM' if overload else 'não',
@@ -2805,8 +2841,8 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
                     'Bónus prio':   f"+{bonus:.1f}",
                     'Need final':   f"{need_final:.1f}",
                     'Prioridade':   pf,
-                    'Vol/Int':      f"{d['need_vol']:.0f} / {d['need_int']:.0f}",
-                    'Intensidade':  intens,
+                    'Vol / Int':    f"{d['need_vol']:.0f} / {d['need_int_prescr']:.0f}",
+                    'Prescrição':   d.get('prescricao','—'),
                 }
                 if mod in grupo_foco:
                     rows_foco.append((need_final, row_d))
@@ -2832,12 +2868,12 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
                 top_mod  = rows_foco[0][1]['Modalidade'].replace('🎯 ','').replace('🔧 ','').replace(' ⚠️','')
                 top_need = rows_foco[0][0]
                 top_ol   = res.get(top_mod, {}).get('overload', False)
+                top_d = res.get(top_mod, {})
+                top_prescr = top_d.get('prescricao', '—')
                 if top_ol:
-                    st.warning(f"⚠️ **{top_mod}**: overload detectado — treinar com baixa intensidade")
+                    st.warning(f"⚠️ **{top_mod}**: overload — {top_prescr}")
                 else:
-                    top_vi   = res.get(top_mod, {})
-                    foco_dim = "volume" if top_vi.get('need_vol',0) > top_vi.get('need_int',0) else "intensidade"
-                    st.info(f"🎯 Próxima sessão sugerida: **{top_mod}** — foco em **{foco_dim}** (score {top_need:.1f})")
+                    st.info(f"🎯 **{top_mod}** (score {top_need:.1f}) — {top_prescr}")
 
             # Debug expandível
             if df_debug is not None and len(df_debug) > 0:
