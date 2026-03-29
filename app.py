@@ -1126,6 +1126,143 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
     else:
         st.info("Dados de actividade completos não disponíveis.")
 
+    # ── Semana anterior + Comparação mensal ─────────────────────────────
+    if da_full is not None and len(da_full) > 0:
+        _df_all = da_full.copy()
+        _df_all['Data'] = pd.to_datetime(_df_all['Data'])
+        _df_all = _df_all[_df_all['type'].apply(norm_tipo) != 'WeightTraining']
+
+        # KJ
+        if 'icu_joules' in _df_all.columns:
+            _df_all['_kj'] = pd.to_numeric(_df_all['icu_joules'], errors='coerce') / 1000
+        elif 'power_avg' in _df_all.columns and 'moving_time' in _df_all.columns:
+            _df_all['_kj'] = (pd.to_numeric(_df_all['power_avg'], errors='coerce') *
+                              pd.to_numeric(_df_all['moving_time'], errors='coerce') / 1000)
+        else:
+            _df_all['_kj'] = np.nan
+        _df_all['_km']  = pd.to_numeric(_df_all['distance'], errors='coerce') / 1000                           if 'distance' in _df_all.columns else np.nan
+        _df_all['_mt']  = pd.to_numeric(_df_all['moving_time'], errors='coerce') / 3600
+        _df_all['_rpe'] = pd.to_numeric(_df_all['rpe'], errors='coerce')                           if 'rpe' in _df_all.columns else np.nan
+
+        hoje      = pd.Timestamp.now().normalize()
+        dow       = hoje.weekday()
+        sem_fim   = hoje - pd.Timedelta(days=dow + 1)
+        sem_ini   = sem_fim - pd.Timedelta(days=6)
+        mes_c_ini = hoje.replace(day=1)
+        mes_p_fim = mes_c_ini - pd.Timedelta(days=1)
+        mes_p_ini = mes_p_fim.replace(day=1)
+
+        def _vg_agg(df, d_ini, d_fim, semana=False):
+            sub = df[(df['Data'] >= d_ini) & (df['Data'] <= d_fim)]
+            if len(sub) == 0: return {}
+            res = {}
+            for mod in sorted(sub['type'].apply(norm_tipo).unique()):
+                s = sub[sub['type'].apply(norm_tipo) == mod]
+                d = {'kj': s['_kj'].sum() if s['_kj'].notna().any() else 0,
+                     'km': s['_km'].sum() if '_km' in s and s['_km'].notna().any() else 0,
+                     'horas': s['_mt'].sum() if s['_mt'].notna().any() else 0}
+                if semana:
+                    d['sessoes']   = len(s)
+                    d['rpe_altas'] = int((s['_rpe'] >= 7).sum())                                      if '_rpe' in s.columns else 0
+                res[mod] = d
+            return res
+
+        sem_data = _vg_agg(_df_all, sem_ini, sem_fim, semana=True)
+        mes_p    = _vg_agg(_df_all, mes_p_ini, mes_p_fim)
+        mes_c    = _vg_agg(_df_all, mes_c_ini, hoje)
+
+        # ── Tabela semana anterior ─────────────────────────────────────────
+        st.subheader(f"📅 Semana anterior "
+                     f"({sem_ini.strftime('%d/%m')} → {sem_fim.strftime('%d/%m')})")
+        if sem_data:
+            rows_sem = []
+            for mod, d in sem_data.items():
+                rows_sem.append({
+                    'Modalidade':     mod,
+                    'Sessões':        d['sessoes'],
+                    'Horas':          f"{d['horas']:.1f}h",
+                    'KM':             f"{d['km']:.0f}" if d['km'] > 0 else '—',
+                    'KJ':             f"{d['kj']:.0f}" if d['kj'] > 0 else '—',
+                    'Sessões RPE≥7':  d['rpe_altas'],
+                })
+            st.dataframe(pd.DataFrame(rows_sem), width="stretch", hide_index=True)
+        else:
+            st.info(f"Sem actividades entre {sem_ini.strftime('%d/%m')} e {sem_fim.strftime('%d/%m')}.")
+
+        st.markdown("---")
+
+        # ── Gráfico barras horizontais KJ ────────────────────────────────
+        all_mods_m = sorted(set(list(mes_p.keys()) + list(mes_c.keys())))
+        if all_mods_m:
+            st.subheader(f"⚡ KJ por Modalidade — "
+                         f"{mes_p_ini.strftime('%b %Y')} vs {mes_c_ini.strftime('%b %Y')}")
+            kj_p = [mes_p.get(m,{}).get('kj',0) for m in all_mods_m]
+            kj_c = [mes_c.get(m,{}).get('kj',0) for m in all_mods_m]
+            fig_kj = go.Figure()
+            fig_kj.add_trace(go.Bar(
+                y=all_mods_m, x=kj_p, name=mes_p_ini.strftime('%b %Y'),
+                orientation='h', marker_color='#95a5a6',
+                text=[f"{v:.0f}" if v>0 else '' for v in kj_p],
+                textposition='outside',
+                hovertemplate='%{y}: <b>%{x:.0f} kJ</b><extra></extra>'))
+            fig_kj.add_trace(go.Bar(
+                y=all_mods_m, x=kj_c,
+                name=f"{mes_c_ini.strftime('%b %Y')} (corrente)",
+                orientation='h', marker_color='#2ecc71',
+                text=[f"{v:.0f}" if v>0 else '' for v in kj_c],
+                textposition='outside',
+                hovertemplate='%{y}: <b>%{x:.0f} kJ</b><extra></extra>'))
+            fig_kj.update_layout(
+                paper_bgcolor='white', plot_bgcolor='white',
+                barmode='group', height=max(200, len(all_mods_m)*60+80),
+                font=dict(color='#222222'),
+                margin=dict(l=60, r=80, t=30, b=20),
+                xaxis=dict(title='kJ', showgrid=True, gridcolor='#eeeeee',
+                           tickfont=dict(color='#333333')),
+                yaxis=dict(tickfont=dict(color='#333333')),
+                legend=dict(orientation='h', y=1.08,
+                            font=dict(color='#111111', size=11)))
+            st.plotly_chart(fig_kj, use_container_width=True)
+
+        # ── Tabela comparativa mensal ─────────────────────────────────────
+        if all_mods_m:
+            st.subheader("📊 Comparação Mensal por Modalidade")
+            st.caption(f"Mês passado: {mes_p_ini.strftime('%b %Y')} | "
+                       f"Corrente: {mes_c_ini.strftime('%b %Y')} (até hoje)")
+
+            def _fmt_diff(vc, vp, unid='', fmt='.0f'):
+                if vp == 0: return '(sem dados mês ant.)'
+                diff = vc - vp; pct = diff / vp * 100
+                s = '↗' if diff > 0 else ('↘' if diff < 0 else '→')
+                return f"{s} {diff:+{fmt}}{unid} ({pct:+.0f}%)"
+
+            rows_mes = []
+            for mod in all_mods_m:
+                dp = mes_p.get(mod, {})
+                rows_mes.append({
+                    'Mês':        mes_p_ini.strftime('%b %Y'),
+                    'Modalidade': mod,
+                    'KJ':         f"{dp.get('kj',0):.0f}"    if dp.get('kj',0)>0    else '—',
+                    'KM':         f"{dp.get('km',0):.0f}"    if dp.get('km',0)>0    else '—',
+                    'Horas':      f"{dp.get('horas',0):.1f}h" if dp.get('horas',0)>0 else '—',
+                    'Δ vs mês ant.': '—',
+                })
+            for mod in all_mods_m:
+                dc_ = mes_c.get(mod, {}); dp_ = mes_p.get(mod, {})
+                rows_mes.append({
+                    'Mês':        f"{mes_c_ini.strftime('%b %Y')} ▶",
+                    'Modalidade': mod,
+                    'KJ':         f"{dc_.get('kj',0):.0f}"    if dc_.get('kj',0)>0    else '—',
+                    'KM':         f"{dc_.get('km',0):.0f}"    if dc_.get('km',0)>0    else '—',
+                    'Horas':      f"{dc_.get('horas',0):.1f}h" if dc_.get('horas',0)>0 else '—',
+                    'Δ vs mês ant.': (
+                        f"KJ {_fmt_diff(dc_.get('kj',0),dp_.get('kj',0),'kJ')}  "
+                        f"KM {_fmt_diff(dc_.get('km',0),dp_.get('km',0),'km')}  "
+                        f"H {_fmt_diff(dc_.get('horas',0),dp_.get('horas',0),'h','.1f')}"
+                    ) if dp_ else '— (sem dados mês ant.)',
+                })
+            st.dataframe(pd.DataFrame(rows_mes), width="stretch", hide_index=True)
+
     st.markdown("---")
 
     # ── Performance Overview + pizza Sessões ──
