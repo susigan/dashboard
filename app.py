@@ -961,6 +961,45 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
     c4.metric("❤️ RHR",       f"{rhr_u:.0f} bpm" if rhr_u else "—")
     st.markdown("---")
 
+    # ── Semana ACTUAL (seg→hoje) ──────────────────────────────────────────
+    if da_full is not None and len(da_full) > 0:
+        _df_sw = da_full.copy()
+        _df_sw['Data'] = pd.to_datetime(_df_sw['Data'])
+        _df_sw = _df_sw[_df_sw['type'].apply(norm_tipo) != 'WeightTraining']
+        _df_sw = filtrar_principais(_df_sw)
+        if 'icu_joules' in _df_sw.columns:
+            _df_sw['_kj'] = pd.to_numeric(_df_sw['icu_joules'], errors='coerce') / 1000
+        elif 'power_avg' in _df_sw.columns:
+            _df_sw['_kj'] = (pd.to_numeric(_df_sw['power_avg'], errors='coerce') *
+                              pd.to_numeric(_df_sw['moving_time'], errors='coerce') / 1000)
+        else:
+            _df_sw['_kj'] = np.nan
+        _df_sw['_mt']  = pd.to_numeric(_df_sw['moving_time'], errors='coerce') / 3600
+        _df_sw['_rpe'] = pd.to_numeric(_df_sw['rpe'], errors='coerce')                          if 'rpe' in _df_sw.columns else np.nan
+
+        _hoje_sw  = pd.Timestamp.now().normalize()
+        _dow_sw   = _hoje_sw.weekday()
+        _sem_ini_sw = _hoje_sw - pd.Timedelta(days=_dow_sw)  # segunda desta semana
+        _df_sw_cur = _df_sw[_df_sw['Data'] >= _sem_ini_sw].copy()
+
+        if len(_df_sw_cur) > 0:
+            _df_sw_cur['_dia'] = _df_sw_cur['Data'].dt.strftime('%a %d/%m')
+            rows_sw = []
+            for _, r in _df_sw_cur.sort_values('Data').iterrows():
+                rows_sw.append({
+                    'Dia':        r['_dia'],
+                    'Modalidade': r['type'],
+                    'RPE':        f"{r['_rpe']:.0f}" if pd.notna(r['_rpe']) else '—',
+                    'KJ':         f"{r['_kj']:.0f}" if pd.notna(r['_kj']) and r['_kj']>0 else '—',
+                    'Horas':      f"{r['_mt']:.1f}h" if pd.notna(r['_mt']) else '—',
+                })
+            st.subheader("📅 Semana actual")
+            st.dataframe(pd.DataFrame(rows_sw), width="stretch", hide_index=True)
+        else:
+            st.subheader("📅 Semana actual")
+            st.info("Sem actividades desde segunda-feira.")
+        st.markdown("---")
+
     # ── HRV-Guided + Recovery Score + Peso/BF ────────────────────────────
     vg_r1, vg_r2, vg_r3, vg_r4, vg_r5 = st.columns(5)
 
@@ -1055,20 +1094,36 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
 
     # Controlos de prioridade — partilhados com a aba Análises via keys únicas
     _mods_vg = ['Bike', 'Row', 'Ski', 'Run']
+    # Defaults com session_state — lembra as últimas escolhas do utilizador
+    _def_preset = st.session_state.get("vg_prio_preset", "Balanceado (K=10)")
+    _def_p1     = st.session_state.get("vg_prio1", "Bike")
+    _def_p2     = st.session_state.get("vg_prio2", "Row")
+    _def_p3     = st.session_state.get("vg_prio3", "Ski")
+    _def_p4     = st.session_state.get("vg_prio4", "Run")
+    _presets    = ["Conservador (K=6)", "Balanceado (K=10)", "Agressivo (K=15)"]
+
     vg_c0, vg_c1, vg_c2, vg_c3, vg_c4 = st.columns([1, 1, 1, 1, 1])
     with vg_c0:
-        vg_preset = st.selectbox("Preset K",
-            ["Conservador (K=6)", "Balanceado (K=10)", "Agressivo (K=15)"],
-            index=1, key="vg_prio_preset")
+        vg_preset = st.selectbox("Preset K", _presets,
+            index=_presets.index(_def_preset) if _def_preset in _presets else 1,
+            key="vg_prio_preset")
         vg_K = {"Conservador (K=6)":6,"Balanceado (K=10)":10,"Agressivo (K=15)":15}[vg_preset]
     with vg_c1:
-        vg_p1 = st.selectbox("🥇 P1 Foco",       _mods_vg, index=0, key="vg_prio1")
+        vg_p1 = st.selectbox("🥇 P1 Foco", _mods_vg,
+            index=_mods_vg.index(_def_p1) if _def_p1 in _mods_vg else 0,
+            key="vg_prio1")
     with vg_c2:
-        vg_p2 = st.selectbox("🥈 P2 Foco",       _mods_vg, index=1, key="vg_prio2")
+        vg_p2 = st.selectbox("🥈 P2 Foco", _mods_vg,
+            index=_mods_vg.index(_def_p2) if _def_p2 in _mods_vg else 1,
+            key="vg_prio2")
     with vg_c3:
-        vg_p3 = st.selectbox("🥉 P3 Manutenção", _mods_vg, index=2, key="vg_prio3")
+        vg_p3 = st.selectbox("🥉 P3 Manutenção", _mods_vg,
+            index=_mods_vg.index(_def_p3) if _def_p3 in _mods_vg else 2,
+            key="vg_prio3")
     with vg_c4:
-        vg_p4 = st.selectbox("4️⃣  P4 Manutenção", _mods_vg, index=3, key="vg_prio4")
+        vg_p4 = st.selectbox("4️⃣  P4 Manutenção", _mods_vg,
+            index=_mods_vg.index(_def_p4) if _def_p4 in _mods_vg else 3,
+            key="vg_prio4")
 
     vg_prio_rank  = {vg_p1:1, vg_p2:2, vg_p3:3, vg_p4:4}
     vg_grupo_foco = {vg_p1, vg_p2}
@@ -1472,29 +1527,33 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             h_acum   = float(_ano_cur['_mt'].sum())
             km_acum  = float(_ano_cur['_km'].sum()) if has_km else 0.0
 
-            kj_esperado = kj_max * (dia_ano/365) if kj_max > 0 else 0
-            h_esperado  = h_max  * (dia_ano/365) if h_max  > 0 else 0
+            h_esperado  = h_max * (dia_ano/365) if h_max > 0 else 0
 
-            cap_atingido= ((kj_acum > kj_esperado * 1.05) if has_kj
-                           else (h_acum > h_esperado * 1.05))
-            if cap_atingido: fator = min(fator, 1.0)
-
-            # Projecção anual
-            kj_proj = kj_acum / dia_ano * 365 if has_kj and kj_acum > 0 else 0
+            # Cap por horas — range 3–12% vs ano anterior (volume total)
+            # KJ: sem cap — apenas informativo
             h_proj  = h_acum  / dia_ano * 365 if h_acum  > 0 else 0
+            kj_proj = kj_acum / dia_ano * 365 if has_kj and kj_acum > 0 else 0
 
-            # Status anual
-            ref_acum = kj_acum if has_kj else h_acum
-            ref_esp  = kj_esperado if has_kj else h_esperado
-            ref_max  = kj_max if has_kj else h_max
-            if ref_max == 0:
+            # Status horas: dentro do range 3–12%?
+            if h_2025 > 0 and h_proj > 0:
+                h_delta_pct = (h_proj - h_2025) / h_2025 * 100
+                if h_delta_pct < 0:
+                    status_ano = f"⚠️ Abaixo ({h_delta_pct:+.0f}% vs {ano_ant})"
+                elif h_delta_pct <= 3:
+                    status_ano = f"→ Manutenção ({h_delta_pct:+.0f}% vs {ano_ant})"
+                elif h_delta_pct <= 12:
+                    status_ano = f"✅ No range ({h_delta_pct:+.0f}% vs {ano_ant})"
+                else:
+                    status_ano = f"🔴 Acima range ({h_delta_pct:+.0f}% vs {ano_ant})"
+            elif h_2025 == 0:
                 status_ano = "— (sem 2025)"
-            elif ref_acum > ref_esp * 1.05:
-                status_ano = "🔴 Acima cap"
-            elif ref_acum >= ref_esp * 0.90:
-                status_ano = "✅ No ritmo"
             else:
-                status_ano = "⚠️ Abaixo"
+                status_ano = "— (sem proj.)"
+
+            # Bloqueia fator se horas acima de 12% pro-rated (com margem 5%)
+            cap_atingido = (h_2025 > 0 and
+                            h_acum > (h_max * (dia_ano/365)) * 1.05)
+            if cap_atingido: fator = min(fator, 1.0)
 
             # Semana actual (Seg → hoje)
             _sem_cur = _sub[_sub['Data'] >= sem_ini_pf]
@@ -1534,15 +1593,11 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                                   (f"✅ 0" if km_rest==0 and h_rest==0 else
                                    f"{km_rest:.0f} km | {h_rest:.1f}h" if has_km
                                    else f"{h_rest:.1f}h"),
-                'Projecção 2026':f"{kj_proj:.0f} kJ" if has_kj and kj_proj>0 else
-                                   (f"{h_proj:.0f}h" if h_proj>0 else "—"),
-                'Cap (+12%)':    (f"{kj_max:.0f} kJ"
-                                   + (" (base)" if has_kj and (kj_2025 < kj_base*4 or _n_sem_2025 < 12) else "")
-                                   ) if has_kj and kj_max>0 else
-                                   (f"{h_max:.0f}h"
-                                   + (" (base)" if h_2025 < h_base*4 or _n_sem_2025 < 12 else "")
-                                   if h_max>0 else "—"),
-                'Status 2026':   status_ano,
+                'Proj. Horas 2026': f"{h_proj:.0f}h" if h_proj>0 else "—",
+                'Range Horas (+3–12%)': (
+                    f"{h_2025:.0f}h → {h_2025*1.03:.0f}–{h_2025*1.12:.0f}h"
+                    if h_2025 > 0 else "—"),
+                'Status Horas':  status_ano,
                 'Sugestão sessão': sug,
             }
             rows_prog.append(row)
