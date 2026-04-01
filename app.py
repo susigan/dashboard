@@ -6030,7 +6030,7 @@ def tab_ctl_kj(da_full):
             except:
                 return ''
 
-        st.dataframe(df_coef.style.applymap(_color_coef, subset=['dTRIMP/dKJ']),
+        st.dataframe(df_coef.style.map(_color_coef, subset=['dTRIMP/dKJ']),
                      width='stretch', hide_index=True)
         st.caption("🟢 < 0.8 eficiente (Z2) | 🟡 0.8–1.4 normal | 🔴 > 1.4 caro (alta intensidade)")
 
