@@ -2202,7 +2202,7 @@ def tab_eftp(da, mods_sel, da_full=None):
         """Agrupa df_in por período (Ano / Mês / Semana) e devolve coluna label."""
         df_in = df_in.copy()
         if agrup == "Ano":
-            df_in['_periodo'] = df_in['Data'].dt.to_period('A')
+            df_in['_periodo'] = df_in['Data'].dt.to_period('Y')
             fmt = lambda p: str(p.year)
         elif agrup == "Semana":
             df_in['_periodo'] = df_in['Data'].dt.to_period('W')
@@ -2461,7 +2461,7 @@ def tab_eftp(da, mods_sel, da_full=None):
             if len(df_mod) < 10: continue
 
             all_results = []
-            for label, code in [("Semanal", "W"), ("Mensal", "M"), ("Anual", "A")]:
+            for label, code in [("Semanal", "W"), ("Mensal", "M"), ("Anual", "Y")]:
                 all_results.extend(_corr_periodo(df_mod, label, code))
 
             if not all_results:
