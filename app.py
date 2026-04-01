@@ -1400,61 +1400,60 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             else:
                 zona_pct, zona_nome, rpe_z = 0.95, "Z4-Z5 HIIT", 8
 
-            if mod == 'Bike' and eftp and kj_rest > 0:
-                watts  = eftp * zona_pct
-                t_min  = kj_rest * 1000 / (watts * 60)
+            # Emojis por modalidade
+            _emj = {'Bike':'🚴','Row':'🚣','Ski':'🎿','Run':'🏃'}
+            _em  = _emj.get(mod, '🏃')
 
-                # Cap: Z4+ → max 75min contínuos → dividir em intervalos
+            # Todas as modalidades com eFTP usam KJ → watts × tempo
+            if eftp and kj_rest > 0:
+                watts = eftp * zona_pct
+                t_min = kj_rest * 1000 / (watts * 60)
+
+                # Cap: Z4+ → max 45min contínuos → intervalos
                 if zona_pct >= 0.90 and t_min > 45:
-                    # Estrutura de intervalos
                     int_dur = 8 if zona_pct >= 0.95 else 10
                     n_int   = min(6, max(3, int(t_min / int_dur)))
-                    # Cap sessões: max 2 sessões se muito alto
                     n_sess  = 1 if t_min <= 90 else 2
                     if n_sess == 1:
-                        sugs.append(f"🚴 {n_int}×{int_dur}min @ {watts:.0f}W "
-                                    f"({zona_nome}, RPE {rpe_z}) — {kj_rest:.0f} kJ restante")
+                        sugs.append(f"{_em} {n_int}×{int_dur}min @ {watts:.0f}W "
+                                    f"({zona_nome}, RPE {rpe_z}) — {kj_rest:.0f} kJ")
                     else:
-                        kj_s   = kj_rest / n_sess
-                        t_s    = kj_s * 1000 / (watts * 60)
-                        n_i_s  = max(2, int(t_s / int_dur))
-                        sugs.append(f"🚴 2 sessões: {n_i_s}×{int_dur}min @ {watts:.0f}W "
+                        kj_s  = kj_rest / n_sess
+                        t_s   = kj_s * 1000 / (watts * 60)
+                        n_i_s = max(2, int(t_s / int_dur))
+                        sugs.append(f"{_em} 2 sessões: {n_i_s}×{int_dur}min @ {watts:.0f}W "
                                     f"({zona_nome}, RPE {rpe_z}) — {kj_rest:.0f} kJ total")
                 elif t_min > 0:
                     n_sess = 1 if t_min <= 90 else 2
                     if n_sess == 2:
-                        sugs.append(f"🚴 2 sessões × {t_min/2:.0f}min @ {watts:.0f}W "
+                        sugs.append(f"{_em} 2×{t_min/2:.0f}min @ {watts:.0f}W "
                                     f"({zona_nome}, RPE {rpe_z}) — {kj_rest:.0f} kJ total")
                     else:
-                        sugs.append(f"🚴 {t_min:.0f}min @ {watts:.0f}W "
+                        sugs.append(f"{_em} {t_min:.0f}min @ {watts:.0f}W "
                                     f"({zona_nome}, RPE {rpe_z}) — {kj_rest:.0f} kJ")
 
+            # Fallback sem eFTP: usar horas/km
             elif mod == 'Row' and h_rest > 0:
-                max_h_row = 1.0 if ol else 1.5   # overload → max 60min
-                n_sess    = max(1, int(np.ceil(h_rest / max_h_row)))
-                h_sess    = h_rest / n_sess
-                sugs.append(f"🚣 {n_sess}× {h_sess*60:.0f}min "
-                            f"({zona_nome}, RPE {rpe_z})")
+                max_h = 1.0 if ol else 1.5
+                n_sess = max(1, int(np.ceil(h_rest / max_h)))
+                sugs.append(f"🚣 {n_sess}× {h_rest/n_sess*60:.0f}min ({zona_nome}, RPE {rpe_z})")
 
             elif mod == 'Ski' and (h_rest > 0 or km_rest > 0):
                 if km_rest > 0:
                     n_sess = max(1, int(np.ceil(km_rest / 12)))
-                    sugs.append(f"🎿 {n_sess}× ~{km_rest/n_sess:.0f}km ({zona_nome}, RPE {rpe_z})")
+                    sugs.append(f"🎿 {n_sess}×~{km_rest/n_sess:.0f}km ({zona_nome}, RPE {rpe_z})")
                 else:
                     sugs.append(f"🎿 {h_rest*60:.0f}min ({zona_nome}, RPE {rpe_z})")
 
             elif mod == 'Run' and (h_rest > 0 or km_rest > 0):
-                # Cap por sessão baseado na intensidade
-                max_km_sess = 8  if ni >= 60 else 15   # intenso=8km, base=15km
-                max_h_sess  = 1.0 if ni >= 60 else 2.0  # intenso=60min, base=120min
+                max_km = 8 if ni >= 60 else 15
+                max_h  = 1.0 if ni >= 60 else 2.0
                 if km_rest > 0:
-                    n_sess = max(1, int(np.ceil(km_rest / max_km_sess)))
-                    sugs.append(f"🏃 {n_sess}× ~{km_rest/n_sess:.0f}km "
-                                f"({zona_nome}, RPE {rpe_z})")
+                    n_sess = max(1, int(np.ceil(km_rest / max_km)))
+                    sugs.append(f"🏃 {n_sess}×~{km_rest/n_sess:.0f}km ({zona_nome}, RPE {rpe_z})")
                 else:
-                    n_sess = max(1, int(np.ceil(h_rest / max_h_sess)))
-                    sugs.append(f"🏃 {n_sess}× {h_rest/n_sess*60:.0f}min "
-                                f"({zona_nome}, RPE {rpe_z})")
+                    n_sess = max(1, int(np.ceil(h_rest / max_h)))
+                    sugs.append(f"🏃 {n_sess}×{h_rest/n_sess*60:.0f}min ({zona_nome}, RPE {rpe_z})")
 
             return sugs[0] if sugs else "—"
 
@@ -1604,6 +1603,147 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
 
         if rows_prog:
             df_prog = pd.DataFrame(rows_prog)
+
+            # ── Deload / Taper detector ───────────────────────────────────
+            # baseline = mediana últimas 3 semanas com dados (KJ ou Horas)
+            _sem_ini_det  = hoje_pf - pd.Timedelta(weeks=1)
+            _sem3_ini_det = hoje_pf - pd.Timedelta(weeks=4)
+            _kj_total_cur = 0.0
+            _kj_total_b3  = []
+            for _m3 in ['Bike','Row','Ski','Run']:
+                _s3 = _pf[_pf['type'].apply(norm_tipo)==_m3].copy()
+                if len(_s3) == 0: continue
+                _s3['_ksem'] = _s3['Data'].dt.to_period('W')
+                _agg3 = _s3.groupby('_ksem')['_kj'].sum()
+                # Últimas 3 semanas completas (antes da actual)
+                _prev3 = _agg3[_agg3.index < _s3['Data'].max().to_period('W')].tail(3)
+                _kj_total_b3.extend(_prev3.values)
+                # Semana actual desta modalidade
+                _kj_total_cur += float(_s3[_s3['Data'] >= sem_ini_pf]['_kj'].sum())
+
+            _kj_b3_mean = float(np.mean(_kj_total_b3)) if _kj_total_b3 else 0.0
+            _load_ratio  = (_kj_total_cur / _kj_b3_mean) if _kj_b3_mean > 0 else 1.0
+
+            # Limiares
+            _kj_normal_min = _kj_b3_mean * 0.80
+            _kj_deload_min = _kj_b3_mean * 0.60
+            _kj_taper_min  = _kj_b3_mean * 0.30
+            _kj_taper_max  = _kj_b3_mean * 0.60
+            _kj_deload_max = _kj_b3_mean * 0.80
+
+            if _kj_b3_mean > 0:
+                st.markdown("**📊 Estado de carga — semana actual**")
+                _c_det1, _c_det2, _c_det3 = st.columns(3)
+                with _c_det1:
+                    st.metric("Carga actual (semana)", f"{_kj_total_cur:.0f} kJ",
+                              f"{(_load_ratio-1)*100:+.0f}% vs baseline")
+                with _c_det2:
+                    st.metric("Baseline (média 3 sem)", f"{_kj_b3_mean:.0f} kJ")
+                with _c_det3:
+                    if _load_ratio >= 0.80:
+                        _fase = "✅ Normal"
+                    elif _load_ratio >= 0.60:
+                        _fase = "📉 Deload"
+                    elif _load_ratio >= 0.30:
+                        _fase = "🔵 Taper"
+                    else:
+                        _fase = "⚠️ Muito baixo"
+                    st.metric("Fase detectada", _fase, f"ratio={_load_ratio:.2f}")
+
+                # Ranges informativos
+                st.caption(
+                    f"**Ranges de referência** (baseline = {_kj_b3_mean:.0f} kJ/sem) — "
+                    f"Normal: >{_kj_normal_min:.0f} kJ | "
+                    f"Deload: {_kj_deload_min:.0f}–{_kj_deload_max:.0f} kJ "
+                    f"(60–80% = redução 20–40%) | "
+                    f"Taper: {_kj_taper_min:.0f}–{_kj_taper_max:.0f} kJ "
+                    f"(30–60% = redução 40–70%)")
+
+                if _load_ratio < 0.80:
+                    if _load_ratio >= 0.60:
+                        st.info("📉 **Deload detectado** — volume 20–40% abaixo do baseline. "
+                                "Manter intensidade. Duração típica: 3–7 dias.")
+                    elif _load_ratio >= 0.30:
+                        st.info("🔵 **Taper detectado** — volume 40–70% abaixo do baseline. "
+                                "Manter ou aumentar intensidade. Duração típica: 7–14 dias.")
+                    else:
+                        st.warning("⚠️ Carga muito baixa (>70% de redução). "
+                                   "Confirma se é intencional.")
+
+            st.markdown("---")
+
+            # ── ΔCTL estimado esta semana ─────────────────────────────────
+            # Coeficientes dTRIMP/dKJ do histórico real (v3)
+            _COEF = {
+                'Bike': {'base': 0.2797/42, 'tempo': 0.5725/42, 'intervalado': 0.9732/42, 'todos': 0.3987/42},
+                'Row':  {'base': 0.2475/42, 'tempo': 0.4177/42, 'intervalado': 0.6625/42, 'todos': 0.3080/42},
+                'Ski':  {'base': 0.3802/42, 'tempo': 0.5395/42, 'intervalado': 0.7046/42, 'todos': 0.4641/42},
+                'Run':  {'todos': 0.3000/42},  # estimativa conservadora
+            }
+
+            # CTL actual (EMA 42d sobre TRIMP histórico)
+            _pf2 = _pf.copy()
+            _pf2['_load_trimp'] = _pf2['_mt'] * 60 * pd.to_numeric(
+                _pf2['rpe'] if 'rpe' in _pf2.columns else 5, errors='coerce').fillna(5)
+            _dates_ctl = pd.date_range(_pf2['Data'].min(), hoje_pf, freq='D')
+            _load_ctl  = _pf2.groupby('Data')['_load_trimp'].sum().reindex(_dates_ctl, fill_value=0)
+            _ctl_hoje  = float(_load_ctl.ewm(span=42, adjust=False).mean().iloc[-1])
+            _atl_hoje  = float(_load_ctl.ewm(span=7,  adjust=False).mean().iloc[-1])
+            _tsb_hoje  = _ctl_hoje - _atl_hoje
+
+            # ΔCTL por modalidade baseado em KJ_restante × coeficiente por tipo
+            _delta_ctl_total = 0.0
+            _delta_rows = []
+            for r_p in rows_prog:
+                _mod_p = r_p['Modalidade']
+                # Extrair KJ restante
+                _rest_str = str(r_p.get('Restante','0'))
+                try:
+                    _kj_rest_p = float(_rest_str.replace('kJ','').replace('✅ 0','0').strip())
+                except: _kj_rest_p = 0.0
+
+                # Tipo de sessão baseado em Need_intensity
+                _ni_p = _ni_cache.get(_mod_p, 50)
+                _tipo_p = ('intervalado' if _ni_p >= 60 else
+                           'tempo'       if _ni_p >= 30 else 'base')
+                _coef_p = _COEF.get(_mod_p, {}).get(_tipo_p,
+                          _COEF.get(_mod_p, {}).get('todos', 0.008))
+
+                _delta_p = _coef_p * _kj_rest_p
+                _delta_ctl_total += _delta_p
+                _delta_rows.append({
+                    'Modalidade': _mod_p,
+                    'KJ restante': f"{_kj_rest_p:.0f} kJ",
+                    'Tipo sessão': _tipo_p,
+                    'dCTL/dKJ': f"{_coef_p:.5f}",
+                    'ΔCTL est.': f"{_delta_p:+.2f}",
+                })
+
+            # CTL e TSB projectados
+            _ctl_proj = _ctl_hoje + _delta_ctl_total
+            _tsb_proj = _tsb_hoje - _delta_ctl_total  # ATL sobe mais que CTL no curto prazo
+
+            # Indicador +1 a +5 CTL
+            _ctl_alvo_min = _ctl_hoje + 1
+            _ctl_alvo_max = _ctl_hoje + 5
+            _dentro_range = _ctl_alvo_min <= _ctl_proj <= _ctl_alvo_max
+
+            st.markdown("**⚡ Impacto CTL estimado — semana actual**")
+            _cc1, _cc2, _cc3, _cc4 = st.columns(4)
+            with _cc1: st.metric("CTL actual",     f"{_ctl_hoje:.1f}")
+            with _cc2: st.metric("ΔCTL estimado",  f"{_delta_ctl_total:+.2f}",
+                                 "✅ no range 1–5" if _dentro_range else
+                                 ("⚠️ abaixo de 1" if _delta_ctl_total < 1 else "⚠️ acima de 5"))
+            with _cc3: st.metric("CTL projectado", f"{_ctl_proj:.1f}")
+            with _cc4: st.metric("TSB projectado", f"{_tsb_proj:.1f}")
+
+            if _delta_rows:
+                with st.expander("🔍 Detalhe ΔCTL por modalidade"):
+                    st.dataframe(pd.DataFrame(_delta_rows), width="stretch", hide_index=True)
+                    st.caption("Coeficientes baseados no histórico real (Tab ⚗️ CTL vs KJ v3). "
+                               "Run: estimativa conservadora (N insuficiente).")
+
+            st.markdown("---")
             st.dataframe(df_prog.drop(columns=['Sugestão sessão']),
                          width="stretch", hide_index=True)
             st.markdown("**💡 Sugestões de sessão (semana actual)**")
@@ -1611,10 +1751,8 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 if r['Sugestão sessão'] != '—':
                     st.caption(f"**{r['Modalidade']}:** {r['Sugestão sessão']}")
             st.caption(
-                "⚠️ Esta camada controla apenas a QUANTIDADE de carga. "
-                "O tipo de treino (intensidade/volume) é definido pelo Need Score acima. "
-                "Fator ≤ 1.0 quando overload. Cap pro-rated +12% vs " +
-                str(ano_ant) + " (margem 5%).")
+                "⚠️ Quantidade de carga: esta camada. Tipo de treino: Need Score acima. "
+                "Cap horas +12% vs " + str(ano_ant) + ".")
 
     st.markdown("---")
 
