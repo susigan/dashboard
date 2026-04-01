@@ -6125,7 +6125,7 @@ def tab_ctl_kj(da_full):
                 rec = eff_sem.tail(8)
                 if len(rec) >= 4:
                     x_t = np.arange(len(rec))
-                    sl_t,_,r_t,_,_ = _scipy_stats.linregress(x_t, rec['eff_roll4'].fillna(method='ffill'))
+                    sl_t,_,r_t,_,_ = _scipy_stats.linregress(x_t, rec['eff_roll4'].ffill())
                     tend = ('↑ fadiga' if sl_t > 0.005 else
                             '↓ adaptação' if sl_t < -0.005 else '→ estável')
                 else:
