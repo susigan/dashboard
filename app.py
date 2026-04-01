@@ -5879,6 +5879,253 @@ def tab_padrao(da_full, dw_full):
     else:
         st.info("Sem dados de HRV/RHR.")
 
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 13 — CTL vs KJ  (análise dTRIMP/dKJ)
+# ════════════════════════════════════════════════════════════════════════════
+
+def tab_ctl_kj(da_full):
+    st.header("⚗️ CTL vs KJ — Coeficiente de Carga")
+    st.caption(
+        "Quantifica a relação entre trabalho externo (KJ) e carga interna (TRIMP→CTL). "
+        "Permite ligar progressão de KJ ao impacto em CTL por modalidade e intensidade.")
+
+    if da_full is None or len(da_full) == 0:
+        st.warning("Sem dados de actividades.")
+        return
+
+    # ── Preparar dados ────────────────────────────────────────────────────────
+    df = filtrar_principais(da_full).copy()
+    df['Data'] = pd.to_datetime(df['Data'])
+
+    # Campos numéricos
+    for c in ['moving_time','icu_joules','power_avg','rpe','icu_eftp']:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors='coerce')
+
+    # KJ
+    if 'icu_joules' in df.columns and df['icu_joules'].notna().any():
+        df['KJ'] = df['icu_joules'] / 1000
+    elif 'power_avg' in df.columns:
+        df['KJ'] = (df['power_avg'] * df['moving_time'] / 1000)
+    else:
+        df['KJ'] = np.nan
+
+    df['dur_min'] = pd.to_numeric(df['moving_time'], errors='coerce') / 60
+    df['rpe_n']   = pd.to_numeric(df['rpe'],         errors='coerce')
+
+    # IF: calcular se não existir
+    if_cols = [c for c in df.columns if c.lower() in ('if','icu_if','intensity_factor')]
+    if if_cols:
+        df['IF'] = pd.to_numeric(df[if_cols[0]], errors='coerce')
+    elif 'power_avg' in df.columns and 'icu_eftp' in df.columns:
+        df['IF'] = (pd.to_numeric(df['power_avg'], errors='coerce') /
+                    pd.to_numeric(df['icu_eftp'], errors='coerce').replace(0, np.nan))
+        df['IF'] = df['IF'].clip(0.3, 1.8)
+    else:
+        df['IF'] = np.nan
+
+    # ── Filtros de qualidade ─────────────────────────────────────────────────
+    n_raw = len(df)
+    df = df[df['dur_min'] >= 10]
+    df = df[df['rpe_n'].between(1, 10)]
+    df = df[df['KJ'] > 0]
+    if df['IF'].notna().any():
+        df = df[df['IF'].between(0.5, 1.5) | df['IF'].isna()]
+
+    # Outliers top 1%
+    for col in ['KJ']:
+        if col in df.columns:
+            q99 = df[col].quantile(0.99)
+            df  = df[df[col] <= q99]
+
+    st.info(f"Sessões analisadas: **{len(df)}** (de {n_raw} totais após filtros de qualidade)")
+
+    if len(df) < 20:
+        st.warning("Dados insuficientes para análise.")
+        return
+
+    # ── TRIMP corrigido ───────────────────────────────────────────────────────
+    df['TRIMP_raw']  = df['dur_min'] * df['rpe_n']
+    if df['IF'].notna().sum() > len(df) * 0.3:
+        df['TRIMP_IF1'] = df['dur_min'] * df['rpe_n'] * df['IF']
+        df['TRIMP_IF2'] = df['dur_min'] * df['rpe_n'] * df['IF'] ** 2
+        has_if = True
+    else:
+        df['TRIMP_IF1'] = df['TRIMP_raw']
+        df['TRIMP_IF2'] = df['TRIMP_raw']
+        has_if = False
+        st.warning("⚠️ IF não disponível para a maioria das sessões — usando TRIMP = dur×RPE")
+
+    # IF_cat
+    if has_if:
+        df['IF_cat'] = pd.cut(df['IF'], bins=[0,0.75,0.85,2.0],
+                               labels=['Z2_base','Threshold','VO2max'])
+    else:
+        df['IF_cat'] = pd.cut(df['rpe_n'], bins=[0,4,6,10],
+                               labels=['leve','moderado','intenso'])
+
+    # ── CTL/ATL real ──────────────────────────────────────────────────────────
+    all_dates = pd.date_range(df['Data'].min(), pd.Timestamp.now().normalize(), freq='D')
+
+    load_d = df.groupby('Data')['TRIMP_IF1'].sum().reindex(all_dates, fill_value=0)
+    ctl_s  = load_d.ewm(span=42, adjust=False).mean()
+    atl_s  = load_d.ewm(span=7,  adjust=False).mean()
+
+    # ATL/CTL ratio (contexto fadiga) — shift D-1
+    ratio_s = (atl_s / ctl_s.replace(0, np.nan)).shift(1)
+    df_ctx  = pd.DataFrame({'Data': all_dates, 'ATL_CTL_d1': ratio_s.values})
+    df      = df.merge(df_ctx, on='Data', how='left')
+
+    # ── Regressão por modalidade × IF_cat ────────────────────────────────────
+    st.subheader("📊 dTRIMP/dKJ por Modalidade × Intensidade")
+    st.caption(
+        "Coeficiente = quanto TRIMP (carga interna) por cada kJ (trabalho externo). "
+        "Alto = sessão cara fisiologicamente. Baixo = sessão eficiente.")
+
+    from scipy import stats as scipy_stats
+
+    rows_coef = []
+    for mod in sorted(df['type'].unique()):
+        dm = df[df['type']==mod].dropna(subset=['KJ','TRIMP_IF1'])
+        if len(dm) < 8: continue
+
+        for seg_label in ['Todos'] + list(dm['IF_cat'].dropna().unique()):
+            if seg_label == 'Todos':
+                ds = dm.copy()
+            else:
+                ds = dm[dm['IF_cat']==seg_label].copy()
+            if len(ds) < 5: continue
+
+            x = ds['KJ'].values
+            y = ds['TRIMP_IF1'].values
+
+            # Regressão linear simples OLS
+            slope, intercept, r, p, se = scipy_stats.linregress(x, y)
+            r2   = r ** 2
+            rmse = float(np.sqrt(np.mean((y - (intercept + slope*x))**2)))
+            bias = float(np.mean((intercept + slope*x) - y))
+
+            rows_coef.append({
+                'Modalidade':  mod,
+                'Segmento':    str(seg_label),
+                'N':           len(ds),
+                'dTRIMP/dKJ':  round(slope, 4),
+                'R²':          round(r2, 3),
+                'RMSE':        round(rmse, 1),
+                'Bias':        round(bias, 2),
+                'KJ médio':    round(ds['KJ'].mean(), 0),
+                'TRIMP médio': round(ds['TRIMP_IF1'].mean(), 1),
+            })
+
+    if rows_coef:
+        df_coef = pd.DataFrame(rows_coef)
+
+        # Highlight: cor por dTRIMP/dKJ
+        def _color_coef(val):
+            try:
+                v = float(val)
+                if v < 0.8:   return 'background-color:#d5f5e3'  # verde — eficiente
+                elif v < 1.4: return 'background-color:#fef9e7'  # amarelo — normal
+                else:         return 'background-color:#fdecea'  # vermelho — caro
+            except:
+                return ''
+
+        st.dataframe(df_coef.style.applymap(_color_coef, subset=['dTRIMP/dKJ']),
+                     width='stretch', hide_index=True)
+        st.caption("🟢 < 0.8 eficiente (Z2) | 🟡 0.8–1.4 normal | 🔴 > 1.4 caro (alta intensidade)")
+
+        csv_coef = df_coef.to_csv(index=False).encode('utf-8')
+        st.download_button("⬇️ Download coeficientes CSV",
+                           csv_coef, "dtrimp_dkj.csv", "text/csv",
+                           key="dl_coef")
+    else:
+        st.info("Dados insuficientes para calcular coeficientes.")
+        return
+
+    st.markdown("---")
+
+    # ── CTL predito vs real ───────────────────────────────────────────────────
+    st.subheader("📈 CTL predito vs real (modelo vs datos)")
+
+    rows_met = []
+    for mod in sorted(df['type'].unique()):
+        dm = df[df['type']==mod].dropna(subset=['KJ','TRIMP_IF1'])
+        if len(dm) < 10: continue
+
+        # Coeficientes do segmento "Todos"
+        row_c = df_coef[(df_coef['Modalidade']==mod) & (df_coef['Segmento']=='Todos')]
+        if len(row_c) == 0: continue
+        slope_m = row_c.iloc[0]['dTRIMP/dKJ']
+
+        dm = dm.copy()
+        dm['TRIMP_pred'] = (slope_m * dm['KJ']).clip(lower=0)
+
+        pred_d = dm.groupby('Data')['TRIMP_pred'].sum().reindex(all_dates, fill_value=0)
+        real_d = dm.groupby('Data')['TRIMP_IF1'].sum().reindex(all_dates, fill_value=0)
+
+        ctl_pred = pred_d.ewm(span=42, adjust=False).mean()
+        ctl_real = real_d.ewm(span=42, adjust=False).mean()
+
+        diff  = ctl_pred - ctl_real
+        valid = ctl_real > 0
+        rows_met.append({
+            'Modalidade':      mod,
+            'CTL real (actual)':  round(float(ctl_real.iloc[-1]), 1),
+            'CTL pred (actual)':  round(float(ctl_pred.iloc[-1]), 1),
+            'MAE':             round(float(diff[valid].abs().mean()), 2),
+            'RMSE':            round(float(np.sqrt((diff[valid]**2).mean())), 2),
+            'Bias':            round(float(diff[valid].mean()), 3),
+            'Err% médio':      round(float((diff[valid].abs()/ctl_real[valid]*100).mean()), 1),
+        })
+
+    if rows_met:
+        st.dataframe(pd.DataFrame(rows_met), width='stretch', hide_index=True)
+        st.caption(
+            "Bias positivo = modelo sobreestima CTL. "
+            "RMSE < 10 = bom ajuste para CTL típico de 300–500.")
+
+    st.markdown("---")
+
+    # ── Série temporal CTL ────────────────────────────────────────────────────
+    st.subheader("📉 Série CTL (raw vs IF corrigido)")
+
+    load_raw_d = df.groupby('Data')['TRIMP_raw'].sum().reindex(all_dates, fill_value=0)
+    ctl_raw_s  = load_raw_d.ewm(span=42, adjust=False).mean()
+    ctl_if1_s  = load_d.ewm(span=42, adjust=False).mean()
+
+    df_ts = pd.DataFrame({
+        'Data':    all_dates,
+        'CTL_raw': ctl_raw_s.values.round(2),
+        'CTL_IF1': ctl_if1_s.values.round(2),
+        'ATL':     atl_s.values.round(2),
+        'TSB':     (ctl_if1_s - atl_s).values.round(2),
+    })
+
+    fig_ctl = go.Figure()
+    fig_ctl.add_trace(go.Scatter(
+        x=df_ts['Data'], y=df_ts['CTL_raw'],
+        name='CTL raw (dur×RPE)', line=dict(color='#95a5a6', dash='dot')))
+    fig_ctl.add_trace(go.Scatter(
+        x=df_ts['Data'], y=df_ts['CTL_IF1'],
+        name='CTL IF¹ (dur×RPE×IF)', line=dict(color='#2980b9', width=2)))
+    fig_ctl.add_trace(go.Scatter(
+        x=df_ts['Data'], y=df_ts['ATL'],
+        name='ATL', line=dict(color='#e74c3c', width=1.5)))
+    fig_ctl.update_layout(
+        paper_bgcolor='white', plot_bgcolor='white',
+        height=350, legend=dict(orientation='h', y=-0.2),
+        xaxis=dict(showgrid=True, gridcolor='#eee'),
+        yaxis=dict(title='Carga', showgrid=True, gridcolor='#eee'),
+        title=dict(text='CTL — raw vs corrigido por IF', font=dict(size=13)))
+    st.plotly_chart(fig_ctl, use_container_width=True)
+
+    # Download série temporal
+    csv_ts = df_ts.to_csv(index=False).encode('utf-8')
+    st.download_button("⬇️ Download série CTL CSV",
+                       csv_ts, "series_ctl.csv", "text/csv",
+                       key="dl_ts")
+
+
 def main():
     days_back, di, df_, mods_sel = render_sidebar()
 
@@ -5940,7 +6187,7 @@ def main():
                 st.dataframe(wr2[cw].sort_values('Data', ascending=False).head(5), hide_index=True)
 
     # ── Tabs ─────────────────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = st.tabs([
         "📊 Visão Geral",
         "📈 PMC",
         "📦 Volume",
@@ -5953,6 +6200,7 @@ def main():
         "🌡️ Aquecimento",
         "🧬 Corporal",
         "🔄 Padrão",
+        "⚗️ CTL vs KJ",
     ])
 
     with tab1:  tab_visao_geral(dw, da_filt, di, df_, da_full=ac_full, wc_full=wc, dc=dc)
@@ -5967,6 +6215,7 @@ def main():
     with tab10: tab_aquecimento(dfs_annual, df_annual, di)
     with tab11: tab_corporal(dc, ac_full)
     with tab12: tab_padrao(ac_full, wc)
+    with tab13: tab_ctl_kj(ac_full)
 
 if __name__ == "__main__":
     main()
