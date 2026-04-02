@@ -1350,6 +1350,8 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             _pf['_kj'] = np.nan
         _pf['_km']  = pd.to_numeric(_pf['distance'], errors='coerce') / 1000                       if 'distance' in _pf.columns else np.nan
         _pf['_mt']  = pd.to_numeric(_pf['moving_time'], errors='coerce') / 3600
+        _pf['_rpe_n']   = pd.to_numeric(_pf['rpe'], errors='coerce') if 'rpe' in _pf.columns else np.nan
+        _pf['_dur_min'] = _pf['_mt'] * 60
 
         hoje_pf   = pd.Timestamp.now().normalize()
         ano_atual = hoje_pf.year
@@ -1393,84 +1395,87 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             vals = agg[col][agg[col] > 0]
             return float(vals.median()) if len(vals) > 0 else 0.0
 
-        def _sugestao_sessao(kj_rest, h_rest, km_rest, mod, eftp, ni, ol):
-            """
-            Gera sugestão de sessão com:
-            - Zona baseada em Need_intensity
-            - Cap de 75min por sessão em Z4+ (dividir em intervalos)
-            - Dividir em múltiplas sessões se KJ_restante > 150% da sessão típica
-            - RPE equivalente à zona
-            """
+        def _sugestao_sessao(kj_rest, h_rest, km_rest, mod, eftp, ni, ol, df_hist=None):
+            """Sugestão baseada em historico real. Usa Z3KJ+ZPwr para melhoria de densidade."""
             sugs = []
+            _emj = {'Bike': '🚴', 'Row': '🚣', 'Ski': '🎿', 'Run': '🏃'}
+            _em = _emj.get(mod, '🏋')
 
-            # Zona e RPE — modelo 3 zonas (alinhado com Z1KJ/Z2KJ/Z3KJ)
-            # Z1 (<~75% FTP): base/recuperação
-            # Z2 (~75–90% FTP): threshold/tempo
-            # Z3 (>~90% FTP): alta intensidade/intervalos
-            # rpe_z calibrado com % FTP (Coggan/Allen)
             if ol:
-                zona_pct, zona_nome, rpe_z = 0.60, "Z1 recuperação", 3
-            elif ni < 30:
-                zona_pct, zona_nome, rpe_z = 0.68, "Z1 base",        5
+                tipo, zona_pct, rpe_z = 'Longo Leve', 0.60, 3
+            elif ni < 20:
+                tipo, zona_pct, rpe_z = 'Longo Leve', 0.68, 4
+            elif ni < 40:
+                tipo, zona_pct, rpe_z = 'Sweet Spot', 0.83, 6
             elif ni < 60:
-                zona_pct, zona_nome, rpe_z = 0.83, "Z2 threshold",   7
+                tipo, zona_pct, rpe_z = 'Threshold', 0.88, 7
+            elif ni < 75:
+                tipo, zona_pct, rpe_z = 'VO2max', 0.95, 9
+            elif ni < 90:
+                tipo, zona_pct, rpe_z = 'Anaer. Cap', 1.05, 9
             else:
-                zona_pct, zona_nome, rpe_z = 0.95, "Z3 HIIT",        9
+                tipo, zona_pct, rpe_z = 'Anaerobio', 1.15, 10
 
-            # Emojis por modalidade
-            _emj = {'Bike':'🚴','Row':'🚣','Ski':'🎿','Run':'🏃'}
-            _em  = _emj.get(mod, '🏃')
+            _estrutura = {
+                'Anaerobio':   '8-12x15s @ {w}W rest 90s',
+                'Anaer. Cap':  '6-8x60s @ {w}W rest 3min',
+                'VO2max':      '5x4min @ {w}W rest 4min (ou 15x30s/30s)',
+                'Threshold':   '3x10min @ {w}W rest 5min',
+                'Sweet Spot':  '{t}min continuo @ {w}W',
+                'Longo Leve':  '{t}min continuo @ {w}W',
+            }
 
-            # Todas as modalidades com eFTP usam KJ → watts × tempo
-            if eftp and kj_rest > 0:
-                watts = eftp * zona_pct
-                t_min = kj_rest * 1000 / (watts * 60)
+            _ref_kj = _ref_z3kj = _ref_z3pwr = _ref_dur = None
+            _rpe_seg = (7, 10) if ni >= 60 else ((5, 6) if ni >= 30 else (1, 4))
 
-                # Cap: Z4+ → max 45min contínuos → intervalos
-                if zona_pct >= 0.90 and t_min > 45:
-                    int_dur = 8 if zona_pct >= 0.95 else 10
-                    n_int   = min(6, max(3, int(t_min / int_dur)))
-                    n_sess  = 1 if t_min <= 90 else 2
-                    if n_sess == 1:
-                        sugs.append(f"{_em} {n_int}×{int_dur}min @ {watts:.0f}W "
-                                    f"({zona_nome}, RPE {rpe_z}) — {kj_rest:.0f} kJ")
-                    else:
-                        kj_s  = kj_rest / n_sess
-                        t_s   = kj_s * 1000 / (watts * 60)
-                        n_i_s = max(2, int(t_s / int_dur))
-                        sugs.append(f"{_em} 2 sessões: {n_i_s}×{int_dur}min @ {watts:.0f}W "
-                                    f"({zona_nome}, RPE {rpe_z}) — {kj_rest:.0f} kJ total")
-                elif t_min > 0:
-                    n_sess = 1 if t_min <= 90 else 2
-                    if n_sess == 2:
-                        sugs.append(f"{_em} 2×{t_min/2:.0f}min @ {watts:.0f}W "
-                                    f"({zona_nome}, RPE {rpe_z}) — {kj_rest:.0f} kJ total")
-                    else:
-                        sugs.append(f"{_em} {t_min:.0f}min @ {watts:.0f}W "
-                                    f"({zona_nome}, RPE {rpe_z}) — {kj_rest:.0f} kJ")
+            if df_hist is not None and len(df_hist) >= 2:
+                _dh = df_hist[
+                    (df_hist["type"].apply(norm_tipo) == mod) &
+                    (df_hist["_rpe_n"].between(_rpe_seg[0], _rpe_seg[1]))
+                ].tail(3)
+                if len(_dh) >= 2:
+                    _ref_kj = float(_dh["_kj"].median())
+                    _ref_dur = float(_dh["_dur_min"].median())
+                    if "z3_kj" in _dh.columns:
+                        _z3 = pd.to_numeric(_dh["z3_kj"], errors="coerce").replace(0, np.nan)
+                        _ref_z3kj = float(_z3.median()) if _z3.notna().any() else None
+                    if "z3_pwr" in _dh.columns:
+                        _zp = pd.to_numeric(_dh["z3_pwr"], errors="coerce").replace(0, np.nan)
+                        _ref_z3pwr = float(_zp.median()) if _zp.notna().any() else None
 
-            # Fallback sem eFTP: usar horas/km
-            elif mod == 'Row' and h_rest > 0:
-                max_h = 1.0 if ol else 1.5
-                n_sess = max(1, int(np.ceil(h_rest / max_h)))
-                sugs.append(f"🚣 {n_sess}× {h_rest/n_sess*60:.0f}min ({zona_nome}, RPE {rpe_z})")
+            watts_ftp = (eftp * zona_pct) if eftp else None
 
-            elif mod == 'Ski' and (h_rest > 0 or km_rest > 0):
+            if _ref_z3kj and _ref_z3pwr and ni >= 40:
+                kj_target = kj_rest if kj_rest > 0 else (_ref_kj or _ref_z3kj * 2)
+                t_z3_novo = kj_target * 1000 / (_ref_z3pwr * 60)
+                delta_kj = (t_z3_novo - _ref_z3kj * 1000 / (_ref_z3pwr * 60)) * _ref_z3pwr * 60 / 1000
+                pwr_B = _ref_z3pwr * 1.02
+                est = _estrutura.get(tipo, "").format(w=f"{_ref_z3pwr:.0f}", t=f"{t_z3_novo:.0f}")
+                msg = (f"{_em} **{tipo}** ref: {_ref_z3kj:.0f} kJ Z3 @ {_ref_z3pwr:.0f}W RPE {rpe_z} | "
+                       f"A) {est} -> ~{_ref_z3kj + delta_kj:.0f} kJ Z3 ({delta_kj:+.0f} kJ) | "
+                       f"B) {pwr_B:.0f}W (+2%) -> ~{_ref_z3kj * 1.02:.0f} kJ Z3 | "
+                       f"KJ total est. ~{(_ref_kj or 0) + max(delta_kj, 0):.0f} kJ")
+                sugs.append(msg)
+
+            elif _ref_kj and _ref_dur and ni < 40:
+                kj_target = kj_rest if kj_rest > 0 else _ref_kj * 1.03
+                w = watts_ftp or ((_ref_kj * 1000 / (_ref_dur * 60)) if _ref_dur else 0)
+                t_min = (kj_target * 1000 / (w * 60)) if w > 0 else _ref_dur
+                est = _estrutura.get(tipo, "").format(w=f"{w:.0f}", t=f"{t_min:.0f}")
+                sugs.append(f"{_em} **{tipo}** {est} -> ~{kj_target:.0f} kJ RPE {rpe_z} "
+                            f"(ref: {_ref_kj:.0f} kJ em {_ref_dur:.0f}min)")
+
+            elif watts_ftp and kj_rest > 0:
+                t_min = kj_rest * 1000 / (watts_ftp * 60)
+                est = _estrutura.get(tipo, "").format(w=f"{watts_ftp:.0f}", t=f"{t_min:.0f}")
+                sugs.append(f"{_em} **{tipo}** {est} -> {kj_rest:.0f} kJ RPE {rpe_z} "
+                            f"(sem historico — estimativa por FTP)")
+
+            elif h_rest > 0 or km_rest > 0:
                 if km_rest > 0:
-                    n_sess = max(1, int(np.ceil(km_rest / 12)))
-                    sugs.append(f"🎿 {n_sess}×~{km_rest/n_sess:.0f}km ({zona_nome}, RPE {rpe_z})")
+                    sugs.append(f"{_em} **{tipo}** {km_rest:.0f} km RPE {rpe_z}")
                 else:
-                    sugs.append(f"🎿 {h_rest*60:.0f}min ({zona_nome}, RPE {rpe_z})")
-
-            elif mod == 'Run' and (h_rest > 0 or km_rest > 0):
-                max_km = 8 if ni >= 60 else 15
-                max_h  = 1.0 if ni >= 60 else 2.0
-                if km_rest > 0:
-                    n_sess = max(1, int(np.ceil(km_rest / max_km)))
-                    sugs.append(f"🏃 {n_sess}×~{km_rest/n_sess:.0f}km ({zona_nome}, RPE {rpe_z})")
-                else:
-                    n_sess = max(1, int(np.ceil(h_rest / max_h)))
-                    sugs.append(f"🏃 {n_sess}×{h_rest/n_sess*60:.0f}min ({zona_nome}, RPE {rpe_z})")
+                    sugs.append(f"{_em} **{tipo}** {h_rest * 60:.0f}min RPE {rpe_z}")
 
             return sugs[0] if sugs else "—"
 
@@ -1582,7 +1587,7 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             km_rest  = max(0.0, km_meta - km_feito) if has_km else 0.0
 
             # Sugestão
-            sug = _sugestao_sessao(kj_rest, h_rest, km_rest, mod, eftp, ni, ol)
+            sug = _sugestao_sessao(kj_rest, h_rest, km_rest, mod, eftp, ni, ol, df_hist=_pf)
 
             # Fator label
             if ol:       fl = "↓ 0.98 overload"
@@ -1691,11 +1696,14 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
 
             # ── ΔCTL estimado esta semana ─────────────────────────────────
             # Coeficientes dTRIMP/dKJ do histórico real (v3)
+            # Coeficientes dTRIMP/dKJ v3 — calculados dos dados reais (Tab ⚗️ CTL vs KJ)
+            # dCTL/dKJ = dTRIMP/dKJ ÷ 42  (divisor EMA 42d)
+            # Modelo: TRIMP ~ KJ_work + densidade  |  R² Bike=0.937, Row=0.867, Ski=0.849
             _COEF = {
                 'Bike': {'base': 0.2797/42, 'tempo': 0.5725/42, 'intervalado': 0.9732/42, 'todos': 0.3987/42},
                 'Row':  {'base': 0.2475/42, 'tempo': 0.4177/42, 'intervalado': 0.6625/42, 'todos': 0.3080/42},
                 'Ski':  {'base': 0.3802/42, 'tempo': 0.5395/42, 'intervalado': 0.7046/42, 'todos': 0.4641/42},
-                'Run':  {'todos': 0.3000/42},  # estimativa conservadora
+                'Run':  {'todos': 0.3000/42},  # N=10 insuficiente — estimativa conservadora
             }
 
             # CTL actual (EMA 42d sobre TRIMP histórico)
