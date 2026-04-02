@@ -116,6 +116,16 @@ MAPA_TRAINING = {
     'icu_joules': ['icu_joules'], 'icu_weight': ['icu_weight'],
     'AllWorkFTP': ['AllWorkFTP'], 'WorkHourKgoverCP': ['WorkHourKgoverCP'],
     'WorkHour':   ['WorkHour'],
+    # ── 3-zone power model (desde 2023) ─────────────────────────────────
+    'z1_kj':  ['Z1KJ'],
+    'z2_kj':  ['Z2KJ'],
+    'z3_kj':  ['Z3KJ'],
+    'z1_pwr': ['Z1Pw'],
+    'z2_pwr': ['Z2pwr'],
+    'z3_pwr': ['ZPwr'],
+    'z1_sec': ['Z1sec'],
+    'z2_sec': ['Z2sec'],
+    'z3_sec': ['Z3sec'],
 }
 
 
@@ -1365,9 +1375,12 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
 
         # eFTP por modalidade (último valor disponível)
         _eftp = {}
-        if 'icu_eftp' in _pf.columns:
+        # icu_ftp = FTP testado (estável, para zonas) — preferido
+        # icu_eftp = estimado pelo modelo (para acompanhamento de forma)
+        _ftp_col = 'icu_ftp' if 'icu_ftp' in _pf.columns else 'icu_eftp'
+        if _ftp_col in _pf.columns:
             for _m in ['Bike','Row','Ski','Run']:
-                _s = _pf[_pf['type'].apply(norm_tipo)==_m]['icu_eftp']
+                _s = _pf[_pf['type'].apply(norm_tipo)==_m][_ftp_col]
                 _s = pd.to_numeric(_s, errors='coerce').dropna()
                 if len(_s) > 0: _eftp[_m] = float(_s.iloc[-1])
 
@@ -1391,14 +1404,16 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             sugs = []
 
             # Zona e RPE por Need_intensity
+            # zona_pct → % do FTP (icu_ftp)
+            # rpe_z derivado do % FTP — literatura Coggan/Allen calibrada
             if ol:
-                zona_pct, zona_nome, rpe_z = 0.65, "Z2 recuperação", 4
+                zona_pct, zona_nome, rpe_z = 0.60, "Z1 recuperação", 3
             elif ni < 30:
-                zona_pct, zona_nome, rpe_z = 0.68, "Z2 base", 5
+                zona_pct, zona_nome, rpe_z = 0.68, "Z2 base",        5
             elif ni < 60:
-                zona_pct, zona_nome, rpe_z = 0.83, "Z3-Z4 tempo", 6
+                zona_pct, zona_nome, rpe_z = 0.83, "Z3 threshold",   7
             else:
-                zona_pct, zona_nome, rpe_z = 0.95, "Z4-Z5 HIIT", 8
+                zona_pct, zona_nome, rpe_z = 0.95, "Z4-Z5 HIIT",    9
 
             # Emojis por modalidade
             _emj = {'Bike':'🚴','Row':'🚣','Ski':'🎿','Run':'🏃'}
