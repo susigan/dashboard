@@ -1396,86 +1396,94 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             return float(vals.median()) if len(vals) > 0 else 0.0
 
         def _sugestao_sessao(kj_rest, h_rest, km_rest, mod, eftp, ni, ol, df_hist=None):
-            """Sugestão baseada em historico real. Usa Z3KJ+ZPwr para melhoria de densidade."""
+            """Sugestao com driver por zona: Z3KJ (forte), Z2KJ (mod), total_KJ (leve)."""
             sugs = []
-            _emj = {'Bike': '🚴', 'Row': '🚣', 'Ski': '🎿', 'Run': '🏃'}
-            _em = _emj.get(mod, '🏋')
+            _emj = {"Bike": "🚴", "Row": "🚣", "Ski": "🎿", "Run": "🏃"}
+            _em = _emj.get(mod, "🏋")
 
             if ol:
-                tipo, zona_pct, rpe_z = 'Longo Leve', 0.60, 3
+                rpe_alvo, rpe_desc, zona_pct, pwr_inc = 3, "Z1 recuperacao", 0.60, 0.05
             elif ni < 20:
-                tipo, zona_pct, rpe_z = 'Longo Leve', 0.68, 4
+                rpe_alvo, rpe_desc, zona_pct, pwr_inc = 4, "Z1 base",        0.68, 0.05
             elif ni < 40:
-                tipo, zona_pct, rpe_z = 'Sweet Spot', 0.83, 6
+                rpe_alvo, rpe_desc, zona_pct, pwr_inc = 6, "Z2 Sweet Spot",  0.83, 0.02
             elif ni < 60:
-                tipo, zona_pct, rpe_z = 'Threshold', 0.88, 7
+                rpe_alvo, rpe_desc, zona_pct, pwr_inc = 7, "Z2 Threshold",   0.88, 0.02
             elif ni < 75:
-                tipo, zona_pct, rpe_z = 'VO2max', 0.95, 9
+                rpe_alvo, rpe_desc, zona_pct, pwr_inc = 8, "Z3 VO2max",      0.95, 0.01
             elif ni < 90:
-                tipo, zona_pct, rpe_z = 'Anaer. Cap', 1.05, 9
+                rpe_alvo, rpe_desc, zona_pct, pwr_inc = 9, "Z3 Anaer.Cap",   1.05, 0.01
             else:
-                tipo, zona_pct, rpe_z = 'Anaerobio', 1.15, 10
+                rpe_alvo, rpe_desc, zona_pct, pwr_inc = 10, "Z3 Anaerobio",  1.15, 0.01
 
-            _estrutura = {
-                'Anaerobio':   '8-12x15s @ {w}W rest 90s',
-                'Anaer. Cap':  '6-8x60s @ {w}W rest 3min',
-                'VO2max':      '5x4min @ {w}W rest 4min (ou 15x30s/30s)',
-                'Threshold':   '3x10min @ {w}W rest 5min',
-                'Sweet Spot':  '{t}min continuo @ {w}W',
-                'Longo Leve':  '{t}min continuo @ {w}W',
-            }
+            if rpe_alvo >= 7:
+                _rpe_seg, _driver = (7, 10), "z3_kj"
+            elif rpe_alvo >= 5:
+                _rpe_seg, _driver = (5, 6),  "z2_kj"
+            else:
+                _rpe_seg, _driver = (1, 4),  "_kj"
 
-            _ref_kj = _ref_z3kj = _ref_z3pwr = _ref_dur = None
-            _rpe_seg = (7, 10) if ni >= 60 else ((5, 6) if ni >= 30 else (1, 4))
+            _ref_driver = _ref_kj = _ref_dur = _ref_z3pwr = _ref_z2pwr = None
 
             if df_hist is not None and len(df_hist) >= 2:
                 _dh = df_hist[
                     (df_hist["type"].apply(norm_tipo) == mod) &
                     (df_hist["_rpe_n"].between(_rpe_seg[0], _rpe_seg[1]))
-                ].tail(3)
+                ].tail(5)
                 if len(_dh) >= 2:
-                    _ref_kj = float(_dh["_kj"].median())
+                    _ref_kj  = float(_dh["_kj"].median())
                     _ref_dur = float(_dh["_dur_min"].median())
-                    if "z3_kj" in _dh.columns:
-                        _z3 = pd.to_numeric(_dh["z3_kj"], errors="coerce").replace(0, np.nan)
-                        _ref_z3kj = float(_z3.median()) if _z3.notna().any() else None
+                    if _driver in _dh.columns:
+                        _d = pd.to_numeric(_dh[_driver], errors="coerce").replace(0, np.nan)
+                        _ref_driver = float(_d.median()) if _d.notna().any() else None
                     if "z3_pwr" in _dh.columns:
-                        _zp = pd.to_numeric(_dh["z3_pwr"], errors="coerce").replace(0, np.nan)
-                        _ref_z3pwr = float(_zp.median()) if _zp.notna().any() else None
+                        _z3p = pd.to_numeric(_dh["z3_pwr"], errors="coerce").replace(0, np.nan)
+                        _ref_z3pwr = float(_z3p.median()) if _z3p.notna().any() else None
+                    if "z2_pwr" in _dh.columns:
+                        _z2p = pd.to_numeric(_dh["z2_pwr"], errors="coerce").replace(0, np.nan)
+                        _ref_z2pwr = float(_z2p.median()) if _z2p.notna().any() else None
 
             watts_ftp = (eftp * zona_pct) if eftp else None
+            ref_pwr = (_ref_z3pwr if rpe_alvo >= 7 else (_ref_z2pwr if rpe_alvo >= 5 else watts_ftp))
 
-            if _ref_z3kj and _ref_z3pwr and ni >= 40:
-                kj_target = kj_rest if kj_rest > 0 else (_ref_kj or _ref_z3kj * 2)
-                t_z3_novo = kj_target * 1000 / (_ref_z3pwr * 60)
-                delta_kj = (t_z3_novo - _ref_z3kj * 1000 / (_ref_z3pwr * 60)) * _ref_z3pwr * 60 / 1000
-                pwr_B = _ref_z3pwr * 1.02
-                est = _estrutura.get(tipo, "").format(w=f"{_ref_z3pwr:.0f}", t=f"{t_z3_novo:.0f}")
-                msg = (f"{_em} **{tipo}** ref: {_ref_z3kj:.0f} kJ Z3 @ {_ref_z3pwr:.0f}W RPE {rpe_z} | "
-                       f"A) {est} -> ~{_ref_z3kj + delta_kj:.0f} kJ Z3 ({delta_kj:+.0f} kJ) | "
-                       f"B) {pwr_B:.0f}W (+2%) -> ~{_ref_z3kj * 1.02:.0f} kJ Z3 | "
-                       f"KJ total est. ~{(_ref_kj or 0) + max(delta_kj, 0):.0f} kJ")
-                sugs.append(msg)
+            if _ref_driver and ref_pwr and _ref_driver > 0 and ref_pwr > 0:
+                kj_target_A   = kj_rest if kj_rest > 0 else _ref_driver * 1.03
+                t_driver_ref  = _ref_driver * 1000 / (ref_pwr * 60)
+                t_driver_novo = kj_target_A * 1000 / (ref_pwr * 60)
+                delta_kj_A    = kj_target_A - _ref_driver
+                pwr_B         = ref_pwr * (1 + pwr_inc)
+                kj_B          = pwr_B * t_driver_ref * 60 / 1000
+                ctx = ("  | total ref: " + str(round(_ref_kj)) + " kJ") if _ref_kj else ""
+                line1 = _em + " RPE alvo " + str(rpe_alvo) + " (" + rpe_desc + ")" + ctx
+                line2 = "   Ref (" + _driver.upper() + "): " + str(round(_ref_driver)) + " kJ @ " + str(round(ref_pwr)) + "W"
+                line3 = ("   A) +vol: " + str(round(t_driver_novo)) + "min @ " + str(round(ref_pwr))
+                         + "W -> " + str(round(kj_target_A)) + " kJ (" + str(int(delta_kj_A)) + ")")
+                line4 = ("   B) +pwr: " + str(round(t_driver_ref)) + "min @ " + str(round(pwr_B))
+                         + "W (+" + str(int(pwr_inc*100)) + "%) -> " + str(round(kj_B)) + " kJ")
+                sugs.append(line1 + "\n" + line2 + "\n" + line3 + "\n" + line4)
 
-            elif _ref_kj and _ref_dur and ni < 40:
-                kj_target = kj_rest if kj_rest > 0 else _ref_kj * 1.03
+            elif _ref_kj and _ref_dur and rpe_alvo <= 4:
+                kj_target = kj_rest if kj_rest > 0 else _ref_kj * 1.05
                 w = watts_ftp or ((_ref_kj * 1000 / (_ref_dur * 60)) if _ref_dur else 0)
-                t_min = (kj_target * 1000 / (w * 60)) if w > 0 else _ref_dur
-                est = _estrutura.get(tipo, "").format(w=f"{w:.0f}", t=f"{t_min:.0f}")
-                sugs.append(f"{_em} **{tipo}** {est} -> ~{kj_target:.0f} kJ RPE {rpe_z} "
-                            f"(ref: {_ref_kj:.0f} kJ em {_ref_dur:.0f}min)")
+                t_min = (kj_target * 1000 / (w * 60)) if w > 0 else _ref_dur * 1.05
+                line1 = _em + " RPE alvo " + str(rpe_alvo) + " (" + rpe_desc + ")"
+                line2 = ("   " + str(round(t_min)) + "min @ " + str(round(w))
+                         + "W -> " + str(round(kj_target)) + " kJ"
+                         + " (ref: " + str(round(_ref_kj)) + " kJ / " + str(round(_ref_dur)) + "min)")
+                sugs.append(line1 + "\n" + line2)
 
             elif watts_ftp and kj_rest > 0:
                 t_min = kj_rest * 1000 / (watts_ftp * 60)
-                est = _estrutura.get(tipo, "").format(w=f"{watts_ftp:.0f}", t=f"{t_min:.0f}")
-                sugs.append(f"{_em} **{tipo}** {est} -> {kj_rest:.0f} kJ RPE {rpe_z} "
-                            f"(sem historico — estimativa por FTP)")
+                line1 = _em + " RPE alvo " + str(rpe_alvo) + " (" + rpe_desc + ")"
+                line2 = ("   " + str(round(t_min)) + "min @ " + str(round(watts_ftp))
+                         + "W -> " + str(round(kj_rest)) + " kJ (sem historico)")
+                sugs.append(line1 + "\n" + line2)
 
             elif h_rest > 0 or km_rest > 0:
                 if km_rest > 0:
-                    sugs.append(f"{_em} **{tipo}** {km_rest:.0f} km RPE {rpe_z}")
+                    sugs.append(_em + " RPE alvo " + str(rpe_alvo) + " - " + str(round(km_rest)) + " km")
                 else:
-                    sugs.append(f"{_em} **{tipo}** {h_rest * 60:.0f}min RPE {rpe_z}")
+                    sugs.append(_em + " RPE alvo " + str(rpe_alvo) + " - " + str(round(h_rest*60)) + "min")
 
             return sugs[0] if sugs else "—"
 
