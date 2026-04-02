@@ -1403,17 +1403,19 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             """
             sugs = []
 
-            # Zona e RPE por Need_intensity
-            # zona_pct → % do FTP (icu_ftp)
-            # rpe_z derivado do % FTP — literatura Coggan/Allen calibrada
+            # Zona e RPE — modelo 3 zonas (alinhado com Z1KJ/Z2KJ/Z3KJ)
+            # Z1 (<~75% FTP): base/recuperação
+            # Z2 (~75–90% FTP): threshold/tempo
+            # Z3 (>~90% FTP): alta intensidade/intervalos
+            # rpe_z calibrado com % FTP (Coggan/Allen)
             if ol:
                 zona_pct, zona_nome, rpe_z = 0.60, "Z1 recuperação", 3
             elif ni < 30:
-                zona_pct, zona_nome, rpe_z = 0.68, "Z2 base",        5
+                zona_pct, zona_nome, rpe_z = 0.68, "Z1 base",        5
             elif ni < 60:
-                zona_pct, zona_nome, rpe_z = 0.83, "Z3 threshold",   7
+                zona_pct, zona_nome, rpe_z = 0.83, "Z2 threshold",   7
             else:
-                zona_pct, zona_nome, rpe_z = 0.95, "Z4-Z5 HIIT",    9
+                zona_pct, zona_nome, rpe_z = 0.95, "Z3 HIIT",        9
 
             # Emojis por modalidade
             _emj = {'Bike':'🚴','Row':'🚣','Ski':'🎿','Run':'🏃'}
@@ -1771,107 +1773,7 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
 
     st.markdown("---")
 
-    # ── Performance Overview + pizza Sessões ──
-    col_l, col_r = st.columns([2, 1])
-    with col_l:
-        st.subheader("📈 Performance Overview")
-        fig, ax = plt.subplots(figsize=(13, 4))
-        if 'moving_time' in da.columns and 'rpe' in da.columns and len(da) > 0:
-            dl = da.copy(); dl['Data'] = pd.to_datetime(dl['Data'])
-            dl['load'] = (dl['moving_time'] / 60) * dl['rpe'].fillna(0)
-            ld = dl.groupby('Data')['load'].sum().reset_index().sort_values('Data')
-            ax.bar(ld['Data'], norm_serie(ld['load']), color=CORES['cinza'],
-                   alpha=0.3, label='Load (norm)', width=0.8)
-        if 'hrv' in dw.columns and len(dw) > 0:
-            dw2 = dw.dropna(subset=['hrv']).copy()
-            dw2['Data'] = pd.to_datetime(dw2['Data'])
-            ax.plot(dw2['Data'], norm_serie(dw2['hrv']),
-                    color=CORES['verde'], linewidth=2, linestyle='--', label='HRV (norm)')
-        ax.set_title('Performance Overview', fontsize=12, fontweight='bold')
-        ax.legend(loc='upper left', fontsize=9)
-        ax.tick_params(axis='x', rotation=45); ax.grid(True, alpha=0.3)
-        plt.tight_layout(); st.pyplot(fig); plt.close()
-
-    with col_r:
-        st.subheader("🎯 Sessões")
-        df_pie = filtrar_principais(da).copy()
-        # Excluir WeightTraining de todos os pizzas
-        df_pie = df_pie[df_pie['type'].apply(norm_tipo) != 'WeightTraining']
-        if len(df_pie) > 0:
-            cnt = df_pie['type'].apply(norm_tipo).value_counts()
-            fig2, ax2 = plt.subplots(figsize=(5, 5))
-            ax2.pie(cnt.values, labels=cnt.index, autopct='%1.0f%%',
-                    colors=[get_cor(t) for t in cnt.index], startangle=90,
-                    pctdistance=0.75,
-                    wedgeprops=dict(width=0.5, edgecolor='white', linewidth=2))
-            ax2.text(0, 0, f'{cnt.sum()}', fontsize=22, fontweight='bold',
-                     ha='center', va='center')
-            ax2.set_title('Sessões (excl. WT)', fontsize=9, fontweight='bold')
-            plt.tight_layout(); st.pyplot(fig2); plt.close()
-
     st.markdown("---")
-
-    # ── Pizzas: Horas | KM | RPE ──
-    st.subheader("🎯 Distribuição por Horas, KM e RPE")
-    pc1, pc2, pc3 = st.columns(3)
-
-    with pc1:
-        if 'moving_time' in df_pie.columns and df_pie['moving_time'].notna().any():
-            hrs_t = (df_pie.groupby(df_pie['type'].apply(norm_tipo))['moving_time']
-                     .sum() / 3600)
-            hrs_t = hrs_t[hrs_t > 0]
-            if len(hrs_t) > 0:
-                fig_h, ax_h = plt.subplots(figsize=(5, 5))
-                ax_h.pie(hrs_t.values, labels=hrs_t.index, autopct='%1.0f%%',
-                         colors=[get_cor(t) for t in hrs_t.index], startangle=90,
-                         pctdistance=0.75,
-                         wedgeprops=dict(width=0.5, edgecolor='white', linewidth=2))
-                ax_h.text(0, 0, f'{hrs_t.sum():.0f}h', fontsize=18,
-                          fontweight='bold', ha='center', va='center')
-                ax_h.set_title('Horas', fontsize=10, fontweight='bold')
-                plt.tight_layout(); st.pyplot(fig_h); plt.close()
-
-    with pc2:
-        if 'distance' in df_pie.columns and df_pie['distance'].notna().any():
-            df_kmt = df_pie.copy()
-            df_kmt['_t'] = df_kmt['type'].apply(norm_tipo)
-            km_t = df_kmt.groupby('_t')['distance'].sum() / 1000
-            km_t = km_t[km_t > 0]
-            if len(km_t) > 0:
-                fig_k, ax_k = plt.subplots(figsize=(5, 5))
-                ax_k.pie(km_t.values, labels=km_t.index, autopct='%1.0f%%',
-                         colors=[get_cor(t) for t in km_t.index], startangle=90,
-                         pctdistance=0.75,
-                         wedgeprops=dict(width=0.5, edgecolor='white', linewidth=2))
-                ax_k.text(0, 0, str(int(km_t.sum())) + ' km', fontsize=14,
-                          fontweight='bold', ha='center', va='center')
-                ax_k.set_title('KM', fontsize=10, fontweight='bold')
-                plt.tight_layout(); st.pyplot(fig_k); plt.close()
-
-    with pc3:
-        if 'rpe' in df_pie.columns and df_pie['rpe'].notna().any():
-            df_rpe = df_pie.dropna(subset=['rpe']).copy()
-            df_rpe['rpe_n'] = pd.to_numeric(df_rpe['rpe'], errors='coerce')
-            df_rpe = df_rpe.dropna(subset=['rpe_n'])
-            df_rpe['rpe_cat'] = pd.cut(df_rpe['rpe_n'],
-                                        bins=[0, 4.9, 6.9, 10],
-                                        labels=['Leve (1-5)', 'Moderado (5-7)', 'Forte (7-10)'])
-            df_rpe = df_rpe.dropna(subset=['rpe_cat'])
-            rpe_cnt = df_rpe['rpe_cat'].value_counts().sort_index()
-            if len(rpe_cnt) > 0:
-                rpe_cores = {'Leve (1-5)': CORES['verde'],
-                             'Moderado (5-7)': CORES['laranja'],
-                             'Forte (7-10)': CORES['vermelho']}
-                fig_r, ax_r = plt.subplots(figsize=(5, 5))
-                ax_r.pie(rpe_cnt.values, labels=rpe_cnt.index, autopct='%1.0f%%',
-                         colors=[rpe_cores.get(str(l), CORES['cinza'])
-                                 for l in rpe_cnt.index],
-                         startangle=90, pctdistance=0.75,
-                         wedgeprops=dict(width=0.5, edgecolor='white', linewidth=2))
-                ax_r.text(0, 0, f'{rpe_cnt.sum()}', fontsize=18,
-                          fontweight='bold', ha='center', va='center')
-                ax_r.set_title('RPE Geral', fontsize=10, fontweight='bold')
-                plt.tight_layout(); st.pyplot(fig_r); plt.close()
 
     st.markdown("---")
 
@@ -1881,7 +1783,7 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
         _agr_col, _ = st.columns([1, 3])
         _agr = _agr_col.selectbox("Agrupar por", ["Semana", "Mês", "Ano"],
                                    key="vg_agrup_km")
-        _code = {"Semana": "W", "Mês": "M", "Ano": "A"}[_agr]
+        _code = {"Semana": "W", "Mês": "M", "Ano": "Y"}[_agr]
 
         df_km = da.copy()
         df_km['_t'] = df_km['type'].apply(norm_tipo)
