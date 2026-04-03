@@ -6584,6 +6584,10 @@ def tab_ctl_kj(da_full):
                 _dm2['_eff_roll']  = _dm2['_eff'].rolling(8, min_periods=3).mean()
                 _dm2['_eff_base']  = _dm2['_eff'].rolling(40, min_periods=10).mean()
                 _dm2['_eff_delta'] = (_dm2['_eff_roll'] / _dm2['_eff_base'] - 1).clip(-0.5, 0.5)
+                # Garantir que _kjh_roll e _kjh_base existem sempre
+                _dm2['_kjh_roll']  = _dm2['_kjh'].rolling(5,  min_periods=2).mean()
+                _dm2['_kjh_base']  = _dm2['_kjh'].rolling(30, min_periods=8).mean()
+                _dm2['_kjh_ratio'] = (_dm2['_kjh_roll'] / _dm2['_kjh_base']).clip(0.5, 1.5)
 
                 # KJ/h rolling e baseline
                 _dm2['_kjh_roll']  = _dm2['_kjh'].rolling(5, min_periods=2).mean()
@@ -6613,8 +6617,12 @@ def tab_ctl_kj(da_full):
 
                 _dm2['_pwr_inc_pct'] = _dm2.apply(_calc_pwr_inc, axis=1)
                 _dm2['_mod'] = _mod
+                # Garantir todas as colunas necessárias
+                for _c in ['_kjh_roll','_kjh_base','_kjh_ratio','_eff_delta','_pwr_inc_pct']:
+                    if _c not in _dm2.columns: _dm2[_c] = np.nan
                 _debug_rows.append(_dm2[['Data','_mod','_eff','_eff_delta','_kjh',
-                                          '_kjh_ratio','_pwr_inc_pct','TRIMP_corr',
+                                          '_kjh_roll','_kjh_base','_kjh_ratio',
+                                          '_pwr_inc_pct','TRIMP_corr',
                                           _kj_col, 'rpe_n']].copy())
 
             if not _debug_rows:
