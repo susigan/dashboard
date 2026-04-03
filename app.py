@@ -1397,257 +1397,223 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
 
         def _sugestao_sessao(kj_rest, h_rest, km_rest, mod, eftp, ni, ol, df_hist=None):
             """
-            Sugestao orientada a densidade (KJ/h).
-            3 sinais independentes: eff (custo), KJ/h (densidade), KJ total (volume).
-            pwr_inc ajustado por eff_delta relativo e kjh vs baseline.
-            block_A se kjh < 95%% do baseline.
+            Retorna (df_opcoes, ref_line, ol_warn).
+            5 tipos de estimulo com mesmo KJ_target. Principal por Need_intensity.
             """
-            sugs = []
-            _emj = {"Bike": "🚴", "Row": "🚣", "Ski": "🎿", "Run": "🏃"}
-            _em = _emj.get(mod, "🏋")
-            _KJ_MIN    = {"Z3": 25, "Z2": 45, "Z1": 0}
-            _PROG_CAP  = {"Z3": 1.07, "Z2": 1.10, "Z1": 1.12}
+            _TIPOS = [
+                {"key":"anaerobio",  "label":"⚫ Anaeróbio",  "pct":(1.15,1.30), "rpe_lbl":"9–10"},
+                {"key":"vo2",        "label":"🔴 VO2max",     "pct":(0.95,1.10), "rpe_lbl":"8–9"},
+                {"key":"threshold",  "label":"🟡 Threshold",  "pct":(0.83,0.90), "rpe_lbl":"6–7"},
+                {"key":"sweetspot",  "label":"🟢 Sweet Spot", "pct":(0.78,0.83), "rpe_lbl":"5–6"},
+                {"key":"leve",       "label":"🔵 Leve",       "pct":(0.55,0.68), "rpe_lbl":"3–4"},
+            ]
+
+            def _estrutura(tipo_key, dur_work_min):
+                d = max(1.0, float(dur_work_min))
+                structs = []
+                if tipo_key == "anaerobio":
+                    for reps, on_s, rest_s in [(10,20,120),(8,25,150),(6,30,180),(5,30,180),(4,40,240)]:
+                        if d > 0 and abs(reps*on_s/60 - d)/d < 0.30:
+                            structs.append(f"{reps}x{on_s}s rest {rest_s//60}:{rest_s%60:02d}")
+                    if not structs:
+                        structs = [f"{max(4,round(d*60/25))}x25s rest 2:30"]
+                elif tipo_key == "vo2":
+                    for reps, on_s in [(4,240),(5,180),(6,180),(5,240),(4,300),(6,240),(3,300),(8,150),(10,120)]:
+                        if d > 0 and abs(reps*on_s/60 - d)/d < 0.20:
+                            ms = on_s//60; ss_r = on_s%60
+                            structs.append(f"{reps}x{ms}:{ss_r:02d} rest {ms}:{ss_r:02d}")
+                    reps_30 = round(d*2)
+                    if 6 <= reps_30 <= 20:
+                        n_ser = max(1, reps_30//8); rpp = reps_30//n_ser
+                        structs.append(f"{n_ser}x{rpp}x30/30")
+                    structs = structs[:3]
+                    if not structs:
+                        structs = [f"{max(3,round(d/4))}x4:00 rest 4:00"]
+                elif tipo_key == "threshold":
+                    for reps, on_m in [(3,10),(4,8),(2,15),(4,10),(3,12),(5,8),(2,20)]:
+                        if d > 0 and abs(reps*on_m - d)/d < 0.25:
+                            structs.append(f"{reps}x{on_m}min rest 3–4min")
+                    structs = structs[:2]
+                    if not structs:
+                        n = max(2, round(d/10))
+                        structs = [f"{n}x{round(d/n)}min rest 3min"]
+                elif tipo_key == "sweetspot":
+                    for reps, on_m in [(1,40),(2,20),(3,15),(1,30),(2,25),(1,50)]:
+                        if d > 0 and abs(reps*on_m - d)/d < 0.25:
+                            structs.append(f"1x{on_m}min contínuo" if reps==1 else f"{reps}x{on_m}min rest 4–5min")
+                    structs = structs[:2]
+                    if not structs:
+                        structs = [f"1x{round(d)}min contínuo"]
+                else:
+                    structs = [f"Contínuo {round(d)}min"]
+                return "  /  ".join(structs)
+
+            # ── Histórico ─────────────────────────────────────────────────
+            _ref_kj = _ref_dur = _ref_pwr = None
+            _eff_delta = 0.0
+            _kjh_ref = _kjh_baseline = None
+            kj_target_A_adj = 1.0
+            _PROG_CAP = {"Z3":1.07, "Z2":1.10, "Z1":1.12}
             _TEMPO_CAP = 1.10
-
-            if ol:
-                rpe_alvo, rpe_desc, zona_pct, pwr_inc, zona_alvo = 3,  "Z1 recuperacao", 0.60, 0.02, "Z1"
-            elif ni < 20:
-                rpe_alvo, rpe_desc, zona_pct, pwr_inc, zona_alvo = 4,  "Z1 base",        0.68, 0.02, "Z1"
-            elif ni < 40:
-                rpe_alvo, rpe_desc, zona_pct, pwr_inc, zona_alvo = 6,  "Z2 Sweet Spot",  0.83, 0.02, "Z2"
-            elif ni < 60:
-                rpe_alvo, rpe_desc, zona_pct, pwr_inc, zona_alvo = 7,  "Z2 Threshold",   0.88, 0.02, "Z2"
-            elif ni < 75:
-                rpe_alvo, rpe_desc, zona_pct, pwr_inc, zona_alvo = 8,  "Z3 VO2max",      0.95, 0.01, "Z3"
-            elif ni < 90:
-                rpe_alvo, rpe_desc, zona_pct, pwr_inc, zona_alvo = 9,  "Z3 Anaer.Cap",   1.05, 0.01, "Z3"
-            else:
-                rpe_alvo, rpe_desc, zona_pct, pwr_inc, zona_alvo = 10, "Z3 Anaerobio",   1.15, 0.01, "Z3"
-
-            if zona_alvo == "Z3":
-                _rpe_seg, _driver, _pwr_col = (7, 10), "z3_kj", "z3_pwr"
-            elif zona_alvo == "Z2":
-                _rpe_seg, _driver, _pwr_col = (5, 6),  "z2_kj", "z2_pwr"
-            else:
-                _rpe_seg, _driver, _pwr_col = (1, 4),  "_kj",   None
-
-            _ref_driver = _ref_kj = _ref_dur = _ref_pwr = None
-            _n_sess = 0
-            _debug_hist = []
-            _kj_min   = _KJ_MIN.get(zona_alvo, 25)
-            _prog_cap = _PROG_CAP.get(zona_alvo, 1.10)
-            block_A   = False
-            _eff_signal = ""
-            kj_target_A_adj = 1.0   # multiplicador KJ_A: reduzido se kjh abaixo baseline
+            pwr_inc_base = 0.01 if ni >= 75 else 0.02
 
             if df_hist is not None and len(df_hist) >= 2:
                 _df_mod = df_hist[df_hist["type"].apply(norm_tipo) == mod].copy()
                 if len(_df_mod) > 0:
-                    # Zona dominante
                     _has_zona = "z3_kj" in _df_mod.columns and "z2_kj" in _df_mod.columns
                     if _has_zona:
                         _z3n = pd.to_numeric(_df_mod["z3_kj"], errors="coerce").fillna(0)
                         _z2n = pd.to_numeric(_df_mod["z2_kj"], errors="coerce").fillna(0)
-                        _tot = pd.to_numeric(_df_mod["_kj"], errors="coerce").replace(0, np.nan).fillna(1)
+                        _tot = pd.to_numeric(_df_mod["_kj"], errors="coerce").replace(0,np.nan).fillna(1)
                         _df_mod["_zona_dom"] = "Z1"
-                        _df_mod.loc[_z2n / _tot > 0.30, "_zona_dom"] = "Z2"
-                        _df_mod.loc[_z3n / _tot > 0.20, "_zona_dom"] = "Z3"
-                        _df_mod.loc[(_z3n == 0) & (_z2n == 0), "_zona_dom"] = None
+                        _df_mod.loc[_z2n/_tot > 0.30, "_zona_dom"] = "Z2"
+                        _df_mod.loc[_z3n/_tot > 0.20, "_zona_dom"] = "Z3"
+                        _df_mod.loc[(_z3n==0)&(_z2n==0), "_zona_dom"] = None
                     else:
                         _df_mod["_zona_dom"] = None
-
-                    # Score: rpe(1.0) + zona(0.5) + recency(0-0.2)
                     _df_mod["_rpe_n_num"] = pd.to_numeric(_df_mod["_rpe_n"], errors="coerce")
-                    _df_mod["_match_rpe"]  = _df_mod["_rpe_n_num"].between(_rpe_seg[0], _rpe_seg[1]).astype(float)
-                    _df_mod["_match_zona"] = (_df_mod["_zona_dom"] == zona_alvo).astype(float) * 0.5
-                    _n_total = len(_df_mod)
-                    _df_mod["_recency"]   = (np.arange(_n_total) / max(_n_total - 1, 1)) * 0.2
-                    _df_mod["_score"]     = _df_mod["_match_rpe"] + _df_mod["_match_zona"] + _df_mod["_recency"]
-
-                    # Pool completo (para baseline) e top-5 (para referencia)
+                    _df_mod["_match_rpe"]  = _df_mod["_rpe_n_num"].between(5,10).astype(float)
+                    _df_mod["_match_zona"] = (_df_mod["_zona_dom"]=="Z3").astype(float)*0.5
+                    _nt = len(_df_mod)
+                    _df_mod["_recency"] = (np.arange(_nt)/max(_nt-1,1))*0.2
+                    _df_mod["_score"]   = _df_mod["_match_rpe"]+_df_mod["_match_zona"]+_df_mod["_recency"]
                     _pool = _df_mod[_df_mod["_match_rpe"] >= 1.0].copy()
                     _dh   = _pool.sort_values("_score", ascending=False).head(5)
-                    _n_sess = len(_dh)
-
-                    if _n_sess >= 2:
+                    if len(_dh) >= 2:
                         _ref_kj  = float(_dh["_kj"].median())
                         _ref_dur = float(_dh["_dur_min"].median())
-
-                        if _driver in _dh.columns:
-                            _d = pd.to_numeric(_dh[_driver], errors="coerce").replace(0, np.nan)
-                            _d_med = float(_d.median()) if _d.notna().any() else None
-                            _ref_driver = _d_med if (_d_med and _d_med >= _kj_min) else None
-
-                        if _pwr_col and _pwr_col in _dh.columns and _ref_driver:
-                            _z_check = pd.to_numeric(_dh[_driver], errors="coerce")
-                            _dh_pwr  = _dh[_z_check >= 20]
-                            if len(_dh_pwr) >= 1:
-                                _zp = pd.to_numeric(_dh_pwr[_pwr_col], errors="coerce").replace(0, np.nan)
-                                _ref_pwr = float(_zp.median()) if _zp.notna().any() else None
-
-                        # ── Sinais de eficiencia e densidade ─────────────────
-                        # eff = TRIMP / KJ_work (custo interno por kJ)
-                        # Calcular do pool completo e das ultimas 8 semanas
+                        if "z3_pwr" in _dh.columns:
+                            _zp = pd.to_numeric(_dh["z3_pwr"], errors="coerce").replace(0,np.nan)
+                            _ref_pwr = float(_zp.median()) if _zp.notna().any() else None
                         _pool2 = _pool.copy()
-                        _kj_work = pd.to_numeric(_pool2["_kj"], errors="coerce").replace(0, np.nan)
-                        _trimp   = (pd.to_numeric(_pool2["_dur_min"], errors="coerce") *
-                                    pd.to_numeric(_pool2["_rpe_n"],   errors="coerce"))
-                        _pool2["_eff"] = _trimp / _kj_work
-
-                        _eff_baseline = float(_pool2["_eff"].median()) if _pool2["_eff"].notna().any() else None
-
-                        _cutoff_8w = pd.Timestamp.now() - pd.Timedelta(weeks=8)
-                        _pool_rec  = _pool2[_pool2["Data"] >= _cutoff_8w]
-                        _eff_rec   = float(_pool_rec["_eff"].median()) if (len(_pool_rec) >= 2 and _pool_rec["_eff"].notna().any()) else None
-
-                        # eff_delta relativo
-                        if _eff_baseline and _eff_rec and _eff_baseline > 0:
-                            _eff_delta = (_eff_rec / _eff_baseline) - 1.0  # -0.05 = -5%, +0.10 = +10%
-                        else:
-                            _eff_delta = 0.0
-
-                        # KJ/h baseline (pool completo)
+                        _kj_w  = pd.to_numeric(_pool2["_kj"], errors="coerce").replace(0,np.nan)
+                        _trimp = (pd.to_numeric(_pool2["_dur_min"], errors="coerce") *
+                                  pd.to_numeric(_pool2["_rpe_n"],   errors="coerce"))
+                        _pool2["_eff"] = _trimp / _kj_w
+                        _eff_bl  = float(_pool2["_eff"].median()) if _pool2["_eff"].notna().any() else None
+                        _cut8w   = pd.Timestamp.now() - pd.Timedelta(weeks=8)
+                        _prec    = _pool2[_pool2["Data"] >= _cut8w]
+                        _eff_rec = float(_prec["_eff"].median()) if (len(_prec)>=2 and _prec["_eff"].notna().any()) else None
+                        if _eff_bl and _eff_rec and _eff_bl > 0:
+                            _eff_delta = (_eff_rec/_eff_bl) - 1.0
                         _pool2["_kjh"] = (pd.to_numeric(_pool2["_kj"], errors="coerce") /
-                                          (pd.to_numeric(_pool2["_dur_min"], errors="coerce") / 60))
+                                          (pd.to_numeric(_pool2["_dur_min"], errors="coerce")/60))
                         _kjh_baseline = float(_pool2["_kjh"].median()) if _pool2["_kjh"].notna().any() else None
-                        _kjh_ref = float(_ref_kj / (_ref_dur / 60)) if (_ref_kj and _ref_dur and _ref_dur > 0) else None
+                        _kjh_ref = (_ref_kj/(_ref_dur/60)) if (_ref_kj and _ref_dur and _ref_dur>0) else None
 
-                        # ── Ajustar pwr_inc — zonas de fadiga contínuas ──────
-                        # Sinal 1: eff_delta → 4 zonas (adaptação → fadiga alta)
-                        if _eff_delta < -0.05:
-                            pwr_inc = pwr_inc * 1.2   # adaptação: agressivo
-                            _eff_z = "adaptacao"
-                            _eff_signal += " eff↓" + str(round(_eff_delta*100)) + "%%→+1.2"
-                        elif _eff_delta < 0.05:
-                            pwr_inc = pwr_inc * 1.0   # zona normal: manter
-                            _eff_z = "normal"
-                            _eff_signal += " eff→normal"
-                        elif _eff_delta < 0.12:
-                            pwr_inc = pwr_inc * 0.9   # fadiga produtiva: leve
-                            _eff_z = "fadiga_prod"
-                            _eff_signal += " eff↑" + str(round(_eff_delta*100)) + "%%→×0.9"
-                        else:
-                            pwr_inc = pwr_inc * 0.7   # fadiga alta: segurar
-                            _eff_z = "fadiga_alta"
-                            _eff_signal += " eff↑" + str(round(_eff_delta*100)) + "%%→×0.7"
+            # ── pwr_inc ────────────────────────────────────────────────────
+            pwr_inc = pwr_inc_base
+            if   _eff_delta < -0.05: pwr_inc *= 1.2
+            elif _eff_delta <  0.05: pwr_inc *= 1.0
+            elif _eff_delta <  0.12: pwr_inc *= 0.9
+            else:                    pwr_inc *= 0.7
+            if _kjh_baseline and _kjh_ref:
+                _kjh_ratio = _kjh_ref/_kjh_baseline
+                if   _kjh_ratio >= 1.0:  pwr_inc *= 1.1
+                elif _kjh_ratio >= 0.90: kj_target_A_adj = 0.95
+                else:                    kj_target_A_adj = 0.90
 
-                        # Sinal 2: KJ/h vs baseline → ajuste contínuo (não binário)
-                        if _kjh_baseline and _kjh_ref:
-                            _kjh_ratio = _kjh_ref / _kjh_baseline
-                            if _kjh_ratio >= 1.0:
-                                pwr_inc = pwr_inc * 1.1   # densidade boa: +10%
-                                _eff_signal += " kjh↑→+1.1"
-                            elif _kjh_ratio >= 0.95:
-                                pwr_inc = pwr_inc * 1.0   # densidade ok: manter
-                                _eff_signal += " kjh→ok"
-                            elif _kjh_ratio >= 0.90:
-                                kj_target_A_adj = 0.95    # densidade leve abaixo: reduzir A 5%%
-                                _eff_signal += " kjh↓→A-5%%"
-                            else:
-                                kj_target_A_adj = 0.90    # densidade muito abaixo: reduzir A 10%%
-                                _eff_signal += " kjh↓↓→A-10%%"
-                        else:
-                            _kjh_ratio = 1.0
-                            kj_target_A_adj = 1.0
+            # ── zona e KJ_target ───────────────────────────────────────────
+            _prog_cap = _PROG_CAP["Z3" if ni>=75 else "Z2" if ni>=40 else "Z1"]
+            if ol:
+                kj_target = (_ref_kj*0.65) if _ref_kj else max(kj_rest*0.65, 60)
+            elif _ref_kj and _ref_kj > 0:
+                kj_target = min(kj_rest if kj_rest>0 else _ref_kj*1.03,
+                                _ref_kj*_prog_cap) * kj_target_A_adj
+            else:
+                kj_target = max(kj_rest, 80)
 
-                        _score_med = round(float(_dh["_score"].mean()), 2)
-                        _debug_hist = [
-                            "Historico (" + str(_n_sess) + " sessoes, score=" + str(_score_med) + ")" + (_eff_signal or "") + ":",
-                            "  Tempo:      " + str(round(_ref_dur)) + " min",
-                            "  Power " + zona_alvo + ":  " + (str(round(_ref_pwr)) + " W" if _ref_pwr else "—"),
-                            "  " + _driver.upper() + ": " + (str(round(_ref_driver)) + " kJ" if _ref_driver else "< " + str(_kj_min) + " kJ (invalido)"),
-                            "  Total KJ:   " + (str(round(_ref_kj)) + " kJ" if _ref_kj else "—"),
-                            "  KJ/h:       " + (str(round(_kjh_ref)) + " kJ/h" if _kjh_ref else "—")
-                                            + (" vs baseline " + str(round(_kjh_baseline)) if _kjh_baseline else ""),
-                            "  eff delta:  " + (str(round(_eff_delta*100, 1)) + "%" if _eff_delta else "—"),
-                        ]
+            tempo_max = (_ref_dur*_TEMPO_CAP) if _ref_dur else 90
+            watts_ftp = eftp if eftp else 200
 
-            watts_ftp     = (eftp * zona_pct) if eftp else None
-            ref_pwr_final = _ref_pwr or watts_ftp
-            header = _em + " " + mod + " — RPE alvo " + str(rpe_alvo) + " (" + rpe_desc + ")"
+            # ── Semana anterior Z3 ─────────────────────────────────────────
+            _sa_z3_kj = _sa_z3_dur = _sa_z3_pwr = None
+            hoje_sa     = pd.Timestamp.now().normalize()
+            sem_ini_sa  = hoje_sa - pd.Timedelta(days=hoje_sa.weekday())
+            sa_ini      = sem_ini_sa - pd.Timedelta(weeks=1)
+            sa_fim      = sem_ini_sa - pd.Timedelta(days=1)
+            if df_hist is not None and len(df_hist) > 0 and "_rpe_n" in df_hist.columns:
+                _df_sa = df_hist[
+                    (df_hist["type"].apply(norm_tipo) == mod) &
+                    (df_hist["Data"] >= sa_ini) &
+                    (df_hist["Data"] <= sa_fim) &
+                    (pd.to_numeric(df_hist["_rpe_n"], errors="coerce") >= 7)
+                ].copy()
+                if len(_df_sa) > 0:
+                    if "z3_kj"  in _df_sa.columns:
+                        _v = pd.to_numeric(_df_sa["z3_kj"],  errors="coerce").replace(0,np.nan)
+                        _sa_z3_kj  = float(_v.sum())  if _v.notna().any() else None
+                    if "z3_sec" in _df_sa.columns:
+                        _v = pd.to_numeric(_df_sa["z3_sec"], errors="coerce").replace(0,np.nan)
+                        _sa_z3_dur = float(_v.sum()/60) if _v.notna().any() else None
+                    if "z3_pwr" in _df_sa.columns:
+                        _v = pd.to_numeric(_df_sa["z3_pwr"], errors="coerce").replace(0,np.nan)
+                        _sa_z3_pwr = float(_v.mean()) if _v.notna().any() else None
 
-            if _ref_driver and ref_pwr_final and _ref_driver > 0 and ref_pwr_final > 0 and _ref_dur:
-                tempo_max = _ref_dur * _TEMPO_CAP
-                if ol:
-                    ref_pwr_use = ref_pwr_final * 0.98
-                    kj_driver_A = min(_ref_driver, kj_rest) if kj_rest > 0 else _ref_driver
-                else:
-                    ref_pwr_use = ref_pwr_final
-                    kj_driver_A = min(
-                        kj_rest if kj_rest > 0 else _ref_driver * 1.03,
-                        _ref_driver * _prog_cap)
-                # Ajuste contínuo de A pelo sinal KJ/h (não bloqueia, só reduz)
-                kj_driver_A = kj_driver_A * kj_target_A_adj
+            # ── Principal ──────────────────────────────────────────────────
+            if ol:
+                _pk = "leve"
+            elif ni >= 90:
+                _pk = "anaerobio"
+            elif ni >= 75:
+                _pk = "vo2"
+            elif ni >= 60:
+                _pk = "threshold"
+            elif ni >= 40:
+                _pk = "sweetspot"
+            else:
+                _pk = "leve"
 
-                # Opcao B: intensidade — mesmo tempo, mais power (sempre)
-                pwr_B  = ref_pwr_use * (1 + pwr_inc)
-                t_B    = _ref_dur
-                kj_B   = pwr_B * t_B * 60 / 1000
-                kjh_B  = kj_B / (t_B / 60)
+            # ── Gerar linhas ───────────────────────────────────────────────
+            _rows = []
+            for _t in _TIPOS:
+                _key  = _t["key"]
+                _pct  = (_t["pct"][0]+_t["pct"][1])/2
+                _pwr_z = watts_ftp * _pct
+                if _key in ("vo2","anaerobio") and _ref_pwr:
+                    _pwr_z = _ref_pwr
+                _inc = pwr_inc if _key==_pk else (0.0 if _key=="anaerobio" else pwr_inc*0.5)
+                _pwr_f = _pwr_z*(1+_inc)*(0.95 if ol else 1.0)
+                _kj_z  = (kj_target*0.35 if _key=="anaerobio" else
+                           kj_target*1.10 if _key=="leve" else kj_target)
+                _dw = min((_kj_z*1000/(_pwr_f*60)) if _pwr_f>0 else 40, tempo_max)
+                _rr = {"anaerobio":8.0,"vo2":1.0,"threshold":0.35,"sweetspot":0.20}.get(_key,0.0)
+                _dt = _dw*(1+_rr)
+                _kj_r = _pwr_f*_dw*60/1000
+                _kjh  = _kj_r/(_dt/60) if _dt>0 else 0
+                _struct = _estrutura(_key, _dw)
+                _vs = ""
+                if _key in ("vo2","anaerobio"):
+                    if _sa_z3_kj:  _vs = f"{_kj_r-_sa_z3_kj:+.0f}kJ Z3"
+                    elif _sa_z3_dur: _vs = f"{_dw-_sa_z3_dur:+.1f}min Z3"
+                _kjh_str = f"{_kjh:.0f}"
+                if _kjh_ref and _kjh_ref>0:
+                    _kjh_str += f" ({(_kjh-_kjh_ref)/_kjh_ref*100:+.0f}%)"
+                _rows.append({
+                    "Tipo":       ("★ " if _key==_pk else "  ")+_t["label"],
+                    "Estrutura":  _struct,
+                    "Watts":      f"{round(_pwr_f)}W",
+                    "Work":       f"{_dw:.0f}min",
+                    "Total":      f"{_dt:.0f}min",
+                    "KJ":         f"{_kj_r:.0f}",
+                    "KJ/h":       _kjh_str,
+                    "RPE":        _t["rpe_lbl"],
+                    "vs sem.ant": _vs,
+                })
 
-                # Opcao A: volume — capado em tempo_max, bloqueada se kjh caiu
-                t_A_raw = kj_driver_A * 1000 / (ref_pwr_use * 60)
-                t_A     = min(t_A_raw, tempo_max)
-                kj_A    = ref_pwr_use * t_A * 60 / 1000
-                kjh_A   = kj_A / (t_A / 60)
-                capped_A = t_A < t_A_raw
+            if not _rows:
+                return None, None, None
 
-                kjh_ref_out = (_ref_kj / (_ref_dur / 60)) if (_ref_kj and _ref_dur) else 0
-                pct_kj_B  = (kj_B  - _ref_kj) / _ref_kj * 100 if _ref_kj > 0 else 0
-                pct_kjh_B = (kjh_B - kjh_ref_out) / kjh_ref_out * 100 if kjh_ref_out > 0 else 0
-                pct_kj_A  = (kj_A  - _ref_kj) / _ref_kj * 100 if _ref_kj > 0 else 0
-                pct_kjh_A = (kjh_A - kjh_ref_out) / kjh_ref_out * 100 if kjh_ref_out > 0 else 0
-
-                lines = [header, ""]
-                lines.extend(_debug_hist)
-                lines.append("  Ref: " + str(round(_ref_kj)) + " kJ | " + str(round(_ref_dur)) + " min | " + str(round(kjh_ref_out)) + " kJ/h")
-                lines.append("")
-                lines.append("Sugestao" + (" (overload)" if ol else "") + ":")
-                lines.append("  B) Intensidade [prioridade]:")
-                lines.append("     " + str(round(t_B)) + " min @ " + str(round(pwr_B))
-                             + " W (+" + str(int(pwr_inc*100)) + "%) ->"
-                             + " " + str(round(kj_B)) + " kJ (" + str(int(pct_kj_B)) + "%%)"
-                             + " | " + str(round(kjh_B)) + " kJ/h (" + str(int(pct_kjh_B)) + "%%)")
-                if block_A:
-                    lines.append("  A) Volume: bloqueada (KJ/h abaixo do baseline)")
-                else:
-                    cap_note = " [cap " + str(round(tempo_max)) + "min]" if capped_A else ""
-                    lines.append("  A) Volume" + cap_note + ":")
-                    lines.append("     " + str(round(t_A)) + " min @ " + str(round(ref_pwr_use))
-                                 + " W -> " + str(round(kj_A)) + " kJ (" + str(int(pct_kj_A)) + "%%)" 
-                                 + " | " + str(round(kjh_A)) + " kJ/h (" + str(int(pct_kjh_A)) + "%%)")
-                sugs.append("\n".join(lines))
-
-            elif _ref_dur and ref_pwr_final:
-                tempo_max = _ref_dur * _TEMPO_CAP
-                pwr_B  = ref_pwr_final * (1 + pwr_inc)
-                kj_B   = pwr_B * _ref_dur * 60 / 1000
-                kjh_B  = kj_B / (_ref_dur / 60)
-                t_A    = min(_ref_dur * 1.05, tempo_max)
-                kj_A   = ref_pwr_final * t_A * 60 / 1000
-                kjh_A  = kj_A / (t_A / 60)
-                lines  = [header, ""]
-                if _debug_hist: lines.extend(_debug_hist)
-                lines.append("")
-                lines.append("Sugestao (tempo historico):")
-                lines.append("  B) Intensidade [prioridade]:")
-                lines.append("     " + str(round(_ref_dur)) + " min @ " + str(round(pwr_B))
-                             + " W -> " + str(round(kj_B)) + " kJ | " + str(round(kjh_B)) + " kJ/h")
-                if not block_A:
-                    lines.append("  A) Volume:")
-                    lines.append("     " + str(round(t_A)) + " min @ " + str(round(ref_pwr_final))
-                                 + " W -> " + str(round(kj_A)) + " kJ | " + str(round(kjh_A)) + " kJ/h")
-                else:
-                    lines.append("  A) Volume: bloqueada (KJ/h abaixo do baseline)")
-                sugs.append("\n".join(lines))
-
-            elif h_rest > 0 or km_rest > 0:
-                if km_rest > 0:
-                    sugs.append(header + "\n   " + str(round(km_rest)) + " km  RPE " + str(rpe_alvo))
-                else:
-                    sugs.append(header + "\n   " + str(round(h_rest*60)) + "min  RPE " + str(rpe_alvo))
-
-            return sugs[0] if sugs else "—"
+            _df_out = pd.DataFrame(_rows)
+            _ref_line = ""
+            if _ref_kj and _ref_dur:
+                _kjh_r = _ref_kj/(_ref_dur/60)
+                _ref_line = f"Ref: {_ref_kj:.0f} kJ | {_ref_dur:.0f} min | {_kjh_r:.0f} kJ/h"
+                if _sa_z3_kj:
+                    _ref_line += f"  |  Sem.ant Z3: {_sa_z3_kj:.0f} kJ"
+                    if _sa_z3_dur: _ref_line += f" / {_sa_z3_dur:.0f} min"
+            _ol_warn = "⚠️ EM OVERLOAD — power reduzido 5%" if ol else ""
+            return _df_out, _ref_line, _ol_warn
 
         rows_prog = []
         for mod in ['Bike','Row','Ski','Run']:
@@ -1760,8 +1726,9 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             if ol:
                 kj_rest = 0.0; h_rest = 0.0; km_rest = 0.0
 
-            # Sugestão
-            sug = _sugestao_sessao(kj_rest, h_rest, km_rest, mod, eftp, ni, ol, df_hist=_pf)
+            # Sugestão — retorna (df, ref_line, ol_warn)
+            _sug_df, _sug_ref, _sug_ol = _sugestao_sessao(
+                kj_rest, h_rest, km_rest, mod, eftp, ni, ol, df_hist=_pf)
 
             # Fator label
             if ol:       fl = "↓ 0.98 overload"
@@ -1793,12 +1760,16 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                     f"{h_2025:.0f}h → {h_2025*1.03:.0f}–{h_2025*1.12:.0f}h"
                     if h_2025 > 0 else "—"),
                 'Status Horas':  status_ano,
-                'Sugestão sessão': sug,
+                '_sug_df': _sug_df, '_sug_ref': _sug_ref, '_sug_ol': _sug_ol,
             }
             rows_prog.append(row)
 
         if rows_prog:
-            df_prog = pd.DataFrame(rows_prog)
+            # Remover colunas internas antes de mostrar tabela
+            _rows_prog_display = [{k:v for k,v in r.items()
+                                   if k not in ("_sug_df","_sug_ref","_sug_ol")}
+                                  for r in rows_prog]
+            df_prog = pd.DataFrame(_rows_prog_display)
 
             # ── Deload / Taper detector ───────────────────────────────────
             # baseline = mediana últimas 3 semanas com dados (KJ ou Horas)
@@ -1943,12 +1914,22 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                                "Run: estimativa conservadora (N insuficiente).")
 
             st.markdown("---")
-            st.dataframe(df_prog.drop(columns=['Sugestão sessão']),
+            st.dataframe(df_prog,
                          width="stretch", hide_index=True)
             st.markdown("**💡 Sugestões de sessão (semana actual)**")
             for r in rows_prog:
-                if r['Sugestão sessão'] != '—':
-                    st.caption(f"**{r['Modalidade']}:** {r['Sugestão sessão']}")
+                _df_s  = r.get("_sug_df")
+                _ref_s = r.get("_sug_ref","")
+                _ol_s  = r.get("_sug_ol","")
+                if _df_s is None: continue
+                st.markdown(f"**{r['Modalidade']}**")
+                if _ref_s: st.caption(_ref_s)
+                if _ol_s:  st.warning(_ol_s)
+                st.dataframe(
+                    _df_s.style.apply(
+                        lambda row: ["font-weight:bold" if "★" in str(row["Tipo"])
+                                    else "" for _ in row], axis=1),
+                    hide_index=True, use_container_width=True)
             st.caption(
                 "⚠️ Quantidade de carga: esta camada. Tipo de treino: Need Score acima. "
                 "Cap horas +12% vs " + str(ano_ant) + ".")
