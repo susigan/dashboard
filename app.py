@@ -6591,7 +6591,10 @@ def tab_ctl_kj(da_full):
                 _dm2['_kjh_ratio'] = (_dm2['_kjh_roll'] / _dm2['_kjh_base']).clip(0.5, 1.5)
 
                 # pwr_inc simulado (base por zona)
-                _ni_mod = _ni_cache.get(_mod, 50)
+                try:
+                    _ni_mod = _ni_cache.get(_mod, 50)
+                except NameError:
+                    _ni_mod = 50
                 if _ni_mod >= 75:    _pwr_base = 0.01
                 elif _ni_mod >= 40:  _pwr_base = 0.02
                 else:                _pwr_base = 0.02
@@ -6812,14 +6815,15 @@ def tab_ctl_kj(da_full):
                 for _mod in _MODS_DEBUG:
                     _s = _df_dbg[_df_dbg['_mod'] == _mod].dropna(subset=['_pwr_inc_pct'])
                     if len(_s) < 3: continue
-                    _ni_m  = _ni_cache.get(_mod, 50)
-                    _ol_m  = _ol_cache.get(_mod, False)
-                    _need  = _need_cache.get(_mod, 40)
-                    _rank  = {vg_p1:1, vg_p2:2, vg_p3:3, vg_p4:4}.get(_mod, '—')                              if 'vg_p1' in dir() else '—'
-                    _grupo = ('🎯 Foco' if _mod in (
-                                  {st.session_state.get('vg_prio1','Bike'),
-                                   st.session_state.get('vg_prio2','Row')})
-                              else '🔧 Manutenção')
+                    try:
+                        _ni_m  = _ni_cache.get(_mod, 50)
+                        _ol_m  = _ol_cache.get(_mod, False)
+                        _need  = _need_cache.get(_mod, 40)
+                    except NameError:
+                        _ni_m, _ol_m, _need = 50, False, 40
+                    _p1 = st.session_state.get('vg_prio1','Bike')
+                    _p2 = st.session_state.get('vg_prio2','Row')
+                    _grupo = '🎯 Foco' if _mod in {_p1, _p2} else '🔧 Manutenção'
                     _rows_prio.append({
                         'Modalidade':   _mod,
                         'Grupo':        _grupo,
