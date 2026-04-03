@@ -6490,8 +6490,63 @@ def tab_ctl_kj(da_full):
             title=dict(text='CTL raw vs IF corrigido', font=dict(size=13)))
         st.plotly_chart(fig_ctl, use_container_width=True)
         csv_ts = df_ts.to_csv(index=False).encode('utf-8')
-        st.download_button("⬇️ Download série CTL", csv_ts,
+        st.download_button("⬇️ Download série CTL (agrupada)", csv_ts,
                            "series_ctl_v3.csv", "text/csv", key="dl_ts_v3")
+
+        st.markdown("---")
+        st.subheader("⬇️ Export sessões — dados por actividade")
+        st.caption(
+            "date | modality | duration_min | kj_total | z1_kj | z2_kj | z3_kj | "
+            "rpe | trimp | ctl | atl + power_avg | IF (opcionais)")
+
+        # Construir DataFrame de sessões com CTL/ATL por sessão
+        _df_exp = df.copy()
+        _df_exp = _df_exp.sort_values("Data").reset_index(drop=True)
+
+        # CTL/ATL no dia de cada sessão (join com série diária)
+        _ctl_map = pd.Series(ctl_s.values,   index=all_dates).to_dict()
+        _atl_map = pd.Series(atl_s.values,   index=all_dates).to_dict()
+        _df_exp["ctl"] = _df_exp["Data"].map(_ctl_map).round(2)
+        _df_exp["atl"] = _df_exp["Data"].map(_atl_map).round(2)
+
+        # Colunas essenciais
+        _exp_cols = {
+            "date":         _df_exp["Data"].dt.strftime("%Y-%m-%d"),
+            "modality":     _df_exp["type"].apply(norm_tipo),
+            "duration_min": _df_exp["dur_min"].round(1),
+            "kj_total":     _df_exp["KJ"].round(1),
+            "z1_kj":        pd.to_numeric(_df_exp.get("z1_kj", np.nan), errors="coerce").round(1)
+                            if "z1_kj" in _df_exp.columns else np.nan,
+            "z2_kj":        pd.to_numeric(_df_exp.get("z2_kj", np.nan), errors="coerce").round(1)
+                            if "z2_kj" in _df_exp.columns else np.nan,
+            "z3_kj":        pd.to_numeric(_df_exp.get("z3_kj", np.nan), errors="coerce").round(1)
+                            if "z3_kj" in _df_exp.columns else np.nan,
+            "rpe":          pd.to_numeric(_df_exp["rpe_n"], errors="coerce").round(1),
+            "trimp":        _df_exp["TRIMP_corr"].round(1),
+            "ctl":          _df_exp["ctl"],
+            "atl":          _df_exp["atl"],
+        }
+
+        # Opcionais
+        if "power_avg" in _df_exp.columns:
+            _exp_cols["power_avg"] = pd.to_numeric(_df_exp["power_avg"], errors="coerce").round(1)
+        if "IF" in _df_exp.columns and _df_exp["IF"].notna().any():
+            _exp_cols["if"] = _df_exp["IF"].round(3)
+
+        _df_export = pd.DataFrame(_exp_cols)
+
+        # Preview últimas 5 sessões
+        st.dataframe(_df_export.tail(5), hide_index=True)
+        st.caption(f"Total: {len(_df_export)} sessões | "
+                   f"Período: {_df_export['date'].iloc[0]} → {_df_export['date'].iloc[-1]}")
+
+        _csv_exp = _df_export.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "⬇️ Download sessões CSV",
+            _csv_exp,
+            "atheltica_sessions_export.csv",
+            "text/csv",
+            key="dl_sessions_exp")
 
 
 def main():
