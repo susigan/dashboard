@@ -6225,8 +6225,8 @@ def tab_ctl_kj(da_full):
     df      = df.merge(df_ctx, on='Data', how='left')
 
     # ── 4 tabs internas ───────────────────────────────────────────────────────
-    t_coef, t_eff, t_ctl, t_serie = st.tabs([
-        "📊 Coeficientes", "📈 Eficiência", "🎯 CTL pred vs real", "📉 Série CTL"])
+    t_coef, t_eff, t_ctl, t_serie, t_debug = st.tabs([
+        "📊 Coeficientes", "📈 Eficiência", "🎯 CTL pred vs real", "📉 Série CTL", "🔬 Debug"])
 
     # ════════════════════════════════════════════════════════════════════════
     # TAB 1 — COEFICIENTES (modelo sem IF — TRIMP ~ KJ_work + tipo)
@@ -6547,6 +6547,314 @@ def tab_ctl_kj(da_full):
             "atheltica_sessions_export.csv",
             "text/csv",
             key="dl_sessions_exp")
+
+    # ════════════════════════════════════════════════════════════════════════
+    # TAB DEBUG — 5 testes visuais do sistema de sugestão
+    # ════════════════════════════════════════════════════════════════════════
+    with t_debug:
+        st.subheader("🔬 Debug Visual — Sistema de Sugestão")
+        st.caption(
+            "Diagnóstico do comportamento dos 3 sinais: eff_delta, KJ/h, pwr_inc. "
+            "Baseado nas sessões filtradas pelo modelo (pool por zona/RPE).")
+
+        if len(df) < 10:
+            st.warning("Dados insuficientes para debug.")
+        else:
+            # ── Calcular sinais por sessão ────────────────────────────────
+            _debug_rows = []
+            _MODS_DEBUG = [m for m in ['Bike','Row','Ski','Run'] if m in df['type'].values]
+
+            for _mod in _MODS_DEBUG:
+                _dm = df[df['type'].apply(norm_tipo) == _mod].copy()
+                if len(_dm) < 5: continue
+                _kj_col = 'KJ_work' if _mod == 'Bike' else 'KJ'
+
+                # Pool completo desta modalidade (sem filtro de zona — ver evolução total)
+                _dm2 = _dm.dropna(subset=[_kj_col, 'TRIMP_corr', 'rpe_n']).copy()
+                _dm2 = _dm2.sort_values('Data')
+
+                # eff por sessão
+                _kj_w = _dm2[_kj_col].replace(0, np.nan)
+                _dm2['_eff'] = _dm2['TRIMP_corr'] / _kj_w
+
+                # KJ/h por sessão
+                _dm2['_kjh'] = (_dm2[_kj_col] / (_dm2['dur_min'] / 60)).replace([np.inf, -np.inf], np.nan)
+
+                # eff_delta rolling (eff_rec / eff_baseline - 1) — janela deslizante 8 semanas
+                _dm2['_eff_roll']  = _dm2['_eff'].rolling(8, min_periods=3).mean()
+                _dm2['_eff_base']  = _dm2['_eff'].rolling(40, min_periods=10).mean()
+                _dm2['_eff_delta'] = (_dm2['_eff_roll'] / _dm2['_eff_base'] - 1).clip(-0.5, 0.5)
+
+                # KJ/h rolling e baseline
+                _dm2['_kjh_roll']  = _dm2['_kjh'].rolling(5, min_periods=2).mean()
+                _dm2['_kjh_base']  = _dm2['_kjh'].rolling(30, min_periods=8).mean()
+                _dm2['_kjh_ratio'] = (_dm2['_kjh_roll'] / _dm2['_kjh_base']).clip(0.5, 1.5)
+
+                # pwr_inc simulado (base por zona)
+                _ni_mod = _ni_cache.get(_mod, 50)
+                if _ni_mod >= 75:    _pwr_base = 0.01
+                elif _ni_mod >= 40:  _pwr_base = 0.02
+                else:                _pwr_base = 0.02
+
+                def _calc_pwr_inc(row):
+                    ed = row['_eff_delta'] if pd.notna(row['_eff_delta']) else 0.0
+                    kr = row['_kjh_ratio'] if pd.notna(row['_kjh_ratio']) else 1.0
+                    p = _pwr_base
+                    if   ed < -0.05: p *= 1.2
+                    elif ed < 0.05:  p *= 1.0
+                    elif ed < 0.12:  p *= 0.9
+                    else:            p *= 0.7
+                    if   kr >= 1.0:  p *= 1.1
+                    elif kr >= 0.95: p *= 1.0
+                    return round(p * 100, 2)  # em %
+
+                _dm2['_pwr_inc_pct'] = _dm2.apply(_calc_pwr_inc, axis=1)
+                _dm2['_mod'] = _mod
+                _debug_rows.append(_dm2[['Data','_mod','_eff','_eff_delta','_kjh',
+                                          '_kjh_ratio','_pwr_inc_pct','TRIMP_corr',
+                                          _kj_col, 'rpe_n']].copy())
+
+            if not _debug_rows:
+                st.info("Sem dados para debug.")
+            else:
+                _df_dbg = pd.concat(_debug_rows, ignore_index=True).sort_values('Data')
+                _CORES_M = {'Bike':'#e74c3c','Row':'#2980b9','Ski':'#27ae60','Run':'#8e44ad'}
+
+                # ── GRÁFICO 1: eff_delta ao longo do tempo ────────────────
+                st.markdown("**Gráfico 1 — eff_delta (custo interno relativo ao baseline)**")
+                st.caption(
+                    "< −5%: adaptação | −5% a +5%: normal | "
+                    "+5% a +12%: fadiga produtiva | > +12%: fadiga alta")
+
+                fig_d1 = go.Figure()
+                for _mod in _MODS_DEBUG:
+                    _s = _df_dbg[_df_dbg['_mod'] == _mod].dropna(subset=['_eff_delta'])
+                    if len(_s) < 3: continue
+                    fig_d1.add_trace(go.Scatter(
+                        x=_s['Data'], y=(_s['_eff_delta'] * 100).round(1),
+                        mode='lines+markers', name=_mod,
+                        line=dict(color=_CORES_M.get(_mod,'#888'), width=2),
+                        marker=dict(size=4),
+                        hovertemplate='%{x|%d/%m/%y}<br>eff_delta: <b>%{y:.1f}%%</b><extra></extra>'))
+                # Zonas de fundo
+                for y0, y1, col, lbl in [
+                    (-50, -5, 'rgba(39,174,96,0.08)',  'adaptação'),
+                    (-5,   5, 'rgba(52,152,219,0.06)', 'normal'),
+                    (5,   12, 'rgba(243,156,18,0.10)', 'fadiga prod.'),
+                    (12,  50, 'rgba(231,76,60,0.10)',  'fadiga alta'),
+                ]:
+                    fig_d1.add_hrect(y0=y0, y1=y1, fillcolor=col, line_width=0,
+                                     annotation_text=lbl, annotation_position='top left',
+                                     annotation_font=dict(size=10, color='#555'))
+                fig_d1.add_hline(y=0, line_dash='dash', line_color='#aaa', line_width=1)
+                fig_d1.update_layout(
+                    paper_bgcolor='white', plot_bgcolor='white', height=320,
+                    legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),
+                    xaxis=dict(showgrid=True, gridcolor='#eee'),
+                    yaxis=dict(title='eff_delta (%)', showgrid=True, gridcolor='#eee'),
+                    title=dict(text='eff_delta — custo interno relativo ao baseline', font=dict(size=12)))
+                st.plotly_chart(fig_d1, use_container_width=True)
+
+                # ── GRÁFICO 2: KJ/h ao longo do tempo ────────────────────
+                st.markdown("**Gráfico 2 — KJ/h (densidade de trabalho)**")
+                st.caption("Rolling 5 sessões vs baseline 30 sessões. Ratio abaixo de 1.0 → A reduzida.")
+
+                fig_d2 = go.Figure()
+                for _mod in _MODS_DEBUG:
+                    _s = _df_dbg[_df_dbg['_mod'] == _mod].dropna(subset=['_kjh_roll'])
+                    if len(_s) < 3: continue
+                    fig_d2.add_trace(go.Scatter(
+                        x=_s['Data'], y=_s['_kjh_roll'].round(0),
+                        mode='lines', name=f'{_mod} roll',
+                        line=dict(color=_CORES_M.get(_mod,'#888'), width=2.5),
+                        hovertemplate='%{x|%d/%m/%y}<br>KJ/h: <b>%{y:.0f}</b><extra></extra>'))
+                    fig_d2.add_trace(go.Scatter(
+                        x=_s['Data'], y=_s['_kjh_base'].round(0),
+                        mode='lines', name=f'{_mod} baseline',
+                        line=dict(color=_CORES_M.get(_mod,'#888'), width=1, dash='dot'),
+                        hovertemplate='%{x|%d/%m/%y}<br>KJ/h baseline: <b>%{y:.0f}</b><extra></extra>'))
+                fig_d2.update_layout(
+                    paper_bgcolor='white', plot_bgcolor='white', height=320,
+                    legend=dict(orientation='h', y=-0.30, font=dict(color='#111')),
+                    xaxis=dict(showgrid=True, gridcolor='#eee'),
+                    yaxis=dict(title='KJ/h', showgrid=True, gridcolor='#eee'),
+                    title=dict(text='KJ/h rolling vs baseline por modalidade', font=dict(size=12)))
+                st.plotly_chart(fig_d2, use_container_width=True)
+
+                # ── GRÁFICO 3: pwr_inc simulado ───────────────────────────
+                st.markdown("**Gráfico 3 — pwr_inc simulado (%)**")
+                st.caption("Incremento de power que seria sugerido com base nos 3 sinais naquele dia.")
+
+                fig_d3 = go.Figure()
+                for _mod in _MODS_DEBUG:
+                    _s = _df_dbg[_df_dbg['_mod'] == _mod].dropna(subset=['_pwr_inc_pct'])
+                    if len(_s) < 3: continue
+                    fig_d3.add_trace(go.Scatter(
+                        x=_s['Data'], y=_s['_pwr_inc_pct'],
+                        mode='lines+markers', name=_mod,
+                        line=dict(color=_CORES_M.get(_mod,'#888'), width=2),
+                        marker=dict(size=4),
+                        hovertemplate='%{x|%d/%m/%y}<br>pwr_inc: <b>%{y:.2f}%%</b><extra></extra>'))
+                fig_d3.update_layout(
+                    paper_bgcolor='white', plot_bgcolor='white', height=300,
+                    legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),
+                    xaxis=dict(showgrid=True, gridcolor='#eee'),
+                    yaxis=dict(title='pwr_inc (%)', showgrid=True, gridcolor='#eee'),
+                    title=dict(text='pwr_inc simulado por sessão', font=dict(size=12)))
+                st.plotly_chart(fig_d3, use_container_width=True)
+
+                st.markdown("---")
+
+                # ── TESTE 1: log eff_delta / kjh_ratio / pwr_inc ─────────
+                st.markdown("**Teste 1 — Log: eff_delta | kjh_ratio | pwr_inc por sessão**")
+                _cols_log = ['Data','_mod','rpe_n','_eff_delta','_kjh_ratio','_pwr_inc_pct']
+                _df_log = _df_dbg[_cols_log].dropna().tail(50).copy()
+                _df_log.columns = ['Data','Modalidade','RPE','eff_delta%','kjh_ratio','pwr_inc%']
+                _df_log['eff_delta%'] = (_df_log['eff_delta%'] * 100).round(1)
+                _df_log['kjh_ratio']  = _df_log['kjh_ratio'].round(3)
+                _df_log['Data'] = _df_log['Data'].dt.strftime('%d/%m/%y')
+                st.dataframe(_df_log.iloc[::-1], hide_index=True, width="stretch")
+
+                st.markdown("---")
+
+                # ── TESTE 2: A vs B dominância ────────────────────────────
+                st.markdown("**Teste 2 — Dominância A vs B por modalidade**")
+                st.caption("Simulação: quando B (intensidade) seria maior que A (volume)?")
+
+                _rows_ab = []
+                for _mod in _MODS_DEBUG:
+                    _s = _df_dbg[_df_dbg['_mod'] == _mod].dropna(
+                        subset=['_eff_delta','_kjh_ratio','_pwr_inc_pct'])
+                    if len(_s) < 3: continue
+
+                    _kj_col = 'KJ_work' if _mod == 'Bike' else 'KJ'
+                    _n_total = len(_s)
+
+                    # B = mesmo tempo, mais power → KJ_B = ref_kj * (1 + pwr_inc/100)
+                    # A = mais tempo, mesmo power → limitado por cap
+                    # Simular: B > A quando pwr_inc efectivo suficiente
+                    _n_b_dom = (_s['_pwr_inc_pct'] >= 1.0).sum()   # B produz ganho real
+                    _n_a_dom = (_s['_kjh_ratio']   <  0.95).sum()  # A reduzida
+                    _n_normal = _n_total - _n_b_dom - _n_a_dom + min(_n_b_dom, _n_a_dom)
+
+                    _rows_ab.append({
+                        'Modalidade':  _mod,
+                        'N sessões':   _n_total,
+                        'B dominante (pwr≥1%)':  f"{_n_b_dom} ({_n_b_dom/_n_total*100:.0f}%)",
+                        'A reduzida (kjh<95%)':  f"{_n_a_dom} ({_n_a_dom/_n_total*100:.0f}%)",
+                        'pwr_inc médio':         f"{_s['_pwr_inc_pct'].mean():.2f}%",
+                        'pwr_inc max':           f"{_s['_pwr_inc_pct'].max():.2f}%",
+                        'pwr_inc min':           f"{_s['_pwr_inc_pct'].min():.2f}%",
+                    })
+                if _rows_ab:
+                    st.dataframe(pd.DataFrame(_rows_ab), hide_index=True, width="stretch")
+
+                st.markdown("---")
+
+                # ── TESTE 3: KJ/h rolling 7–14 dias ─────────────────────
+                st.markdown("**Teste 3 — KJ/h rolling 7 e 14 sessões**")
+                _rows_kjh = []
+                for _mod in _MODS_DEBUG:
+                    _s = _df_dbg[_df_dbg['_mod'] == _mod].dropna(subset=['_kjh']).copy()
+                    if len(_s) < 5: continue
+                    _s = _s.sort_values('Data')
+                    _kjh7  = _s['_kjh'].rolling(7,  min_periods=3).mean().iloc[-1]
+                    _kjh14 = _s['_kjh'].rolling(14, min_periods=5).mean().iloc[-1]
+                    _kjh_all = _s['_kjh'].mean()
+                    _rows_kjh.append({
+                        'Modalidade':    _mod,
+                        'KJ/h histórico': round(_kjh_all, 0),
+                        'KJ/h roll 7':   round(_kjh7, 0),
+                        'KJ/h roll 14':  round(_kjh14, 0),
+                        'Ratio 7/hist':  f"{_kjh7/_kjh_all:.2f}" if _kjh_all > 0 else '—',
+                        'Ratio 14/hist': f"{_kjh14/_kjh_all:.2f}" if _kjh_all > 0 else '—',
+                    })
+                if _rows_kjh:
+                    st.dataframe(pd.DataFrame(_rows_kjh), hide_index=True, width="stretch")
+
+                st.markdown("---")
+
+                # ── TESTE 4: eff_delta vs pwr_inc scatter ─────────────────
+                st.markdown("**Teste 4 — eff_delta vs pwr_inc (fadiga vs resposta)**")
+                st.caption("Esperado: correlação negativa — mais fadiga → menor pwr_inc.")
+
+                fig_d4 = go.Figure()
+                for _mod in _MODS_DEBUG:
+                    _s = _df_dbg[_df_dbg['_mod'] == _mod].dropna(
+                        subset=['_eff_delta','_pwr_inc_pct'])
+                    if len(_s) < 5: continue
+                    fig_d4.add_trace(go.Scatter(
+                        x=(_s['_eff_delta'] * 100).round(1),
+                        y=_s['_pwr_inc_pct'],
+                        mode='markers', name=_mod,
+                        marker=dict(color=_CORES_M.get(_mod,'#888'), size=6, opacity=0.6),
+                        hovertemplate=f'{_mod}<br>eff_delta: <b>%{{x:.1f}}%%</b><br>pwr_inc: <b>%{{y:.2f}}%%</b><extra></extra>'))
+                # Linhas verticais das zonas
+                for xv, col in [(-5,'#27ae60'),(5,'#f39c12'),(12,'#e74c3c')]:
+                    fig_d4.add_vline(x=xv, line_dash='dot', line_color=col, line_width=1.5)
+                fig_d4.update_layout(
+                    paper_bgcolor='white', plot_bgcolor='white', height=320,
+                    legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),
+                    xaxis=dict(title='eff_delta (%)', showgrid=True, gridcolor='#eee', zeroline=True),
+                    yaxis=dict(title='pwr_inc (%)', showgrid=True, gridcolor='#eee'),
+                    title=dict(text='eff_delta vs pwr_inc — fadiga vs resposta', font=dict(size=12)))
+                st.plotly_chart(fig_d4, use_container_width=True)
+
+                st.markdown("---")
+
+                # ── TESTE 5: prioridade vs pwr_inc ───────────────────────
+                st.markdown("**Teste 5 — Prioridade vs pwr_inc médio**")
+                st.caption(
+                    "Esperado: modalidades P1/P2 (Foco) com ni mais alto → "
+                    "pwr_inc maior que P3/P4 (Manutenção).")
+
+                _rows_prio = []
+                for _mod in _MODS_DEBUG:
+                    _s = _df_dbg[_df_dbg['_mod'] == _mod].dropna(subset=['_pwr_inc_pct'])
+                    if len(_s) < 3: continue
+                    _ni_m  = _ni_cache.get(_mod, 50)
+                    _ol_m  = _ol_cache.get(_mod, False)
+                    _need  = _need_cache.get(_mod, 40)
+                    _rank  = {vg_p1:1, vg_p2:2, vg_p3:3, vg_p4:4}.get(_mod, '—')                              if 'vg_p1' in dir() else '—'
+                    _grupo = ('🎯 Foco' if _mod in (
+                                  {st.session_state.get('vg_prio1','Bike'),
+                                   st.session_state.get('vg_prio2','Row')})
+                              else '🔧 Manutenção')
+                    _rows_prio.append({
+                        'Modalidade':   _mod,
+                        'Grupo':        _grupo,
+                        'Need_int':     _ni_m,
+                        'Need_score':   round(_need, 1),
+                        'Overload':     '⚠️' if _ol_m else '—',
+                        'pwr_inc médio': f"{_s['_pwr_inc_pct'].mean():.2f}%",
+                        'pwr_inc últimas 5': f"{_s['_pwr_inc_pct'].tail(5).mean():.2f}%",
+                    })
+                if _rows_prio:
+                    _rows_prio.sort(key=lambda x: float(x['pwr_inc médio'].replace('%','')),
+                                    reverse=True)
+                    st.dataframe(pd.DataFrame(_rows_prio), hide_index=True, width="stretch")
+                    st.caption(
+                        "pwr_inc é determinado por eff_delta e kjh_ratio (dados históricos), "
+                        "NÃO directamente pela prioridade. "
+                        "A prioridade influencia Need_int → zona alvo → pwr_inc base.")
+
+                # Download debug CSV
+                st.markdown("---")
+                _df_dbg_dl = _df_dbg.copy()
+                _df_dbg_dl['Data'] = _df_dbg_dl['Data'].dt.strftime('%Y-%m-%d')
+                _df_dbg_dl['_eff_delta_pct'] = (_df_dbg_dl['_eff_delta'] * 100).round(2)
+                _df_dbg_dl = _df_dbg_dl.rename(columns={
+                    '_mod':'modality','_eff':'eff','_eff_delta_pct':'eff_delta_pct',
+                    '_kjh':'kjh','_kjh_ratio':'kjh_ratio','_pwr_inc_pct':'pwr_inc_pct',
+                    'rpe_n':'rpe','TRIMP_corr':'trimp'})
+                _cols_dl = [c for c in ['Data','modality','rpe','eff','eff_delta_pct',
+                                         'kjh','kjh_ratio','pwr_inc_pct','trimp']
+                            if c in _df_dbg_dl.columns]
+                _csv_dbg = _df_dbg_dl[_cols_dl].to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    "⬇️ Download debug CSV",
+                    _csv_dbg, "atheltica_debug_signals.csv",
+                    "text/csv", key="dl_dbg_signals")
 
 
 def main():
