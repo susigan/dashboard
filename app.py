@@ -1438,6 +1438,7 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             _prog_cap = _PROG_CAP.get(zona_alvo, 1.10)
             block_A   = False
             _eff_signal = ""
+            kj_target_A_adj = 1.0   # multiplicador KJ_A: reduzido se kjh abaixo baseline
 
             if df_hist is not None and len(df_hist) >= 2:
                 _df_mod = df_hist[df_hist["type"].apply(norm_tipo) == mod].copy()
@@ -1511,23 +1512,43 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                         _kjh_baseline = float(_pool2["_kjh"].median()) if _pool2["_kjh"].notna().any() else None
                         _kjh_ref = float(_ref_kj / (_ref_dur / 60)) if (_ref_kj and _ref_dur and _ref_dur > 0) else None
 
-                        # ── Ajustar pwr_inc pelos 3 sinais ───────────────────
-                        # Sinal 1: eff melhorou → aumentar pwr_inc
+                        # ── Ajustar pwr_inc — zonas de fadiga contínuas ──────
+                        # Sinal 1: eff_delta → 4 zonas (adaptação → fadiga alta)
                         if _eff_delta < -0.05:
-                            pwr_inc = pwr_inc * 1.2
-                            _eff_signal += " eff↓" + str(round(_eff_delta*100)) + "%%→pwr+"
-                        elif _eff_delta > 0.08:
-                            pwr_inc = pwr_inc * 0.7
-                            _eff_signal += " eff↑" + str(round(_eff_delta*100)) + "%%→pwr-"
+                            pwr_inc = pwr_inc * 1.2   # adaptação: agressivo
+                            _eff_z = "adaptacao"
+                            _eff_signal += " eff↓" + str(round(_eff_delta*100)) + "%%→+1.2"
+                        elif _eff_delta < 0.05:
+                            pwr_inc = pwr_inc * 1.0   # zona normal: manter
+                            _eff_z = "normal"
+                            _eff_signal += " eff→normal"
+                        elif _eff_delta < 0.12:
+                            pwr_inc = pwr_inc * 0.9   # fadiga produtiva: leve
+                            _eff_z = "fadiga_prod"
+                            _eff_signal += " eff↑" + str(round(_eff_delta*100)) + "%%→×0.9"
+                        else:
+                            pwr_inc = pwr_inc * 0.7   # fadiga alta: segurar
+                            _eff_z = "fadiga_alta"
+                            _eff_signal += " eff↑" + str(round(_eff_delta*100)) + "%%→×0.7"
 
-                        # Sinal 2: KJ/h acima do baseline → aumentar pwr_inc
+                        # Sinal 2: KJ/h vs baseline → ajuste contínuo (não binário)
                         if _kjh_baseline and _kjh_ref:
-                            if _kjh_ref > _kjh_baseline:
-                                pwr_inc = pwr_inc * 1.1
-                                _eff_signal += " kjh↑→pwr+"
-                            elif _kjh_ref < _kjh_baseline * 0.95:
-                                block_A = True
-                                _eff_signal += " kjh↓→bloqA"
+                            _kjh_ratio = _kjh_ref / _kjh_baseline
+                            if _kjh_ratio >= 1.0:
+                                pwr_inc = pwr_inc * 1.1   # densidade boa: +10%
+                                _eff_signal += " kjh↑→+1.1"
+                            elif _kjh_ratio >= 0.95:
+                                pwr_inc = pwr_inc * 1.0   # densidade ok: manter
+                                _eff_signal += " kjh→ok"
+                            elif _kjh_ratio >= 0.90:
+                                kj_target_A_adj = 0.95    # densidade leve abaixo: reduzir A 5%%
+                                _eff_signal += " kjh↓→A-5%%"
+                            else:
+                                kj_target_A_adj = 0.90    # densidade muito abaixo: reduzir A 10%%
+                                _eff_signal += " kjh↓↓→A-10%%"
+                        else:
+                            _kjh_ratio = 1.0
+                            kj_target_A_adj = 1.0
 
                         _score_med = round(float(_dh["_score"].mean()), 2)
                         _debug_hist = [
@@ -1555,6 +1576,8 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                     kj_driver_A = min(
                         kj_rest if kj_rest > 0 else _ref_driver * 1.03,
                         _ref_driver * _prog_cap)
+                # Ajuste contínuo de A pelo sinal KJ/h (não bloqueia, só reduz)
+                kj_driver_A = kj_driver_A * kj_target_A_adj
 
                 # Opcao B: intensidade — mesmo tempo, mais power (sempre)
                 pwr_B  = ref_pwr_use * (1 + pwr_inc)
