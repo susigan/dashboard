@@ -1397,27 +1397,23 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
 
         def _sugestao_sessao(kj_rest, h_rest, km_rest, mod, eftp, ni, ol, df_hist=None):
             """
-            Sugestao baseada em historico real.
-            Seleccao: score = match_rpe(1.0) + match_zona(0.5) + recency(0-0.2)
-            Ordenado por score desc, top-5. Pre-2023 sem zona: score=1.0.
-            Driver minimo por zona: Z3>=25kJ, Z2>=45kJ, Z1=total.
-            Progression cap por zona: Z3=1.07, Z2=1.10, Z1=1.12.
-            Overload: kj_target = min(ref_driver, kj_rest), power -2%%.
-            Fallback: usa tempo historico, nunca KJ/power directo.
+            Objectivo: densidade (KJ/h) — priorizar power sobre volume.
+            Score: match_rpe(1.0) + match_zona(0.5) + recency(0-0.2) → top-5.
+            Tempo max = _ref_dur × 1.10 — se A excede, A é capada.
+            B sempre prioritaria (mesmo tempo, mais power).
+            Z1: pwr_inc conservador (max 2%). Fallback: tempo historico.
             """
             sugs = []
             _emj = {"Bike": "🚴", "Row": "🚣", "Ski": "🎿", "Run": "🏃"}
             _em = _emj.get(mod, "🏋")
-
-            # Parametros por zona
             _KJ_MIN   = {"Z3": 25, "Z2": 45, "Z1": 0}
             _PROG_CAP = {"Z3": 1.07, "Z2": 1.10, "Z1": 1.12}
+            _TEMPO_CAP = 1.10   # max +10% tempo total vs historico
 
-            # Need_intensity → RPE alvo + zona alvo + incremento de power
             if ol:
-                rpe_alvo, rpe_desc, zona_pct, pwr_inc, zona_alvo = 3, "Z1 recuperacao", 0.60, 0.05, "Z1"
+                rpe_alvo, rpe_desc, zona_pct, pwr_inc, zona_alvo = 3, "Z1 recuperacao", 0.60, 0.02, "Z1"
             elif ni < 20:
-                rpe_alvo, rpe_desc, zona_pct, pwr_inc, zona_alvo = 4, "Z1 base",        0.68, 0.05, "Z1"
+                rpe_alvo, rpe_desc, zona_pct, pwr_inc, zona_alvo = 4, "Z1 base",        0.68, 0.02, "Z1"
             elif ni < 40:
                 rpe_alvo, rpe_desc, zona_pct, pwr_inc, zona_alvo = 6, "Z2 Sweet Spot",  0.83, 0.02, "Z2"
             elif ni < 60:
@@ -1439,15 +1435,12 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             _ref_driver = _ref_kj = _ref_dur = _ref_pwr = None
             _n_sess = 0
             _debug_hist = []
-            _kj_min = _KJ_MIN.get(zona_alvo, 25)
+            _kj_min   = _KJ_MIN.get(zona_alvo, 25)
             _prog_cap = _PROG_CAP.get(zona_alvo, 1.10)
 
             if df_hist is not None and len(df_hist) >= 2:
                 _df_mod = df_hist[df_hist["type"].apply(norm_tipo) == mod].copy()
-                if len(_df_mod) == 0:
-                    pass
-                else:
-                    # Zona dominante por sessao (None se sem dados de zona)
+                if len(_df_mod) > 0:
                     _has_zona = "z3_kj" in _df_mod.columns and "z2_kj" in _df_mod.columns
                     if _has_zona:
                         _z3n = pd.to_numeric(_df_mod["z3_kj"], errors="coerce").fillna(0)
@@ -1460,101 +1453,114 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                     else:
                         _df_mod["_zona_dom"] = None
 
-                    # Score: match_rpe(1.0) + match_zona(0.5) + recency(0-0.2)
                     _df_mod["_rpe_n_num"] = pd.to_numeric(_df_mod["_rpe_n"], errors="coerce")
-                    _df_mod["_match_rpe"] = _df_mod["_rpe_n_num"].between(
-                        _rpe_seg[0], _rpe_seg[1]).astype(float)
+                    _df_mod["_match_rpe"]  = _df_mod["_rpe_n_num"].between(_rpe_seg[0], _rpe_seg[1]).astype(float)
                     _df_mod["_match_zona"] = (_df_mod["_zona_dom"] == zona_alvo).astype(float) * 0.5
-                    # Recency: rank normalizado 0-0.2 (mais recente = 0.2)
                     _n_total = len(_df_mod)
                     _df_mod["_recency"] = (np.arange(_n_total) / max(_n_total - 1, 1)) * 0.2
-                    _df_mod["_score"] = (_df_mod["_match_rpe"]
-                                         + _df_mod["_match_zona"]
-                                         + _df_mod["_recency"])
+                    _df_mod["_score"]   = _df_mod["_match_rpe"] + _df_mod["_match_zona"] + _df_mod["_recency"]
 
-                    # Top-5 por score desc (so sessoes com match_rpe >= 1.0)
                     _dh = (_df_mod[_df_mod["_match_rpe"] >= 1.0]
                            .sort_values("_score", ascending=False)
                            .head(5))
-
                     _n_sess = len(_dh)
                     if _n_sess >= 2:
                         _ref_kj  = float(_dh["_kj"].median())
                         _ref_dur = float(_dh["_dur_min"].median())
-
-                        # Driver KJ da zona (valido se >= _kj_min)
                         if _driver in _dh.columns:
                             _d = pd.to_numeric(_dh[_driver], errors="coerce").replace(0, np.nan)
                             _d_med = float(_d.median()) if _d.notna().any() else None
                             _ref_driver = _d_med if (_d_med and _d_med >= _kj_min) else None
-
-                        # Power da zona (valido se z_kj >= 20 kJ)
                         if _pwr_col and _pwr_col in _dh.columns and _ref_driver:
                             _z_check = pd.to_numeric(_dh[_driver], errors="coerce")
                             _dh_pwr  = _dh[_z_check >= 20]
                             if len(_dh_pwr) >= 1:
                                 _zp = pd.to_numeric(_dh_pwr[_pwr_col], errors="coerce").replace(0, np.nan)
                                 _ref_pwr = float(_zp.median()) if _zp.notna().any() else None
-
-                        # Score medio para debug
                         _score_med = round(float(_dh["_score"].mean()), 2)
-                        _zona_info = _dh["_zona_dom"].value_counts().to_dict() if _has_zona else {}
                         _debug_hist = [
                             "Historico (" + str(_n_sess) + " sessoes, score=" + str(_score_med) + "):",
-                            "  Tempo med.:    " + str(round(_ref_dur)) + " min",
-                            "  Power " + zona_alvo + ":     " + (str(round(_ref_pwr)) + " W" if _ref_pwr else "— (fallback FTP)"),
-                            "  " + _driver.upper() + " med.:  " + (str(round(_ref_driver)) + " kJ" if _ref_driver else "< " + str(_kj_min) + " kJ (invalido)"),
-                            "  Total KJ med.: " + (str(round(_ref_kj)) + " kJ" if _ref_kj else "—"),
+                            "  Tempo:      " + str(round(_ref_dur)) + " min",
+                            "  Power " + zona_alvo + ":  " + (str(round(_ref_pwr)) + " W" if _ref_pwr else "—"),
+                            "  " + _driver.upper() + ": " + (str(round(_ref_driver)) + " kJ" if _ref_driver else "< " + str(_kj_min) + " kJ (invalido)"),
+                            "  Total KJ:   " + (str(round(_ref_kj)) + " kJ" if _ref_kj else "—"),
+                            "  KJ/h:       " + (str(round(_ref_kj / (_ref_dur / 60))) + " kJ/h" if (_ref_kj and _ref_dur) else "—"),
                         ]
 
-            watts_ftp = (eftp * zona_pct) if eftp else None
+            watts_ftp     = (eftp * zona_pct) if eftp else None
             ref_pwr_final = _ref_pwr or watts_ftp
             header = _em + " " + mod + " — RPE alvo " + str(rpe_alvo) + " (" + rpe_desc + ")"
 
-            if _ref_driver and ref_pwr_final and _ref_driver > 0 and ref_pwr_final > 0:
+            if _ref_driver and ref_pwr_final and _ref_driver > 0 and ref_pwr_final > 0 and _ref_dur:
+                tempo_max = _ref_dur * _TEMPO_CAP  # max +10% tempo total
+
                 if ol:
-                    # Overload: kj_target = min(ref_driver, kj_rest), power -2%
-                    kj_target_A = min(_ref_driver, kj_rest) if kj_rest > 0 else _ref_driver
-                    ref_pwr_ol  = ref_pwr_final * 0.98
+                    ref_pwr_use = ref_pwr_final * 0.98
+                    kj_driver_A = min(_ref_driver, kj_rest) if kj_rest > 0 else _ref_driver
                 else:
-                    kj_target_A = min(
+                    ref_pwr_use = ref_pwr_final
+                    kj_driver_A = min(
                         kj_rest if kj_rest > 0 else _ref_driver * 1.03,
                         _ref_driver * _prog_cap)
-                    ref_pwr_ol = ref_pwr_final
-                t_ref  = _ref_driver * 1000 / (ref_pwr_ol * 60)
-                t_novo = kj_target_A * 1000 / (ref_pwr_ol * 60)
-                delta  = kj_target_A - _ref_driver
-                pct_A  = delta / _ref_driver * 100 if _ref_driver > 0 else 0
-                pwr_B  = ref_pwr_ol * (1 + pwr_inc)
-                kj_B   = pwr_B * t_ref * 60 / 1000
-                pct_B  = (kj_B - _ref_driver) / _ref_driver * 100 if _ref_driver > 0 else 0
+
+                # Opcao A: volume — tempo calculado, capado em tempo_max
+                t_A_raw = kj_driver_A * 1000 / (ref_pwr_use * 60)
+                t_A     = min(t_A_raw, tempo_max)
+                kj_A    = ref_pwr_use * t_A * 60 / 1000   # KJ real ao tempo capado
+                kjh_A   = kj_A / (t_A / 60) if t_A > 0 else 0
+                capped_A = t_A < t_A_raw  # foi capado?
+
+                # Opcao B: intensidade — mesmo tempo ref, mais power (PRIORITARIA)
+                pwr_B = ref_pwr_use * (1 + pwr_inc)
+                t_B   = _ref_dur   # mesmo tempo total da sessao ref
+                kj_B  = pwr_B * t_B * 60 / 1000
+                kjh_B = kj_B / (t_B / 60) if t_B > 0 else 0
+
+                # Referencia KJ/h
+                kjh_ref = (_ref_kj / (_ref_dur / 60)) if _ref_dur > 0 else 0
+                pct_A   = (kj_A - _ref_kj) / _ref_kj * 100 if _ref_kj > 0 else 0
+                pct_B   = (kj_B - _ref_kj) / _ref_kj * 100 if _ref_kj > 0 else 0
+                kjh_pct_A = (kjh_A - kjh_ref) / kjh_ref * 100 if kjh_ref > 0 else 0
+                kjh_pct_B = (kjh_B - kjh_ref) / kjh_ref * 100 if kjh_ref > 0 else 0
+
                 lines = [header, ""]
                 lines.extend(_debug_hist)
+                lines.append("  Ref:  " + str(round(_ref_kj)) + " kJ | " + str(round(_ref_dur)) + " min | " + str(round(kjh_ref)) + " kJ/h")
                 lines.append("")
                 lines.append("Sugestao" + (" (overload — manter nivel)" if ol else "") + ":")
-                lines.append("  A) Volume:")
-                lines.append("     " + str(round(t_novo)) + "min @ " + str(round(ref_pwr_ol))
-                             + "W -> ~" + str(round(kj_target_A)) + " kJ (" + (str(int(pct_A)) if not ol else "=ref") + ")")
-                lines.append("  B) Intensidade:")
-                lines.append("     " + str(round(t_ref)) + "min @ " + str(round(pwr_B))
-                             + "W (+" + str(int(pwr_inc*100)) + "%) -> ~" + str(round(kj_B)) + " kJ (" + (str(int(pct_B)) if not ol else "-2%pwr") + ")")
+                # B primeiro (prioritaria — densidade)
+                lines.append("  B) Intensidade [prioridade]:")
+                lines.append("     " + str(round(t_B)) + " min @ " + str(round(pwr_B))
+                             + " W (+"+str(int(pwr_inc*100))+"%) ->"
+                             + " " + str(round(kj_B)) + " kJ | " + str(round(kjh_B)) + " kJ/h (" + str(int(kjh_pct_B)) + "%)")
+                # A segundo (volume, com nota se capada)
+                cap_note = " [cap " + str(round(tempo_max)) + "min]" if capped_A else ""
+                lines.append("  A) Volume" + cap_note + ":")
+                lines.append("     " + str(round(t_A)) + " min @ " + str(round(ref_pwr_use))
+                             + " W -> " + str(round(kj_A)) + " kJ | " + str(round(kjh_A)) + " kJ/h (" + str(int(kjh_pct_A)) + "%)")
                 sugs.append("\n".join(lines))
 
             elif _ref_dur and ref_pwr_final:
                 # Fallback: tempo historico + %FTP (nunca KJ/power)
-                t_base = _ref_dur
-                t_A    = min(t_base * 1.05, t_base * _prog_cap)
-                kj_A   = ref_pwr_final * t_A * 60 / 1000
-                pwr_B  = ref_pwr_final * (1 + pwr_inc)
-                kj_B   = pwr_B * t_base * 60 / 1000
-                lines  = [header, ""]
+                tempo_max = _ref_dur * _TEMPO_CAP
+                t_B   = _ref_dur
+                pwr_B = ref_pwr_final * (1 + pwr_inc)
+                kj_B  = pwr_B * t_B * 60 / 1000
+                t_A   = min(_ref_dur * 1.05, tempo_max)
+                kj_A  = ref_pwr_final * t_A * 60 / 1000
+                kjh_ref = _ref_kj / (_ref_dur / 60) if (_ref_kj and _ref_dur) else 0
+                kjh_A   = kj_A / (t_A / 60) if t_A > 0 else 0
+                kjh_B   = kj_B / (t_B / 60) if t_B > 0 else 0
+                lines = [header, ""]
                 if _debug_hist: lines.extend(_debug_hist)
+                if kjh_ref > 0:
+                    lines.append("  Ref:  — kJ | " + str(round(_ref_dur)) + " min | " + str(round(kjh_ref)) + " kJ/h")
                 lines.append("")
-                lines.append("Sugestao (tempo historico — sem driver zona valido):")
-                lines.append("  A) Volume:      " + str(round(t_A)) + "min @ "
-                             + str(round(ref_pwr_final)) + "W -> ~" + str(round(kj_A)) + " kJ")
-                lines.append("  B) Intensidade: " + str(round(t_base)) + "min @ "
-                             + str(round(pwr_B)) + "W -> ~" + str(round(kj_B)) + " kJ")
+                lines.append("Sugestao (tempo historico):")
+                lines.append("  B) Intensidade [prioridade]:")
+                lines.append("     " + str(round(t_B)) + " min @ " + str(round(pwr_B)) + " W -> " + str(round(kj_B)) + " kJ | " + str(round(kjh_B)) + " kJ/h")
+                lines.append("  A) Volume:")
+                lines.append("     " + str(round(t_A)) + " min @ " + str(round(ref_pwr_final)) + " W -> " + str(round(kj_A)) + " kJ | " + str(round(kjh_A)) + " kJ/h")
                 sugs.append("\n".join(lines))
 
             elif h_rest > 0 or km_rest > 0:
