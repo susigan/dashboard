@@ -1992,17 +1992,10 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                         # Linha de referência + overload
                         if _ref_s: st.caption(_ref_s)
                         if _ol_s:  st.warning(_ol_s)
-                        # Tabela de opções com principal em negrito
-                        def _style_principal(df_in):
-                            styles = []
-                            for _, row in df_in.iterrows():
-                                if "★" in str(row.get("Tipo","")):
-                                    styles.append(["font-weight:bold; background-color:#f0f7ff"]*len(row))
-                                else:
-                                    styles.append([""]*len(row))
-                            return pd.DataFrame(styles, index=df_in.index, columns=df_in.columns)
+                        # Tabela de opções — principal marcada com ★ na coluna Tipo
+                        # Não usar style (causa texto branco no tema escuro do Streamlit)
                         st.dataframe(
-                            _df_s.style.apply(_style_principal, axis=None),
+                            _df_s,
                             hide_index=True,
                             use_container_width=True)
                         # KJ restante e meta abaixo da tabela
