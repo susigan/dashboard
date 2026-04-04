@@ -1976,19 +1976,44 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             st.dataframe(df_prog,
                          width="stretch", hide_index=True)
             st.markdown("**💡 Sugestões de sessão (semana actual)**")
-            for r in rows_prog:
-                _df_s  = r.get("_sug_df")
-                _ref_s = r.get("_sug_ref","")
-                _ol_s  = r.get("_sug_ol","")
-                if _df_s is None: continue
-                st.markdown(f"**{r['Modalidade']}**")
-                if _ref_s: st.caption(_ref_s)
-                if _ol_s:  st.warning(_ol_s)
-                st.dataframe(
-                    _df_s.style.apply(
-                        lambda row: ["font-weight:bold" if "★" in str(row["Tipo"])
-                                    else "" for _ in row], axis=1),
-                    hide_index=True, use_container_width=True)
+
+            # Mini-tabs por modalidade
+            _mods_sug = [r for r in rows_prog if r.get("_sug_df") is not None]
+            if _mods_sug:
+                _emj_map = {"Bike":"🚴 Bike","Row":"🚣 Row","Ski":"🎿 Ski","Run":"🏃 Run"}
+                _tab_labels = [_emj_map.get(r["Modalidade"], r["Modalidade"])
+                               for r in _mods_sug]
+                _sug_tabs = st.tabs(_tab_labels)
+                for _stab, r in zip(_sug_tabs, _mods_sug):
+                    with _stab:
+                        _df_s  = r["_sug_df"]
+                        _ref_s = r.get("_sug_ref","")
+                        _ol_s  = r.get("_sug_ol","")
+                        # Linha de referência + overload
+                        if _ref_s: st.caption(_ref_s)
+                        if _ol_s:  st.warning(_ol_s)
+                        # Tabela de opções com principal em negrito
+                        def _style_principal(df_in):
+                            styles = []
+                            for _, row in df_in.iterrows():
+                                if "★" in str(row.get("Tipo","")):
+                                    styles.append(["font-weight:bold; background-color:#f0f7ff"]*len(row))
+                                else:
+                                    styles.append([""]*len(row))
+                            return pd.DataFrame(styles, index=df_in.index, columns=df_in.columns)
+                        st.dataframe(
+                            _df_s.style.apply(_style_principal, axis=None),
+                            hide_index=True,
+                            use_container_width=True)
+                        # KJ restante e meta abaixo da tabela
+                        _kj_r_val = r.get("Restante","")
+                        _meta_val = r.get("Meta semana","")
+                        _feito_val = r.get("Feito","")
+                        if _kj_r_val or _meta_val:
+                            st.caption(
+                                f"Meta semana: **{_meta_val}** | "
+                                f"Feito: **{_feito_val}** | "
+                                f"Restante: **{_kj_r_val}**")
             st.caption(
                 "⚠️ Quantidade de carga: esta camada. Tipo de treino: Need Score acima. "
                 "Cap horas +12% vs " + str(ano_ant) + ".")
