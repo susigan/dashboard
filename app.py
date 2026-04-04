@@ -1526,29 +1526,50 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             tempo_max = (_ref_dur*_TEMPO_CAP) if _ref_dur else 90
             watts_ftp = eftp if eftp else 200
 
-            # ── Semana anterior Z3 ─────────────────────────────────────────
+            # ── Semana anterior — Z1/Z2/Z3 por zona ───────────────────────
             _sa_z3_kj = _sa_z3_dur = _sa_z3_pwr = None
-            hoje_sa     = pd.Timestamp.now().normalize()
-            sem_ini_sa  = hoje_sa - pd.Timedelta(days=hoje_sa.weekday())
-            sa_ini      = sem_ini_sa - pd.Timedelta(weeks=1)
-            sa_fim      = sem_ini_sa - pd.Timedelta(days=1)
+            _sa_z2_kj = _sa_z2_dur = _sa_z2_pwr = None
+            _sa_z1_kj = _sa_z1_dur = _sa_z1_rpe_med = None
+            hoje_sa    = pd.Timestamp.now().normalize()
+            sem_ini_sa = hoje_sa - pd.Timedelta(days=hoje_sa.weekday())
+            sa_ini     = sem_ini_sa - pd.Timedelta(weeks=1)
+            sa_fim     = sem_ini_sa - pd.Timedelta(days=1)
+
             if df_hist is not None and len(df_hist) > 0 and "_rpe_n" in df_hist.columns:
-                _df_sa = df_hist[
+                _df_sa_all = df_hist[
                     (df_hist["type"].apply(norm_tipo) == mod) &
                     (df_hist["Data"] >= sa_ini) &
-                    (df_hist["Data"] <= sa_fim) &
-                    (pd.to_numeric(df_hist["_rpe_n"], errors="coerce") >= 7)
+                    (df_hist["Data"] <= sa_fim)
                 ].copy()
-                if len(_df_sa) > 0:
-                    if "z3_kj"  in _df_sa.columns:
-                        _v = pd.to_numeric(_df_sa["z3_kj"],  errors="coerce").replace(0,np.nan)
-                        _sa_z3_kj  = float(_v.sum())  if _v.notna().any() else None
-                    if "z3_sec" in _df_sa.columns:
-                        _v = pd.to_numeric(_df_sa["z3_sec"], errors="coerce").replace(0,np.nan)
-                        _sa_z3_dur = float(_v.sum()/60) if _v.notna().any() else None
-                    if "z3_pwr" in _df_sa.columns:
-                        _v = pd.to_numeric(_df_sa["z3_pwr"], errors="coerce").replace(0,np.nan)
-                        _sa_z3_pwr = float(_v.mean()) if _v.notna().any() else None
+                _rpe_sa = pd.to_numeric(_df_sa_all.get("_rpe_n", pd.Series(dtype=float)), errors="coerce")
+                _kj_sa  = pd.to_numeric(_df_sa_all.get("_kj",    pd.Series(dtype=float)), errors="coerce").replace(0,np.nan)
+
+                # Z3 — RPE >= 7 AND z3_kj/total_kj > 20%
+                if "z3_kj" in _df_sa_all.columns:
+                    _z3_sa  = pd.to_numeric(_df_sa_all["z3_kj"], errors="coerce").replace(0,np.nan)
+                    _z3_dom = (_z3_sa / _kj_sa.fillna(1) > 0.20) & (_rpe_sa >= 7)
+                    _df_z3  = _df_sa_all[_z3_dom].copy()
+                    if len(_df_z3) > 0:
+                        _sa_z3_kj  = float(pd.to_numeric(_df_z3["z3_kj"],  errors="coerce").replace(0,np.nan).sum())   if "z3_kj"  in _df_z3.columns else None
+                        _sa_z3_dur = float(pd.to_numeric(_df_z3["z3_sec"], errors="coerce").replace(0,np.nan).sum()/60) if "z3_sec" in _df_z3.columns else None
+                        _sa_z3_pwr = float(pd.to_numeric(_df_z3["z3_pwr"], errors="coerce").replace(0,np.nan).mean())  if "z3_pwr" in _df_z3.columns else None
+
+                # Z2 — RPE 5-7 AND z2_kj/total_kj > 30%
+                if "z2_kj" in _df_sa_all.columns:
+                    _z2_sa  = pd.to_numeric(_df_sa_all["z2_kj"], errors="coerce").replace(0,np.nan)
+                    _z2_dom = (_z2_sa / _kj_sa.fillna(1) > 0.30) & (_rpe_sa.between(5,7))
+                    _df_z2  = _df_sa_all[_z2_dom].copy()
+                    if len(_df_z2) > 0:
+                        _sa_z2_kj  = float(pd.to_numeric(_df_z2["z2_kj"],  errors="coerce").replace(0,np.nan).sum())   if "z2_kj"  in _df_z2.columns else None
+                        _sa_z2_dur = float(pd.to_numeric(_df_z2["z2_sec"], errors="coerce").replace(0,np.nan).sum()/60) if "z2_sec" in _df_z2.columns else None
+                        _sa_z2_pwr = float(pd.to_numeric(_df_z2["z2_pwr"], errors="coerce").replace(0,np.nan).mean())  if "z2_pwr" in _df_z2.columns else None
+
+                # Z1 — RPE <= 4 (qualquer sessão leve)
+                _df_z1 = _df_sa_all[_rpe_sa <= 4].copy()
+                if len(_df_z1) > 0:
+                    _sa_z1_kj      = float(_kj_sa[_rpe_sa<=4].sum())         if _kj_sa[_rpe_sa<=4].notna().any() else None
+                    _sa_z1_dur     = float(pd.to_numeric(_df_z1["_dur_min"], errors="coerce").sum()) if "_dur_min" in _df_z1.columns else None
+                    _sa_z1_rpe_med = float(_rpe_sa[_rpe_sa<=4].median())
 
             # ── Principal ──────────────────────────────────────────────────
             if ol:
@@ -1582,10 +1603,48 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 _kj_r = _pwr_f*_dw*60/1000
                 _kjh  = _kj_r/(_dt/60) if _dt>0 else 0
                 _struct = _estrutura(_key, _dw)
+                # ── vs semana anterior por zona ──────────────────────────
                 _vs = ""
                 if _key in ("vo2","anaerobio"):
-                    if _sa_z3_kj:  _vs = f"{_kj_r-_sa_z3_kj:+.0f}kJ Z3"
-                    elif _sa_z3_dur: _vs = f"{_dw-_sa_z3_dur:+.1f}min Z3"
+                    # Z3: comparar kJ, duração e power em Z3
+                    if _sa_z3_kj and _sa_z3_kj > 5:
+                        _dk = _kj_r - _sa_z3_kj
+                        _vs = f"{_dk:+.0f}kJ Z3"
+                        if _sa_z3_pwr and _sa_z3_pwr > 0:
+                            _dp = _pwr_f - _sa_z3_pwr
+                            _vs += f" | {_dp:+.0f}W"
+                    elif _sa_z3_dur and _sa_z3_dur > 2:
+                        _vs = f"{_dw-_sa_z3_dur:+.1f}min Z3"
+
+                elif _key in ("threshold","sweetspot"):
+                    # Z2: comparar kJ e duração em Z2
+                    if _sa_z2_kj and _sa_z2_kj > 10:
+                        _dk2 = _kj_r - _sa_z2_kj
+                        _vs = f"{_dk2:+.0f}kJ Z2"
+                        if _sa_z2_pwr and _sa_z2_pwr > 0:
+                            _dp2 = _pwr_f - _sa_z2_pwr
+                            _vs += f" | {_dp2:+.0f}W"
+                    elif _sa_z2_dur and _sa_z2_dur > 5:
+                        _vs = f"{_dw-_sa_z2_dur:+.1f}min Z2"
+                    elif not _sa_z2_kj and not _sa_z2_dur:
+                        # Sem Z2 na semana anterior — novo estímulo
+                        _vs = "novo estímulo Z2"
+
+                elif _key == "leve":
+                    # Z1: opção B — se RPE médio < 4 e dur > 45min, sugerir subir para Z2
+                    if _sa_z1_kj and _sa_z1_dur:
+                        _dk1 = _kj_r - _sa_z1_kj
+                        _vs = f"{_dk1:+.0f}kJ Z1"
+                        # Sugerir upgrade se leve bem tolerado
+                        if (_sa_z1_rpe_med is not None and _sa_z1_rpe_med < 3.5
+                                and _sa_z1_dur > 45):
+                            _vs += " → considera Sweet Spot"
+                    elif _sa_z1_dur and _sa_z1_dur > 0:
+                        _dd1 = _dw - _sa_z1_dur
+                        _vs = f"{_dd1:+.0f}min Z1"
+                        if (_sa_z1_rpe_med is not None and _sa_z1_rpe_med < 3.5
+                                and _sa_z1_dur > 45):
+                            _vs += " → considera Sweet Spot"
                 _kjh_str = f"{_kjh:.0f}"
                 if _kjh_ref and _kjh_ref>0:
                     _kjh_str += f" ({(_kjh-_kjh_ref)/_kjh_ref*100:+.0f}%)"
