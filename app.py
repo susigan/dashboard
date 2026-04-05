@@ -171,6 +171,29 @@ def norm_tipo(t):
     if not isinstance(t, str): return 'Other'
     return TYPE_MAP.get(t.strip(), 'Other')
 
+def fmt_dur(horas):
+    """Converte horas decimais para string legível: 55min, 1h05, 2h30"""
+    if horas is None or (hasattr(horas, '__float__') and horas != horas): return '—'
+    try:
+        h = float(horas)
+    except (TypeError, ValueError):
+        return '—'
+    if h <= 0: return '—'
+    total_min = round(h * 60)
+    hh = total_min // 60
+    mm = total_min % 60
+    if hh == 0:   return f'{mm}min'
+    if mm == 0:   return f'{hh}h'
+    return f'{hh}h{mm:02d}'
+
+def fmt_dur_sec(segundos):
+    """Converte segundos directamente para string legível."""
+    if segundos is None: return '—'
+    try:
+        return fmt_dur(float(segundos) / 3600)
+    except (TypeError, ValueError):
+        return '—'
+
 def get_cor(tipo):
     return CORES_ATIV.get(tipo, CORES_ATIV['Other'])
 
@@ -966,7 +989,7 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
     hrv_m = dw['hrv'].dropna().tail(7).mean() if 'hrv' in dw.columns and len(dw) > 0 else None
     rhr_u = dw['rhr'].dropna().iloc[-1] if 'rhr' in dw.columns and len(dw) > 0 and dw['rhr'].notna().any() else None
     c1.metric("🏋️ Sessões",   f"{len(da)}")
-    c2.metric("⏱️ Horas",     f"{horas:.1f}h" if horas else "—")
+    c2.metric("⏱️ Horas",     fmt_dur(horas) if horas else "—")
     c3.metric("💚 HRV (7d)", f"{hrv_m:.0f} ms" if hrv_m else "—")
     c4.metric("❤️ RHR",       f"{rhr_u:.0f} bpm" if rhr_u else "—")
     st.markdown("---")
@@ -1001,7 +1024,7 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                     'Modalidade': r['type'],
                     'RPE':        f"{r['_rpe']:.0f}" if pd.notna(r['_rpe']) else '—',
                     'KJ':         f"{r['_kj']:.0f}" if pd.notna(r['_kj']) and r['_kj']>0 else '—',
-                    'Horas':      f"{r['_mt']:.1f}h" if pd.notna(r['_mt']) else '—',
+                    'Horas':      fmt_dur(r['_mt']) if pd.notna(r['_mt']) else '—',
                 })
             st.subheader("📅 Semana actual")
             st.dataframe(pd.DataFrame(rows_sw), width="stretch", hide_index=True)
@@ -1245,7 +1268,7 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 rows_sem.append({
                     'Modalidade':     mod,
                     'Sessões':        d['sessoes'],
-                    'Horas':          f"{d['horas']:.1f}h",
+                    'Horas':          fmt_dur(d['horas']),
                     'KM':             f"{d['km']:.0f}" if d['km'] > 0 else '—',
                     'KJ':             f"{d['kj']:.0f}" if d['kj'] > 0 else '—',
                     'Sessões RPE≥7':  d['rpe_altas'],
@@ -1309,7 +1332,7 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                     'Modalidade': mod,
                     'KJ':         f"{dp.get('kj',0):.0f}"    if dp.get('kj',0)>0    else '—',
                     'KM':         f"{dp.get('km',0):.0f}"    if dp.get('km',0)>0    else '—',
-                    'Horas':      f"{dp.get('horas',0):.1f}h" if dp.get('horas',0)>0 else '—',
+                    'Horas':      fmt_dur(dp.get('horas',0)) if dp.get('horas',0)>0 else '—',
                     'Δ vs mês ant.': '—',
                 })
             for mod in all_mods_m:
@@ -1319,7 +1342,7 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                     'Modalidade': mod,
                     'KJ':         f"{dc_.get('kj',0):.0f}"    if dc_.get('kj',0)>0    else '—',
                     'KM':         f"{dc_.get('km',0):.0f}"    if dc_.get('km',0)>0    else '—',
-                    'Horas':      f"{dc_.get('horas',0):.1f}h" if dc_.get('horas',0)>0 else '—',
+                    'Horas':      fmt_dur(dc_.get('horas',0)) if dc_.get('horas',0)>0 else '—',
                     'Δ vs mês ant.': (
                         f"KJ {_fmt_diff(dc_.get('kj',0),dp_.get('kj',0),'kJ')}  "
                         f"KM {_fmt_diff(dc_.get('km',0),dp_.get('km',0),'km')}  "
@@ -1767,23 +1790,23 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 'Modalidade':    mod,
                 'Métrica':       'KJ' if has_kj else ('KM' if has_km else 'Horas'),
                 'Base (med.8s)': f"{kj_base:.0f} kJ" if has_kj else
-                                  (f"{km_base:.0f} km | {h_base:.1f}h" if has_km
-                                   else f"{h_base:.1f}h"),
+                                  (f"{km_base:.0f} km | {fmt_dur(h_base)}" if has_km
+                                   else fmt_dur(h_base)),
                 'Fator':         fl,
                 'Meta semana':   f"{kj_meta:.0f} kJ" if has_kj else
-                                  (f"{km_meta:.0f} km | {h_meta:.1f}h" if has_km
-                                   else f"{h_meta:.1f}h"),
+                                  (f"{km_meta:.0f} km | {fmt_dur(h_meta)}" if has_km
+                                   else fmt_dur(h_meta)),
                 'Feito':         f"{kj_feito:.0f} kJ" if has_kj else
-                                  (f"{km_feito:.0f} km | {h_feito:.1f}h" if has_km
-                                   else f"{h_feito:.1f}h"),
+                                  (f"{km_feito:.0f} km | {fmt_dur(h_feito)}" if has_km
+                                   else fmt_dur(h_feito)),
                 'Restante':      (f"✅ 0" if kj_rest==0 and has_kj else
                                    f"{kj_rest:.0f} kJ") if has_kj else
                                   (f"✅ 0" if km_rest==0 and h_rest==0 else
-                                   f"{km_rest:.0f} km | {h_rest:.1f}h" if has_km
-                                   else f"{h_rest:.1f}h"),
-                'Proj. Horas 2026': f"{h_proj:.0f}h" if h_proj>0 else "—",
+                                   f"{km_rest:.0f} km | {fmt_dur(h_rest)}" if has_km
+                                   else fmt_dur(h_rest)),
+                'Proj. Horas 2026': fmt_dur(h_proj) if h_proj>0 else "—",
                 'Range Horas (+3–12%)': (
-                    f"{h_2025:.0f}h → {h_2025*1.03:.0f}–{h_2025*1.12:.0f}h"
+                    f"{fmt_dur(h_2025)} → {fmt_dur(h_2025*1.03)}–{fmt_dur(h_2025*1.12)}"
                     if h_2025 > 0 else "—"),
                 'Status Horas':  status_ano,
                 '_sug_df': _sug_df, '_sug_ref': _sug_ref, '_sug_ol': _sug_ol,
@@ -2067,7 +2090,7 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                  (datetime.now().date() - timedelta(days=7))]
         col1.metric("Sessões (7d)", len(dw7))
         if 'moving_time' in dw7.columns:
-            col2.metric("Horas (7d)", f"{dw7['moving_time'].sum()/3600:.1f}h")
+            col2.metric("Horas (7d)", fmt_dur_sec(dw7['moving_time'].sum()))
         if 'rpe' in dw7.columns and dw7['rpe'].notna().any():
             col3.metric("RPE médio (7d)", f"{dw7['rpe'].mean():.1f}")
 
@@ -4090,7 +4113,7 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
         c2.metric("ATL (Fadiga)",   f"{u_s['ATL']:.0f}")
         c3.metric("TSB (Forma)",    f"{u_s['CTL']-u_s['ATL']:+.0f}")
         c4.metric("Atividades 7d",  len(df7))
-        c5.metric("Horas 7d",       f"{horas7:.1f}h")
+        c5.metric("Horas 7d",       fmt_dur(horas7))
     if len(dw) > 0:
         cw1, cw2 = st.columns(2)
         if 'hrv' in dw.columns:
