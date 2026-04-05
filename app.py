@@ -3708,6 +3708,216 @@ def tab_correlacoes(da, dw):
         st.info("Dados insuficientes.")
 
 
+
+    st.markdown("---")
+    st.subheader("\U0001f4ca Analise Consolidada & Perfil do Atleta")
+
+    def _build_rpe_table(merged_in, label):
+        if len(merged_in) == 0: return pd.DataFrame()
+        col_g = 'rpe_cat' if 'rpe_cat' in merged_in.columns else '_tipo'
+        grupos = [g for g in ['Leve','Moderado','Pesado','Rest']
+                  if g in merged_in[col_g].values]
+        base_hrv = merged_in['hrv'].mean()
+        base_rhr = merged_in['rhr'].mean() if 'rhr' in merged_in.columns else None
+        kw = _stat_kruskal(merged_in, col_g, grupos)
+        rows = []
+        for g in grupos:
+            sub = merged_in[merged_in[col_g] == g]
+            if len(sub) < 2: continue
+            d_hrv = (sub['hrv'].mean() - base_hrv) / base_hrv * 100
+            cv_h  = sub['hrv'].std() / sub['hrv'].mean() * 100 if sub['hrv'].mean() > 0 else None
+            r = {'Analise': label, 'Grupo': g, 'N': len(sub),
+                 'HRV medio': round(sub['hrv'].mean(), 1),
+                 'D HRV pct': round(d_hrv, 2),
+                 'CV pct HRV': round(cv_h, 1) if cv_h else None}
+            if base_rhr and 'rhr' in merged_in.columns:
+                r['RHR medio'] = round(sub['rhr'].mean(), 1)
+                r['D RHR']     = round(sub['rhr'].mean() - base_rhr, 2)
+            rows.append(r)
+        df_out = pd.DataFrame(rows)
+        if len(df_out) > 0 and kw:
+            for metric in ['hrv','rhr']:
+                if metric not in kw: continue
+                m = kw[metric]
+                df_out['KW H ' + metric.upper()]    = m['H']
+                df_out['p ' + metric.upper()]        = m['p']
+                df_out['Sig ' + metric.upper()]      = m['sig']
+                df_out['eta2 ' + metric.upper()]     = m['eta2']
+                df_out['eta2 lbl ' + metric.upper()] = m['eta2_lbl']
+        return df_out
+
+    def _build_tipo_table(merged_t):
+        if len(merged_t) == 0: return pd.DataFrame()
+        tipos = [t for t in ['Bike','Row','Ski','Run','WeightTraining','Rest']
+                 if t in merged_t['_tipo'].values]
+        base_hrv = merged_t['hrv'].mean()
+        base_rhr = merged_t['rhr'].mean() if 'rhr' in merged_t.columns else None
+        kw = _stat_kruskal(merged_t, '_tipo', tipos)
+        rows = []
+        for t in tipos:
+            sub = merged_t[merged_t['_tipo'] == t]
+            if len(sub) < 2: continue
+            d_hrv = (sub['hrv'].mean() - base_hrv) / base_hrv * 100
+            cv_h  = sub['hrv'].std() / sub['hrv'].mean() * 100 if sub['hrv'].mean() > 0 else None
+            r = {'Modalidade': t, 'N': len(sub),
+                 'HRV medio': round(sub['hrv'].mean(), 1),
+                 'D HRV pct': round(d_hrv, 2),
+                 'CV pct HRV': round(cv_h, 1) if cv_h else None}
+            if base_rhr and 'rhr' in merged_t.columns:
+                r['RHR medio'] = round(sub['rhr'].mean(), 1)
+                r['D RHR']     = round(sub['rhr'].mean() - base_rhr, 2)
+            rows.append(r)
+        df_out = pd.DataFrame(rows)
+        if len(df_out) > 0 and kw:
+            for metric in ['hrv','rhr']:
+                if metric not in kw: continue
+                m = kw[metric]
+                df_out['KW H ' + metric.upper()]  = m['H']
+                df_out['p ' + metric.upper()]      = m['p']
+                df_out['Sig ' + metric.upper()]    = m['sig']
+                df_out['eta2 ' + metric.upper()]   = m['eta2']
+        return df_out
+
+    def _build_modal_table(merged_m):
+        if len(merged_m) == 0: return pd.DataFrame()
+        base_hrv = merged_m['hrv'].mean()
+        base_rhr = merged_m['rhr'].mean() if 'rhr' in merged_m.columns else None
+        rows = []
+        for mod in [m for m in CICLICOS_T if m in merged_m['modalidade'].values]:
+            for cat in ['Leve','Moderado','Pesado']:
+                sub = merged_m[(merged_m['modalidade']==mod)&(merged_m['rpe_cat']==cat)]
+                if len(sub) < 2: continue
+                d_hrv = (sub['hrv'].mean() - base_hrv) / base_hrv * 100
+                cv_h  = sub['hrv'].std() / sub['hrv'].mean() * 100 if sub['hrv'].mean() > 0 else None
+                r = {'Modalidade': mod, 'RPE cat': cat, 'N': len(sub),
+                     'HRV medio': round(sub['hrv'].mean(), 1),
+                     'D HRV pct': round(d_hrv, 2),
+                     'CV pct HRV': round(cv_h, 1) if cv_h else None}
+                if base_rhr and 'rhr' in merged_m.columns:
+                    r['RHR medio'] = round(sub['rhr'].mean(), 1)
+                    r['D RHR']     = round(sub['rhr'].mean() - base_rhr, 2)
+                rows.append(r)
+        return pd.DataFrame(rows)
+
+    _mr2  = _prep_merged_rpe(_da_use)
+    _mt3  = _prep_merged_tipo(_da_use)
+    _mm2  = _prep_merged_rpe_modal(_da_use)
+    df_tr = _build_rpe_table(_mr2, "RPE")
+    df_tt = _build_tipo_table(_mt3)
+    df_tm = _build_modal_table(_mm2)
+
+    c5a, c5b = st.columns(2)
+    with c5a:
+        st.markdown("**Impacto RPE**")
+        if len(df_tr) > 0:
+            cols_r = [c for c in ['Grupo','N','D HRV pct','CV pct HRV',
+                                   'KW H HRV','p HRV','Sig HRV','eta2 HRV']
+                      if c in df_tr.columns]
+            st.dataframe(df_tr[cols_r], hide_index=True, use_container_width=True)
+    with c5b:
+        st.markdown("**Impacto por Tipo**")
+        if len(df_tt) > 0:
+            cols_t = [c for c in ['Modalidade','N','D HRV pct','CV pct HRV',
+                                   'KW H HRV','p HRV','Sig HRV','eta2 HRV']
+                      if c in df_tt.columns]
+            st.dataframe(df_tt[cols_t], hide_index=True, use_container_width=True)
+
+    if len(df_tm) > 0:
+        st.markdown("**RPE por Modalidade**")
+        cols_m = [c for c in ['Modalidade','RPE cat','N','D HRV pct','CV pct HRV','D RHR']
+                  if c in df_tm.columns]
+        st.dataframe(df_tm[cols_m], hide_index=True, use_container_width=True)
+
+    st.markdown("---")
+    st.subheader("\U0001f4c5 Impacto RPE por Ano")
+    st.caption("D HRV% por categoria em cada ano.")
+    _da_aa = _da_use.copy()
+    _da_aa['ano'] = pd.to_datetime(_da_aa['Data']).dt.year
+    rows_aa = []
+    for ano in sorted(_da_aa['ano'].unique()):
+        _sub_aa = _da_aa[_da_aa['ano'] == ano]
+        if len(_sub_aa) < 8: continue
+        _m_aa = _prep_merged_rpe(_sub_aa)
+        if len(_m_aa) < 8 or 'rpe_cat' not in _m_aa.columns: continue
+        _base_aa = _m_aa['hrv'].mean()
+        for cat in ['Leve','Moderado','Pesado','Rest']:
+            sub = _m_aa[_m_aa['rpe_cat'] == cat]
+            if len(sub) < 2: continue
+            rows_aa.append({'Ano': ano, 'Grupo': cat, 'N': len(sub),
+                            'D HRV pct': round((sub['hrv'].mean()-_base_aa)/_base_aa*100, 1)})
+    if rows_aa:
+        df_aa = pd.DataFrame(rows_aa)
+        try:
+            piv_aa = df_aa.pivot_table(index='Ano', columns='Grupo',
+                                        values='D HRV pct', aggfunc='first')
+            piv_aa = piv_aa[[c for c in ['Leve','Moderado','Pesado','Rest']
+                              if c in piv_aa.columns]].round(1).reset_index()
+            n_aa = df_aa.groupby('Ano')['N'].sum().reset_index().rename(columns={'N':'N total'})
+            piv_aa = piv_aa.merge(n_aa, on='Ano')
+            st.dataframe(piv_aa, hide_index=True, use_container_width=True)
+        except Exception:
+            st.dataframe(df_aa, hide_index=True, use_container_width=True)
+    else:
+        st.info("Dados insuficientes para analise ano a ano.")
+
+    st.markdown("---")
+    st.subheader("\U0001f3c3 Perfil de Resposta do Atleta")
+    if len(df_tr) > 0 or len(df_tm) > 0:
+        lines_p = []
+        if len(df_tm) > 0 and 'D HRV pct' in df_tm.columns:
+            pesado_p = df_tm[df_tm['RPE cat']=='Pesado'].sort_values('D HRV pct')
+            if len(pesado_p) > 0:
+                lines_p.append("**Sessoes pesadas por modalidade:**")
+                for _, rw in pesado_p.iterrows():
+                    d = rw['D HRV pct']
+                    arr = "debaixo" if d < -3 else ("acima" if d > 3 else "neutro")
+                    lines_p.append(f"- **{rw['Modalidade']} Pesado**: {d:+.1f}% HRV ({arr})")
+                lines_p.append("")
+        if len(df_tr) > 0 and 'D HRV pct' in df_tr.columns:
+            lines_p.append("**Por zona de RPE:**")
+            emoji_p = {"Pesado":"\U0001f534","Moderado":"\U0001f7e1","Leve":"\U0001f7e2","Rest":"\U0001f535"}
+            for cat in ['Pesado','Moderado','Leve','Rest']:
+                sub_p = df_tr[df_tr['Grupo']==cat]
+                if len(sub_p) == 0: continue
+                d = float(sub_p['D HRV pct'].iloc[0])
+                arr = "stress" if d < -3 else ("recuperacao" if d > 3 else "neutro")
+                lines_p.append(f"- {emoji_p.get(cat,'')} **{cat}**: {d:+.1f}% HRV -> {arr}")
+            lines_p.append("")
+        lines_p.append("**Confiabilidade:**")
+        _e2v = None
+        if len(df_tr) > 0 and 'eta2 HRV' in df_tr.columns:
+            _e2c = df_tr['eta2 HRV'].dropna()
+            if len(_e2c) > 0: _e2v = float(_e2c.iloc[0])
+        _cv_p = []
+        for _dfc2 in [df_tr, df_tm]:
+            if len(_dfc2) > 0 and 'CV pct HRV' in _dfc2.columns:
+                _cv_p.extend(_dfc2['CV pct HRV'].dropna().tolist())
+        _cv_p2 = round(float(np.mean(_cv_p)), 1) if _cv_p else None
+        if _e2v is not None:
+            _e2l = ("grande ✅" if _e2v>=0.14 else "medio ✅" if _e2v>=0.06
+                    else "pequeno ⚠️" if _e2v>=0.01 else "negligenciavel ❌")
+            lines_p.append(f"- **Eta2**: {_e2v:.3f} -- efeito {_e2l}")
+        if _cv_p2 is not None:
+            _cvl = ("baixo -- sinal limpo ✅" if _cv_p2<10
+                    else "medio ⚠️" if _cv_p2<20 else "alto -- ruido 🔴")
+            lines_p.append(f"- **CV% medio**: {_cv_p2:.1f}% -- {_cvl}")
+        st.markdown("  \n".join(lines_p))
+        st.info("D HRV% negativo = HRV mais baixo no dia seguinte = stress/fadiga. "
+                "Eta2 > 0.06 = sinal real (treino explica 6%+ da variacao).")
+        st.markdown("---")
+    _all_e2 = []
+    for _dfe3, _lbl3 in [(df_tr,'RPE'), (df_tt,'Tipo'), (df_tm,'Modal')]:
+        if len(_dfe3) > 0:
+            _dfe3c = _dfe3.copy()
+            _dfe3c.insert(0, 'Tabela', _lbl3)
+            _all_e2.append(_dfe3c)
+    if _all_e2:
+        _df_all2 = pd.concat(_all_e2, ignore_index=True)
+        _csv2 = _df_all2.to_csv(index=False).encode('utf-8')
+        st.download_button("Baixar CSV -- Correlacoes completo",
+                           _csv2, "atheltica_correlacoes.csv",
+                           "text/csv", key="dl_corr_all2")
+
 def tab_recovery(dw):
     st.header("🔋 Recovery Score & HRV Analysis")
     if len(dw) == 0 or 'hrv' not in dw.columns: st.warning("Sem dados de wellness/HRV."); return
@@ -7440,3 +7650,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
