@@ -3290,6 +3290,11 @@ def tab_correlacoes(da, dw):
             else:
                 st.info("Sem dados de RHR.")
 
+    # ── Dados base para análises (2020+, filtrados) ──────────────────────
+    _da_use = filtrar_principais(da).copy()
+    _da_use['Data'] = pd.to_datetime(_da_use['Data'])
+    _da_use = _da_use[_da_use['Data'] >= pd.Timestamp('2020-01-01')]
+
     # ════════════════════════════════════════════════════════════════════════
     # SECÇÃO 1 — Impacto RPE → HRV/RHR (dia seguinte)
     # ════════════════════════════════════════════════════════════════════════
