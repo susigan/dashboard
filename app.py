@@ -3124,50 +3124,96 @@ def tab_correlacoes(da, dw):
         margin=dict(l=45, r=20, t=50, b=50))
 
     # ── Helpers ──────────────────────────────────────────────────────────────
-    def _prep_merged_rpe(da_in):
-        """Cruza RPE diário (só cíclicas) com HRV/RHR dia seguinte + Rest."""
+    def _remove_outliers_iqr(series, factor=1.5):
+        """Remove outliers IQR 1.5× — retorna série com NaN nos extremos."""
+        s = pd.to_numeric(series, errors='coerce')
+        q1, q3 = s.quantile(0.25), s.quantile(0.75)
+        iqr = q3 - q1
+        mask = (s < q1 - factor*iqr) | (s > q3 + factor*iqr)
+        s[mask] = np.nan
+        return s
+
+    def _prep_dw_clean(dw_in, data_min='2020-01-01'):
+        """Wellness limpo: filtro 2020+, outliers IQR removidos."""
+        d = dw_in.copy()
+        d['Data'] = pd.to_datetime(d['Data']).dt.normalize()
+        d = d[d['Data'] >= pd.Timestamp(data_min)]
+        if 'hrv' in d.columns:
+            d['hrv'] = _remove_outliers_iqr(d['hrv'])
+        if 'rhr' in d.columns:
+            d['rhr'] = _remove_outliers_iqr(d['rhr'])
+        return d.dropna(subset=['hrv'])
+
+    def _prep_merged_rpe(da_in, data_min='2020-01-01'):
+        """
+        Cruza RPE diário (só cíclicas, com RPE válido) com HRV/RHR dia seguinte.
+        Rest = dia de wellness sem NENHUMA actividade elegível (cíclica com RPE).
+        Exclui actividades sem RPE — não são Rest.
+        """
         da2 = da_in.copy()
         da2['_tipo'] = da2['type'].apply(norm_tipo)
         da2 = da2[da2['_tipo'].isin(CICLICOS_T)].copy()
         da2['Data'] = pd.to_datetime(da2['Data']).dt.normalize()
+        da2 = da2[da2['Data'] >= pd.Timestamp(data_min)]
         if not rpe_col: return pd.DataFrame()
+        # Só sessões COM RPE válido
+        da2 = da2.dropna(subset=[rpe_col])
+        da2[rpe_col] = pd.to_numeric(da2[rpe_col], errors='coerce')
+        da2 = da2.dropna(subset=[rpe_col])
+
         rpe_d = da2.groupby('Data')[rpe_col].mean().reset_index()
-        rpe_d.columns = ['Data','rpe_avg']
+        rpe_d.columns = ['Data', 'rpe_avg']
         rpe_d['rpe_cat'] = rpe_d['rpe_avg'].apply(classificar_rpe)
-        dw2 = dw.copy()
-        dw2['Data'] = pd.to_datetime(dw2['Data']).dt.normalize()
-        # Todos os dias de wellness — incluindo os sem actividade (Rest)
-        all_days = dw2[['Data']].copy()
-        all_days = all_days.merge(rpe_d, on='Data', how='left')
+        # Remover dias onde classificar_rpe retornou None (RPE fora de 1-10)
+        rpe_d = rpe_d.dropna(subset=['rpe_cat'])
+
+        dw_clean = _prep_dw_clean(dw, data_min)
+        # Base: todos os dias de wellness limpo
+        all_days = dw_clean[['Data']].copy()
+        all_days = all_days.merge(rpe_d[['Data','rpe_cat']], on='Data', how='left')
+        # Rest = sem actividade cíclica COM RPE válido nesse dia
         all_days['rpe_cat'] = all_days['rpe_cat'].fillna('Rest')
-        cols_dw = ['Data','hrv'] + (['rhr'] if 'rhr' in dw2.columns else [])
-        dw_shift = dw2[cols_dw].copy()
+
+        cols_dw = ['Data','hrv'] + (['rhr'] if 'rhr' in dw_clean.columns else [])
+        dw_shift = dw_clean[cols_dw].copy()
         dw_shift['Data'] = dw_shift['Data'] - pd.Timedelta(days=1)
         merged = all_days.merge(dw_shift, on='Data', how='inner')
         return merged.dropna(subset=['hrv'])
 
-    def _prep_merged_tipo(da_in):
-        """Cruza tipo de actividade com HRV/RHR dia seguinte + Rest."""
+    def _prep_merged_tipo(da_in, data_min='2020-01-01'):
+        """
+        Cruza tipo de actividade com HRV/RHR dia seguinte.
+        Rest = dia de wellness sem NENHUMA actividade (nem cíclica, nem WT).
+        WT só quando sozinho (sem cíclica no mesmo dia).
+        """
         da3 = da_in.copy()
         da3['_tipo'] = da3['type'].apply(norm_tipo)
         da3['Data']  = pd.to_datetime(da3['Data']).dt.normalize()
-        # WT só sozinho
+        da3 = da3[da3['Data'] >= pd.Timestamp(data_min)]
+
+        # Dias com actividade cíclica
         dias_cicl = set(da3[da3['_tipo'].isin(CICLICOS_T)]['Data'])
+        # Dias com QUALQUER actividade (para excluir do Rest)
+        dias_com_ativ = set(da3['Data'])
+
         da3_f = da3[
             da3['_tipo'].isin(CICLICOS_T) |
-            ((da3['_tipo']=='WeightTraining') & (~da3['Data'].isin(dias_cicl)))
+            ((da3['_tipo'] == 'WeightTraining') & (~da3['Data'].isin(dias_cicl)))
         ].copy()
+
         tipo_d = (da3_f.groupby('Data')['_tipo']
-                  .agg(lambda x: x.mode()[0] if len(x)>0 else None)
+                  .agg(lambda x: x.mode()[0] if len(x) > 0 else None)
                   .reset_index())
-        dw2 = dw.copy()
-        dw2['Data'] = pd.to_datetime(dw2['Data']).dt.normalize()
-        # Incluir dias Rest
-        all_days = dw2[['Data']].copy()
+
+        dw_clean = _prep_dw_clean(dw, data_min)
+        all_days = dw_clean[['Data']].copy()
         all_days = all_days.merge(tipo_d, on='Data', how='left')
+        # Rest = sem NENHUMA actividade elegível nesse dia
+        # Dias com actividade não elegível (ex: yoga, natação) ficam como NaN → Rest
         all_days['_tipo'] = all_days['_tipo'].fillna('Rest')
-        cols_dw = ['Data','hrv'] + (['rhr'] if 'rhr' in dw2.columns else [])
-        dw_shift = dw2[cols_dw].copy()
+
+        cols_dw = ['Data','hrv'] + (['rhr'] if 'rhr' in dw_clean.columns else [])
+        dw_shift = dw_clean[cols_dw].copy()
         dw_shift['Data'] = dw_shift['Data'] - pd.Timedelta(days=1)
         merged = all_days.merge(dw_shift, on='Data', how='inner')
         return merged.dropna(subset=['hrv'])
@@ -3177,38 +3223,38 @@ def tab_correlacoes(da, dw):
         base_hrv = merged['hrv'].mean()
         base_rhr = merged['rhr'].mean() if 'rhr' in merged.columns else None
         for g in grupos:
-            sub = merged[merged[grupo_col]==g]
+            sub = merged[merged[grupo_col] == g]
             if len(sub) < 2: continue
             d_hrv = (sub['hrv'].mean() - base_hrv) / base_hrv * 100
             row = {
-                'Grupo': g, 'N': len(sub),
-                'HRV médio': f"{sub['hrv'].mean():.0f} ms",
-                'Δ HRV%': f"{d_hrv:+.1f}%",
-                'Interpretação HRV': ('↗ recuperação' if d_hrv>3
-                                       else '↘ stress' if d_hrv<-3 else '→ neutro'),
+                'Grupo':            g,
+                'N':                len(sub),
+                'HRV médio':        f"{sub['hrv'].mean():.0f} ms",
+                'Δ HRV%':           f"{d_hrv:+.1f}%",
+                'Interpretação HRV':('↗ recuperação' if d_hrv > 3
+                                     else '↘ stress' if d_hrv < -3 else '→ neutro'),
             }
             if base_rhr and 'rhr' in merged.columns:
                 d_rhr = sub['rhr'].mean() - base_rhr
-                row['RHR médio']  = f"{sub['rhr'].mean():.0f} bpm"
-                row['Δ RHR']      = f"{d_rhr:+.1f} bpm"
-                row['Interpret. RHR'] = ('↘ recuperação' if d_rhr<-2
-                                          else '↗ stress' if d_rhr>2 else '→ neutro')
+                row['RHR médio']      = f"{sub['rhr'].mean():.0f} bpm"
+                row['Δ RHR']          = f"{d_rhr:+.1f} bpm"
+                row['Interpret. RHR'] = ('↘ recuperação' if d_rhr < -2
+                                          else '↗ stress' if d_rhr > 2 else '→ neutro')
             rows.append(row)
         return pd.DataFrame(rows) if rows else pd.DataFrame()
 
     def _bar_chart(grupos, deltas_hrv, deltas_rhr, cores_map, title_hrv, title_rhr):
-        """Dois gráficos HRV + RHR lado a lado, mobile-friendly."""
+        """Dois gráficos HRV% + RHR bpm lado a lado, mobile-friendly."""
         col_h, col_r = st.columns(2)
         with col_h:
             fig = go.Figure()
             for g, d in zip(grupos, deltas_hrv):
                 if d is None: continue
                 fig.add_trace(go.Bar(
-                    x=[g], y=[round(d,1)],
-                    marker_color=cores_map.get(g,'#555555'),
+                    x=[g], y=[round(d, 1)],
+                    marker_color=cores_map.get(g, '#555555'),
                     text=[f"{d:+.1f}%"], textposition='outside',
-                    textfont=dict(color='#111111', size=13),
-                    width=0.55,
+                    textfont=dict(color='#111111', size=13), width=0.55,
                     hovertemplate=f'{g}<br>Δ HRV: <b>{d:+.1f}%</b><extra></extra>'))
             fig.add_hline(y=0, line_dash='dash', line_color='#555', line_width=1)
             fig.update_layout(**LAYOUT_BASE,
@@ -3220,18 +3266,16 @@ def tab_correlacoes(da, dw):
                            showgrid=True, gridcolor='#ddd', zeroline=True,
                            zerolinecolor='#888', zerolinewidth=1.5))
             st.plotly_chart(fig, use_container_width=True)
-
         with col_r:
             if any(d is not None for d in deltas_rhr):
                 fig2 = go.Figure()
                 for g, d in zip(grupos, deltas_rhr):
                     if d is None: continue
                     fig2.add_trace(go.Bar(
-                        x=[g], y=[round(d,1)],
-                        marker_color=cores_map.get(g,'#555555'),
+                        x=[g], y=[round(d, 1)],
+                        marker_color=cores_map.get(g, '#555555'),
                         text=[f"{d:+.1f}"], textposition='outside',
-                        textfont=dict(color='#111111', size=13),
-                        width=0.55,
+                        textfont=dict(color='#111111', size=13), width=0.55,
                         hovertemplate=f'{g}<br>Δ RHR: <b>{d:+.1f} bpm</b><extra></extra>'))
                 fig2.add_hline(y=0, line_dash='dash', line_color='#555', line_width=1)
                 fig2.update_layout(**LAYOUT_BASE,
@@ -3245,15 +3289,6 @@ def tab_correlacoes(da, dw):
                 st.plotly_chart(fig2, use_container_width=True)
             else:
                 st.info("Sem dados de RHR.")
-
-    # ── Filtro de período ────────────────────────────────────────────────────
-    st.caption("ℹ️ Esta aba usa **todo o histórico disponível** (independente do filtro do sidebar). "
-               "Os dados de wellness e actividades são cruzados pelo histórico completo.")
-
-    # Usar ac_full se disponível no session_state
-    _da_full = st.session_state.get('da_full', da)
-    _da_use  = filtrar_principais(_da_full).copy() if len(_da_full) > 0 else da.copy()
-    _da_use['Data'] = pd.to_datetime(_da_use['Data'])
 
     # ════════════════════════════════════════════════════════════════════════
     # SECÇÃO 1 — Impacto RPE → HRV/RHR (dia seguinte)
