@@ -3447,7 +3447,8 @@ def tab_recovery(dw):
     c1.metric("Recovery Score", f"{score:.0f}/100", delta=cat)
     c2.metric("HRV atual", f"{u['hrv']:.0f} ms" if pd.notna(u['hrv']) else "—")
     c3.metric("Baseline HRV", f"{u['hrv_baseline']:.0f} ms" if pd.notna(u['hrv_baseline']) else "—")
-    c4.metric("CV% 7d", f"{u['hrv_cv7']:.1f}%" if pd.notna(u['hrv_cv7']) else "—")
+    _cv7 = u.get('hrv_cv_7d', u.get('hrv_cv7', u.get('hrv_cv', None)))
+    c4.metric("CV% 7d", f"{_cv7:.1f}%" if _cv7 is not None and pd.notna(_cv7) else "—")
     st.markdown("---")
     n_dias = st.slider("Dias a mostrar", 14, min(len(rec), 365), min(90, len(rec)))
     df_tl = rec.tail(n_dias).copy()
@@ -3482,7 +3483,8 @@ def tab_recovery(dw):
     ax1.scatter(xr, hv, c=chr_list, s=70, edgecolors='white', linewidths=2, zorder=5)
     ax1.legend(loc='upper right', fontsize=9); ax1.grid(True, alpha=0.3); ax1.set_ylabel('HRV (ms)', fontweight='bold')
     ax1.set_title('HRV com Normal Range (HRV4Training)', fontsize=13, fontweight='bold')
-    cv_s = df_tl['hrv_cv7'].copy()
+    _cv_col = 'hrv_cv_7d' if 'hrv_cv_7d' in df_tl.columns else 'hrv_cv7' if 'hrv_cv7' in df_tl.columns else None
+    cv_s = df_tl[_cv_col].copy() if _cv_col else pd.Series(dtype=float)
     if cv_s.notna().sum() >= 5:
         cv_b = cv_s.rolling(14, min_periods=5).mean(); cv_sd = cv_s.rolling(14, min_periods=5).std()
         cv_inf = cv_b - 0.5 * cv_sd; cv_sup = cv_b + 0.5 * cv_sd
