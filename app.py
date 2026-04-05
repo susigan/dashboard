@@ -553,7 +553,7 @@ def analisar_falta_estimulo(df_act_full, janela_dias=14, baseline_dias=90):
         # NÃO alteram Need_score. Apenas interpretam A/B/C/D.
         # Pesos: A×0.6+C×0.4 para volume | B×0.7+D×0.3 para intensidade
         need_vol = min(100.0, A * 100 * 0.60 + C * 100 * 0.40)
-        need_int = min(100.0, B * 100 * 0.70 + D * 100 * 0.30)
+        need_int = min(100.0, B * 100 * 0.65 + D * 100 * 0.35)
 
         prio_base = 'ALTA' if need >= 70 else 'MÉDIA' if need >= 40 else 'BAIXA'
 
@@ -577,7 +577,7 @@ def analisar_falta_estimulo(df_act_full, janela_dias=14, baseline_dias=90):
         overload = score_overload >= 2
 
         # Overload → reduzir intensidade (não zerar, não remover)
-        need_int_prescr = min(100.0, need_int * 0.5) if overload else need_int
+        need_int_prescr = min(100.0, need_int * 0.65) if overload else need_int
 
         # C_reforçado — debug, NÃO substitui C original
         datas_mod_dbg  = df[df['type']==mod]['Data'].sort_values()
@@ -1455,7 +1455,7 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             kj_target_A_adj = 1.0
             _PROG_CAP = {"Z3":1.07, "Z2":1.10, "Z1":1.12}
             _TEMPO_CAP = 1.10
-            pwr_inc_base = 0.01 if ni >= 75 else 0.02
+            pwr_inc_base = 0.01 if ni >= 70 else 0.02
 
             if df_hist is not None and len(df_hist) >= 2:
                 _df_mod = df_hist[df_hist["type"].apply(norm_tipo) == mod].copy()
@@ -1514,7 +1514,7 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 else:                    kj_target_A_adj = 0.90
 
             # ── zona e KJ_target ───────────────────────────────────────────
-            _prog_cap = _PROG_CAP["Z3" if ni>=75 else "Z2" if ni>=40 else "Z1"]
+            _prog_cap = _PROG_CAP["Z3" if ni>=70 else "Z2" if ni>=40 else "Z1"]
             if ol:
                 kj_target = (_ref_kj*0.65) if _ref_kj else max(kj_rest*0.65, 60)
             elif _ref_kj and _ref_kj > 0:
@@ -1576,7 +1576,7 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 _pk = "leve"
             elif ni >= 90:
                 _pk = "anaerobio"
-            elif ni >= 75:
+            elif ni >= 70:
                 _pk = "vo2"
             elif ni >= 60:
                 _pk = "threshold"
@@ -1709,48 +1709,20 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             h_meta  = min(h_base  * fator, max(h_sem_ant,  h_base)  * 1.08)
             km_meta = km_base * fator if has_km else 0.0
 
-            # Cap anual pro-rated (+12% com margem 5%)
+            # Informativo: comparação com ano anterior (sem cap — só leitura)
             _ano_ant = _sub[_sub['Data'].dt.year == ano_ant]
-            kj_2025  = float(_ano_ant['_kj'].sum()) if has_kj else 0.0
-            h_2025   = float(_ano_ant['_mt'].sum())
-            km_2025  = float(_ano_ant['_km'].sum()) if has_km else 0.0
-
-            # Cap adaptativo: se 2025 < 12 semanas de dados → usar base×52×1.12
-            # Evita cap artificialmente baixo para modalidades novas/reduzidas em 2025
-            # Count weeks in 2025 with actual data (not just rows)
-            if len(_ano_ant) > 0:
-                _sem_grp = _ano_ant.groupby(_ano_ant['Data'].dt.to_period('W'))
-                _n_sem_2025 = sum(
-                    1 for _, g in _sem_grp
-                    if (g['_kj'].sum() > 0 if has_kj else g['_mt'].sum() > 0))
-            else:
-                _n_sem_2025 = 0
-            _threshold_kj = kj_base * 4   # mínimo de 4 semanas de dados em 2025
-            _threshold_h  = h_base  * 4
-
-            if has_kj and (kj_2025 < _threshold_kj or _n_sem_2025 < 12):
-                kj_max = kj_base * 52 * 1.12   # cap baseado no ritmo actual
-            else:
-                kj_max = kj_2025 * 1.12
-
-            if h_2025 < _threshold_h or _n_sem_2025 < 12:
-                h_max = h_base * 52 * 1.12
-            else:
-                h_max = h_2025 * 1.12
-
             _ano_cur = _sub[_sub['Data'].dt.year == ano_atual]
-            kj_acum  = float(_ano_cur['_kj'].sum()) if has_kj else 0.0
+            h_2025   = float(_ano_ant['_mt'].sum())
+            kj_2025  = float(_ano_ant['_kj'].sum()) if has_kj else 0.0
+            km_2025  = float(_ano_ant['_km'].sum()) if has_km else 0.0
             h_acum   = float(_ano_cur['_mt'].sum())
+            kj_acum  = float(_ano_cur['_kj'].sum()) if has_kj else 0.0
             km_acum  = float(_ano_cur['_km'].sum()) if has_km else 0.0
+            h_proj   = h_acum  / dia_ano * 365 if h_acum  > 0 else 0
+            kj_proj  = kj_acum / dia_ano * 365 if has_kj and kj_acum > 0 else 0
+            cap_atingido = False  # cap removido — só informativo
 
-            h_esperado  = h_max * (dia_ano/365) if h_max > 0 else 0
-
-            # Cap por horas — range 3–12% vs ano anterior (volume total)
-            # KJ: sem cap — apenas informativo
-            h_proj  = h_acum  / dia_ano * 365 if h_acum  > 0 else 0
-            kj_proj = kj_acum / dia_ano * 365 if has_kj and kj_acum > 0 else 0
-
-            # Status horas: dentro do range 3–12%?
+            # Status horas vs ano anterior (informativo)
             if h_2025 > 0 and h_proj > 0:
                 h_delta_pct = (h_proj - h_2025) / h_2025 * 100
                 if h_delta_pct < 0:
@@ -1760,16 +1732,11 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 elif h_delta_pct <= 12:
                     status_ano = f"✅ No range ({h_delta_pct:+.0f}% vs {ano_ant})"
                 else:
-                    status_ano = f"🔴 Acima range ({h_delta_pct:+.0f}% vs {ano_ant})"
+                    status_ano = f"📈 Acima ({h_delta_pct:+.0f}% vs {ano_ant})"
             elif h_2025 == 0:
-                status_ano = "— (sem 2025)"
+                status_ano = "— (sem ano anterior)"
             else:
                 status_ano = "— (sem proj.)"
-
-            # Bloqueia fator se horas acima de 12% pro-rated (com margem 5%)
-            cap_atingido = (h_2025 > 0 and
-                            h_acum > (h_max * (dia_ano/365)) * 1.05)
-            if cap_atingido: fator = min(fator, 1.0)
 
             # Semana actual (Seg → hoje)
             _sem_cur = _sub[_sub['Data'] >= sem_ini_pf]
