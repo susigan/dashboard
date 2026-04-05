@@ -3286,11 +3286,16 @@ def tab_correlacoes(da, dw):
 
     def _stat_kruskal(merged, grupo_col, grupos):
         """
-        Kruskal-Wallis entre grupos para HRV e RHR.
-        Retorna dict com H, p-value, interpretação.
+        Estatísticas de confiabilidade por grupo:
+        - Kruskal-Wallis: diferença global entre grupos (p-value)
+        - Eta² (η²): variância explicada — tamanho do efeito (sinal vs ruído)
+        - Cohen's d: tamanho do efeito entre grupo e restante
+        - CV% intra-grupo: variabilidade interna (ruído)
         """
         from scipy.stats import kruskal as _kruskal
         results = {}
+        N = len(merged)
+        k = len([g for g in grupos if (merged[grupo_col]==g).sum() >= 3])
         for metric in ['hrv','rhr']:
             if metric not in merged.columns: continue
             vals = [merged[merged[grupo_col]==g][metric].dropna().values
@@ -3298,12 +3303,35 @@ def tab_correlacoes(da, dw):
             if len(vals) < 2: continue
             try:
                 H, p = _kruskal(*vals)
+                # Eta² — variância explicada pelo grupo
+                eta2 = max(0.0, (H - k + 1) / (N - k)) if N > k else 0.0
+                if   eta2 >= 0.14: eta2_lbl = "grande (≥14%)"
+                elif eta2 >= 0.06: eta2_lbl = "médio (6–14%)"
+                elif eta2 >= 0.01: eta2_lbl = "pequeno (1–6%)"
+                else:               eta2_lbl = "negligenciável (<1%)"
                 sig = ('✅ SIG p<0.05' if p < 0.05 else
                        '~ marginal p<0.10' if p < 0.10 else '✗ ns')
-                results[metric] = {'H': round(H,2), 'p': round(p,4), 'sig': sig}
+                results[metric] = {
+                    'H': round(H,2), 'p': round(p,4), 'sig': sig,
+                    'eta2': round(eta2,3), 'eta2_lbl': eta2_lbl,
+                    'N': N,
+                }
             except Exception:
                 pass
         return results
+
+    def _cohen_d(g1, g2):
+        """Cohen's d entre dois grupos (pooled SD)."""
+        n1, n2 = len(g1), len(g2)
+        if n1 < 2 or n2 < 2: return None
+        s_pooled = np.sqrt(((n1-1)*np.var(g1,ddof=1) + (n2-1)*np.var(g2,ddof=1)) / (n1+n2-2))
+        if s_pooled == 0: return None
+        d = (np.mean(g1) - np.mean(g2)) / s_pooled
+        if   abs(d) >= 0.8: lbl = "grande"
+        elif abs(d) >= 0.5: lbl = "médio"
+        elif abs(d) >= 0.2: lbl = "pequeno"
+        else:               lbl = "negligenciável"
+        return round(d, 2), lbl
 
     def _tabela_delta(merged, grupo_col, grupos):
         rows = []
@@ -3314,34 +3342,51 @@ def tab_correlacoes(da, dw):
             sub = merged[merged[grupo_col] == g]
             if len(sub) < 2: continue
             d_hrv = (sub['hrv'].mean() - base_hrv) / base_hrv * 100
+            # CV% intra-grupo HRV
+            cv_hrv = (sub['hrv'].std() / sub['hrv'].mean() * 100
+                      if sub['hrv'].mean() > 0 and len(sub) >= 3 else None)
+            cv_lbl = ('baixo ✅' if cv_hrv and cv_hrv < 10 else
+                      'médio ⚠️' if cv_hrv and cv_hrv < 20 else
+                      'alto 🔴' if cv_hrv else '—')
             row = {
                 'Grupo':            g,
                 'N':                len(sub),
                 'HRV médio':        f"{sub['hrv'].mean():.0f} ms",
                 'Δ HRV%':           f"{d_hrv:+.1f}%",
+                'CV% HRV':          f"{cv_hrv:.0f}% {cv_lbl}" if cv_hrv else '—',
                 'Interpretação HRV':('↗ recuperação' if d_hrv > 3
                                      else '↘ stress' if d_hrv < -3 else '→ neutro'),
             }
             if base_rhr and 'rhr' in merged.columns:
                 d_rhr = sub['rhr'].mean() - base_rhr
+                cv_rhr = (sub['rhr'].std() / sub['rhr'].mean() * 100
+                          if sub['rhr'].mean() > 0 and len(sub) >= 3 else None)
                 row['RHR médio']      = f"{sub['rhr'].mean():.0f} bpm"
                 row['Δ RHR']          = f"{d_rhr:+.1f} bpm"
                 row['Interpret. RHR'] = ('↘ recuperação' if d_rhr < -2
                                           else '↗ stress' if d_rhr > 2 else '→ neutro')
             rows.append(row)
         df_tab = pd.DataFrame(rows) if rows else pd.DataFrame()
-        # Adicionar linha de significância Kruskal-Wallis
+
+        # Linha de estatísticas globais (KW + Eta²)
         if len(df_tab) > 0 and kw:
-            kw_row = {'Grupo': '— Kruskal-Wallis', 'N': ''}
-            if 'hrv' in kw:
-                kw_row['HRV médio'] = ''
-                kw_row['Δ HRV%'] = f"H={kw['hrv']['H']}"
-                kw_row['Interpretação HRV'] = kw['hrv']['sig']
-            if 'rhr' in kw:
-                kw_row['RHR médio'] = ''
-                kw_row['Δ RHR'] = f"H={kw['rhr']['H']}"
-                kw_row['Interpret. RHR'] = kw['rhr']['sig']
-            df_tab = pd.concat([df_tab, pd.DataFrame([kw_row])], ignore_index=True)
+            for metric, col_hrv, col_delta in [
+                ('hrv', 'HRV médio', 'Δ HRV%'),
+                ('rhr', 'RHR médio', 'Δ RHR'),
+            ]:
+                if metric not in kw: continue
+                kw_m = kw[metric]
+                stat_row = {
+                    'Grupo': f"— KW {'HRV' if metric=='hrv' else 'RHR'}",
+                    'N': kw_m['N'],
+                    col_hrv: f"H={kw_m['H']}  p={kw_m['p']}",
+                    col_delta: kw_m['sig'],
+                    'CV% HRV' if metric=='hrv' else 'Δ RHR': f"η²={kw_m['eta2']} ({kw_m['eta2_lbl']})",
+                    'Interpretação HRV' if metric=='hrv' else 'Interpret. RHR':
+                        ("Sinal forte" if kw_m['eta2'] >= 0.06 else
+                         "Sinal fraco" if kw_m['eta2'] >= 0.01 else "Ruído"),
+                }
+                df_tab = pd.concat([df_tab, pd.DataFrame([stat_row])], ignore_index=True)
         return df_tab
 
     def _bar_chart(grupos, deltas_hrv, deltas_rhr, cores_map, title_hrv, title_rhr):
