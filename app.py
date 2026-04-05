@@ -3334,9 +3334,12 @@ def tab_correlacoes(da, dw):
     col1, col2 = st.columns(2)
 
     with col1:
-        if len(merged_rpe) >= 5 and rpe_col and 'rpe_avg' in merged_rpe.columns:
+        if rpe_col and len(merged_rpe) > 0 and 'rpe_avg' in merged_rpe.columns:
             m_cl = merged_rpe[['rpe_avg','hrv']].dropna()
-            if len(m_cl) >= 5:
+            # Excluir Rest do scatter (rpe_avg=NaN para Rest — já dropna acima)
+            m_cl = m_cl[m_cl['rpe_avg'].notna()]
+            st.caption(f"N pontos scatter RPE→HRV: **{len(m_cl)}**")
+            if len(m_cl) >= 3:
                 r_val, _ = pearsonr(m_cl['rpe_avg'].astype(float),
                                     m_cl['hrv'].astype(float))
                 xr = np.linspace(float(m_cl['rpe_avg'].min()),
