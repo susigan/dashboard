@@ -3125,7 +3125,7 @@ def tab_correlacoes(da, dw):
 
     # ── Helpers ──────────────────────────────────────────────────────────────
     def _remove_outliers_iqr(series, factor=1.5):
-        """Remove outliers IQR 1.5× — retorna série com NaN nos extremos."""
+        """Remove outliers IQR 1.5x — retorna série com NaN nos extremos."""
         s = pd.to_numeric(series, errors='coerce')
         q1, q3 = s.quantile(0.25), s.quantile(0.75)
         iqr = q3 - q1
@@ -3144,35 +3144,62 @@ def tab_correlacoes(da, dw):
             d['rhr'] = _remove_outliers_iqr(d['rhr'])
         return d.dropna(subset=['hrv'])
 
+    def _dias_com_atividade(da_in, data_min='2020-01-01'):
+        """
+        Retorna set de datas onde houve QUALQUER actividade
+        (cíclica OU WeightTraining), a partir de data_min.
+        Usado para definir Rest de forma uniforme em ambas as análises.
+        """
+        d = da_in.copy()
+        d['Data'] = pd.to_datetime(d['Data']).dt.normalize()
+        d = d[d['Data'] >= pd.Timestamp(data_min)]
+        d['_tipo'] = d['type'].apply(norm_tipo)
+        # Qualquer actividade reconhecida (cíclica OU WT)
+        d_ativ = d[d['_tipo'].isin(CICLICOS_T + ['WeightTraining'])]
+        return set(d_ativ['Data'].unique())
+
     def _prep_merged_rpe(da_in, data_min='2020-01-01'):
         """
         Cruza RPE diário (só cíclicas, com RPE válido) com HRV/RHR dia seguinte.
-        Rest = dia de wellness sem NENHUMA actividade elegível (cíclica com RPE).
-        Exclui actividades sem RPE — não são Rest.
+
+        REGRA REST (uniforme):
+          Rest = dia de wellness onde NÃO houve NENHUMA actividade
+                 (nem cíclica, nem WeightTraining).
+          Dias com actividade mas sem RPE → ficam como Rest para o scatter
+          mas são excluídos da análise RPE (não têm categoria Leve/Mod/Pesado).
         """
         da2 = da_in.copy()
         da2['_tipo'] = da2['type'].apply(norm_tipo)
-        da2 = da2[da2['_tipo'].isin(CICLICOS_T)].copy()
         da2['Data'] = pd.to_datetime(da2['Data']).dt.normalize()
         da2 = da2[da2['Data'] >= pd.Timestamp(data_min)]
-        if not rpe_col: return pd.DataFrame()
-        # Só sessões COM RPE válido
-        da2 = da2.dropna(subset=[rpe_col])
-        da2[rpe_col] = pd.to_numeric(da2[rpe_col], errors='coerce')
-        da2 = da2.dropna(subset=[rpe_col])
 
-        rpe_d = da2.groupby('Data')[rpe_col].mean().reset_index()
+        # Dias com QUALQUER actividade (para definir Rest)
+        _todos_ativ = _dias_com_atividade(da_in, data_min)
+
+        # Só cíclicas COM RPE válido → para classificar zona
+        da_cicl = da2[da2['_tipo'].isin(CICLICOS_T)].copy()
+        if not rpe_col:
+            return pd.DataFrame()
+        da_cicl = da_cicl.dropna(subset=[rpe_col])
+        da_cicl[rpe_col] = pd.to_numeric(da_cicl[rpe_col], errors='coerce')
+        da_cicl = da_cicl.dropna(subset=[rpe_col])
+
+        rpe_d = da_cicl.groupby('Data')[rpe_col].mean().reset_index()
         rpe_d.columns = ['Data', 'rpe_avg']
         rpe_d['rpe_cat'] = rpe_d['rpe_avg'].apply(classificar_rpe)
-        # Remover dias onde classificar_rpe retornou None (RPE fora de 1-10)
         rpe_d = rpe_d.dropna(subset=['rpe_cat'])
 
         dw_clean = _prep_dw_clean(dw, data_min)
-        # Base: todos os dias de wellness limpo
         all_days = dw_clean[['Data']].copy()
-        all_days = all_days.merge(rpe_d[['Data','rpe_cat']], on='Data', how='left')
-        # Rest = sem actividade cíclica COM RPE válido nesse dia
-        all_days['rpe_cat'] = all_days['rpe_cat'].fillna('Rest')
+        all_days = all_days.merge(rpe_d[['Data','rpe_cat','rpe_avg']], on='Data', how='left')
+
+        # Rest = sem NENHUMA actividade nesse dia (cíclica OU WT)
+        all_days['rpe_cat'] = all_days.apply(
+            lambda r: r['rpe_cat'] if pd.notna(r['rpe_cat'])
+            else ('Rest' if r['Data'] not in _todos_ativ else None),
+            axis=1)
+        # Dias com actividade mas sem RPE válido → excluir (None → drop)
+        all_days = all_days.dropna(subset=['rpe_cat'])
 
         cols_dw = ['Data','hrv'] + (['rhr'] if 'rhr' in dw_clean.columns else [])
         dw_shift = dw_clean[cols_dw].copy()
@@ -3183,18 +3210,21 @@ def tab_correlacoes(da, dw):
     def _prep_merged_tipo(da_in, data_min='2020-01-01'):
         """
         Cruza tipo de actividade com HRV/RHR dia seguinte.
-        Rest = dia de wellness sem NENHUMA actividade (nem cíclica, nem WT).
-        WT só quando sozinho (sem cíclica no mesmo dia).
+
+        REGRA REST (uniforme, igual ao _prep_merged_rpe):
+          Rest = dia de wellness onde NÃO houve NENHUMA actividade
+                 (nem cíclica, nem WeightTraining).
+          WT só quando sozinho (sem cíclica no mesmo dia).
         """
         da3 = da_in.copy()
         da3['_tipo'] = da3['type'].apply(norm_tipo)
         da3['Data']  = pd.to_datetime(da3['Data']).dt.normalize()
         da3 = da3[da3['Data'] >= pd.Timestamp(data_min)]
 
-        # Dias com actividade cíclica
+        # Dias com QUALQUER actividade (mesma definição do RPE)
+        _todos_ativ = _dias_com_atividade(da_in, data_min)
+
         dias_cicl = set(da3[da3['_tipo'].isin(CICLICOS_T)]['Data'])
-        # Dias com QUALQUER actividade (para excluir do Rest)
-        dias_com_ativ = set(da3['Data'])
 
         da3_f = da3[
             da3['_tipo'].isin(CICLICOS_T) |
@@ -3208,9 +3238,13 @@ def tab_correlacoes(da, dw):
         dw_clean = _prep_dw_clean(dw, data_min)
         all_days = dw_clean[['Data']].copy()
         all_days = all_days.merge(tipo_d, on='Data', how='left')
-        # Rest = sem NENHUMA actividade elegível nesse dia
-        # Dias com actividade não elegível (ex: yoga, natação) ficam como NaN → Rest
-        all_days['_tipo'] = all_days['_tipo'].fillna('Rest')
+
+        # Rest = sem NENHUMA actividade (cíclica OU WT) — mesma regra
+        all_days['_tipo'] = all_days.apply(
+            lambda r: r['_tipo'] if pd.notna(r['_tipo'])
+            else ('Rest' if r['Data'] not in _todos_ativ else None),
+            axis=1)
+        all_days = all_days.dropna(subset=['_tipo'])
 
         cols_dw = ['Data','hrv'] + (['rhr'] if 'rhr' in dw_clean.columns else [])
         dw_shift = dw_clean[cols_dw].copy()
@@ -3218,10 +3252,64 @@ def tab_correlacoes(da, dw):
         merged = all_days.merge(dw_shift, on='Data', how='inner')
         return merged.dropna(subset=['hrv'])
 
+    def _prep_merged_rpe_modal(da_in, data_min='2020-01-01'):
+        """
+        Cruza RPE por modalidade × dia com HRV/RHR do dia seguinte.
+        Para cada dia: modalidade dominante + RPE médio desse dia.
+        Só dias com cíclica + RPE válido.
+        """
+        da2 = da_in.copy()
+        da2['_tipo'] = da2['type'].apply(norm_tipo)
+        da2['Data']  = pd.to_datetime(da2['Data']).dt.normalize()
+        da2 = da2[da2['Data'] >= pd.Timestamp(data_min)]
+        da2 = da2[da2['_tipo'].isin(CICLICOS_T)]
+        if not rpe_col: return pd.DataFrame()
+        da2 = da2.dropna(subset=[rpe_col])
+        da2[rpe_col] = pd.to_numeric(da2[rpe_col], errors='coerce')
+        da2 = da2.dropna(subset=[rpe_col])
+        if len(da2) == 0: return pd.DataFrame()
+
+        # Agrupar: modalidade dominante + RPE médio por dia
+        grp = da2.groupby('Data').agg(
+            modalidade=('_tipo', lambda x: x.mode()[0]),
+            rpe_avg=(rpe_col, 'mean')
+        ).reset_index()
+        grp['rpe_cat'] = grp['rpe_avg'].apply(classificar_rpe)
+        grp = grp.dropna(subset=['rpe_cat'])
+
+        dw_clean = _prep_dw_clean(dw, data_min)
+        cols_dw = ['Data','hrv'] + (['rhr'] if 'rhr' in dw_clean.columns else [])
+        dw_shift = dw_clean[cols_dw].copy()
+        dw_shift['Data'] = dw_shift['Data'] - pd.Timedelta(days=1)
+        merged = grp.merge(dw_shift, on='Data', how='inner')
+        return merged.dropna(subset=['hrv'])
+
+    def _stat_kruskal(merged, grupo_col, grupos):
+        """
+        Kruskal-Wallis entre grupos para HRV e RHR.
+        Retorna dict com H, p-value, interpretação.
+        """
+        from scipy.stats import kruskal as _kruskal
+        results = {}
+        for metric in ['hrv','rhr']:
+            if metric not in merged.columns: continue
+            vals = [merged[merged[grupo_col]==g][metric].dropna().values
+                    for g in grupos if (merged[grupo_col]==g).sum() >= 3]
+            if len(vals) < 2: continue
+            try:
+                H, p = _kruskal(*vals)
+                sig = ('✅ SIG p<0.05' if p < 0.05 else
+                       '~ marginal p<0.10' if p < 0.10 else '✗ ns')
+                results[metric] = {'H': round(H,2), 'p': round(p,4), 'sig': sig}
+            except Exception:
+                pass
+        return results
+
     def _tabela_delta(merged, grupo_col, grupos):
         rows = []
         base_hrv = merged['hrv'].mean()
         base_rhr = merged['rhr'].mean() if 'rhr' in merged.columns else None
+        kw = _stat_kruskal(merged, grupo_col, grupos)
         for g in grupos:
             sub = merged[merged[grupo_col] == g]
             if len(sub) < 2: continue
@@ -3241,7 +3329,20 @@ def tab_correlacoes(da, dw):
                 row['Interpret. RHR'] = ('↘ recuperação' if d_rhr < -2
                                           else '↗ stress' if d_rhr > 2 else '→ neutro')
             rows.append(row)
-        return pd.DataFrame(rows) if rows else pd.DataFrame()
+        df_tab = pd.DataFrame(rows) if rows else pd.DataFrame()
+        # Adicionar linha de significância Kruskal-Wallis
+        if len(df_tab) > 0 and kw:
+            kw_row = {'Grupo': '— Kruskal-Wallis', 'N': ''}
+            if 'hrv' in kw:
+                kw_row['HRV médio'] = ''
+                kw_row['Δ HRV%'] = f"H={kw['hrv']['H']}"
+                kw_row['Interpretação HRV'] = kw['hrv']['sig']
+            if 'rhr' in kw:
+                kw_row['RHR médio'] = ''
+                kw_row['Δ RHR'] = f"H={kw['rhr']['H']}"
+                kw_row['Interpret. RHR'] = kw['rhr']['sig']
+            df_tab = pd.concat([df_tab, pd.DataFrame([kw_row])], ignore_index=True)
+        return df_tab
 
     def _bar_chart(grupos, deltas_hrv, deltas_rhr, cores_map, title_hrv, title_rhr):
         """Dois gráficos HRV% + RHR bpm lado a lado, mobile-friendly."""
@@ -3254,13 +3355,13 @@ def tab_correlacoes(da, dw):
                     x=[g], y=[round(d, 1)],
                     marker_color=cores_map.get(g, '#555555'),
                     text=[f"{d:+.1f}%"], textposition='outside',
-                    textfont=dict(color='#111111', size=13), width=0.55,
+                    textfont=dict(color='#111111', size=12), width=0.55,
                     hovertemplate=f'{g}<br>Δ HRV: <b>{d:+.1f}%</b><extra></extra>'))
             fig.add_hline(y=0, line_dash='dash', line_color='#555', line_width=1)
             fig.update_layout(**LAYOUT_BASE,
                 title=dict(text=title_hrv, font=dict(size=13, color='#111')),
-                height=320, showlegend=False,
-                xaxis=dict(title='', tickfont=dict(size=13, color='#111'),
+                height=340, showlegend=False,
+                xaxis=dict(title='', tickfont=dict(size=11, color='#111'),
                            showgrid=False, linecolor='#ccc', showline=True),
                 yaxis=dict(title='Δ HRV (%)', tickfont=dict(color='#111'),
                            showgrid=True, gridcolor='#ddd', zeroline=True,
@@ -3275,13 +3376,13 @@ def tab_correlacoes(da, dw):
                         x=[g], y=[round(d, 1)],
                         marker_color=cores_map.get(g, '#555555'),
                         text=[f"{d:+.1f}"], textposition='outside',
-                        textfont=dict(color='#111111', size=13), width=0.55,
+                        textfont=dict(color='#111111', size=12), width=0.55,
                         hovertemplate=f'{g}<br>Δ RHR: <b>{d:+.1f} bpm</b><extra></extra>'))
                 fig2.add_hline(y=0, line_dash='dash', line_color='#555', line_width=1)
                 fig2.update_layout(**LAYOUT_BASE,
                     title=dict(text=title_rhr, font=dict(size=13, color='#111')),
-                    height=320, showlegend=False,
-                    xaxis=dict(title='', tickfont=dict(size=13, color='#111'),
+                    height=340, showlegend=False,
+                    xaxis=dict(title='', tickfont=dict(size=11, color='#111'),
                                showgrid=False, linecolor='#ccc', showline=True),
                     yaxis=dict(title='Δ RHR (bpm)', tickfont=dict(color='#111'),
                                showgrid=True, gridcolor='#ddd', zeroline=True,
@@ -3324,6 +3425,89 @@ def tab_correlacoes(da, dw):
             st.dataframe(df_tab_rpe, hide_index=True, use_container_width=True)
     else:
         st.info("Dados insuficientes.")
+
+    st.markdown("---")
+
+    # ════════════════════════════════════════════════════════════════════════
+    # SECÇÃO 1b — RPE por Modalidade → HRV/RHR (dia seguinte)
+    # ════════════════════════════════════════════════════════════════════════
+    st.subheader("🚴 RPE por Modalidade → HRV/RHR (dia seguinte)")
+    st.caption(
+        "Cada dia: modalidade dominante × zona RPE → HRV/RHR do dia seguinte. "
+        "Permite ver se Bike pesado afecta diferente de Row pesado.")
+
+    merged_modal = _prep_merged_rpe_modal(_da_use)
+
+    if len(merged_modal) >= 5:
+        mods_modal = [m for m in CICLICOS_T if m in merged_modal['modalidade'].values]
+        base_hrv_m = merged_modal['hrv'].mean()
+        base_rhr_m = merged_modal['rhr'].mean() if 'rhr' in merged_modal.columns else None
+
+        # Gráfico: barras agrupadas por modalidade + zona RPE
+        _grupos_modal = []
+        _dhrv_modal   = []
+        _drhr_modal   = []
+        for mod in mods_modal:
+            for cat in ['Leve','Moderado','Pesado']:
+                sub = merged_modal[(merged_modal['modalidade']==mod) &
+                                   (merged_modal['rpe_cat']==cat)]
+                if len(sub) < 2: continue
+                lbl = f"{mod} {cat}"
+                _grupos_modal.append(lbl)
+                _dhrv_modal.append((sub['hrv'].mean() - base_hrv_m) / base_hrv_m * 100)
+                _drhr_modal.append((sub['rhr'].mean() - base_rhr_m)
+                                   if base_rhr_m else None)
+
+        CORES_MODAL_RPE = {
+            'Bike Leve':'#fadbd8','Bike Moderado':'#f1948a','Bike Pesado':'#e74c3c',
+            'Row Leve':'#d6eaf8','Row Moderado':'#5dade2','Row Pesado':'#2980b9',
+            'Ski Leve':'#e8daef','Ski Moderado':'#a569bd','Ski Pesado':'#8e44ad',
+            'Run Leve':'#d5f5e3','Run Moderado':'#58d68d','Run Pesado':'#27ae60',
+        }
+
+        if _grupos_modal:
+            _bar_chart(_grupos_modal, _dhrv_modal, _drhr_modal,
+                       CORES_MODAL_RPE,
+                       "Δ HRV% por Modalidade × RPE",
+                       "Δ RHR bpm por Modalidade × RPE")
+
+            # Tabela detalhada
+            rows_modal = []
+            kw_modal = _stat_kruskal(merged_modal, 'modalidade', mods_modal)
+            for mod in mods_modal:
+                for cat in ['Leve','Moderado','Pesado']:
+                    sub = merged_modal[(merged_modal['modalidade']==mod) &
+                                       (merged_modal['rpe_cat']==cat)]
+                    if len(sub) < 2: continue
+                    d_hrv = (sub['hrv'].mean() - base_hrv_m) / base_hrv_m * 100
+                    row = {
+                        'Modalidade': mod,
+                        'RPE cat':    cat,
+                        'N':          len(sub),
+                        'HRV médio':  f"{sub['hrv'].mean():.0f} ms",
+                        'Δ HRV%':     f"{d_hrv:+.1f}%",
+                        'Interp. HRV':('↗ rec.' if d_hrv>3 else '↘ stress' if d_hrv<-3 else '→'),
+                    }
+                    if base_rhr_m and 'rhr' in sub.columns:
+                        d_rhr = sub['rhr'].mean() - base_rhr_m
+                        row['RHR médio']   = f"{sub['rhr'].mean():.0f} bpm"
+                        row['Δ RHR']       = f"{d_rhr:+.1f} bpm"
+                        row['Interp. RHR'] = ('↘ rec.' if d_rhr<-2 else '↗ stress' if d_rhr>2 else '→')
+                    rows_modal.append(row)
+            if rows_modal:
+                df_modal_tab = pd.DataFrame(rows_modal)
+                st.dataframe(df_modal_tab, hide_index=True, use_container_width=True)
+
+            # Significância Kruskal-Wallis entre modalidades
+            if kw_modal:
+                parts = []
+                if 'hrv' in kw_modal:
+                    parts.append(f"HRV: H={kw_modal['hrv']['H']} {kw_modal['hrv']['sig']}")
+                if 'rhr' in kw_modal:
+                    parts.append(f"RHR: H={kw_modal['rhr']['H']} {kw_modal['rhr']['sig']}")
+                st.caption("Kruskal-Wallis entre modalidades: " + "  |  ".join(parts))
+    else:
+        st.info("Dados insuficientes para análise por modalidade.")
 
     st.markdown("---")
 
