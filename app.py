@@ -3109,145 +3109,215 @@ def tab_zones(da, mods_sel):
 
 def tab_correlacoes(da, dw):
     st.header("🧠 Correlações & Impacto")
+    st.caption("Análise sobre todo o histórico disponível — independente do filtro de período do sidebar.")
     if len(da) == 0 or len(dw) == 0: st.warning("Sem dados suficientes."); return
 
-    rpe_col = next((c for c in ['rpe', 'RPE', 'icu_rpe'] if c in da.columns), None)
-    CICLICOS_T = ['Bike', 'Row', 'Run', 'Ski']
+    rpe_col   = next((c for c in ['rpe','RPE','icu_rpe'] if c in da.columns), None)
+    CICLICOS_T = ['Bike','Row','Run','Ski']
+    # Cores fortes para boa visibilidade mobile
+    CORES_T  = {'Bike':'#e74c3c','Row':'#2980b9','Ski':'#8e44ad',
+                'Run':'#27ae60','WeightTraining':'#e67e22','Rest':'#7f8c8d'}
+    CORES_CAT = {'Leve':'#27ae60','Moderado':'#e67e22','Pesado':'#c0392b','Rest':'#7f8c8d'}
+    LAYOUT_BASE = dict(
+        paper_bgcolor='white', plot_bgcolor='white',
+        font=dict(color='#111111', size=13),
+        margin=dict(l=45, r=20, t=50, b=50))
 
     # ── Helpers ──────────────────────────────────────────────────────────────
-    def _prep_merged(da_in, excluir_wt=True):
-        """Cruza RPE diário com HRV/RHR do dia seguinte."""
-        da2 = filtrar_principais(da_in).copy()
-        if excluir_wt:
-            da2 = da2[da2['type'].apply(norm_tipo) != 'WeightTraining']
+    def _prep_merged_rpe(da_in):
+        """Cruza RPE diário (só cíclicas) com HRV/RHR dia seguinte + Rest."""
+        da2 = da_in.copy()
+        da2['_tipo'] = da2['type'].apply(norm_tipo)
+        da2 = da2[da2['_tipo'].isin(CICLICOS_T)].copy()
         da2['Data'] = pd.to_datetime(da2['Data']).dt.normalize()
-        if rpe_col:
-            rpe_d = da2.groupby('Data')[rpe_col].mean().reset_index()
-            rpe_d.columns = ['Data', 'rpe_avg']
-            rpe_d['rpe_cat'] = rpe_d['rpe_avg'].apply(classificar_rpe)
-        else:
-            return pd.DataFrame()
+        if not rpe_col: return pd.DataFrame()
+        rpe_d = da2.groupby('Data')[rpe_col].mean().reset_index()
+        rpe_d.columns = ['Data','rpe_avg']
+        rpe_d['rpe_cat'] = rpe_d['rpe_avg'].apply(classificar_rpe)
         dw2 = dw.copy()
         dw2['Data'] = pd.to_datetime(dw2['Data']).dt.normalize()
-        cols_dw = ['Data', 'hrv'] + (['rhr'] if 'rhr' in dw2.columns else [])
-        dw2_shift = dw2[cols_dw].copy()
-        dw2_shift['Data'] = dw2_shift['Data'] - pd.Timedelta(days=1)
-        merged = rpe_d.merge(dw2_shift, on='Data', how='inner')
-        return merged.dropna(subset=['hrv', 'rpe_cat'])
+        # Todos os dias de wellness — incluindo os sem actividade (Rest)
+        all_days = dw2[['Data']].copy()
+        all_days = all_days.merge(rpe_d, on='Data', how='left')
+        all_days['rpe_cat'] = all_days['rpe_cat'].fillna('Rest')
+        cols_dw = ['Data','hrv'] + (['rhr'] if 'rhr' in dw2.columns else [])
+        dw_shift = dw2[cols_dw].copy()
+        dw_shift['Data'] = dw_shift['Data'] - pd.Timedelta(days=1)
+        merged = all_days.merge(dw_shift, on='Data', how='inner')
+        return merged.dropna(subset=['hrv'])
 
-    def _tabela_delta(merged, grupo_col, baseline_col, grupos, label_col='Categoria'):
-        """Gera tabela com Δ HRV% e Δ RHR para cada grupo."""
+    def _prep_merged_tipo(da_in):
+        """Cruza tipo de actividade com HRV/RHR dia seguinte + Rest."""
+        da3 = da_in.copy()
+        da3['_tipo'] = da3['type'].apply(norm_tipo)
+        da3['Data']  = pd.to_datetime(da3['Data']).dt.normalize()
+        # WT só sozinho
+        dias_cicl = set(da3[da3['_tipo'].isin(CICLICOS_T)]['Data'])
+        da3_f = da3[
+            da3['_tipo'].isin(CICLICOS_T) |
+            ((da3['_tipo']=='WeightTraining') & (~da3['Data'].isin(dias_cicl)))
+        ].copy()
+        tipo_d = (da3_f.groupby('Data')['_tipo']
+                  .agg(lambda x: x.mode()[0] if len(x)>0 else None)
+                  .reset_index())
+        dw2 = dw.copy()
+        dw2['Data'] = pd.to_datetime(dw2['Data']).dt.normalize()
+        # Incluir dias Rest
+        all_days = dw2[['Data']].copy()
+        all_days = all_days.merge(tipo_d, on='Data', how='left')
+        all_days['_tipo'] = all_days['_tipo'].fillna('Rest')
+        cols_dw = ['Data','hrv'] + (['rhr'] if 'rhr' in dw2.columns else [])
+        dw_shift = dw2[cols_dw].copy()
+        dw_shift['Data'] = dw_shift['Data'] - pd.Timedelta(days=1)
+        merged = all_days.merge(dw_shift, on='Data', how='inner')
+        return merged.dropna(subset=['hrv'])
+
+    def _tabela_delta(merged, grupo_col, grupos):
         rows = []
         base_hrv = merged['hrv'].mean()
         base_rhr = merged['rhr'].mean() if 'rhr' in merged.columns else None
         for g in grupos:
-            sub = merged[merged[grupo_col] == g]
-            if len(sub) < 3: continue
+            sub = merged[merged[grupo_col]==g]
+            if len(sub) < 2: continue
             d_hrv = (sub['hrv'].mean() - base_hrv) / base_hrv * 100
             row = {
-                label_col: g,
-                'N':        len(sub),
+                'Grupo': g, 'N': len(sub),
                 'HRV médio': f"{sub['hrv'].mean():.0f} ms",
-                'Δ HRV%':   f"{d_hrv:+.1f}%",
-                'Δ HRV interp.': ('↗ recuperação' if d_hrv > 3 else
-                                   '↘ stress' if d_hrv < -3 else '→ neutro'),
+                'Δ HRV%': f"{d_hrv:+.1f}%",
+                'Interpretação HRV': ('↗ recuperação' if d_hrv>3
+                                       else '↘ stress' if d_hrv<-3 else '→ neutro'),
             }
             if base_rhr and 'rhr' in merged.columns:
                 d_rhr = sub['rhr'].mean() - base_rhr
-                row['RHR médio'] = f"{sub['rhr'].mean():.0f} bpm"
-                row['Δ RHR']     = f"{d_rhr:+.1f} bpm"
-                row['Δ RHR interp.'] = ('↘ recuperação' if d_rhr < -2 else
-                                          '↗ stress' if d_rhr > 2 else '→ neutro')
+                row['RHR médio']  = f"{sub['rhr'].mean():.0f} bpm"
+                row['Δ RHR']      = f"{d_rhr:+.1f} bpm"
+                row['Interpret. RHR'] = ('↘ recuperação' if d_rhr<-2
+                                          else '↗ stress' if d_rhr>2 else '→ neutro')
             rows.append(row)
         return pd.DataFrame(rows) if rows else pd.DataFrame()
 
-    # ════════════════════════════════════════════════════════════════════════
-    # SECÇÃO 1 — Impacto RPE → HRV/RHR (sem WeightTraining)
-    # ════════════════════════════════════════════════════════════════════════
-    st.subheader("💚 Impacto do RPE no HRV/RHR (dia seguinte)")
-    st.caption("Só actividades cíclicas (excluindo WeightTraining). "
-               "RPE agrupado em Leve/Moderado/Pesado. HRV/RHR do dia seguinte.")
+    def _bar_chart(grupos, deltas_hrv, deltas_rhr, cores_map, title_hrv, title_rhr):
+        """Dois gráficos HRV + RHR lado a lado, mobile-friendly."""
+        col_h, col_r = st.columns(2)
+        with col_h:
+            fig = go.Figure()
+            for g, d in zip(grupos, deltas_hrv):
+                if d is None: continue
+                fig.add_trace(go.Bar(
+                    x=[g], y=[round(d,1)],
+                    marker_color=cores_map.get(g,'#555555'),
+                    text=[f"{d:+.1f}%"], textposition='outside',
+                    textfont=dict(color='#111111', size=13),
+                    width=0.55,
+                    hovertemplate=f'{g}<br>Δ HRV: <b>{d:+.1f}%</b><extra></extra>'))
+            fig.add_hline(y=0, line_dash='dash', line_color='#555', line_width=1)
+            fig.update_layout(**LAYOUT_BASE,
+                title=dict(text=title_hrv, font=dict(size=13, color='#111')),
+                height=320, showlegend=False,
+                xaxis=dict(title='', tickfont=dict(size=13, color='#111'),
+                           showgrid=False, linecolor='#ccc', showline=True),
+                yaxis=dict(title='Δ HRV (%)', tickfont=dict(color='#111'),
+                           showgrid=True, gridcolor='#ddd', zeroline=True,
+                           zerolinecolor='#888', zerolinewidth=1.5))
+            st.plotly_chart(fig, use_container_width=True)
 
-    merged_rpe = _prep_merged(da, excluir_wt=True)
+        with col_r:
+            if any(d is not None for d in deltas_rhr):
+                fig2 = go.Figure()
+                for g, d in zip(grupos, deltas_rhr):
+                    if d is None: continue
+                    fig2.add_trace(go.Bar(
+                        x=[g], y=[round(d,1)],
+                        marker_color=cores_map.get(g,'#555555'),
+                        text=[f"{d:+.1f}"], textposition='outside',
+                        textfont=dict(color='#111111', size=13),
+                        width=0.55,
+                        hovertemplate=f'{g}<br>Δ RHR: <b>{d:+.1f} bpm</b><extra></extra>'))
+                fig2.add_hline(y=0, line_dash='dash', line_color='#555', line_width=1)
+                fig2.update_layout(**LAYOUT_BASE,
+                    title=dict(text=title_rhr, font=dict(size=13, color='#111')),
+                    height=320, showlegend=False,
+                    xaxis=dict(title='', tickfont=dict(size=13, color='#111'),
+                               showgrid=False, linecolor='#ccc', showline=True),
+                    yaxis=dict(title='Δ RHR (bpm)', tickfont=dict(color='#111'),
+                               showgrid=True, gridcolor='#ddd', zeroline=True,
+                               zerolinecolor='#888', zerolinewidth=1.5))
+                st.plotly_chart(fig2, use_container_width=True)
+            else:
+                st.info("Sem dados de RHR.")
+
+    # ── Filtro de período ────────────────────────────────────────────────────
+    st.caption("ℹ️ Esta aba usa **todo o histórico disponível** (independente do filtro do sidebar). "
+               "Os dados de wellness e actividades são cruzados pelo histórico completo.")
+
+    # Usar ac_full se disponível no session_state
+    _da_full = st.session_state.get('da_full', da)
+    _da_use  = filtrar_principais(_da_full).copy() if len(_da_full) > 0 else da.copy()
+    _da_use['Data'] = pd.to_datetime(_da_use['Data'])
+
+    # ════════════════════════════════════════════════════════════════════════
+    # SECÇÃO 1 — Impacto RPE → HRV/RHR (dia seguinte)
+    # ════════════════════════════════════════════════════════════════════════
+    st.subheader("💚 Impacto do RPE → HRV/RHR (dia seguinte)")
+    st.caption("Só sessões cíclicas. 'Rest' = dias sem actividade cíclica.")
+
+    merged_rpe = _prep_merged_rpe(_da_use)
 
     if len(merged_rpe) >= 5:
-        cats = ['Leve', 'Moderado', 'Pesado']
-        base_hrv = merged_rpe['hrv'].mean()
+        cats = ['Leve','Moderado','Pesado','Rest']
+        base_hrv_r = merged_rpe['hrv'].mean()
+        base_rhr_r = merged_rpe['rhr'].mean() if 'rhr' in merged_rpe.columns else None
 
-        # Gráfico Plotly — mobile-friendly (barras verticais simples)
-        cat_data = {}
-        for c in cats:
-            sub = merged_rpe[merged_rpe['rpe_cat'] == c]
-            if len(sub) >= 2:
-                cat_data[c] = {
-                    'hrv': sub['hrv'].mean(),
-                    'rhr': sub['rhr'].mean() if 'rhr' in sub.columns else None,
-                    'n':   len(sub),
-                }
+        grupos_rpe   = [c for c in cats if (merged_rpe['rpe_cat']==c).sum() >= 2]
+        deltas_hrv_r = [(merged_rpe[merged_rpe['rpe_cat']==g]['hrv'].mean()-base_hrv_r)/base_hrv_r*100
+                        for g in grupos_rpe]
+        deltas_rhr_r = [(merged_rpe[merged_rpe['rpe_cat']==g]['rhr'].mean()-base_rhr_r)
+                        if (base_rhr_r and 'rhr' in merged_rpe.columns) else None
+                        for g in grupos_rpe]
 
-        fig_rpe = go.Figure()
-        CORES_CAT = {'Leve': '#2ecc71', 'Moderado': '#f39c12', 'Pesado': '#e74c3c'}
-        for c in cats:
-            if c not in cat_data: continue
-            delta = (cat_data[c]['hrv'] - base_hrv) / base_hrv * 100
-            fig_rpe.add_trace(go.Bar(
-                x=[c], y=[round(delta, 1)],
-                name=c,
-                marker_color=CORES_CAT[c],
-                text=[f"{delta:+.1f}%"],
-                textposition='outside',
-                width=0.5,
-                hovertemplate=f'{c}<br>Δ HRV: <b>{delta:+.1f}%</b><br>N={cat_data[c]["n"]}<extra></extra>'))
-        fig_rpe.add_hline(y=0, line_dash='dash', line_color='#888', line_width=1)
-        fig_rpe.update_layout(
-            paper_bgcolor='white', plot_bgcolor='white',
-            title=dict(text='Δ HRV% no dia seguinte por RPE', font=dict(size=13)),
-            height=320, showlegend=False,
-            xaxis=dict(title='Categoria RPE', tickfont=dict(size=14)),
-            yaxis=dict(title='Δ HRV (%)', showgrid=True, gridcolor='#eee', zeroline=True),
-            margin=dict(l=40, r=20, t=50, b=40))
-        st.plotly_chart(fig_rpe, use_container_width=True)
+        _bar_chart(grupos_rpe, deltas_hrv_r, deltas_rhr_r, CORES_CAT,
+                   "Δ HRV% — dia seguinte (por RPE)",
+                   "Δ RHR bpm — dia seguinte (por RPE)")
 
-        # Tabela
-        df_tab_rpe = _tabela_delta(merged_rpe, 'rpe_cat', 'hrv', cats, 'Categoria RPE')
+        df_tab_rpe = _tabela_delta(merged_rpe, 'rpe_cat', grupos_rpe)
         if len(df_tab_rpe) > 0:
             st.dataframe(df_tab_rpe, hide_index=True, use_container_width=True)
     else:
-        st.info("Dados insuficientes para análise de impacto RPE.")
+        st.info("Dados insuficientes.")
 
     st.markdown("---")
 
     # ════════════════════════════════════════════════════════════════════════
     # SECÇÃO 2 — Scatter RPE→HRV | HRV→RHR
     # ════════════════════════════════════════════════════════════════════════
-    st.subheader("🔍 Relação: RPE → HRV | HRV → RHR")
-
+    st.subheader("🔍 Relação: RPE → HRV | HRV ↔ RHR")
     col1, col2 = st.columns(2)
 
     with col1:
-        if len(merged_rpe) >= 5 and rpe_col:
+        if len(merged_rpe) >= 5 and rpe_col and 'rpe_avg' in merged_rpe.columns:
             m_cl = merged_rpe[['rpe_avg','hrv']].dropna()
             if len(m_cl) >= 5:
-                r_val, _ = pearsonr(m_cl['rpe_avg'], m_cl['hrv'])
+                r_val, _ = pearsonr(m_cl['rpe_avg'].astype(float),
+                                    m_cl['hrv'].astype(float))
+                xr = np.linspace(float(m_cl['rpe_avg'].min()),
+                                 float(m_cl['rpe_avg'].max()), 50)
+                z  = np.polyfit(m_cl['rpe_avg'].astype(float),
+                                m_cl['hrv'].astype(float), 1)
                 fig_sc1 = go.Figure()
                 fig_sc1.add_trace(go.Scatter(
-                    x=m_cl['rpe_avg'], y=m_cl['hrv'],
+                    x=m_cl['rpe_avg'].tolist(), y=m_cl['hrv'].tolist(),
                     mode='markers',
-                    marker=dict(color='#3498db', size=7, opacity=0.5),
+                    marker=dict(color='#2980b9', size=7, opacity=0.5),
                     hovertemplate='RPE: %{x:.1f}<br>HRV: <b>%{y:.0f} ms</b><extra></extra>'))
-                xr = np.linspace(m_cl['rpe_avg'].min(), m_cl['rpe_avg'].max(), 50)
-                z = np.polyfit(m_cl['rpe_avg'], m_cl['hrv'], 1)
                 fig_sc1.add_trace(go.Scatter(
-                    x=xr, y=np.poly1d(z)(xr),
+                    x=xr.tolist(), y=np.poly1d(z)(xr).tolist(),
                     mode='lines', line=dict(color='#e74c3c', width=2),
                     hoverinfo='skip'))
-                fig_sc1.update_layout(
-                    paper_bgcolor='white', plot_bgcolor='white',
-                    title=dict(text=f'RPE → HRV (r={r_val:.2f})', font=dict(size=12)),
-                    height=280,
-                    xaxis=dict(title='RPE', showgrid=True, gridcolor='#eee'),
-                    yaxis=dict(title='HRV (ms) dia+1', showgrid=True, gridcolor='#eee'),
-                    margin=dict(l=40, r=20, t=40, b=40),
+                fig_sc1.update_layout(**LAYOUT_BASE,
+                    title=dict(text=f'RPE → HRV (r={r_val:.2f})', font=dict(size=12,color='#111')),
+                    height=260,
+                    xaxis=dict(title='RPE', tickfont=dict(color='#111'), showgrid=True, gridcolor='#ddd'),
+                    yaxis=dict(title='HRV (ms)', tickfont=dict(color='#111'), showgrid=True, gridcolor='#ddd'),
                     showlegend=False)
                 st.plotly_chart(fig_sc1, use_container_width=True)
 
@@ -3255,26 +3325,24 @@ def tab_correlacoes(da, dw):
         if 'hrv' in dw.columns and 'rhr' in dw.columns:
             dw3 = dw[['hrv','rhr']].dropna()
             if len(dw3) >= 5:
-                r2 = dw3['hrv'].corr(dw3['rhr'])
+                r2   = float(dw3['hrv'].astype(float).corr(dw3['rhr'].astype(float)))
+                xr2  = np.linspace(float(dw3['hrv'].min()), float(dw3['hrv'].max()), 50)
+                z2   = np.polyfit(dw3['hrv'].astype(float), dw3['rhr'].astype(float), 1)
                 fig_sc2 = go.Figure()
                 fig_sc2.add_trace(go.Scatter(
-                    x=dw3['hrv'], y=dw3['rhr'],
+                    x=dw3['hrv'].tolist(), y=dw3['rhr'].tolist(),
                     mode='markers',
-                    marker=dict(color='#9b59b6', size=7, opacity=0.5),
+                    marker=dict(color='#8e44ad', size=7, opacity=0.5),
                     hovertemplate='HRV: %{x:.0f}<br>RHR: <b>%{y:.0f} bpm</b><extra></extra>'))
-                xr2 = np.linspace(dw3['hrv'].min(), dw3['hrv'].max(), 50)
-                z2  = np.polyfit(dw3['hrv'], dw3['rhr'], 1)
                 fig_sc2.add_trace(go.Scatter(
-                    x=xr2, y=np.poly1d(z2)(xr2),
+                    x=xr2.tolist(), y=np.poly1d(z2)(xr2).tolist(),
                     mode='lines', line=dict(color='#e74c3c', width=2),
                     hoverinfo='skip'))
-                fig_sc2.update_layout(
-                    paper_bgcolor='white', plot_bgcolor='white',
-                    title=dict(text=f'HRV vs RHR (r={r2:.2f})', font=dict(size=12)),
-                    height=280,
-                    xaxis=dict(title='HRV (ms)', showgrid=True, gridcolor='#eee'),
-                    yaxis=dict(title='RHR (bpm)', showgrid=True, gridcolor='#eee'),
-                    margin=dict(l=40, r=20, t=40, b=40),
+                fig_sc2.update_layout(**LAYOUT_BASE,
+                    title=dict(text=f'HRV vs RHR (r={r2:.2f})', font=dict(size=12,color='#111')),
+                    height=260,
+                    xaxis=dict(title='HRV (ms)', tickfont=dict(color='#111'), showgrid=True, gridcolor='#ddd'),
+                    yaxis=dict(title='RHR (bpm)', tickfont=dict(color='#111'), showgrid=True, gridcolor='#ddd'),
                     showlegend=False)
                 st.plotly_chart(fig_sc2, use_container_width=True)
 
@@ -3283,32 +3351,31 @@ def tab_correlacoes(da, dw):
     # ════════════════════════════════════════════════════════════════════════
     # SECÇÃO 3 — Correlações Wellness (heatmap + tabela)
     # ════════════════════════════════════════════════════════════════════════
-    st.subheader("📊 Correlações entre Métricas Wellness")
+    st.subheader("📊 Correlações Wellness")
 
     mets_num = [c for c in ['hrv','rhr','sleep_quality','fatiga','stress','humor','soreness']
                 if c in dw.columns and dw[c].notna().any()]
 
     if len(mets_num) >= 3:
-        corr_mat = dw[mets_num].corr(method='pearson')
+        corr_mat = dw[mets_num].apply(pd.to_numeric, errors='coerce').corr(method='pearson')
 
-        # Heatmap (mobile-friendly: menor, quadrado)
         import matplotlib.pyplot as plt
         import seaborn as sns
-        fig_hm, ax_hm = plt.subplots(figsize=(min(8, len(mets_num)*1.2),
-                                               min(7, len(mets_num)*1.0)))
+        n = len(mets_num)
+        fig_hm, ax_hm = plt.subplots(figsize=(min(8, n*1.2), min(7, n*1.0)))
         mask = np.triu(np.ones_like(corr_mat, dtype=bool))
         sns.heatmap(corr_mat, mask=mask, annot=True, fmt='.2f',
                     cmap='RdYlGn', center=0, ax=ax_hm, square=True,
                     linewidths=0.5, vmin=-1, vmax=1,
                     cbar_kws={'shrink':0.8},
-                    annot_kws={'size': 9})
-        ax_hm.set_title('Correlações Wellness (Pearson)', fontsize=12, fontweight='bold')
-        ax_hm.tick_params(axis='both', labelsize=9)
+                    annot_kws={'size':9, 'color':'#111111'})
+        ax_hm.set_title('Correlações Wellness (Pearson)', fontsize=12,
+                         fontweight='bold', color='#111111')
+        ax_hm.tick_params(axis='both', labelsize=9, labelcolor='#111111')
         plt.tight_layout()
         st.pyplot(fig_hm)
         plt.close()
 
-        # Tabela de interpretação
         def _forca_str(r):
             a = abs(r)
             if a >= 0.70: return "★★★ Forte"
@@ -3317,96 +3384,56 @@ def tab_correlacoes(da, dw):
             return "— Nenhuma"
 
         rows_corr = []
-        for i in range(len(mets_num)):
-            for j in range(i+1, len(mets_num)):
-                r = corr_mat.iloc[i,j]
-                if abs(r) < 0.20: continue  # ignorar muito fracas
+        for i in range(n):
+            for j in range(i+1, n):
+                r = float(corr_mat.iloc[i,j])
+                if abs(r) < 0.20: continue
                 rows_corr.append({
-                    'Variável A':  mets_num[i],
-                    'Variável B':  mets_num[j],
-                    'r':           f"{r:+.2f}",
-                    'Força':       _forca_str(r),
-                    'Direcção':    ('↗ positiva' if r > 0 else '↘ negativa'),
+                    'Variável A': mets_num[i],
+                    'Variável B': mets_num[j],
+                    'r':          f"{r:+.2f}",
+                    'r_num':      round(abs(r), 3),
+                    'Força':      _forca_str(r),
+                    'Direcção':   ('↗ positiva' if r>0 else '↘ negativa'),
                 })
         if rows_corr:
-            df_corr_tab = (pd.DataFrame(rows_corr)
-                           .sort_values('r', key=lambda s: s.abs(), ascending=False))
-            st.dataframe(df_corr_tab, hide_index=True, use_container_width=True)
-            st.caption("★★★ Forte |r|≥0.70 | ★★ Moderada |r|≥0.50 | ★ Fraca |r|≥0.30")
+            df_ct = (pd.DataFrame(rows_corr)
+                     .sort_values('r_num', ascending=False)
+                     .drop(columns=['r_num']))
+            st.dataframe(df_ct, hide_index=True, use_container_width=True)
+            st.caption("★★★ Forte |r|≥0.70 | ★★ Moderada ≥0.50 | ★ Fraca ≥0.30")
 
     st.markdown("---")
 
     # ════════════════════════════════════════════════════════════════════════
-    # SECÇÃO 4 — Impacto por Tipo de Actividade → HRV/RHR (dia+1)
+    # SECÇÃO 4 — Impacto por Tipo de Actividade
     # ════════════════════════════════════════════════════════════════════════
     st.subheader("🏃 Impacto por Tipo de Actividade → HRV/RHR (dia seguinte)")
-    st.caption(
-        "Cíclicas: todas as sessões. "
-        "WeightTraining: só dias sem outra modalidade cíclica.")
+    st.caption("Cíclicas: todas. WeightTraining: só dias sem outra cíclica. Rest: dias sem actividade.")
 
-    da3 = filtrar_principais(da).copy()
-    da3['Data'] = pd.to_datetime(da3['Data']).dt.normalize()
-    da3['_tipo'] = da3['type'].apply(norm_tipo)
+    merged_tipo = _prep_merged_tipo(_da_use)
 
-    # WeightTraining só se sozinho no dia
-    dias_ciclicos = set(da3[da3['_tipo'].isin(CICLICOS_T)]['Data'].dt.normalize())
-    da3_filter = da3[
-        (da3['_tipo'].isin(CICLICOS_T)) |
-        ((da3['_tipo'] == 'WeightTraining') & (~da3['Data'].isin(dias_ciclicos)))
-    ].copy()
+    if len(merged_tipo) >= 5:
+        base_hrv_t = merged_tipo['hrv'].mean()
+        base_rhr_t = merged_tipo['rhr'].mean() if 'rhr' in merged_tipo.columns else None
 
-    tipo_daily = (da3_filter.groupby('Data')['_tipo']
-                  .agg(lambda x: x.mode()[0] if len(x) > 0 else None)
-                  .reset_index())
+        tipos_disp = [t for t in CICLICOS_T + ['WeightTraining','Rest']
+                      if (merged_tipo['_tipo']==t).sum() >= 2]
+        deltas_hrv_t = [(merged_tipo[merged_tipo['_tipo']==g]['hrv'].mean()-base_hrv_t)/base_hrv_t*100
+                        for g in tipos_disp]
+        deltas_rhr_t = [(merged_tipo[merged_tipo['_tipo']==g]['rhr'].mean()-base_rhr_t)
+                        if base_rhr_t else None
+                        for g in tipos_disp]
 
-    dw2b = dw.copy()
-    dw2b['Data'] = pd.to_datetime(dw2b['Data']).dt.normalize()
-    cols_dw2 = ['Data','hrv'] + (['rhr'] if 'rhr' in dw2b.columns else [])
-    dw2b_s = dw2b[cols_dw2].copy()
-    dw2b_s['Data'] = dw2b_s['Data'] - pd.Timedelta(days=1)
-    merged2 = tipo_daily.merge(
-        dw2b_s.rename(columns={'Data':'Data'}), on='Data', how='inner')
-    merged2 = merged2.dropna(subset=['hrv','_tipo'])
+        _bar_chart(tipos_disp, deltas_hrv_t, deltas_rhr_t, CORES_T,
+                   "Δ HRV% — dia seguinte (por Modalidade)",
+                   "Δ RHR bpm — dia seguinte (por Modalidade)")
 
-    if len(merged2) >= 5:
-        tipos_disp = [t for t in CICLICOS_T + ['WeightTraining']
-                      if t in merged2['_tipo'].values]
-        base_hrv2  = merged2['hrv'].mean()
-        base_rhr2  = merged2['rhr'].mean() if 'rhr' in merged2.columns else None
-
-        CORES_T = {'Bike':'#e74c3c','Row':'#3498db','Ski':'#9b59b6',
-                   'Run':'#2ecc71','WeightTraining':'#f39c12'}
-
-        # Gráfico barras (mobile-friendly)
-        fig_tipo = go.Figure()
-        for t in tipos_disp:
-            sub = merged2[merged2['_tipo']==t]
-            if len(sub) < 3: continue
-            delta = (sub['hrv'].mean() - base_hrv2) / base_hrv2 * 100
-            fig_tipo.add_trace(go.Bar(
-                x=[t], y=[round(delta,1)],
-                name=t,
-                marker_color=CORES_T.get(t,'#888'),
-                text=[f"{delta:+.1f}%"],
-                textposition='outside',
-                width=0.5,
-                hovertemplate=f'{t}<br>Δ HRV: <b>{delta:+.1f}%</b><br>N={len(sub)}<extra></extra>'))
-        fig_tipo.add_hline(y=0, line_dash='dash', line_color='#888', line_width=1)
-        fig_tipo.update_layout(
-            paper_bgcolor='white', plot_bgcolor='white',
-            title=dict(text='Δ HRV% no dia seguinte por Modalidade', font=dict(size=13)),
-            height=320, showlegend=False,
-            xaxis=dict(title='Modalidade', tickfont=dict(size=13)),
-            yaxis=dict(title='Δ HRV (%)', showgrid=True, gridcolor='#eee', zeroline=True),
-            margin=dict(l=40, r=20, t=50, b=40))
-        st.plotly_chart(fig_tipo, use_container_width=True)
-
-        # Tabela igual à do RPE
-        df_tab_tipo = _tabela_delta(merged2, '_tipo', 'hrv', tipos_disp, 'Modalidade')
+        df_tab_tipo = _tabela_delta(merged_tipo, '_tipo', tipos_disp)
         if len(df_tab_tipo) > 0:
             st.dataframe(df_tab_tipo, hide_index=True, use_container_width=True)
     else:
-        st.info("Dados insuficientes para análise por tipo de actividade.")
+        st.info("Dados insuficientes.")
 
 
 def tab_recovery(dw):
@@ -7128,7 +7155,7 @@ def main():
     with tab3:  tab_volume(da_filt, dw)
     with tab4:  tab_eftp(da_filt, mods_sel, ac_full)
     with tab5:  tab_zones(da_filt, mods_sel)
-    with tab6:  tab_correlacoes(da_filt, dw)
+    with tab6:  tab_correlacoes(ac_full, wc)
     with tab7:  tab_recovery(dw)
     with tab8:  tab_wellness(dw)
     with tab9:  tab_analises(ac_full, dw, dfs_annual, df_annual)
