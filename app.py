@@ -3906,21 +3906,34 @@ def tab_correlacoes(da, dw):
                 "Eta2 > 0.06 = sinal real (treino explica 6%+ da variacao).")
         st.markdown("---")
     # ════════════════════════════════════════════════════════════════════════
-    # SECÇÃO 6 — Análise avançada: isolamento, TRIMP, ATL, robustez
+    # SECÇÃO 6 — Análise Avançada: Carga, Fadiga e HRV
     # ════════════════════════════════════════════════════════════════════════
     st.subheader("\U0001f9ea Análise Avançada — Carga, Fadiga e HRV")
+    st.caption(
+        "Usa icu_training_load (mesma escala do PMC). "
+        "WeightTraining excluído. Actividades disponíveis a partir de 2023-01-25 (RPE). "
+        "ATL/CTL calculados sobre training_load historico completo. "
+        "lag(ATL/CTL) evita leakage: ATL(t-1) = fadiga ANTES da sessao de hoje.")
 
-    # ── Preparar série diária de carga (TRIMP + KJ + ATL/CTL) ────────────
+    # ── Série diária de carga (icu_training_load, sem WT) ────────────────
     _adv_da = _da_use.copy()
+    _adv_da = _adv_da[_adv_da['type'].apply(norm_tipo) != 'WeightTraining']
     _adv_dw = _prep_dw_clean(dw, '2020-01-01').copy()
     _adv_dw['Data'] = pd.to_datetime(_adv_dw['Data']).dt.normalize()
 
-    # TRIMP e KJ por dia
-    if 'rpe' in _adv_da.columns:
-        _adv_da['_rpe_n'] = pd.to_numeric(_adv_da['rpe'], errors='coerce')
-    _adv_da['_mt_min'] = pd.to_numeric(_adv_da['moving_time'], errors='coerce') / 60
-    _adv_da['_trimp']  = _adv_da['_mt_min'] * _adv_da['_rpe_n']
-    if 'icu_joules' in _adv_da.columns:
+    # Usar icu_training_load como carga primária (fallback: dur_min × rpe)
+    _has_icu = ('icu_training_load' in _adv_da.columns and
+                _adv_da['icu_training_load'].notna().sum() > 20)
+    if _has_icu:
+        _adv_da['_load'] = pd.to_numeric(_adv_da['icu_training_load'], errors='coerce').fillna(0)
+        _load_src = "icu_training_load"
+    else:
+        _rpe_c = pd.to_numeric(_adv_da.get('rpe', pd.Series(dtype=float)), errors='coerce')
+        _adv_da['_load'] = (pd.to_numeric(_adv_da['moving_time'], errors='coerce') / 60 * _rpe_c).fillna(0)
+        _load_src = "TRIMP (fallback)"
+
+    # KJ por dia (para impacto agudo)
+    if 'icu_joules' in _adv_da.columns and _adv_da['icu_joules'].notna().any():
         _adv_da['_kj'] = pd.to_numeric(_adv_da['icu_joules'], errors='coerce') / 1000
     elif 'power_avg' in _adv_da.columns:
         _adv_da['_kj'] = (pd.to_numeric(_adv_da['power_avg'], errors='coerce') *
@@ -3930,25 +3943,40 @@ def tab_correlacoes(da, dw):
 
     # Agregar por dia
     _daily = _adv_da.groupby('Data').agg(
-        trimp=('_trimp', 'sum'),
-        kj=('_kj', 'sum'),
-        rpe_avg=('_rpe_n', 'mean'),
-        n_sess=('_mt_min', 'count'),
+        load=('_load', 'sum'),
+        kj=('_kj',    'sum'),
+        n_sess=('_load', 'count'),
     ).reset_index()
     _daily['Data'] = pd.to_datetime(_daily['Data'])
     _daily['kj']   = _daily['kj'].replace(0, np.nan)
-    _daily['trimp']= _daily['trimp'].replace(0, np.nan)
+    _daily['load'] = _daily['load'].replace(0, np.nan)
 
-    # ATL (7d EMA) e CTL (42d EMA) sobre TRIMP
+    # ATL/CTL sobre série completa (histórico desde 2020)
     _all_d = pd.date_range(_daily['Data'].min(), pd.Timestamp.now().normalize(), freq='D')
-    _load_d = _daily.set_index('Data')['trimp'].reindex(_all_d, fill_value=0)
-    _atl_s  = _load_d.ewm(span=7,  adjust=False).mean()
-    _ctl_s  = _load_d.ewm(span=42, adjust=False).mean()
-    _atl_df = pd.DataFrame({'Data': _all_d, 'ATL': _atl_s.values, 'CTL': _ctl_s.values})
-    _atl_df['ATL_CTL'] = (_atl_df['ATL'] / _atl_df['CTL'].replace(0, np.nan)).round(3)
-    _daily  = _daily.merge(_atl_df, on='Data', how='left')
+    _load_ser = _daily.set_index('Data')['load'].reindex(_all_d, fill_value=0)
+    _atl_s = _load_ser.ewm(span=7,  adjust=False).mean()
+    _ctl_s = _load_ser.ewm(span=42, adjust=False).mean()
 
-    # Cruzar com HRV do mesmo dia (estado) e do dia seguinte (resposta aguda)
+    # ⚠️ CRÍTICO: lag(ATL/CTL) — usar ATL(t-1) para evitar data leakage
+    _atl_lag = _atl_s.shift(1)
+    _ctl_lag = _ctl_s.shift(1)
+    _atl_ctl_lag = (_atl_lag / _ctl_lag.replace(0, np.nan)).round(3)
+
+    _ld_df = pd.DataFrame({
+        'Data': _all_d,
+        'ATL': _atl_s.values,
+        'CTL': _ctl_s.values,
+        'ATL_lag': _atl_lag.values,
+        'CTL_lag': _ctl_lag.values,
+        'ATL_CTL_lag': _atl_ctl_lag.values,
+    })
+    _daily = _daily.merge(_ld_df, on='Data', how='left')
+
+    # Log-transform de KJ e load (reduz outliers, captura não-linearidade)
+    _daily['log_kj']   = np.log1p(_daily['kj'].fillna(0))
+    _daily['log_load'] = np.log1p(_daily['load'].fillna(0))
+
+    # Cruzar com HRV(t) e HRV(t+1)
     _hrv_today = _adv_dw[['Data','hrv']].rename(columns={'hrv':'hrv_t'})
     _hrv_next  = _adv_dw[['Data','hrv']].copy()
     _hrv_next['Data'] = _hrv_next['Data'] - pd.Timedelta(days=1)
@@ -3957,190 +3985,239 @@ def tab_correlacoes(da, dw):
               .merge(_hrv_today, on='Data', how='inner')
               .merge(_hrv_next,  on='Data', how='left'))
 
-    # ── ATL percentis para filtro "dias isolados" ─────────────────────────
-    _atl_p33 = float(_daily['ATL'].quantile(0.33))
-    _atl_p66 = float(_daily['ATL'].quantile(0.66))
+    # HRV relativo: HRV / rolling_mean(7d) — reduz ruído individual
+    _hrv_roll7 = _adv_dw.set_index('Data')['hrv'].rolling(7, min_periods=3).mean()
+    _hrv_roll7_df = pd.DataFrame({'Data': _hrv_roll7.index, 'hrv_roll7': _hrv_roll7.values})
+    _hrv_roll7_df['Data'] = pd.to_datetime(_hrv_roll7_df['Data'])
+    _daily = _daily.merge(_hrv_roll7_df, on='Data', how='left')
+    _daily['hrv_rel'] = (_daily['hrv_t'] / _daily['hrv_roll7'].replace(0, np.nan)).round(4)
+    # HRV relativo dia seguinte
+    _hrv_roll7_next = _hrv_roll7_df.copy()
+    _hrv_roll7_next['Data'] = _hrv_roll7_next['Data'] - pd.Timedelta(days=1)
+    _hrv_roll7_next = _hrv_roll7_next.rename(columns={'hrv_roll7':'hrv_roll7_next'})
+    _daily = _daily.merge(_hrv_roll7_next, on='Data', how='left')
+    _hrv_t1_abs = _adv_dw[['Data','hrv']].copy()
+    _hrv_t1_abs['Data'] = _hrv_t1_abs['Data'] - pd.Timedelta(days=1)
+    _hrv_t1_abs = _hrv_t1_abs.rename(columns={'hrv':'hrv_t1_abs'})
+    _daily = _daily.merge(_hrv_t1_abs, on='Data', how='left')
+    _daily['hrv_t1_rel'] = (_daily['hrv_t1_abs'] / _daily['hrv_roll7_next'].replace(0, np.nan)).round(4)
 
-    # Dias isolados = ATL no tercil inferior (baixa fadiga acumulada)
-    _isolated = _daily[_daily['ATL'] <= _atl_p33].copy()
-    # Dias com fadiga alta = ATL no tercil superior
-    _fatigued  = _daily[_daily['ATL'] >= _atl_p66].copy()
+    # Filtros de segmentação
+    _atl_p33 = float(_daily['ATL_lag'].quantile(0.33))
+    _atl_p66 = float(_daily['ATL_lag'].quantile(0.66))
+    _isolated = _daily[_daily['ATL_lag'] <= _atl_p33].copy()
+    _fatigued  = _daily[_daily['ATL_lag'] >= _atl_p66].copy()
 
     st.caption(
-        f"Série: {len(_daily)} dias com actividade | "
-        f"ATL tercis: baixo ≤{_atl_p33:.0f} | alto ≥{_atl_p66:.0f}. "
-        f"Isolados (ATL baixo): {len(_isolated)} dias | Fatigados (ATL alto): {len(_fatigued)} dias")
+        f"Metrica load: **{_load_src}** | "
+        f"Dias com actividade: {len(_daily)} | "
+        f"ATL-lag tercis: baixo ≤{_atl_p33:.0f} | alto ≥{_atl_p66:.0f} | "
+        f"Isolados: {len(_isolated)} | Fatigados: {len(_fatigued)}")
 
     # ── Função de correlação robusta ──────────────────────────────────────
     def _corr_row(df_in, x_col, y_col, label_x, label_y, grupo="Todos"):
         d = df_in[[x_col, y_col]].dropna()
-        if len(d) < 8:
-            return None
-        x, y = d[x_col].values.astype(float), d[y_col].values.astype(float)
+        if len(d) < 8: return None
+        x = d[x_col].values.astype(float)
+        y = d[y_col].values.astype(float)
         from scipy.stats import spearmanr, pearsonr, linregress
-        r_p, p_p   = pearsonr(x, y)
-        r_s, p_s   = spearmanr(x, y)
+        r_p, p_p = pearsonr(x, y)
+        r_s, p_s = spearmanr(x, y)
         sl, ic, _, _, _ = linregress(x, y)
-        eta2 = max(0.0, (abs(r_s) - 0) ** 2)  # r² como proxy eta²
-        sig  = "✅ p<0.05" if min(p_p, p_s) < 0.05 else ("~ p<0.10" if min(p_p,p_s)<0.10 else "✗ ns")
-        forca = ("forte" if abs(r_s)>=0.5 else "moderada" if abs(r_s)>=0.3
-                 else "fraca" if abs(r_s)>=0.1 else "negligenciavel")
+        sig = ("✅ p<0.05" if min(p_p,p_s)<0.05 else
+               "~ p<0.10" if min(p_p,p_s)<0.10 else "✗ ns")
+        forca = ("forte" if abs(r_s)>=0.5 else
+                 "moderada" if abs(r_s)>=0.3 else
+                 "fraca" if abs(r_s)>=0.1 else "negligenciavel")
         return {
-            'Grupo': grupo, 'X': label_x, 'Y': label_y,
-            'N': len(d),
-            'r Pearson': round(r_p, 3), 'r Spearman': round(r_s, 3),
-            'p': round(min(p_p, p_s), 4), 'Sig': sig,
-            'Slope': round(sl, 4), 'Intercept': round(ic, 2),
-            'Forca': forca,
-            'Direcao': ("↗ positiva" if r_s > 0 else "↘ negativa"),
+            'Grupo': grupo, 'X': label_x, 'Y': label_y, 'N': len(d),
+            'r Spearman': round(r_s, 3), 'r Pearson': round(r_p, 3),
+            'p': round(min(p_p,p_s), 4), 'Sig': sig,
+            'Slope': round(sl, 4), 'Forca': forca,
+            'Direcao': ("↗" if r_s > 0 else "↘"),
         }
 
-    # ── 1. Impacto agudo: HRV(t+1) ~ TRIMP(t) e KJ(t) ───────────────────
+    # ════════════════════════════════════════════════════════════════════
+    # BLOCO 1 — Impacto Agudo: HRV(t+1) ~ load(t) / KJ(t)
+    # ════════════════════════════════════════════════════════════════════
     st.markdown("---")
     st.markdown("**1️⃣  Impacto Agudo — HRV amanhã em função da carga hoje**")
     st.caption(
-        "HRV(t+1) = HRV do dia seguinte. "
-        "Testado em 3 grupos: Todos / Dias isolados (ATL baixo) / Fatigados (ATL alto). "
-        "Dias isolados mostram o efeito directo da sessão sem confundimento de fadiga acumulada.")
+        "Usa HRV relativo (HRV/rolling7d) e log(KJ+1) para reduzir ruído e outliers. "
+        "ATL(t-1) = fadiga ANTES da sessão. "
+        "Isolados = ATL-lag baixo (≤P33) — efeito limpo sem fadiga acumulada.")
 
-    _rows_agudo = []
-    for _df_g, _label_g in [(_daily,"Todos"), (_isolated,"Isolados (ATL baixo)"),
-                              (_fatigued,"Fatigados (ATL alto)")]:
-        for _x, _lbl_x in [('trimp','TRIMP'), ('kj','KJ')]:
-            r = _corr_row(_df_g, _x, 'hrv_t1', _lbl_x, 'HRV(t+1)', _label_g)
-            if r: _rows_agudo.append(r)
+    _rows_b1 = []
+    for _df_g, _lbl_g in [
+        (_daily,    "Todos"),
+        (_isolated, "Isolados (ATL-lag baixo)"),
+        (_fatigued, "Fatigados (ATL-lag alto)"),
+    ]:
+        # HRV relativo dia seguinte ~ log_load
+        r = _corr_row(_df_g, 'log_load', 'hrv_t1_rel', f'log({_load_src})', 'HRV_rel(t+1)', _lbl_g)
+        if r: _rows_b1.append(r)
+        # HRV relativo dia seguinte ~ log_kj
+        r2 = _corr_row(_df_g, 'log_kj', 'hrv_t1_rel', 'log(KJ)', 'HRV_rel(t+1)', _lbl_g)
+        if r2: _rows_b1.append(r2)
 
-    if _rows_agudo:
-        df_agudo = pd.DataFrame(_rows_agudo)
-        st.dataframe(df_agudo, hide_index=True, use_container_width=True)
-        st.caption(
-            "r negativo = mais carga hoje → HRV mais baixo amanhã. "
-            "Isolados = efeito limpo (sem fadiga acumulada). "
-            "Fatigados = efeito amplificado ou invertido.")
+    if _rows_b1:
+        st.dataframe(pd.DataFrame(_rows_b1), hide_index=True, use_container_width=True)
 
-        # Scatter TRIMP vs HRV(t+1) para dias isolados
-        _sc = _isolated[['trimp','hrv_t1']].dropna()
-        if len(_sc) >= 5:
-            from scipy.stats import pearsonr as _pr
-            _r_sc, _ = _pr(_sc['trimp'].astype(float), _sc['hrv_t1'].astype(float))
-            _z_sc    = np.polyfit(_sc['trimp'].astype(float), _sc['hrv_t1'].astype(float), 1)
-            _xr_sc   = np.linspace(float(_sc['trimp'].min()), float(_sc['trimp'].max()), 50)
-            fig_agudo = go.Figure()
-            fig_agudo.add_trace(go.Scatter(
-                x=_sc['trimp'].tolist(), y=_sc['hrv_t1'].tolist(),
-                mode='markers',
-                marker=dict(color='#2980b9', size=6, opacity=0.5),
-                hovertemplate='TRIMP: %{x:.0f}<br>HRV(t+1): <b>%{y:.0f} ms</b><extra></extra>'))
-            fig_agudo.add_trace(go.Scatter(
-                x=_xr_sc.tolist(), y=np.poly1d(_z_sc)(_xr_sc).tolist(),
-                mode='lines', line=dict(color='#e74c3c', width=2), showlegend=False))
-            fig_agudo.update_layout(**LAYOUT_BASE,
-                title=dict(text=f'TRIMP(t) vs HRV(t+1) — Dias Isolados (r={_r_sc:.2f})',
-                           font=dict(size=13, color='#111')),
-                height=300,
-                xaxis=dict(title='TRIMP', tickfont=dict(color='#111'), showgrid=True, gridcolor='#ddd'),
-                yaxis=dict(title='HRV dia seguinte (ms)', tickfont=dict(color='#111'),
-                           showgrid=True, gridcolor='#ddd'),
-                showlegend=False)
-            st.plotly_chart(fig_agudo, use_container_width=True)
+    # Scatter com LOWESS para dias isolados
+    _sc1 = _isolated[['log_kj','hrv_t1_rel']].dropna()
+    if len(_sc1) >= 8:
+        from scipy.stats import pearsonr as _pr1
+        _r1, _ = _pr1(_sc1['log_kj'].astype(float), _sc1['hrv_t1_rel'].astype(float))
+        _z1 = np.polyfit(_sc1['log_kj'].astype(float), _sc1['hrv_t1_rel'].astype(float), 1)
+        _xr1 = np.linspace(float(_sc1['log_kj'].min()), float(_sc1['log_kj'].max()), 50)
+        # LOWESS via pandas rolling (simples)
+        _sc1_s = _sc1.sort_values('log_kj').copy()
+        _sc1_s['_roll'] = _sc1_s['hrv_t1_rel'].rolling(max(3, len(_sc1_s)//8),
+                                                         min_periods=2, center=True).mean()
+        fig_b1 = go.Figure()
+        fig_b1.add_trace(go.Scatter(
+            x=_sc1_s['log_kj'].tolist(), y=_sc1_s['hrv_t1_rel'].tolist(),
+            mode='markers', name='Pontos',
+            marker=dict(color='#2980b9', size=6, opacity=0.45),
+            hovertemplate='log(KJ): %{x:.2f}<br>HRV_rel(t+1): <b>%{y:.3f}</b><extra></extra>'))
+        fig_b1.add_trace(go.Scatter(
+            x=_sc1_s['log_kj'].tolist(), y=np.poly1d(_z1)(_sc1_s['log_kj'].values).tolist(),
+            mode='lines', name='Regressão linear',
+            line=dict(color='#e74c3c', width=2)))
+        fig_b1.add_trace(go.Scatter(
+            x=_sc1_s['log_kj'].tolist(), y=_sc1_s['_roll'].tolist(),
+            mode='lines', name='Tendência (rolling)',
+            line=dict(color='#27ae60', width=2, dash='dash')))
+        fig_b1.update_layout(**LAYOUT_BASE,
+            title=dict(text=f'log(KJ) vs HRV_rel(t+1) — Dias Isolados (r={_r1:.2f})',
+                       font=dict(size=13, color='#111')),
+            height=310, showlegend=True,
+            legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),
+            xaxis=dict(title='log(KJ+1)', tickfont=dict(color='#111'),
+                       showgrid=True, gridcolor='#ddd'),
+            yaxis=dict(title='HRV relativo dia seguinte', tickfont=dict(color='#111'),
+                       showgrid=True, gridcolor='#ddd'))
+        st.plotly_chart(fig_b1, use_container_width=True)
+        st.caption("HRV_rel = HRV / média_7d (remove tendência individual). "
+                   "log(KJ) = escala logarítmica (captura não-linearidade).")
 
-    # ── 2. Fadiga acumulada: HRV(t) ~ ATL(t) ─────────────────────────────
+    # ════════════════════════════════════════════════════════════════════
+    # BLOCO 2 — Fadiga Acumulada: HRV(t) ~ ATL_lag
+    # ════════════════════════════════════════════════════════════════════
     st.markdown("---")
-    st.markdown("**2️⃣  Fadiga Acumulada — HRV hoje em função do ATL**")
-    st.caption("HRV(t) = HRV do mesmo dia. ATL = média exponencial 7d de TRIMP.")
-
-    _rows_fad = []
-    for _df_g, _label_g in [(_daily,"Todos"), (_isolated,"ATL baixo"), (_fatigued,"ATL alto")]:
-        r = _corr_row(_df_g, 'ATL', 'hrv_t', 'ATL', 'HRV(t)', _label_g)
-        if r: _rows_fad.append(r)
-
-    if _rows_fad:
-        df_fad = pd.DataFrame(_rows_fad)
-        st.dataframe(df_fad, hide_index=True, use_container_width=True)
-
-        # Scatter ATL vs HRV
-        _sc2 = _daily[['ATL','hrv_t']].dropna()
-        if len(_sc2) >= 5:
-            from scipy.stats import pearsonr as _pr2
-            _r2, _ = _pr2(_sc2['ATL'].astype(float), _sc2['hrv_t'].astype(float))
-            _z2    = np.polyfit(_sc2['ATL'].astype(float), _sc2['hrv_t'].astype(float), 1)
-            _xr2   = np.linspace(float(_sc2['ATL'].min()), float(_sc2['ATL'].max()), 50)
-            fig_fad = go.Figure()
-            fig_fad.add_trace(go.Scatter(
-                x=_sc2['ATL'].tolist(), y=_sc2['hrv_t'].tolist(),
-                mode='markers',
-                marker=dict(color='#e74c3c', size=6, opacity=0.4),
-                hovertemplate='ATL: %{x:.0f}<br>HRV(t): <b>%{y:.0f} ms</b><extra></extra>'))
-            fig_fad.add_trace(go.Scatter(
-                x=_xr2.tolist(), y=np.poly1d(_z2)(_xr2).tolist(),
-                mode='lines', line=dict(color='#2c3e50', width=2), showlegend=False))
-            fig_fad.update_layout(**LAYOUT_BASE,
-                title=dict(text=f'ATL vs HRV(t) — Fadiga acumulada (r={_r2:.2f})',
-                           font=dict(size=13, color='#111')),
-                height=300,
-                xaxis=dict(title='ATL (7d EMA TRIMP)', tickfont=dict(color='#111'),
-                           showgrid=True, gridcolor='#ddd'),
-                yaxis=dict(title='HRV mesmo dia (ms)', tickfont=dict(color='#111'),
-                           showgrid=True, gridcolor='#ddd'),
-                showlegend=False)
-            st.plotly_chart(fig_fad, use_container_width=True)
-        st.caption("r negativo = mais fadiga acumulada → HRV mais baixo.")
-
-    # ── 3. Robustez: HRV ~ ATL/CTL e HRV(t+1) ~ TRIMP + ATL ─────────────
-    st.markdown("---")
-    st.markdown("**3️⃣  Robustez — ATL/CTL e modelo combinado**")
+    st.markdown("**2️⃣  Fadiga Acumulada — HRV hoje em função do ATL do dia anterior**")
     st.caption(
-        "ATL/CTL > 1 = stress agudo acima do crónico (overreaching). "
-        "Modelo combinado TRIMP + ATL testa se a carga hoje tem efeito "
-        "independente do estado de fadiga.")
+        "ATL_lag = ATL calculado até ONTEM (shift 1). "
+        "Evita que a sessão de hoje contamine o ATL que tentamos correlacionar com HRV de hoje.")
 
-    _rows_rob = []
-    # ATL/CTL vs HRV(t)
-    r = _corr_row(_daily, 'ATL_CTL', 'hrv_t', 'ATL/CTL', 'HRV(t)', 'Todos')
-    if r: _rows_rob.append(r)
+    _rows_b2 = []
+    for _df_g, _lbl_g in [(_daily,"Todos"),(_isolated,"ATL-lag baixo"),(_fatigued,"ATL-lag alto")]:
+        r = _corr_row(_df_g, 'ATL_lag', 'hrv_rel', 'ATL(t-1)', 'HRV_rel(t)', _lbl_g)
+        if r: _rows_b2.append(r)
+        r2 = _corr_row(_df_g, 'ATL_CTL_lag', 'hrv_rel', 'ATL/CTL(t-1)', 'HRV_rel(t)', _lbl_g)
+        if r2: _rows_b2.append(r2)
 
-    # Normalizar TRIMP por KJ (eficiência) vs HRV(t+1) se KJ disponível
-    _dn = _daily.dropna(subset=['trimp','kj','hrv_t1']).copy()
-    if len(_dn) >= 8:
-        _dn['trimp_kj'] = _dn['trimp'] / _dn['kj'].replace(0, np.nan)
-        _dn = _dn.dropna(subset=['trimp_kj'])
-        if len(_dn) >= 8:
-            r2 = _corr_row(_dn, 'trimp_kj', 'hrv_t1', 'TRIMP/KJ (efic.)', 'HRV(t+1)', 'Todos')
-            if r2: _rows_rob.append(r2)
+    if _rows_b2:
+        st.dataframe(pd.DataFrame(_rows_b2), hide_index=True, use_container_width=True)
 
-    # Modelo múltiplo: HRV(t+1) ~ TRIMP + ATL (OLS simples)
-    _dm = _daily[['trimp','ATL','hrv_t1']].dropna()
-    if len(_dm) >= 10:
-        from scipy.stats import pearsonr as _pr3
-        X_m = np.column_stack([np.ones(len(_dm)), _dm['trimp'].values, _dm['ATL'].values])
-        y_m = _dm['hrv_t1'].values.astype(float)
-        try:
-            beta_m = np.linalg.lstsq(X_m, y_m, rcond=None)[0]
-            y_pred_m = X_m @ beta_m
-            ss_res = np.sum((y_m - y_pred_m)**2)
-            ss_tot = np.sum((y_m - y_m.mean())**2)
-            r2_m   = max(0.0, 1 - ss_res/ss_tot) if ss_tot > 0 else 0
-            _rows_rob.append({
-                'Grupo': 'OLS multiplo', 'X': 'TRIMP + ATL', 'Y': 'HRV(t+1)',
-                'N': len(_dm),
-                'r Pearson': '—', 'r Spearman': '—',
-                'p': '—', 'Sig': '—',
-                'Slope': f"TRIMP:{beta_m[1]:+.4f} ATL:{beta_m[2]:+.4f}",
-                'Intercept': round(float(beta_m[0]), 2),
-                'Forca': f"R²={round(r2_m,3)}",
-                'Direcao': ('TRIMP neg, ATL neg' if beta_m[1]<0 and beta_m[2]<0
-                            else 'ver slope'),
-            })
-        except Exception:
-            pass
+    # Scatter ATL_lag vs HRV_rel
+    _sc2 = _daily[['ATL_lag','hrv_rel']].dropna()
+    if len(_sc2) >= 8:
+        from scipy.stats import pearsonr as _pr2
+        _r2, _ = _pr2(_sc2['ATL_lag'].astype(float), _sc2['hrv_rel'].astype(float))
+        _z2 = np.polyfit(_sc2['ATL_lag'].astype(float), _sc2['hrv_rel'].astype(float), 1)
+        _sc2_s = _sc2.sort_values('ATL_lag').copy()
+        _sc2_s['_roll'] = _sc2_s['hrv_rel'].rolling(max(3, len(_sc2_s)//8),
+                                                      min_periods=2, center=True).mean()
+        fig_b2 = go.Figure()
+        fig_b2.add_trace(go.Scatter(
+            x=_sc2_s['ATL_lag'].tolist(), y=_sc2_s['hrv_rel'].tolist(),
+            mode='markers', name='Pontos',
+            marker=dict(color='#e74c3c', size=6, opacity=0.4),
+            hovertemplate='ATL(t-1): %{x:.1f}<br>HRV_rel: <b>%{y:.3f}</b><extra></extra>'))
+        fig_b2.add_trace(go.Scatter(
+            x=_sc2_s['ATL_lag'].tolist(), y=np.poly1d(_z2)(_sc2_s['ATL_lag'].values).tolist(),
+            mode='lines', name='Regressão linear', line=dict(color='#2c3e50', width=2)))
+        fig_b2.add_trace(go.Scatter(
+            x=_sc2_s['ATL_lag'].tolist(), y=_sc2_s['_roll'].tolist(),
+            mode='lines', name='Tendência (rolling)',
+            line=dict(color='#f39c12', width=2, dash='dash')))
+        fig_b2.update_layout(**LAYOUT_BASE,
+            title=dict(text=f'ATL(t-1) vs HRV_rel(t) (r={_r2:.2f})',
+                       font=dict(size=13, color='#111')),
+            height=310, showlegend=True,
+            legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),
+            xaxis=dict(title=f'ATL(t-1) [{_load_src}]', tickfont=dict(color='#111'),
+                       showgrid=True, gridcolor='#ddd'),
+            yaxis=dict(title='HRV relativo (t)', tickfont=dict(color='#111'),
+                       showgrid=True, gridcolor='#ddd'))
+        st.plotly_chart(fig_b2, use_container_width=True)
+        st.caption("ATL↑ → HRV_rel↓ esperado. Se r < -0.2 com p<0.05 = fadiga detectável.")
 
-    if _rows_rob:
-        df_rob = pd.DataFrame(_rows_rob)
-        st.dataframe(df_rob, hide_index=True, use_container_width=True)
-        st.caption(
-            "ATL/CTL > 1 associado a HRV baixo = overreaching detectavel. "
-            "TRIMP/KJ = eficiencia metabolica (alto = caro). "
-            "OLS multiplo R2 = % da variacao HRV explicada por TRIMP+ATL.")
+    # ════════════════════════════════════════════════════════════════════
+    # BLOCO 3 — Robustez: modelo combinado + interação
+    # ════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("**3️⃣  Robustez — Modelo combinado: HRV_rel(t+1) ~ log(KJ) + ATL_lag + KJ×ATL**")
+    st.caption(
+        "Variáveis z-scored (mesma escala). "
+        "Interação KJ×ATL: testa se o impacto do KJ depende do nível de fadiga. "
+        "R² = % da variação de HRV explicada pelo modelo.")
+
+    _dm3 = _daily[['log_kj','ATL_lag','hrv_t1_rel']].dropna().copy()
+    if len(_dm3) >= 15:
+        from scipy.stats import zscore as _zsc
+        # Z-score das variáveis
+        _dm3['z_logkj'] = _zsc(_dm3['log_kj'].astype(float))
+        _dm3['z_atl']   = _zsc(_dm3['ATL_lag'].astype(float))
+        _dm3['z_inter'] = _dm3['z_logkj'] * _dm3['z_atl']
+        y3 = _dm3['hrv_t1_rel'].values.astype(float)
+
+        _models_b3 = [
+            ("M1: log(KJ)",               ['z_logkj']),
+            ("M2: ATL_lag",               ['z_atl']),
+            ("M3: log(KJ) + ATL_lag",     ['z_logkj','z_atl']),
+            ("M4: log(KJ)+ATL+KJ*ATL",   ['z_logkj','z_atl','z_inter']),
+        ]
+        _rows_b3 = []
+        for _mlbl, _mcols in _models_b3:
+            X3 = np.column_stack([np.ones(len(_dm3))] +
+                                  [_dm3[c].values for c in _mcols])
+            try:
+                beta3   = np.linalg.lstsq(X3, y3, rcond=None)[0]
+                y_pred3 = X3 @ beta3
+                ss_res  = np.sum((y3 - y_pred3)**2)
+                ss_tot  = np.sum((y3 - y3.mean())**2)
+                r2_3    = max(0.0, 1 - ss_res/ss_tot) if ss_tot > 0 else 0
+                # F-test para R²
+                k3 = len(_mcols)
+                n3 = len(_dm3)
+                F3 = (r2_3/k3) / ((1-r2_3)/(n3-k3-1)) if r2_3 < 1 and n3 > k3+1 else 0
+                from scipy.stats import f as _f_dist
+                p_f3 = 1 - _f_dist.cdf(F3, k3, n3-k3-1)
+                coef_str = "  ".join(
+                    [f"{c.replace('z_','')}:{b:+.3f}"
+                     for c, b in zip(_mcols, beta3[1:])])
+                _rows_b3.append({
+                    'Modelo': _mlbl, 'N': len(_dm3),
+                    'R²': round(r2_3, 4),
+                    'F': round(F3, 2), 'p(F)': round(p_f3, 4),
+                    'Sig': "✅" if p_f3 < 0.05 else "✗ ns",
+                    'Coeficientes (z)': coef_str,
+                    'Intercept': round(float(beta3[0]), 4),
+                })
+            except Exception:
+                pass
+
+        if _rows_b3:
+            st.dataframe(pd.DataFrame(_rows_b3), hide_index=True, use_container_width=True)
+            st.caption(
+                "Coeficientes z-scored: interpretáveis directamente. "
+                "KJ negativo = mais treino → HRV mais baixo amanhã. "
+                "ATL negativo = mais fadiga → HRV mais baixo. "
+                "KJ*ATL: se positivo = efeito do KJ diminui quando fadiga é alta (adaptacao).")
+    else:
+        st.info(f"Dados insuficientes para modelo combinado (N={len(_dm3)} < 15).")
 
     st.markdown("---")
     _all_e2 = []
@@ -7888,4 +7965,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
