@@ -4164,89 +4164,88 @@ def tab_correlacoes(da, dw):
         "Interação KJ×ATL: testa se o impacto do KJ depende do nível de fadiga. "
         "R² = % da variação de HRV explicada pelo modelo.")
 
-    # Verificar se temos colunas de zonas no _daily
+    # Verificar zonas
     _has_kj_zones_b3 = all(c in _daily.columns for c in ['kj_z1','kj_z2','kj_z3'])
-
-    # KJ por zonas agregadas (Z1+Z2 = low/med, Z3 = high) — igual ao 3-zone model
     if _has_kj_zones_b3:
-        _daily['kj_low']      = _daily['kj_z1'].fillna(0) + _daily['kj_z2'].fillna(0)
-        _daily['kj_high']     = _daily['kj_z3'].fillna(0)
         _daily['kj_weighted'] = (_daily['kj_z1'].fillna(0)*1 +
                                   _daily['kj_z2'].fillna(0)*2 +
                                   _daily['kj_z3'].fillna(0)*3)
-        _daily['log_kj_z3']   = np.log1p(_daily['kj_high'])
-        _daily['log_kj_w']    = np.log1p(_daily['kj_weighted'])
-        _zone_cols_b3 = ['log_kj','log_kj_z3','log_kj_w','ATL_lag','hrv_t1_rel']
-    else:
-        _zone_cols_b3 = ['log_kj','ATL_lag','hrv_t1_rel']
+        _daily['log_kj_z3']  = np.log1p(_daily['kj_z3'].fillna(0))
+        _daily['log_kj_w']   = np.log1p(_daily['kj_weighted'])
 
-    _dm3 = _daily[_zone_cols_b3].dropna().copy()
-    if len(_dm3) >= 15:
-        from scipy.stats import zscore as _zsc
-        # Z-score das variáveis
-        _dm3['z_logkj']   = _zsc(_dm3['log_kj'].astype(float))
-        _dm3['z_atl']     = _zsc(_dm3['ATL_lag'].astype(float))
-        _dm3['z_inter']   = _dm3['z_logkj'] * _dm3['z_atl']
-        if _has_kj_zones_b3 and 'log_kj_z3' in _dm3.columns:
-            _dm3['z_kj_z3'] = _zsc(_dm3['log_kj_z3'].astype(float))
-            _dm3['z_kj_w']  = _zsc(_dm3['log_kj_w'].astype(float))
-            _dm3['z_inter_z3'] = _dm3['z_kj_z3'] * _dm3['z_atl']
-            _dm3['z_inter_w']  = _dm3['z_kj_w']  * _dm3['z_atl']
-        y3 = _dm3['hrv_t1_rel'].values.astype(float)
+    from scipy.stats import zscore as _zsc, f as _f_dist
 
-        _models_b3 = [
-            ("M1: log(KJ_total)",          ['z_logkj']),
-            ("M2: ATL_lag",                ['z_atl']),
-            ("M3: log(KJ) + ATL_lag",      ['z_logkj','z_atl']),
-            ("M4: log(KJ)+ATL+KJ*ATL",    ['z_logkj','z_atl','z_inter']),
+    # M1-M4: dataset completo (todas as linhas com KJ+ATL+HRV)
+    _dm3_base = _daily[['log_kj','ATL_lag','hrv_t1_rel']].dropna().copy()
+    # M5-M8: dataset com zonas (linhas que têm dados de zona)
+    _dm3_z = (pd.DataFrame() if not _has_kj_zones_b3
+              else _daily[['log_kj','log_kj_z3','log_kj_w',
+                            'ATL_lag','hrv_t1_rel']].dropna().copy())
+
+    def _run_b3(dm, suffix=""):
+        if len(dm) < 10: return []
+        dm = dm.copy()
+        dm['z_logkj'] = _zsc(dm['log_kj'].astype(float))
+        dm['z_atl']   = _zsc(dm['ATL_lag'].astype(float))
+        dm['z_inter'] = dm['z_logkj'] * dm['z_atl']
+        if 'log_kj_z3' in dm.columns:
+            dm['z_kj_z3']    = _zsc(dm['log_kj_z3'].astype(float))
+            dm['z_kj_w']     = _zsc(dm['log_kj_w'].astype(float))
+            dm['z_inter_z3'] = dm['z_kj_z3'] * dm['z_atl']
+            dm['z_inter_w']  = dm['z_kj_w']  * dm['z_atl']
+        y = dm['hrv_t1_rel'].values.astype(float)
+        models = [
+            ("M1: log(KJ_total)",         ['z_logkj']),
+            ("M2: ATL_lag",               ['z_atl']),
+            ("M3: log(KJ)+ATL_lag",       ['z_logkj','z_atl']),
+            ("M4: log(KJ)+ATL+KJ*ATL",   ['z_logkj','z_atl','z_inter']),
         ]
-        # Adicionar modelos com zonas se disponíveis
-        if _has_kj_zones_b3 and 'z_kj_z3' in _dm3.columns:
-            _models_b3 += [
-                ("M5: log(KJ_Z3)+ATL",         ['z_kj_z3','z_atl']),
-                ("M6: log(KJ_Z3)+ATL+Z3*ATL",  ['z_kj_z3','z_atl','z_inter_z3']),
-                ("M7: KJ_weighted+ATL",         ['z_kj_w','z_atl']),
-                ("M8: KJ_weighted+ATL+Kw*ATL",  ['z_kj_w','z_atl','z_inter_w']),
+        if 'z_kj_z3' in dm.columns:
+            models += [
+                ("M5: log(KJ_Z3)+ATL",        ['z_kj_z3','z_atl']),
+                ("M6: log(KJ_Z3)+ATL+Z3*ATL", ['z_kj_z3','z_atl','z_inter_z3']),
+                ("M7: KJ_w+ATL",               ['z_kj_w','z_atl']),
+                ("M8: KJ_w+ATL+Kw*ATL",        ['z_kj_w','z_atl','z_inter_w']),
             ]
-        _rows_b3 = []
-        for _mlbl, _mcols in _models_b3:
-            X3 = np.column_stack([np.ones(len(_dm3))] +
-                                  [_dm3[c].values for c in _mcols])
+        rows = []
+        for mlbl, mcols in models:
+            if not all(c in dm.columns for c in mcols): continue
+            X = np.column_stack([np.ones(len(dm))] + [dm[c].values for c in mcols])
             try:
-                beta3   = np.linalg.lstsq(X3, y3, rcond=None)[0]
-                y_pred3 = X3 @ beta3
-                ss_res  = np.sum((y3 - y_pred3)**2)
-                ss_tot  = np.sum((y3 - y3.mean())**2)
-                r2_3    = max(0.0, 1 - ss_res/ss_tot) if ss_tot > 0 else 0
-                # F-test para R²
-                k3 = len(_mcols)
-                n3 = len(_dm3)
-                F3 = (r2_3/k3) / ((1-r2_3)/(n3-k3-1)) if r2_3 < 1 and n3 > k3+1 else 0
-                from scipy.stats import f as _f_dist
-                p_f3 = 1 - _f_dist.cdf(F3, k3, n3-k3-1)
-                coef_str = "  ".join(
-                    [f"{c.replace('z_','')}:{b:+.3f}"
-                     for c, b in zip(_mcols, beta3[1:])])
-                _rows_b3.append({
-                    'Modelo': _mlbl, 'N': len(_dm3),
-                    'R²': round(r2_3, 4),
-                    'F': round(F3, 2), 'p(F)': round(p_f3, 4),
-                    'Sig': "✅" if p_f3 < 0.05 else "✗ ns",
-                    'Coeficientes (z)': coef_str,
-                    'Intercept': round(float(beta3[0]), 4),
+                beta   = np.linalg.lstsq(X, y, rcond=None)[0]
+                y_pred = X @ beta
+                ss_res = np.sum((y - y_pred)**2)
+                ss_tot = np.sum((y - y.mean())**2)
+                r2 = max(0.0, 1 - ss_res/ss_tot) if ss_tot > 0 else 0
+                k, n = len(mcols), len(dm)
+                F  = (r2/k)/((1-r2)/(n-k-1)) if r2 < 1 and n > k+1 else 0
+                pf = 1 - _f_dist.cdf(F, k, n-k-1)
+                coef_s = "  ".join(f"{c.replace('z_','')}:{b:+.3f}"
+                                    for c, b in zip(mcols, beta[1:]))
+                rows.append({
+                    'Modelo': mlbl + suffix, 'N': n,
+                    'R²': round(r2,4), 'F': round(F,2),
+                    'p(F)': round(pf,4),
+                    'Sig': "✅" if pf < 0.05 else "✗ ns",
+                    'Coeficientes (z)': coef_s,
                 })
-            except Exception:
-                pass
+            except Exception: pass
+        return rows
 
-        if _rows_b3:
-            st.dataframe(pd.DataFrame(_rows_b3), hide_index=True, use_container_width=True)
-            st.caption(
-                "Coeficientes z-scored: interpretáveis directamente. "
-                "KJ negativo = mais treino → HRV mais baixo amanhã. "
-                "ATL negativo = mais fadiga → HRV mais baixo. "
-                "KJ*ATL: se positivo = efeito do KJ diminui quando fadiga é alta (adaptacao).")
-    else:
-        st.info(f"Dados insuficientes para modelo combinado (N={len(_dm3)} < 15).")
+    # Correr base (M1-M4) + zonas (M5-M8 com N próprio)
+    _rows_b3 = _run_b3(_dm3_base)
+    if len(_dm3_z) >= 10:
+        _rows_b3 += [r for r in _run_b3(_dm3_z, f" [N={len(_dm3_z)}]")
+                     if any(r['Modelo'].startswith(m) for m in ['M5','M6','M7','M8'])]
+
+    if _rows_b3:
+        st.dataframe(pd.DataFrame(_rows_b3), hide_index=True, use_container_width=True)
+        st.caption(
+            "M1-M4: todo o histórico. M5-M8: só dias com dados de zonas. "
+            "Coeficientes z-scored. KJ neg = mais treino → HRV↓ amanhã. "
+            "KJ*ATL positivo = efeito do KJ diminui com fadiga alta.")
+    elif len(_dm3_base) < 10:
+        st.info(f"Dados insuficientes (N={len(_dm3_base)} < 10).")
 
     st.markdown("---")
     _all_e2 = []
