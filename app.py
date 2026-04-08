@@ -4164,21 +4164,50 @@ def tab_correlacoes(da, dw):
         "Interação KJ×ATL: testa se o impacto do KJ depende do nível de fadiga. "
         "R² = % da variação de HRV explicada pelo modelo.")
 
-    _dm3 = _daily[['log_kj','ATL_lag','hrv_t1_rel']].dropna().copy()
+    # Verificar se temos colunas de zonas no _daily
+    _has_kj_zones_b3 = all(c in _daily.columns for c in ['kj_z1','kj_z2','kj_z3'])
+
+    # KJ por zonas agregadas (Z1+Z2 = low/med, Z3 = high) — igual ao 3-zone model
+    if _has_kj_zones_b3:
+        _daily['kj_low']      = _daily['kj_z1'].fillna(0) + _daily['kj_z2'].fillna(0)
+        _daily['kj_high']     = _daily['kj_z3'].fillna(0)
+        _daily['kj_weighted'] = (_daily['kj_z1'].fillna(0)*1 +
+                                  _daily['kj_z2'].fillna(0)*2 +
+                                  _daily['kj_z3'].fillna(0)*3)
+        _daily['log_kj_z3']   = np.log1p(_daily['kj_high'])
+        _daily['log_kj_w']    = np.log1p(_daily['kj_weighted'])
+        _zone_cols_b3 = ['log_kj','log_kj_z3','log_kj_w','ATL_lag','hrv_t1_rel']
+    else:
+        _zone_cols_b3 = ['log_kj','ATL_lag','hrv_t1_rel']
+
+    _dm3 = _daily[_zone_cols_b3].dropna().copy()
     if len(_dm3) >= 15:
         from scipy.stats import zscore as _zsc
         # Z-score das variáveis
-        _dm3['z_logkj'] = _zsc(_dm3['log_kj'].astype(float))
-        _dm3['z_atl']   = _zsc(_dm3['ATL_lag'].astype(float))
-        _dm3['z_inter'] = _dm3['z_logkj'] * _dm3['z_atl']
+        _dm3['z_logkj']   = _zsc(_dm3['log_kj'].astype(float))
+        _dm3['z_atl']     = _zsc(_dm3['ATL_lag'].astype(float))
+        _dm3['z_inter']   = _dm3['z_logkj'] * _dm3['z_atl']
+        if _has_kj_zones_b3 and 'log_kj_z3' in _dm3.columns:
+            _dm3['z_kj_z3'] = _zsc(_dm3['log_kj_z3'].astype(float))
+            _dm3['z_kj_w']  = _zsc(_dm3['log_kj_w'].astype(float))
+            _dm3['z_inter_z3'] = _dm3['z_kj_z3'] * _dm3['z_atl']
+            _dm3['z_inter_w']  = _dm3['z_kj_w']  * _dm3['z_atl']
         y3 = _dm3['hrv_t1_rel'].values.astype(float)
 
         _models_b3 = [
-            ("M1: log(KJ)",               ['z_logkj']),
-            ("M2: ATL_lag",               ['z_atl']),
-            ("M3: log(KJ) + ATL_lag",     ['z_logkj','z_atl']),
-            ("M4: log(KJ)+ATL+KJ*ATL",   ['z_logkj','z_atl','z_inter']),
+            ("M1: log(KJ_total)",          ['z_logkj']),
+            ("M2: ATL_lag",                ['z_atl']),
+            ("M3: log(KJ) + ATL_lag",      ['z_logkj','z_atl']),
+            ("M4: log(KJ)+ATL+KJ*ATL",    ['z_logkj','z_atl','z_inter']),
         ]
+        # Adicionar modelos com zonas se disponíveis
+        if _has_kj_zones_b3 and 'z_kj_z3' in _dm3.columns:
+            _models_b3 += [
+                ("M5: log(KJ_Z3)+ATL",         ['z_kj_z3','z_atl']),
+                ("M6: log(KJ_Z3)+ATL+Z3*ATL",  ['z_kj_z3','z_atl','z_inter_z3']),
+                ("M7: KJ_weighted+ATL",         ['z_kj_w','z_atl']),
+                ("M8: KJ_weighted+ATL+Kw*ATL",  ['z_kj_w','z_atl','z_inter_w']),
+            ]
         _rows_b3 = []
         for _mlbl, _mcols in _models_b3:
             X3 = np.column_stack([np.ones(len(_dm3))] +
