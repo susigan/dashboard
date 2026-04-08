@@ -522,6 +522,10 @@ def analisar_falta_estimulo(df_act_full, janela_dias=14, baseline_dias=90):
         share_base = 0.0 if np.isnan(share_base) else share_base
         floor_peso = min(1.0, share_base / 0.10) if share_base < 0.10 else 1.0
         A_raw = max(0.0, (share_base - share_jan) / share_base) if share_base > 0 else 0.0
+
+        # Overload guard: se share_base muito baixo (<5%), ratios são instáveis
+        # Modalidade com <5% do treino histórico → não pode estar em overload
+        _share_min_ol = 0.05
         A     = min(A_raw, 1.0) * floor_peso
 
         # ── B — Quality deficit (carga_Z3 / carga_total) ───────────────────
@@ -594,9 +598,9 @@ def analisar_falta_estimulo(df_act_full, janela_dias=14, baseline_dias=90):
                 slope_pct_jan = (ff - fi) / fi
 
         score_overload = 0
-        if share_ratio   > 1.4: score_overload += 1
-        if quality_ratio > 1.4: score_overload += 1
-        if slope_pct_jan > 0.15: score_overload += 1
+        if share_ratio   > 1.4 and share_base > 0.05: score_overload += 1
+        if quality_ratio > 1.4 and q_base > 0.02:     score_overload += 1
+        if slope_pct_jan > 0.15:                       score_overload += 1
         overload = score_overload >= 2
 
         # Overload → reduzir intensidade (não zerar, não remover)
@@ -1163,7 +1167,7 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
     vg_grupo_man  = {vg_p3, vg_p4}
 
     if da_full is not None and len(da_full) > 0:
-        vg_res, _ = analisar_falta_estimulo(da_full, janela_dias=14)
+        vg_res, _ = analisar_falta_estimulo(da_full, janela_dias=7)
         if vg_res:
             rows_f, rows_m = [], []
             for mod, d in vg_res.items():
@@ -1914,7 +1918,33 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 _kj_total_cur += float(_s3[_s3['Data'] >= sem_ini_pf]['_kj'].sum())
 
             _kj_b3_mean = float(np.mean(_kj_total_b3)) if _kj_total_b3 else 0.0
-            _load_ratio  = (_kj_total_cur / _kj_b3_mean) if _kj_b3_mean > 0 else 1.0
+
+            # ── Semana anterior KJ (para guard início de semana) ──────────
+            _sem_ant_ini_det = sem_ini_pf - pd.Timedelta(weeks=1)
+            _sem_ant_fim_det = sem_ini_pf - pd.Timedelta(days=1)
+            _kj_sem_ant_det  = 0.0
+            for _m3 in ['Bike','Row','Ski','Run']:
+                _s3b = _pf[_pf['type'].apply(norm_tipo)==_m3]
+                _kj_sem_ant_det += float(_s3b[
+                    (_s3b['Data'] >= _sem_ant_ini_det) &
+                    (_s3b['Data'] <= _sem_ant_fim_det)
+                ]['_kj'].sum())
+            _ratio_sem_ant = (_kj_sem_ant_det / _kj_b3_mean) if _kj_b3_mean > 0 else 1.0
+
+            # Guard: dias decorridos desta semana (Seg=0, Dom=6)
+            _dias_semana = hoje_pf.weekday() + 1   # 1=seg, 7=dom
+            # KJ projectado para semana completa (pro-rata)
+            _kj_proj_semana = (_kj_total_cur / _dias_semana * 7) if _dias_semana > 0 else 0
+
+            # Guard início de semana: se <3 dias decorridos E semana anterior Normal → não julgar
+            _semana_iniciando = _dias_semana < 3
+
+            # Ratio a usar: projectado se início de semana, actual se ≥3 dias
+            _load_ratio = ((_kj_proj_semana / _kj_b3_mean) if (_kj_b3_mean > 0 and _semana_iniciando)
+                           else (_kj_total_cur / _kj_b3_mean) if _kj_b3_mean > 0 else 1.0)
+
+            # Se semana anterior já era Taper/Deload → não alarmar novamente
+            _sem_ant_era_taper = _ratio_sem_ant < 0.80
 
             # Limiares
             _kj_normal_min = _kj_b3_mean * 0.80
@@ -1927,12 +1957,17 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 st.markdown("**📊 Estado de carga — semana actual**")
                 _c_det1, _c_det2, _c_det3 = st.columns(3)
                 with _c_det1:
-                    st.metric("Carga actual (semana)", f"{_kj_total_cur:.0f} kJ",
+                    _kj_show = _kj_proj_semana if _semana_iniciando else _kj_total_cur
+                    _lbl_kj  = f"{_kj_show:.0f} kJ {'(proj.)' if _semana_iniciando else ''}"
+                    st.metric("Carga actual (semana)", _lbl_kj,
                               f"{(_load_ratio-1)*100:+.0f}% vs baseline")
                 with _c_det2:
-                    st.metric("Baseline (média 3 sem)", f"{_kj_b3_mean:.0f} kJ")
+                    st.metric("Baseline (média 3 sem)", f"{_kj_b3_mean:.0f} kJ",
+                              f"Sem.ant: {_ratio_sem_ant*100:.0f}% baseline")
                 with _c_det3:
-                    if _load_ratio >= 0.80:
+                    if _semana_iniciando and not _sem_ant_era_taper:
+                        _fase = "⏳ Início semana"
+                    elif _load_ratio >= 0.80:
                         _fase = "✅ Normal"
                     elif _load_ratio >= 0.60:
                         _fase = "📉 Deload"
@@ -1944,23 +1979,27 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
 
                 # Ranges informativos
                 st.caption(
-                    f"**Ranges de referência** (baseline = {_kj_b3_mean:.0f} kJ/sem) — "
-                    f"Normal: >{_kj_normal_min:.0f} kJ | "
-                    f"Deload: {_kj_deload_min:.0f}–{_kj_deload_max:.0f} kJ "
-                    f"(60–80% = redução 20–40%) | "
-                    f"Taper: {_kj_taper_min:.0f}–{_kj_taper_max:.0f} kJ "
-                    f"(30–60% = redução 40–70%)")
+                    f"**Ranges** (baseline={_kj_b3_mean:.0f} kJ/sem) — "
+                    f"Normal: >{_kj_normal_min:.0f} | "
+                    f"Deload: {_kj_deload_min:.0f}–{_kj_deload_max:.0f} | "
+                    f"Taper: {_kj_taper_min:.0f}–{_kj_taper_max:.0f} kJ  "
+                    f"{'⏳ Início semana — usando projecção pro-rata' if _semana_iniciando else ''}"
+                    f"{'  |  Sem.ant já era Taper/Deload' if _sem_ant_era_taper else ''}")
 
-                if _load_ratio < 0.80:
-                    if _load_ratio >= 0.60:
-                        st.info("📉 **Deload detectado** — volume 20–40% abaixo do baseline. "
-                                "Manter intensidade. Duração típica: 3–7 dias.")
-                    elif _load_ratio >= 0.30:
-                        st.info("🔵 **Taper detectado** — volume 40–70% abaixo do baseline. "
-                                "Manter ou aumentar intensidade. Duração típica: 7–14 dias.")
-                    else:
-                        st.warning("⚠️ Carga muito baixa (>70% de redução). "
-                                   "Confirma se é intencional.")
+                # Alertas — só se semana tem dados suficientes OU sem.ant era taper
+                if not _semana_iniciando or _sem_ant_era_taper:
+                    if _load_ratio < 0.80:
+                        if _load_ratio >= 0.60:
+                            _taper_cont = " (continuação)" if _sem_ant_era_taper else ""
+                            st.info(f"📉 **Deload{_taper_cont}** — volume 20–40% abaixo. "
+                                    "Manter intensidade. Duração típica: 3–7 dias.")
+                        elif _load_ratio >= 0.30:
+                            _taper_cont = " (continuação)" if _sem_ant_era_taper else ""
+                            st.info(f"🔵 **Taper{_taper_cont}** — volume 40–70% abaixo. "
+                                    "Manter/aumentar intensidade. Duração típica: 7–14 dias.")
+                        else:
+                            st.warning("⚠️ Carga muito baixa (>70% redução). "
+                                       "Confirma se é intencional.")
 
             st.markdown("---")
 
