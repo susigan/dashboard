@@ -1398,6 +1398,40 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
         except Exception:
             pass
 
+        # Need_7d cache — para calcular delta 7d vs 14d
+        _need7_cache = {}
+        try:
+            _res_prog7, _ = analisar_falta_estimulo(_pf, janela_dias=7)
+            if _res_prog7:
+                for _m, _d in _res_prog7.items():
+                    _need7_cache[_m] = _d.get('need_score', 40)
+        except Exception:
+            pass
+
+        def _calc_f_delta(need_7d, need_14d, ol, n_sess_7d):
+            """
+            Opção B — thresholds fixos calibrados.
+            Delta = Need_7d - Need_14d.
+            Positivo = deficit recente maior que baseline = aumentar kj_target.
+            Negativo = excesso recente = reduzir kj_target.
+            Limites: F_MAX=1.10, F_MIN=0.85 (alinhados com prog_cap).
+            """
+            # Poucos dados recentes → neutro
+            if n_sess_7d < 3:
+                return 1.0
+            # Overload → nunca aumentar
+            delta = float(need_7d) - float(need_14d)
+            if   delta >= 25:  f = 1.10
+            elif delta >= 15:  f = 1.06
+            elif delta >= 5:   f = 1.02
+            elif delta <= -25: f = 0.85
+            elif delta <= -15: f = 0.90
+            elif delta <= -5:  f = 0.95
+            else:              f = 1.00
+            if ol:
+                f = min(f, 1.0)
+            return max(0.85, min(f, 1.10))
+
         # eFTP por modalidade (último valor disponível)
         _eftp = {}
         # icu_ftp = FTP testado (estável, para zonas) — preferido
@@ -1418,7 +1452,7 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             vals = agg[col][agg[col] > 0]
             return float(vals.median()) if len(vals) > 0 else 0.0
 
-        def _sugestao_sessao(kj_rest, h_rest, km_rest, mod, eftp, ni, ol, df_hist=None):
+        def _sugestao_sessao(kj_rest, h_rest, km_rest, mod, eftp, ni, ol, df_hist=None, f_delta=1.0):
             """
             Retorna (df_opcoes, ref_line, ol_warn).
             5 tipos de estimulo com mesmo KJ_target. Principal por Need_intensity.
@@ -1546,6 +1580,15 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             else:
                 kj_target = max(kj_rest, 80)
 
+            # ── f_delta: ajuste 7d vs 14d ─────────────────────────────────
+            # Overload já capturado em kj_target*0.65 — f_delta clampado a ≤1.0 por _calc_f_delta
+            kj_target = kj_target * f_delta
+
+            # Clamps de segurança pós f_delta
+            if _ref_kj and _ref_kj > 0:
+                kj_target = min(kj_target, _ref_kj * 1.15)  # nunca +15% do histórico
+            kj_target = max(kj_target, 40)                   # mínimo absoluto 40 kJ
+
             tempo_max = (_ref_dur*_TEMPO_CAP) if _ref_dur else 90
             watts_ftp = eftp if eftp else 200
 
@@ -1618,6 +1661,27 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                     _pwr_z = _ref_pwr
                 _inc = pwr_inc if _key==_pk else (0.0 if _key=="anaerobio" else pwr_inc*0.5)
                 _pwr_f = _pwr_z*(1+_inc)*(0.95 if ol else 1.0)
+
+                # ── f_delta power adjustment — ajuste leve com clamp por zona ──
+                # 50% do efeito do f_delta, para não sobrepor o tipo de sessão
+                _pwr_adj = 1.0 + (f_delta - 1.0) * 0.5
+                # Clamp por zona (garante que Threshold não vaza para VO2)
+                _clamp_zona = {"anaerobio": 1.01, "vo2": 1.02,
+                               "threshold": 1.03, "sweetspot": 1.03, "leve": 1.05}
+                _pwr_adj = min(_pwr_adj, _clamp_zona.get(_key, 1.03))
+                _pwr_adj = max(_pwr_adj, 0.90)  # nunca reduzir mais de 10%
+                # Limites de zona para não mudar tipo de sessão
+                _zona_pct_min, _zona_pct_max = {
+                    "anaerobio":  (1.10, 1.35),
+                    "vo2":        (0.90, 1.12),
+                    "threshold":  (0.80, 0.92),
+                    "sweetspot":  (0.75, 0.84),
+                    "leve":       (0.50, 0.70),
+                }.get(_key, (0.50, 1.35))
+                _pwr_f = _pwr_f * _pwr_adj
+                _ftp_ref = (eftp if eftp else 200)
+                _pwr_f = max(_ftp_ref * _zona_pct_min,
+                             min(_pwr_f, _ftp_ref * _zona_pct_max))
                 _kj_z  = (kj_target*0.35 if _key=="anaerobio" else
                            kj_target*1.10 if _key=="leve" else kj_target)
                 _dw = min((_kj_z*1000/(_pwr_f*60)) if _pwr_f>0 else 40, tempo_max)
@@ -1695,6 +1759,10 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                     _ref_line += f"  |  Sem.ant Z3: {_sa_z3_kj:.0f} kJ"
                     if _sa_z3_dur: _ref_line += f" / {_sa_z3_dur:.0f} min"
             _ol_warn = "⚠️ EM OVERLOAD — power reduzido 5%" if ol else ""
+            # Mostrar f_delta no ref_line para transparência
+            if f_delta != 1.0:
+                _fd_str = f"+{(f_delta-1)*100:.0f}%" if f_delta > 1 else f"{(f_delta-1)*100:.0f}%"
+                _ref_line += f"  |  Δ7d/14d: {_fd_str} KJ"
             return _df_out, _ref_line, _ol_warn
 
         rows_prog = []
@@ -1776,8 +1844,16 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 kj_rest = 0.0; h_rest = 0.0; km_rest = 0.0
 
             # Sugestão — retorna (df, ref_line, ol_warn)
+            # Calcular f_delta para esta modalidade
+            _need7_m   = _need7_cache.get(mod, _need_cache.get(mod, 40))
+            _need14_m  = _need_cache.get(mod, 40)
+            _cut7d = pd.Timestamp.now().normalize() - pd.Timedelta(days=7)
+            _n7d   = len(_sub[_sub['Data'] >= _cut7d])
+            _f_delta_m = _calc_f_delta(_need7_m, _need14_m, ol, _n7d)
+
             _sug_df, _sug_ref, _sug_ol = _sugestao_sessao(
-                kj_rest, h_rest, km_rest, mod, eftp, ni, ol, df_hist=_pf)
+                kj_rest, h_rest, km_rest, mod, eftp, ni, ol,
+                df_hist=_pf, f_delta=_f_delta_m)
 
             # Fator label
             if ol:       fl = "↓ 0.98 overload"
