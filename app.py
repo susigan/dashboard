@@ -584,29 +584,75 @@ def analisar_falta_estimulo(df_act_full, janela_dias=14, baseline_dias=90):
 
         prio_base = 'ALTA' if need >= 70 else 'MÉDIA' if need >= 40 else 'BAIXA'
 
-        # ── Overload por score acumulado ────────────────────────────────────
+        # ── Overload guards — densidade histórica + slope ──────────────────
         share_ratio   = share_jan / share_base if share_base > 0 else 0.0
         quality_ratio = q_jan / q_base         if q_base    > 0 else 0.0
 
-        # slope_pct na janela activa (para overload — diferente do D que usa baseline)
+        # Sessões nos últimos 90d desta modalidade
+        _sess_90d = len(df[(df['type']==mod) & (df['Data'] >= ini_base)])
+
+        # Slope FTLM na janela activa
         ftlm_jan_series = fm.loc[ini_jan:hoje, 'FTLM'].dropna()
         slope_pct_jan = 0.0
+        fi = 0.0
+        ff = 0.0
         if len(ftlm_jan_series) >= 3:
             fi = float(ftlm_jan_series.iloc[0])
             ff = float(ftlm_jan_series.iloc[-1])
             if fi > 0:
                 slope_pct_jan = (ff - fi) / fi
 
+        # Guard 1: <4 sessões/90d — sem dados para avaliar overload
+        _ignorar_overload = _sess_90d < 4
+
+        # Guard 2: FTLM pequeno — slope instável (início de época)
+        _ftlm_p10 = float(fm['FTLM'].quantile(0.10)) if len(fm['FTLM'].dropna()) >= 10 else 0.0
+        _ignorar_slope = (fi < max(_ftlm_p10, ff * 0.10)) if ff > 0 else True
+
+        # Frequência esperada para ajustar A (complementar ao A_share)
+        _freq_base    = _sess_90d / 90.0
+        _esperado_7d  = _freq_base * janela_dias
+        _sess_jan     = len(df[(df['type']==mod) & (df['Data'] >= ini_jan)])
+        _A_freq_boost = 0.0
+        if _esperado_7d > 0.5:  # só se há histórico suficiente
+            _freq_ratio = _sess_jan / _esperado_7d
+            if _freq_ratio < 0.5:     _A_freq_boost = 0.20  # treinou muito menos
+            elif _freq_ratio < 0.75:  _A_freq_boost = 0.10
+        # Aplicar boost em A (max 1.0)
+        A_adj = min(1.0, A + _A_freq_boost * (1.0 - A))
+
+        # Dias desde último Z3 (para trigger de estímulo forte)
+        _dm_z3 = df[(df['type']==mod) & (df['rpe_n'] >= 7) & (df['Data'] >= ini_base)]
+        _ultima_z3 = _dm_z3['Data'].max() if len(_dm_z3) > 0 else pd.NaT
+        _dias_z3 = int((hoje - _ultima_z3).days) if pd.notna(_ultima_z3) else 999
+        _gap_z3_tipico = float(max(1, _dm_z3['Data'].sort_values()
+                                   .diff().dt.days.dropna().median())
+                               if len(_dm_z3) >= 2 else 14.0)
+        _limite_z3 = _gap_z3_tipico * 1.5
+        _forcar_z3 = (_dias_z3 > _limite_z3) and (not _ignorar_overload)
+
+        # Score overload com guards
         score_overload = 0
-        if share_ratio   > 1.4 and share_base > 0.05: score_overload += 1
-        if quality_ratio > 1.4 and q_base > 0.02:     score_overload += 1
-        if slope_pct_jan > 0.15:                       score_overload += 1
-        overload = score_overload >= 2
+        if not _ignorar_overload:
+            if share_ratio   > 1.4 and share_base > 0.05: score_overload += 1
+            if quality_ratio > 1.4 and q_base > 0.02:     score_overload += 1
+            if slope_pct_jan > 0.15 and not _ignorar_slope: score_overload += 1
+        overload = (score_overload >= 2) and not _ignorar_overload
 
-        # Overload → reduzir intensidade (não zerar, não remover)
-        need_int_prescr = min(100.0, need_int * 0.65) if overload else need_int
+        # Tipo de overload (para modulação da intensidade)
+        _overload_vol  = share_ratio   > 1.4 and share_base > 0.05
+        _overload_qual = quality_ratio > 1.4 and q_base > 0.02
+        _overload_agudo= slope_pct_jan > 0.15 and not _ignorar_slope
 
-        # C_reforçado — debug, NÃO substitui C original
+        if overload:
+            if _overload_qual or _overload_agudo:
+                need_int_prescr = min(100.0, need_int * 0.65)   # reduzir forte
+            else:
+                need_int_prescr = min(100.0, need_int * 0.90)   # só volume alto — redução leve
+        else:
+            need_int_prescr = need_int
+
+        # C_reforçado + gap
         datas_mod_dbg  = df[df['type']==mod]['Data'].sort_values()
         ultima_dbg     = datas_mod_dbg.max() if len(datas_mod_dbg) > 0 else pd.NaT
         dias_sem       = int((hoje - ultima_dbg).days) if pd.notna(ultima_dbg) else 999
@@ -614,89 +660,144 @@ def analisar_falta_estimulo(df_act_full, janela_dias=14, baseline_dias=90):
                                    .diff().dt.days.dropna().median())
                                if len(datas_mod_dbg[datas_mod_dbg >= ini_base]) >= 2
                                else 7.0)
-        gap_score      = min(1.0, dias_sem / (gap_tipico_dbg * 2))
-        c_reforcado    = max(C, gap_score)  # debug — observação apenas
+        gap_score    = min(1.0, dias_sem / (gap_tipico_dbg * 2))
+        c_reforcado  = max(C, gap_score)
+        gap_ratio    = min(dias_sem / gap_tipico_dbg, 3.0) if gap_tipico_dbg > 0 else 0.0
 
-        # ── Prescrição textual com contexto temporal ───────────────────────
-        ALTO = 50
-        # gap_ratio: quanto tempo passou vs padrão (cap 3.0 para evitar distorções)
-        gap_ratio = min(dias_sem / gap_tipico_dbg, 3.0) if gap_tipico_dbg > 0 else 0.0
-
-        if overload:
-            prescricao = "🟢 Treino leve/moderado (overload — reduzir intensidade)"
-
-        elif need_int_prescr >= ALTO and need_vol >= ALTO:
-            # Ambos altos → sessão completa independentemente do gap
-            # gap_ratio NÃO reduz prescrição quando ambos são críticos
-            prescricao = "🔴 Sessão completa (volume + intensidade)"
-
-        elif need_int_prescr >= ALTO and need_vol < ALTO:
-            # Intensidade alta + volume baixo → modular pelo gap_ratio
-            if gap_ratio <= 1.0:
-                # Treinou recentemente → pode aguentar intensidade
-                prescricao = "🟠 Sessão intensa/curta (fresco — défice qualidade)"
-            elif gap_ratio <= 2.0:
-                # Algum tempo sem treinar → reentrée gradual
-                prescricao = "🟡 Sessão mista vol+int (reentrée gradual)"
-            else:
-                # Gap longo (>2× padrão, cap 3×) → base primeiro
-                prescricao = "🔵 Sessão de base/reentrée (gap longo — não forçar intensidade)"
-
-        elif need_vol >= ALTO and need_int_prescr < ALTO:
-            prescricao = "🔵 Sessão de volume/base (défice de carga)"
-
-        else:
-            prescricao = "⚪ Manutenção ou descanso"
-
+        # ── Guardar estado intermédio — prescrição calculada em 2ª passagem ─
         results[mod] = dict(
             need_score=need, prioridade=prio_base, overload=overload,
             overload_score=score_overload,
+            overload_tipo=('qualidade/agudo' if (_overload_qual or _overload_agudo)
+                           else 'volume' if _overload_vol else ''),
             need_vol=round(need_vol, 1),
             need_int=round(need_int, 1),
             need_int_prescr=round(need_int_prescr, 1),
-            prescricao=prescricao,
+            prescricao='',    # preenchida em 2ª passagem
             dias_sem=dias_sem, gap_score=round(gap_score, 2),
+            gap_ratio=gap_ratio, gap_z3=_dias_z3, forcar_z3=_forcar_z3,
+            gap_z3_limite=round(_limite_z3, 1),
             c_reforcado=round(c_reforcado, 3),
+            sess_90d=_sess_90d, ignorar_overload=_ignorar_overload,
             share_actual=share_jan, share_hist=share_base,
             quality_actual=q_jan, quality_hist=q_base,
             load_jan=load_jan, load_tipico=load_tipico,
             ftlm_slope_pct=slope_pct, ftlm_slope_jan=slope_pct_jan,
-            A=A, B=B, C=C, D=D, E=E, floor_peso=floor_peso)
+            A=A_adj, B=B, C=C, D=D, E=E, floor_peso=floor_peso)
 
         debug_rows.append({
-            'Modalidade':           mod,
-            'Need Score':           round(need, 1),
-            'Need Volume':          round(need_vol, 1),
-            'Need Intensity':       round(need_int, 1),
-            'Need Int (prescrição)':round(need_int_prescr, 1),
-            'Prescrição':           prescricao,
-            'dias_sem_sessao':      dias_sem,
-            'gap_score':            round(gap_score, 2),
-            'C_reforçado':          round(c_reforcado, 3),
-            'Prioridade base':      prio_base,
-            'Overload score':       score_overload,
-            'Overload':             '⚠️ SIM' if overload else 'não',
-            'A Share actual%':      round(share_jan  * 100, 1),
-            'A Share hist90d%':     round(share_base * 100, 1),
-            'A Deficit%':           round(A_raw * 100, 1),
-            'A Floor peso':         round(floor_peso, 2),
-            'A contribuição':       round(A * 100 * 0.25, 1),
-            'B Quality actual%':    round(q_jan  * 100, 1),
-            'B Quality hist90d%':   round(q_base * 100, 1),
-            'B Deficit%':           round(B_raw * 100, 1),
-            'B contribuição':       round(B * 100 * 0.25, 1),
-            'C Load janela':        round(load_jan, 1),
-            'C Load típico':        round(load_tipico, 1),
-            'C Deficit%':           round(C_raw * 100, 1),
-            'C contribuição':       round(C * 100 * 0.20, 1),
-            'D FTLM ini':           round(ftlm_ini if len(ftlm_base_series)>=10 else 0, 1),
-            'D FTLM fim':           round(ftlm_fim if len(ftlm_base_series)>=10 else 0, 1),
-            'D slope_pct%':         round(slope_pct * 100, 1),
-            'D slope_jan%':         round(slope_pct_jan * 100, 1),
-            'D contribuição':       round(D * 100 * 0.20, 1),
-            'E Fator VQ':           fator_e,
-            'E contribuição':       round(E * 100 * 0.10, 1),
+            'Modalidade':            mod,
+            'Need Score':            round(need, 1),
+            'Need Volume':           round(need_vol, 1),
+            'Need Intensity':        round(need_int, 1),
+            'Need Int (prescrição)': round(need_int_prescr, 1),
+            'Prescrição':            '(2ª passagem)',
+            'dias_sem_sessao':       dias_sem,
+            'gap_score':             round(gap_score, 2),
+            'C_reforçado':           round(c_reforcado, 3),
+            'Prioridade base':       prio_base,
+            'Overload score':        score_overload,
+            'Overload':              '⚠️ SIM' if overload else 'não',
+            'Overload tipo':         results[mod]['overload_tipo'],
+            'Sess 90d':              _sess_90d,
+            'Ignorar OL':            _ignorar_overload,
+            'Dias Z3':               _dias_z3,
+            'Forçar Z3':             _forcar_z3,
+            'A_freq_boost':          round(_A_freq_boost, 2),
+            'A Share actual%':       round(share_jan  * 100, 1),
+            'A Share hist90d%':      round(share_base * 100, 1),
+            'A Deficit%':            round(A_raw * 100, 1),
+            'A Floor peso':          round(floor_peso, 2),
+            'A contribuição':        round(A_adj * 100 * 0.25, 1),
+            'B Quality actual%':     round(q_jan  * 100, 1),
+            'B Quality hist90d%':    round(q_base * 100, 1),
+            'B Deficit%':            round(B_raw * 100, 1),
+            'B contribuição':        round(B * 100 * 0.25, 1),
+            'C Load janela':         round(load_jan, 1),
+            'C Load típico':         round(load_tipico, 1),
+            'C Deficit%':            round(C_raw * 100, 1),
+            'C contribuição':        round(C * 100 * 0.20, 1),
+            'D FTLM ini':            round(ftlm_ini if len(ftlm_base_series)>=10 else 0, 1),
+            'D FTLM fim':            round(ftlm_fim if len(ftlm_base_series)>=10 else 0, 1),
+            'D slope_pct%':          round(slope_pct * 100, 1),
+            'D slope_jan%':          round(slope_pct_jan * 100, 1),
+            'D contribuição':        round(D * 100 * 0.20, 1),
+            'E Fator VQ':            fator_e,
+            'E contribuição':        round(E * 100 * 0.10, 1),
         })
+
+    # ══════════════════════════════════════════════════════
+    # 2ª PASSAGEM — rank relativo + prescrição contextual
+    # ══════════════════════════════════════════════════════
+    # Calcular need_int_prescr de todos os mods para rank
+    _all_scores = [d['need_int_prescr'] for d in results.values()]
+    _std_scores  = float(np.std(_all_scores)) if len(_all_scores) > 1 else 0.0
+
+    for mod, d in results.items():
+        ni  = d['need_int_prescr']
+        nv  = d['need_vol']
+        ol  = d['overload']
+        gr  = d['gap_ratio']
+        fz3 = d['forcar_z3']
+        dz3 = d['gap_z3']
+        lz3 = d['gap_z3_limite']
+
+        # Rank percentil dentro das modalidades (0-100)
+        rank_int = float(sum(ni > s for s in _all_scores)) / max(len(_all_scores)-1, 1) * 100
+
+        # Guard baixa dispersão: se todos scores semelhantes (std < 5)
+        # → usar padrão histórico em vez de prescrever intenso a todos
+        _baixa_dispersao = _std_scores < 5.0
+
+        # Aviso Z3
+        _aviso_z3 = (f" ⚡ Último Z3 há {dz3}d (limite {lz3:.0f}d)"
+                     if fz3 else "")
+
+        if ol:
+            if d['overload_tipo'] == 'volume':
+                prescricao = "🟡 Overload de volume — intensidade leve/moderada"
+            else:
+                prescricao = "🟢 Overload — reduzir intensidade" + _aviso_z3
+        elif fz3 and not _baixa_dispersao:
+            # Z3 em falta há muito tempo E há diferenciação entre mods
+            prescricao = "🟠 Estímulo Z3 urgente" + _aviso_z3
+        elif _baixa_dispersao:
+            # Todos mods com need semelhante → usar histórico
+            if nv >= 40:
+                prescricao = "🔵 Sessão de base/volume (sem diferenciação clara)"
+            else:
+                prescricao = "⚪ Manutenção (estado equilibrado)"
+        elif rank_int >= 75:
+            # Top 25% de intensidade → sessão intensa
+            if nv >= 50:
+                prescricao = "🔴 Sessão completa (volume + intensidade)" + _aviso_z3
+            elif gr <= 1.0:
+                prescricao = "🟠 Sessão intensa/curta (fresco — défice qualidade)" + _aviso_z3
+            elif gr <= 2.0:
+                prescricao = "🟡 Sessão mista vol+int (reentrée gradual)" + _aviso_z3
+            else:
+                prescricao = "🔵 Sessão de base/reentrée (gap longo)" + _aviso_z3
+        elif rank_int >= 50:
+            # Top 50% → sessão moderada
+            if nv >= 50:
+                prescricao = "🔵 Sessão de volume/base + intensidade moderada"
+            else:
+                prescricao = "🟡 Sessão moderada"
+        elif nv >= 50:
+            prescricao = "🔵 Sessão de volume/base (défice de carga)"
+        else:
+            prescricao = "⚪ Manutenção ou descanso"
+
+        results[mod]['prescricao'] = prescricao
+        results[mod]['rank_int']   = round(rank_int, 0)
+        results[mod]['std_scores'] = round(_std_scores, 1)
+
+        # Actualizar debug
+        for row in debug_rows:
+            if row['Modalidade'] == mod:
+                row['Prescrição'] = prescricao
+                row['Rank int%']  = round(rank_int, 0)
+                row['Std scores'] = round(_std_scores, 1)
 
     results_sorted = dict(sorted(
         results.items(), key=lambda x: x[1]['need_score'], reverse=True))
