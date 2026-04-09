@@ -8118,226 +8118,223 @@ def tab_ctl_kj(da_full):
 
 
 def tab_cp_model():
-    """CP Model Comparison — Power-Duration + Veloclinic correcto."""
+    """CP Model Comparison — 3 modelos distintos + Veloclinic correcto."""
     import numpy as np
     from scipy.optimize import curve_fit
     from scipy.stats import linregress
     import plotly.graph_objects as go
 
-    st.header("🏁 CP Model Comparison")
-    st.caption(
-        "CP = Critical Power (limiar de fadiga) | "
-        "W′ = Capacidade de trabalho acima do CP (reserva anaeróbia)")
-
-    # ────────────────────────────────────────────────────────────────────────
-    # PALETA — fundo branco, cores saturadas para legibilidade
-    # ────────────────────────────────────────────────────────────────────────
-    CORES_M = {
-        "M1: P vs 1/t":   "#e74c3c",   # vermelho
-        "M2: Work-Time":  "#2980b9",   # azul
-        "M3: Hiperbólico":"#27ae60",   # verde
-    }
-    _LAYOUT = dict(
+    # ── Paleta ──────────────────────────────────────────────────────────────
+    C = {"M1":"#e74c3c", "M2":"#2980b9", "M3":"#27ae60"}
+    BASE_LAYOUT = dict(
         paper_bgcolor="white", plot_bgcolor="white",
         font=dict(color="#111111", size=12),
-        legend=dict(
-            bgcolor="white", bordercolor="#cccccc", borderwidth=1,
-            font=dict(color="#111111", size=11),
-            orientation="h", y=-0.30,
-        ),
+        legend=dict(bgcolor="rgba(255,255,255,0.95)",
+                    bordercolor="#cccccc", borderwidth=1,
+                    font=dict(color="#111111", size=11),
+                    orientation="h", y=-0.28),
+        margin=dict(t=60, b=80, l=60, r=30),
     )
+    AX = dict(color="#111111", showgrid=True, gridcolor="#eeeeee",
+              linecolor="#cccccc", linewidth=1, showline=True,
+              tickfont=dict(color="#111111"))
 
     # ════════════════════════════════════════════════════════════════════════
-    # HELPERS
+    # MODELOS
     # ════════════════════════════════════════════════════════════════════════
-
-    def _see(p_obs, p_pred):
-        n = len(p_obs)
-        if n < 3: return None, None
-        sse  = float(np.sum((np.array(p_obs) - np.array(p_pred))**2))
-        see  = float(np.sqrt(sse / (n - 2)))
-        seep = see / float(np.mean(p_obs)) * 100
-        return round(see, 2), round(seep, 2)
-
-    # ── Modelos ──────────────────────────────────────────────────────────────
-
-    def _m1_p_inv_t(tests):
-        """P = W′·(1/t) + CP  — linear P vs 1/t"""
-        x = np.array([1/t for _, t in tests])
-        y = np.array([p   for p, _ in tests])
+    def m1_p_inv_t(tests):
+        """M1: P = W′·(1/t) + CP  —  regressão linear P vs 1/t
+        X=1/t, Y=P → slope=W′, intercept=CP"""
+        x = np.array([1/t for _,t in tests])
+        y = np.array([p   for p,_ in tests])
         sl, ic, r, _, _ = linregress(x, y)
-        cp, wp = ic, sl
-        pp = [wp/t + cp for _, t in tests]
-        return float(cp), float(wp), pp, float(r**2)
+        cp, wp = float(ic), float(sl)
+        pp = [wp/t + cp for _,t in tests]
+        return cp, wp, pp, float(r**2)
 
-    def _m2_work_time(tests):
-        """W = CP·t + W′  — linear Work vs Time"""
-        x = np.array([t   for _, t in tests])
-        y = np.array([p*t for p, t in tests])
+    def m2_work_time(tests):
+        """M2: W = CP·t + W′  —  regressão linear W vs t
+        X=t, Y=P·t → slope=CP, intercept=W′"""
+        x = np.array([t   for _,t in tests])
+        y = np.array([p*t for p,t in tests])
         sl, ic, r, _, _ = linregress(x, y)
-        cp, wp = sl, ic
-        pp = [cp + wp/t for _, t in tests]
-        return float(cp), float(wp), pp, float(r**2)
+        cp, wp = float(sl), float(ic)
+        pp = [cp + wp/t for _,t in tests]
+        return cp, wp, pp, float(r**2)
 
-    def _m3_hyperbolic(tests):
-        """P(t) = W′/t + CP  — non-linear fit"""
+    def m3_hyperbolic(tests):
+        """M3: P(t) = W′/t + CP  —  ajuste NÃO-LINEAR (curve_fit).
+        Mesma equação que M1 mas optimizado directamente em (cp,wp)
+        sem transformação — resulta em diferentes estimativas quando n≥3."""
         def _f(t, cp, wp): return wp/t + cp
-        p_obs = [p for p, _ in tests]
-        t_obs = [t for _, t in tests]
+        p_obs = [p for p,_ in tests]
+        t_obs = [t for _,t in tests]
         try:
-            p0     = [min(p_obs)*0.85, min(p_obs)*min(t_obs)*0.3]
+            p0     = [min(p_obs)*0.80, min(p_obs)*min(t_obs)*0.25]
             bounds = ([0, 0], [max(p_obs)*1.5, max(p_obs)*max(t_obs)*2])
-            popt, _ = curve_fit(_f, t_obs, p_obs, p0=p0, bounds=bounds, maxfev=8000)
-            cp, wp  = float(popt[0]), float(popt[1])
+            popt,_ = curve_fit(_f, t_obs, p_obs, p0=p0, bounds=bounds, maxfev=10000)
+            cp, wp = float(popt[0]), float(popt[1])
             pp = [_f(t, cp, wp) for t in t_obs]
-            ss_res = np.sum((np.array(p_obs) - np.array(pp))**2)
-            ss_tot = np.sum((np.array(p_obs) - np.mean(p_obs))**2)
-            r2 = float(1 - ss_res/ss_tot) if ss_tot > 0 else 0.0
+            ss_res = float(np.sum((np.array(p_obs)-np.array(pp))**2))
+            ss_tot = float(np.sum((np.array(p_obs)-np.mean(p_obs))**2))
+            r2     = max(0.0, 1-ss_res/ss_tot) if ss_tot > 0 else 0.0
             return cp, wp, pp, r2
         except Exception:
             return None, None, None, None
 
-    # ── Veloclinic correcto (artigo veloclinic.com) ──────────────────────────
-    # Eixo X = Power (P)
-    # Eixo Y = W′_point = t*(P - CP) = trabalho acima do CP naquele esforço
-    # Platô horizontal ≈ W′ (capacidade anaeróbia)
-    # Intercepto X direito ≈ Pmax | Intercepto X esquerdo ≈ CP
+    # ── SEE ────────────────────────────────────────────────────────────────
+    def calc_see(p_obs, p_pred):
+        n = len(p_obs)
+        if n < 3: return None, None
+        sse  = float(np.sum((np.array(p_obs)-np.array(p_pred))**2))
+        see  = float(np.sqrt(sse/(n-2)))
+        seep = see/float(np.mean(p_obs))*100
+        return round(see,2), round(seep,2)
 
-    def _veloclinic_correct(tests, cp, wp):
+    # ── Veloclinic ─────────────────────────────────────────────────────────
+    def veloclinic_curve(tests, cp, wp):
         """
-        Veloclinic Plot — Work above CP vs Power.
-        Cada ponto: W′_point = t*(P-CP)  plotado contra P.
-        Curva teórica: variar P de CP+1 até Pmax e calcular t teórico,
-        depois W′_point teórico = t*(P-CP).
-        """
-        p_obs = [p for p, _ in tests]
-        t_obs = [t for _, t in tests]
-        pmax  = max(p_obs) * 1.3
+        Veloclinic Plot correcto (veloclinic.com):
+          Eixo X = Potência (W)
+          Eixo Y = W′_point = t*(P-CP)  [trabalho acima do CP]
 
-        # Curva teórica contínua
-        p_range  = np.linspace(cp + 1, pmax, 300)
-        t_theory = wp / (p_range - cp)           # t = W′/(P-CP)
-        wp_theory= t_theory * (p_range - cp)     # = W′ (constante = wp)
+        Curva teórica contínua:
+          para cada P em [CP+ε, Pmax]:
+            t_model = W′/(P-CP)
+            W′_curve = t_model*(P-CP) = W′  (constante — platô)
+
+        Pontos reais:
+          W′_point = t*(P-CP)  para cada teste
+        """
+        p_obs = [p for p,_ in tests]
+        pmax  = max(p_obs)*1.35
+        eps   = 0.5
+
+        # Curva teórica
+        p_range   = np.linspace(cp+eps, pmax, 400)
+        t_model   = wp / (p_range - cp)
+        wp_curve  = t_model * (p_range - cp)   # = wp (constante)
 
         # Pontos reais
-        wp_real = [t*(p - cp) for p, t in tests]   # W′ consumido
+        wp_real   = [t*(p-cp) for p,t in tests]
+        t_real    = [t for _,t in tests]
 
-        return (p_range.tolist(), wp_theory.tolist(),
-                p_obs, wp_real, t_obs)
+        return p_range.tolist(), wp_curve.tolist(), p_obs, wp_real, t_real
 
-    def _veloclinic_metrics(tests, cp, wp):
-        """
-        Métricas do platô para pontos na janela 2–20 min.
-        W′_point dos pontos reais na janela + consistência.
-        """
-        pts_plat = [(p, t) for p, t in tests if 120 <= t <= 1200]
-        if not pts_plat:
-            pts_plat = tests  # fallback
-
-        wp_vals  = [t*(p-cp) for p, t in pts_plat]
-        std_wp   = float(np.std(wp_vals)) if len(wp_vals) > 1 else 0.0
-        mean_wp  = float(np.mean(wp_vals))
-        cv_wp    = std_wp / mean_wp * 100 if mean_wp > 0 else 0.0
-        # slope W′_point vs P (idealmente flat)
-        if len(pts_plat) >= 2:
-            p_pts  = [p for p, _ in pts_plat]
-            sl, _, _, _, _ = linregress(p_pts, wp_vals)
+    def veloclinic_metrics(tests, cp, wp):
+        """Métricas do platô. Usa todos os pontos (com n=2-3 não há filtro 2-20min)."""
+        wp_pts  = [t*(p-cp) for p,t in tests if p > cp]
+        if not wp_pts: return {"std":0,"cv":0,"mean":0,"slope":0}
+        std_w   = float(np.std(wp_pts))
+        mean_w  = float(np.mean(wp_pts))
+        cv_w    = std_w/mean_w*100 if mean_w > 0 else 0.0
+        # slope W′_point vs P
+        p_pts = [p for p,t in tests if p > cp]
+        if len(p_pts) >= 2:
+            sl,_,_,_,_ = linregress(p_pts, wp_pts)
         else:
             sl = 0.0
-        return {
-            'std':  round(std_wp,  1),
-            'cv':   round(cv_wp,   1),
-            'mean': round(mean_wp, 0),
-            'slope':round(sl,      4),
-        }
+        return {"std":round(std_w,1),"cv":round(cv_w,1),
+                "mean":round(mean_w,0),"slope":round(float(sl),4)}
 
-    def _classify_fatigue(vm, tests, cp):
-        """Classificação automática de tipo de fadiga."""
-        cv  = vm['cv']
-        sl  = abs(vm['slope'])
-        wp_vals = [t*(p-cp) for p, t in tests if p > cp]
-        mean_wp = float(np.mean(wp_vals)) if wp_vals else 0
-
-        if cv < 10 and sl < 1:
-            return "✅ Bom fit fisiológico — W′ consistente"
+    def classify_fatigue(vm, tests, cp):
+        cv  = vm["cv"]
+        wp_pts = [t*(p-cp) for p,t in tests if p > cp]
+        if not wp_pts: return "⚠️ Sem pontos acima do CP"
+        mean_wp = float(np.mean(wp_pts))
+        if cv < 10:
+            return "✅ Bom fit — W′ consistente"
         elif cv > 30:
-            return "🔵 Possível fadiga central (alta variabilidade — recrutamento/pacing)"
-        elif mean_wp < wp_vals[0]*0.7 if wp_vals else False:
-            return "🔴 Possível fadiga periférica (W′ reduzido — limitação muscular)"
+            return "🔵 Fadiga central (alta variabilidade)"
+        elif mean_wp < wp_pts[0]*0.70 if len(wp_pts)>1 else False:
+            return "🔴 Fadiga periférica (W′ reduzido)"
         elif cv > 15:
-            return "🟠 Fadiga sistêmica (deslocamento global da curva)"
+            return "🟠 Fadiga sistémica (deslocamento global)"
         else:
-            return "⚠️ Dados inconsistentes — verificar testes"
+            return "⚠️ Dados inconsistentes"
 
-    def _score(see_pct, vm):
-        if see_pct is None: return 999.0
-        sc = (0.50 * min(see_pct, 30)/30 +
-              0.30 * min(vm['cv'],  50)/50 +
-              0.20 * min(abs(vm['slope']), 10)/10)
-        return round(sc * 100, 1)
+    def model_score(seep, vm):
+        if seep is None: return 999.0
+        s = (0.50*min(seep,30)/30 +
+             0.30*min(vm["cv"],50)/50 +
+             0.20*min(abs(vm["slope"]),10)/10)
+        return round(s*100,1)
 
     # ════════════════════════════════════════════════════════════════════════
     # UI — INPUTS
     # ════════════════════════════════════════════════════════════════════════
-    c_meta1, c_meta2 = st.columns(2)
-    with c_meta1:
-        modalidade = st.selectbox("Modalidade", ["Bike","Run","Row","Ski"], key="cp_mod")
-    with c_meta2:
-        data_teste = st.date_input("Data do teste", key="cp_data")
+    st.header("🏁 CP Model Comparison")
+    st.caption(
+        "3 modelos distintos de Power-Duration: linear P vs 1/t, "
+        "linear Work-Time, e hiperbólico não-linear. "
+        "CP = limiar de fadiga | W′ = reserva anaeróbia (J)")
+
+    cm1, cm2 = st.columns(2)
+    with cm1: modalidade = st.selectbox("Modalidade",["Bike","Run","Row","Ski"],key="cp_mod")
+    with cm2: data_teste = st.date_input("Data do teste", key="cp_data")
 
     st.subheader("📥 Testes Máximos")
-    st.caption("Cada teste = esforço máximo até à falha numa duração fixa.")
+    st.caption("Cada teste = esforço máximo até à falha (TTE) numa potência fixa.")
 
-    col1, col2, col3 = st.columns(3)
-    with col1:
+    c1, c2, c3 = st.columns(3)
+    with c1:
         st.markdown("**Teste 1 ✅**")
         p1 = st.number_input("Power T1 (W)", 50, 2000, 400, key="cp_p1")
         t1 = st.number_input("Tempo T1 (s)", 10, 7200, 180, key="cp_t1")
-    with col2:
+    with c2:
         st.markdown("**Teste 2 ✅**")
         p2 = st.number_input("Power T2 (W)", 50, 2000, 320, key="cp_p2")
         t2 = st.number_input("Tempo T2 (s)", 10, 7200, 600, key="cp_t2")
-    with col3:
+    with c3:
         st.markdown("**Teste 3 (opcional)**")
-        usar_t3 = st.checkbox("Usar teste 3", True, key="cp_usar_t3")
-        p3 = st.number_input("Power T3 (W)", 50, 2000, 270, key="cp_p3",
-                              disabled=not usar_t3)
-        t3 = st.number_input("Tempo T3 (s)", 10, 7200, 1200, key="cp_t3",
-                              disabled=not usar_t3)
+        usar3 = st.checkbox("Usar teste 3", True, key="cp_usar3")
+        p3 = st.number_input("Power T3 (W)", 50, 2000, 270, key="cp_p3", disabled=not usar3)
+        t3 = st.number_input("Tempo T3 (s)", 10, 7200, 1200, key="cp_t3", disabled=not usar3)
 
-    calcular = st.button("⚡ Calcular Modelos", type="primary")
-    if not calcular:
+    if not st.button("⚡ Calcular Modelos", type="primary"):
         st.info("Configura os testes e clica em **Calcular Modelos**.")
         return
 
     # Validação
-    tests = [(float(p1), float(t1)), (float(p2), float(t2))]
-    if usar_t3: tests.append((float(p3), float(t3)))
+    tests = [(float(p1),float(t1)),(float(p2),float(t2))]
+    if usar3: tests.append((float(p3),float(t3)))
+    tests = sorted(tests, key=lambda x: x[1])
 
     errs = []
-    if t1 == t2: errs.append("Testes 1 e 2 têm o mesmo tempo")
+    if float(t1)==float(t2): errs.append("T1 e T2 têm o mesmo tempo")
     for i,(p,t) in enumerate(tests,1):
-        if p<=0: errs.append(f"T{i}: Power > 0")
-        if t<=0: errs.append(f"T{i}: Tempo > 0")
+        if p<=0: errs.append(f"T{i}: Power>0")
+        if t<=0: errs.append(f"T{i}: Tempo>0")
     if errs:
-        for e in errs: st.error(e)
-        return
+        [st.error(e) for e in errs]; return
 
-    tests = sorted(tests, key=lambda x: x[1])
+    n = len(tests)
+    if n < 5:
+        st.warning(f"⚠️ Baixa confiabilidade fisiológica ({n} testes). Recomendado ≥5 testes.")
+
     p_obs = [p for p,_ in tests]
 
     # ════════════════════════════════════════════════════════════════════════
-    # CALCULAR MODELOS
+    # CALCULAR
     # ════════════════════════════════════════════════════════════════════════
-    MODELS_FN = {
-        "M1: P vs 1/t":    _m1_p_inv_t,
-        "M2: Work-Time":   _m2_work_time,
-        "M3: Hiperbólico": _m3_hyperbolic,
+    res = {}
+    cp1,wp1,pp1,r2_1 = m1_p_inv_t(tests)
+    cp2,wp2,pp2,r2_2 = m2_work_time(tests)
+    cp3,wp3,pp3,r2_3 = m3_hyperbolic(tests)
+
+    res = {
+        "M1: P vs 1/t (linear)":   (cp1,wp1,pp1,r2_1),
+        "M2: Work-Time (linear)":  (cp2,wp2,pp2,r2_2),
+        "M3: Hiperbólico (NL)":    (cp3,wp3,pp3,r2_3),
     }
-    computed = {}
-    for mname, fn in MODELS_FN.items():
-        cp, wp, pp, r2 = fn(tests)
-        computed[mname] = (cp, wp, pp, r2)
+
+    # Equivalência M1 vs M3
+    equiv_msg = ""
+    if cp3 and cp1:
+        diff_cp = abs(cp1-cp3)/max(cp1,0.01)*100
+        diff_wp = abs(wp1-wp3)/max(wp1,0.01)*100 if wp3 else 0
+        if diff_cp < 1 and diff_wp < 1:
+            equiv_msg = "ℹ️ M1 e M3 são equivalentes (diferença < 1%) — com apenas 2 testes lineares e não-lineares convergem."
 
     # ════════════════════════════════════════════════════════════════════════
     # TABELA COMPARATIVA
@@ -8346,39 +8343,44 @@ def tab_cp_model():
     scores   = {}
     vm_all   = {}
     fat_all  = {}
+    mnames   = list(res.keys())
 
-    for mname, (cp, wp, pp, r2) in computed.items():
-        if cp is None or wp is None or cp <= 0 or wp <= 0:
-            rows_tab.append({'Modelo':mname,'CP (W)':'—',"W′ (J)":'—',
-                             'SEE (W)':'—','SEE%':'—','R²':'—',
-                             'CV W′%':'—','Score':'—','Fadiga':'—','Status':'❌'})
-            scores[mname] = 999
-            vm_all[mname] = {'std':None,'cv':None,'mean':None,'slope':None}
+    for mname,(cp,wp,pp,r2) in res.items():
+        mk = mname[:2]  # "M1", "M2", "M3"
+        if cp is None or wp is None or cp<=0 or wp<=0:
+            rows_tab.append({"Modelo":mname,"CP (W)":"—","W′ (J)":"—",
+                             "SEE (W)":"—","SEE%":"—","R²":"—",
+                             "CV W′%":"—","Slope":"—","Equivalência":"—",
+                             "Fadiga":"—","Score":"—","Status":"❌"})
+            scores[mname]=999; vm_all[mname]={"std":None,"cv":None,"mean":None,"slope":None}
             continue
 
-        see, seep = _see(p_obs, pp)
-        vm        = _veloclinic_metrics(tests, cp, wp)
-        fat       = _classify_fatigue(vm, tests, cp)
-        sc        = _score(seep, vm)
-        vm_all[mname]  = vm
-        fat_all[mname] = fat
-        scores[mname]  = sc
+        see,seep = calc_see(p_obs,pp)
+        vm       = veloclinic_metrics(tests,cp,wp)
+        fat      = classify_fatigue(vm,tests,cp)
+        sc       = model_score(seep,vm)
+        vm_all[mname]=vm; fat_all[mname]=fat; scores[mname]=sc
 
-        if seep and seep <= 5 and cp > 0 and wp > 0: status = "✅ válido"
-        elif seep and seep <= 10:                     status = "⚠️ suspeito"
-        else:                                          status = "❌ inválido"
+        if seep and seep<=5 and cp>0 and wp>0:   status="✅ válido"
+        elif seep and seep<=10:                   status="⚠️ suspeito"
+        else:                                      status="❌ inválido"
+
+        eq = ""
+        if mname.startswith("M1") or mname.startswith("M3"):
+            eq = equiv_msg[:40]+"…" if equiv_msg else "—"
 
         rows_tab.append({
-            'Modelo': mname, 'CP (W)': round(cp,1),
-            "W′ (J)": round(wp,0), 'SEE (W)': see,
-            'SEE%': seep, 'R²': round(r2,4) if r2 else '—',
-            'CV W′%': vm['cv'], 'Score': sc,
-            'Fadiga': fat, 'Status': status,
+            "Modelo":mname,"CP (W)":round(cp,1),"W′ (J)":round(wp,0),
+            "SEE (W)":see,"SEE%":seep,"R²":round(r2,4) if r2 else "—",
+            "CV W′%":vm["cv"],"Slope":vm["slope"],
+            "Equivalência":eq,"Fadiga":fat,"Score":sc,"Status":status,
         })
+
+    if equiv_msg: st.info(equiv_msg)
 
     df_tab    = pd.DataFrame(rows_tab)
     best_name = min(scores, key=scores.get)
-    best_cp, best_wp, _, _ = computed[best_name]
+    best_cp,best_wp,_,_ = res[best_name]
 
     st.markdown("---")
     st.subheader("📋 Tabela Comparativa")
@@ -8386,189 +8388,175 @@ def tab_cp_model():
 
     if best_cp and best_wp:
         st.success(
-            f"🏆 **Melhor modelo:** {best_name}  —  "
-            f"Modalidade: **{modalidade}**  |  Data: **{data_teste}**  |  "
+            f"🏆 **Melhor modelo:** {best_name}  |  "
+            f"**{modalidade}** — {data_teste}  |  "
             f"CP = **{best_cp:.1f} W**  |  W′ = **{best_wp:.0f} J**")
 
     # ════════════════════════════════════════════════════════════════════════
-    # GRÁFICO 1 — Power-Duration
+    # G1 — Power-Duration
     # ════════════════════════════════════════════════════════════════════════
     st.markdown("---")
     st.subheader("📈 Curvas Power-Duration")
 
-    t_range = np.linspace(
-        max(10, min(t for _,t in tests)*0.4),
-        max(t for _,t in tests)*2.5, 400)
-
+    t_range = np.linspace(max(10,min(t for _,t in tests)*0.35),
+                          max(t for _,t in tests)*2.8, 500)
     fig_pd = go.Figure()
-    for mname, (cp, wp, pp, r2) in computed.items():
+    for mname,(cp,wp,pp,r2) in res.items():
         if cp is None: continue
-        p_curve = [max(0, wp/t + cp) for t in t_range]
+        mk = mname[:2]
         fig_pd.add_trace(go.Scatter(
-            x=t_range.tolist(), y=p_curve, mode='lines', name=mname,
-            line=dict(color=CORES_M[mname], width=2.5),
-            hovertemplate='t=%{x:.0f}s  P=%{y:.0f}W<extra></extra>'))
+            x=t_range.tolist(), y=[max(0,wp/t+cp) for t in t_range],
+            mode="lines", name=f"{mname} (R²={r2:.4f})",
+            line=dict(color=C[mk], width=2.5),
+            hovertemplate="t=%{x:.0f}s  P=%{y:.0f}W<extra></extra>"))
     fig_pd.add_trace(go.Scatter(
-        x=[t for _,t in tests], y=[p for p,_ in tests],
-        mode='markers+text', name='Testes reais',
-        text=[f"T{i+1}" for i in range(len(tests))],
-        textposition='top center', textfont=dict(color='#111', size=11),
-        marker=dict(size=13, color='#f39c12', symbol='circle',
-                    line=dict(width=2, color='#2c3e50')),
-        hovertemplate='T%{text}: t=%{x:.0f}s  P=%{y:.0f}W<extra></extra>'))
-    fig_pd.update_layout(**_LAYOUT,
-        title=dict(text=f'Power-Duration — {modalidade} ({data_teste})',
-                   font=dict(size=14, color='#111')),
-        height=400, hovermode='x unified',
-        xaxis=dict(title='Tempo (s)', color='#111', showgrid=True,
-                   gridcolor='#eeeeee', linecolor='#cccccc'),
-        yaxis=dict(title='Power (W)', color='#111', showgrid=True,
-                   gridcolor='#eeeeee', linecolor='#cccccc'))
+        x=[t for _,t in tests], y=p_obs, mode="markers+text",
+        text=[f"T{i+1}" for i in range(n)],
+        textposition="top center", textfont=dict(color="#111",size=12,family="Arial Black"),
+        marker=dict(size=14,color="#f39c12",symbol="circle",line=dict(width=2,color="#2c3e50")),
+        name="Testes reais",
+        hovertemplate="T%{text}: t=%{x:.0f}s  P=%{y:.0f}W<extra></extra>"))
+    fig_pd.update_layout(**BASE_LAYOUT,
+        title=dict(text=f"Power-Duration — {modalidade} ({data_teste})",
+                   font=dict(size=14,color="#111")),
+        height=420, hovermode="x unified",
+        xaxis=dict(title="Tempo (s)", **AX),
+        yaxis=dict(title="Power (W)", **AX))
     st.plotly_chart(fig_pd, use_container_width=True)
 
     # ════════════════════════════════════════════════════════════════════════
-    # GRÁFICO 2 — Resíduos
+    # G2 — Resíduos
     # ════════════════════════════════════════════════════════════════════════
-    st.subheader("📉 Resíduos por modelo")
+    st.subheader("📉 Resíduos (P_obs − P_pred)")
     fig_res = go.Figure()
-    for mname, (cp, wp, pp, r2) in computed.items():
+    for mname,(cp,wp,pp,r2) in res.items():
         if pp is None: continue
-        res = [p_obs[i]-pp[i] for i in range(len(p_obs))]
+        mk  = mname[:2]
+        res_v = [p_obs[i]-pp[i] for i in range(n)]
         fig_res.add_trace(go.Bar(
-            x=[f"T{i+1}" for i in range(len(tests))],
-            y=res, name=mname,
-            marker_color=CORES_M[mname],
-            text=[f"{v:+.1f}W" for v in res],
-            textposition='outside',
-            textfont=dict(color='#111', size=11),
-            hovertemplate='%{x}: %{y:.1f}W<extra></extra>'))
-    fig_res.add_hline(y=0, line_dash='dash', line_color='#555', line_width=1.5)
-    fig_res.update_layout(**_LAYOUT,
-        title=dict(text='Resíduos (P_obs − P_pred)', font=dict(size=13, color='#111')),
-        height=320, barmode='group',
-        xaxis=dict(title='Teste', color='#111'),
-        yaxis=dict(title='Resíduo (W)', color='#111', showgrid=True, gridcolor='#eee',
-                   zeroline=True, zerolinecolor='#999'))
+            x=[f"T{i+1}: {tests[i][1]:.0f}s" for i in range(n)],
+            y=res_v, name=mname,
+            marker_color=C[mk],
+            text=[f"{v:+.1f}W" for v in res_v],
+            textposition="outside", textfont=dict(color="#111",size=11),
+            hovertemplate="%{x}: %{y:.1f}W<extra></extra>"))
+    fig_res.add_hline(y=0,line_dash="dash",line_color="#555",line_width=1.5)
+    fig_res.update_layout(**BASE_LAYOUT,
+        title=dict(text="Resíduos por modelo e teste",font=dict(size=13,color="#111")),
+        height=330, barmode="group",
+        xaxis=dict(title="Teste",**AX),
+        yaxis=dict(title="Resíduo (W)",zeroline=True,zerolinecolor="#999",**AX))
     st.plotly_chart(fig_res, use_container_width=True)
 
     # ════════════════════════════════════════════════════════════════════════
-    # GRÁFICO 3 — VELOCLINIC (correcto — Work above CP vs Power)
+    # G3 — VELOCLINIC (correcto — veloclinic.com)
     # ════════════════════════════════════════════════════════════════════════
     st.markdown("---")
-    st.subheader("🔬 Veloclinic Plot — Work above CP vs Power")
+    st.subheader(f"🔬 Veloclinic Plot — {modalidade} — {data_teste}")
 
     with st.expander("📖 Como interpretar o Veloclinic Plot"):
         st.markdown("""
-**O Veloclinic Plot** (veloclinic.com) é uma ferramenta de diagnóstico do modelo CP:
+**Fonte:** [veloclinic.com](https://veloclinic.com/veloclinic-plot-w-cp-subtraction-plot/)
 
 | Elemento | Significado |
 |---|---|
 | **Eixo X** | Potência (W) |
-| **Eixo Y** | Trabalho acima do CP = t × (P − CP) |
-| **Platô horizontal** | Capacidade anaeróbia (W′) — deve ser constante |
-| **Intercepto X esquerdo** | CP (quando W′ = 0) |
-| **Intercepto X direito** | Pmax teórico |
+| **Eixo Y** | W′_point = t×(P−CP) — trabalho acima do CP |
+| **Platô horizontal** | ≈ W′ (capacidade anaeróbia constante) |
+| **Intercepto X esquerdo** | CP (W′_point → 0) |
+| **Linha vermelha vertical** | CP estimado pelo melhor modelo |
+| **Linha preta horizontal** | W′ estimado pelo melhor modelo |
 
-**Interpretação fisiológica:**
-- 🟢 **Platô estável (CV < 10%)** → Bom fit, W′ bem estimado
-- 🔴 **Fadiga periférica** → W′ baixo, queda precoce (limitação muscular)
-- 🔵 **Fadiga central** → Alta variabilidade entre pontos (recrutamento/pacing)
-- 🟠 **Fadiga sistêmica** → Todos os pontos abaixo do esperado (overreaching)
+**Tipos de fadiga:**
+- ✅ **CV < 10%, slope ≈ 0** → Bom fit, W′ bem estimado
+- 🔴 **Fadiga periférica** → W′ baixo vs esperado (limitação muscular)
+- 🔵 **Fadiga central** → Alta variabilidade entre testes (recrutamento/pacing)
+- 🟠 **Fadiga sistémica** → Todos os pontos abaixo da curva (overreaching)
 
-**Região 2–20 min** (120–1200s) → janela onde o modelo CP é fisiologicamente válido.
+**Zona válida (2–20 min = 120–1200s):** região onde o modelo CP é fisiologicamente adequado.
         """)
 
     fig_vc = go.Figure()
 
-    for mname, (cp, wp, pp, r2) in computed.items():
-        if cp is None or wp is None or cp <= 0: continue
-
-        p_curve, wp_curve, p_real, wp_real, t_real = _veloclinic_correct(
-            tests, cp, wp)
+    for mname,(cp,wp,pp,r2) in res.items():
+        if cp is None or wp is None or cp<=0: continue
+        mk = mname[:2]
+        p_curve,wp_curve,p_real,wp_real,t_real = veloclinic_curve(tests,cp,wp)
 
         # Curva teórica
         fig_vc.add_trace(go.Scatter(
-            x=p_curve, y=wp_curve, mode='lines', name=f'{mname} (teórico)',
-            line=dict(color=CORES_M[mname], width=2.5),
-            hovertemplate='P=%{x:.0f}W  W′=%{y:.0f}J<extra></extra>'))
+            x=p_curve, y=wp_curve, mode="lines",
+            name=f"{mname} (teórico)",
+            line=dict(color=C[mk], width=2.5),
+            hovertemplate="P=%{x:.0f}W  W′=%{y:.0f}J<extra></extra>"))
 
         # Pontos reais
-        hover_txt = [f"T{i+1}: {p:.0f}W × {t:.0f}s" for i,(p,t) in enumerate(tests)]
+        hover_real = [f"T{i+1}: {tests[i][0]:.0f}W × {tests[i][1]:.0f}s" for i in range(n)]
         fig_vc.add_trace(go.Scatter(
-            x=p_real, y=wp_real, mode='markers+text',
-            name=f'{mname} (pontos)',
-            text=[f"T{i+1}" for i in range(len(tests))],
-            textposition='top center',
-            textfont=dict(color='#111', size=11),
-            marker=dict(size=13, color=CORES_M[mname], symbol='diamond',
-                        line=dict(width=2, color='white')),
-            customdata=hover_txt,
-            hovertemplate='%{customdata}<br>W′=%{y:.0f}J<extra></extra>',
-            showlegend=True))
+            x=p_real, y=wp_real, mode="markers+text",
+            name=f"{mname} (pontos)",
+            text=[f"T{i+1}" for i in range(n)],
+            textposition="top center",
+            textfont=dict(color="#111",size=11,family="Arial Black"),
+            marker=dict(size=14, color=C[mk], symbol="diamond",
+                        line=dict(width=2,color="white")),
+            customdata=hover_real,
+            hovertemplate="%{customdata}<br>W′=%{y:.0f}J<extra></extra>"))
 
-    # CP melhor modelo — linha vertical
-    if best_cp:
-        fig_vc.add_vline(x=best_cp, line_dash='dash',
-                         line_color='#c0392b', line_width=1.5,
-                         annotation_text=f"CP={best_cp:.0f}W",
-                         annotation_font=dict(color='#c0392b', size=11),
-                         annotation_position="top right")
-    # W′ melhor modelo — linha horizontal
-    if best_wp:
-        fig_vc.add_hline(y=best_wp, line_dash='dot',
-                         line_color='#2c3e50', line_width=1.5,
-                         annotation_text=f"W′={best_wp:.0f}J",
-                         annotation_font=dict(color='#2c3e50', size=11),
-                         annotation_position="right")
-    # Região 2-20 min (potência correspondente ao melhor modelo)
+    # Marcas do melhor modelo
     if best_cp and best_wp:
-        p_2min  = best_wp/120 + best_cp
+        fig_vc.add_vline(x=best_cp, line_dash="dash",
+                         line_color="#c0392b", line_width=2,
+                         annotation_text=f"CP = {best_cp:.0f}W",
+                         annotation_font=dict(color="#c0392b",size=12),
+                         annotation_position="top right")
+        fig_vc.add_hline(y=best_wp, line_dash="dot",
+                         line_color="#2c3e50", line_width=2,
+                         annotation_text=f"W′ = {best_wp:.0f}J",
+                         annotation_font=dict(color="#2c3e50",size=12),
+                         annotation_position="right")
+        # Zona válida 2-20min
+        p_2min  = best_wp/120  + best_cp
         p_20min = best_wp/1200 + best_cp
-        fig_vc.add_vrect(
-            x0=p_20min, x1=p_2min,
-            fillcolor='rgba(39,174,96,0.08)', line_width=0,
-            annotation_text="Janela 2–20 min",
-            annotation_position="top left",
-            annotation_font=dict(size=10, color='#27ae60'))
+        fig_vc.add_vrect(x0=p_20min, x1=p_2min,
+                         fillcolor="rgba(39,174,96,0.09)", line_width=0,
+                         annotation_text="Zona válida 2–20 min",
+                         annotation_position="top left",
+                         annotation_font=dict(size=10,color="#27ae60"))
 
-    fig_vc.update_layout(**_LAYOUT,
-        title=dict(text=f'Veloclinic Plot — {modalidade} ({data_teste})',
-                   font=dict(size=14, color='#111')),
-        height=430, hovermode='closest',
-        xaxis=dict(title='Potência (W)', color='#111', showgrid=True,
-                   gridcolor='#eeeeee', linecolor='#cccccc', zeroline=False),
-        yaxis=dict(title='Trabalho acima do CP — W′_point (J)',
-                   color='#111', showgrid=True, gridcolor='#eeeeee',
-                   linecolor='#cccccc', zeroline=True, zerolinecolor='#aaa'))
+    fig_vc.update_layout(**BASE_LAYOUT,
+        title=dict(text=f"Veloclinic Plot — Work above CP vs Power — {modalidade} ({data_teste})",
+                   font=dict(size=13,color="#111")),
+        height=460, hovermode="closest",
+        xaxis=dict(title="Potência (W)", **AX),
+        yaxis=dict(title="W′_point = t×(P−CP)  [J]", zeroline=True,
+                   zerolinecolor="#aaa", **AX))
     st.plotly_chart(fig_vc, use_container_width=True)
 
     # Métricas Veloclinic
     vm_rows = []
-    for mname, vm in vm_all.items():
-        if vm.get('cv') is None: continue
-        q_plat  = ("✅ estável" if vm['cv']  < 10 else
-                   "⚠️ moderado" if vm['cv'] < 25 else "❌ instável")
-        q_slope = ("✅" if abs(vm.get('slope',0)) < 1.0 else
-                   "⚠️" if abs(vm.get('slope',0)) < 3.0 else "❌")
+    for mname,vm in vm_all.items():
+        if vm.get("cv") is None: continue
+        q_cv    = ("✅" if vm["cv"]<10 else "⚠️" if vm["cv"]<25 else "❌")
+        q_slope = ("✅" if abs(vm["slope"])<1 else "⚠️" if abs(vm["slope"])<3 else "❌")
         vm_rows.append({
-            'Modelo':      mname,
-            'W′ médio (J)':vm['mean'],
-            'Std W′ (J)':  vm['std'],
-            'CV W′%':      vm['cv'],
-            'Slope platô': vm['slope'],
-            'Platô':       q_plat,
-            'Slope OK':    q_slope,
-            'Fadiga':      fat_all.get(mname,'—'),
+            "Modelo":mname,
+            "W′ médio (J)":vm["mean"],
+            "Std W′ (J)":vm["std"],
+            "CV W′%":f"{vm['cv']:.1f}% {q_cv}",
+            "Slope":f"{vm['slope']:.4f} {q_slope}",
+            "Fadiga":fat_all.get(mname,"—"),
         })
     if vm_rows:
         st.dataframe(pd.DataFrame(vm_rows), hide_index=True, use_container_width=True)
 
     # Export
     st.markdown("---")
-    _csv = df_tab.to_csv(index=False).encode('utf-8')
-    st.download_button("⬇️ Exportar resultados CSV", _csv,
-                       f"cp_model_{modalidade}_{data_teste}.csv",
-                       "text/csv", key="dl_cp_csv")
+    _csv = df_tab.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "⬇️ Exportar resultados CSV", _csv,
+        f"cp_model_{modalidade}_{data_teste}.csv",
+        "text/csv", key="dl_cp")
 
 def main():
     days_back, di, df_, mods_sel = render_sidebar()
