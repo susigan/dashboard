@@ -8382,30 +8382,52 @@ def tab_cp_model():
     # ════════════════════════════════════════════════════════════════════════
     # SCORE FINAL — por modelo (usando fit "none" como referência)
     # ════════════════════════════════════════════════════════════════════════
-    model_scores = {}
-    vm_ref = {}
-    fat_ref= {}
+    model_scores  = {}
+    model_status  = {}   # 🟢 Estável | 🟡 Sensível | 🔴 Instável
+    model_reject  = {}   # True = rejeitado por critério duro
+    vm_ref  = {}
+    fat_ref = {}
 
     for mk in ["M1","M2","M3","M4"]:
         cp,wp,pmax,pp,r2,k = all_fits[mk]["none"]
         stab = stability[mk]
         if cp is None or wp is None or stab is None:
-            model_scores[mk]=999; continue
+            model_scores[mk]=999; model_status[mk]="❌"; model_reject[mk]=True; continue
         _,seep = calc_see(p_obs,pp,k)
         vm = vc_metrics(tests,cp,wp)
         vm_ref[mk]=vm; fat_ref[mk]=classify_fatigue(vm)
         cp_var = stab["cp_var"]
         wp_var = stab["wp_var"]
-        pen_k  = 0.05*(k-2)
-        pen_var= 0.20 if cp_var>15 else 0.10 if cp_var>10 else 0
-        sc = (0.40*(vm["cv"]/50 if vm["cv"] else 0) +
-              0.30*(cp_var/30) +
-              0.20*((seep or 30)/30) +
-              0.10*(wp_var/30) +
-              pen_k + pen_var)
+        cv_max = max(
+            (vc_metrics(tests, all_fits[mk][wm][0], all_fits[mk][wm][1])["cv"]
+             for wm in W_MODES if all_fits[mk][wm][0] is not None),
+            default=0)
+
+        # ── Critérios duros de rejeição ──────────────────────────────────
+        rejected = (cp_var > 15 or cv_max > 25 or (seep or 99) > 20)
+        model_reject[mk] = rejected
+
+        # ── Status visual ─────────────────────────────────────────────────
+        if   cp_var < 5  and cv_max < 15: model_status[mk] = "🟢 Estável"
+        elif cp_var < 10 and cv_max < 20: model_status[mk] = "🟡 Sensível"
+        else:                              model_status[mk] = "🔴 Instável"
+        if rejected: model_status[mk] = "🔴 Rejeitado"
+
+        # ── Score — CP_var é critério principal (0.40) ───────────────────
+        pen_k = 0.05*(k-2)
+        sc = (0.40*(cp_var/30) +           # PRINCIPAL: estabilidade CP
+              0.30*(vm["cv"]/50 if vm["cv"] else 0) +   # consistência VC
+              0.20*((seep or 30)/30) +      # qualidade ajuste
+              0.10*(wp_var/30) +            # estabilidade W′
+              pen_k +
+              (0.50 if rejected else 0))    # penalidade dura
         model_scores[mk] = round(sc*100,1)
 
-    best_mk = min(model_scores, key=model_scores.get)
+    # Preferir modelos não rejeitados; fallback ao menor score
+    _candidates = {mk:sc for mk,sc in model_scores.items()
+                   if not model_reject.get(mk,False)}
+    if not _candidates: _candidates = model_scores   # fallback
+    best_mk = min(_candidates, key=_candidates.get)
     best_cp,best_wp,best_pmax,_,_,_ = all_fits[best_mk]["none"]
 
     # ════════════════════════════════════════════════════════════════════════
@@ -8425,17 +8447,28 @@ def tab_cp_model():
         cp_var = stab["cp_var"]
         rob = ("✅ Robusto" if cp_var<10 else
                "⚠️ Sensível" if cp_var<20 else "❌ Instável")
+        # SEE médio dos 3 cenários
+        sees = [calc_see(p_obs,all_fits[mk][wm][3],k)[1]
+                for wm in W_MODES
+                if all_fits[mk][wm][3] is not None]
+        see_mean = round(float(np.mean([s for s in sees if s])),2) if sees else None
+
+        # CV médio dos 3 cenários
+        cvs = [vc_metrics(tests,all_fits[mk][wm][0],all_fits[mk][wm][1])["cv"]
+               for wm in W_MODES if all_fits[mk][wm][0] is not None]
+        cv_mean = round(float(np.mean(cvs)),1) if cvs else 0
+
         rows_main.append({
-            "Modelo":NOMES[mk],
-            "CP médio (W)":stab["cp_mean"],
-            "CP var%":f"{cp_var:.1f}%",
-            "W′ médio (J)":stab["wp_mean"],
-            "W′ var%":f"{stab['wp_var']:.1f}%",
-            "CV W′%":f"{vm.get('cv',0):.1f}%",
-            "SEE%":seep,
-            "Score":model_scores[mk],
-            "Robustez":rob,
-            "Fadiga":fat_ref.get(mk,"—"),
+            "Modelo":        NOMES[mk],
+            "Status":        model_status.get(mk,"—"),
+            "CP médio (W)":  stab["cp_mean"],
+            "CP var%":       f"{cp_var:.1f}%",
+            "W′ médio (J)":  stab["wp_mean"],
+            "W′ var%":       f"{stab['wp_var']:.1f}%",
+            "CV médio%":     f"{cv_mean:.1f}%",
+            "SEE médio%":    see_mean,
+            "Score":         model_scores[mk],
+            "Fadiga":        fat_ref.get(mk,"—"),
         })
 
     st.markdown("---")
