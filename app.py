@@ -1415,7 +1415,7 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 yaxis=dict(tickfont=dict(color='#333333')),
                 legend=dict(orientation='h', y=1.08,
                             font=dict(color='#111111', size=11)))
-            st.plotly_chart(fig_kj, use_container_width=True)
+            st.plotly_chart(fig_kj, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
 
         # ── Tabela comparativa mensal ─────────────────────────────────────
         if all_mods_m:
@@ -3118,7 +3118,7 @@ def tab_zones(da, mods_sel):
             yaxis=dict(title='%', tickfont=dict(color='#333333'),
                        showgrid=True, gridcolor='#eeeeee', range=[0,108]))
         with col1:
-            st.plotly_chart(fig_hr_mod, use_container_width=True)
+            st.plotly_chart(fig_hr_mod, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
 
         # HR Geral pizza
         ts_hr = {z: dh_ano[c].sum()
@@ -3132,9 +3132,9 @@ def tab_zones(da, mods_sel):
         fig_hr_gen.update_layout(**PW,
             title=dict(text=f'❤️ HR Geral — {ano_sel}', font=dict(color='#222', size=13)),
             height=380, showlegend=True,
-            legend=dict(font=dict(color='#111111', size=11)))
+            legend=dict(orientation="h", y=-0.28, font=dict(color='#111111', size=11)))
         with col2:
-            st.plotly_chart(fig_hr_gen, use_container_width=True)
+            st.plotly_chart(fig_hr_gen, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
 
     # RPE por modalidade
     col3, col4 = st.columns(2)
@@ -3167,7 +3167,7 @@ def tab_zones(da, mods_sel):
             yaxis=dict(title='%', tickfont=dict(color='#333333'),
                        showgrid=True, gridcolor='#eeeeee', range=[0,108]))
         with col3:
-            st.plotly_chart(fig_rpe_mod, use_container_width=True)
+            st.plotly_chart(fig_rpe_mod, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
 
         ts_rpe = {z: piv_r[z].sum() for z in CORES_RPE.keys()}
         fig_rpe_gen = go.Figure(go.Pie(
@@ -3179,9 +3179,9 @@ def tab_zones(da, mods_sel):
         fig_rpe_gen.update_layout(**PW,
             title=dict(text=f'🎯 RPE Geral — {ano_sel}', font=dict(color='#222', size=13)),
             height=380, showlegend=True,
-            legend=dict(font=dict(color='#111111', size=11)))
+            legend=dict(orientation="h", y=-0.28, font=dict(color='#111111', size=11)))
         with col4:
-            st.plotly_chart(fig_rpe_gen, use_container_width=True)
+            st.plotly_chart(fig_rpe_gen, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
 
     st.markdown("---")
 
@@ -3627,7 +3627,7 @@ def tab_correlacoes(da, dw):
                 yaxis=dict(title='Δ HRV (%)', tickfont=dict(color='#111'),
                            showgrid=True, gridcolor='#ddd', zeroline=True,
                            zerolinecolor='#888', zerolinewidth=1.5))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
         with col_r:
             if any(d is not None for d in deltas_rhr):
                 fig2 = go.Figure()
@@ -3648,7 +3648,7 @@ def tab_correlacoes(da, dw):
                     yaxis=dict(title='Δ RHR (bpm)', tickfont=dict(color='#111'),
                                showgrid=True, gridcolor='#ddd', zeroline=True,
                                zerolinecolor='#888', zerolinewidth=1.5))
-                st.plotly_chart(fig2, use_container_width=True)
+                st.plotly_chart(fig2, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
             else:
                 st.info("Sem dados de RHR.")
 
@@ -3807,7 +3807,7 @@ def tab_correlacoes(da, dw):
                     xaxis=dict(title='RPE', tickfont=dict(color='#111'), showgrid=True, gridcolor='#ddd'),
                     yaxis=dict(title='HRV (ms)', tickfont=dict(color='#111'), showgrid=True, gridcolor='#ddd'),
                     showlegend=False)
-                st.plotly_chart(fig_sc1, use_container_width=True)
+                st.plotly_chart(fig_sc1, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
 
     with col2:
         if 'hrv' in dw.columns and 'rhr' in dw.columns:
@@ -3832,7 +3832,7 @@ def tab_correlacoes(da, dw):
                     xaxis=dict(title='HRV (ms)', tickfont=dict(color='#111'), showgrid=True, gridcolor='#ddd'),
                     yaxis=dict(title='RHR (bpm)', tickfont=dict(color='#111'), showgrid=True, gridcolor='#ddd'),
                     showlegend=False)
-                st.plotly_chart(fig_sc2, use_container_width=True)
+                st.plotly_chart(fig_sc2, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
 
     st.markdown("---")
 
@@ -4313,7 +4313,7 @@ def tab_correlacoes(da, dw):
                        showgrid=True, gridcolor='#ddd'),
             yaxis=dict(title='HRV relativo dia seguinte', tickfont=dict(color='#111'),
                        showgrid=True, gridcolor='#ddd'))
-        st.plotly_chart(fig_b1, use_container_width=True)
+        st.plotly_chart(fig_b1, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
         st.caption("HRV_rel = HRV / média_7d (remove tendência individual). "
                    "log(KJ) = escala logarítmica (captura não-linearidade).")
 
@@ -4367,7 +4367,7 @@ def tab_correlacoes(da, dw):
                        showgrid=True, gridcolor='#ddd'),
             yaxis=dict(title='HRV relativo (t)', tickfont=dict(color='#111'),
                        showgrid=True, gridcolor='#ddd'))
-        st.plotly_chart(fig_b2, use_container_width=True)
+        st.plotly_chart(fig_b2, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
         st.caption("ATL↑ → HRV_rel↓ esperado. Se r < -0.2 com p<0.05 = fadiga detectável.")
 
     # ════════════════════════════════════════════════════════════════════
@@ -5789,12 +5789,12 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                 fig_s.update_layout(**PLOTLY_WHITE,
                     title=dict(text=f'{aba} — HR e O2 vs Potência | Z-Score (±2σ) e MDC-95',
                                font=dict(size=14, color='#222')),
-                    height=500, hovermode='x unified',
+                    height=400, hovermode='closest',
                     xaxis=_xaxis('Potência (W)'),
                     yaxis=_yaxis('HR (bpm)', '#c0392b'),
                     yaxis2=_yaxis('SmO2 (%)', '#2471a3', secondary=True),
                     legend=LEGEND_STYLE)
-                st.plotly_chart(fig_s, use_container_width=True)
+                st.plotly_chart(fig_s, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
 
             st.markdown("---")
 
@@ -5914,11 +5914,11 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                 fig_t.update_layout(**PLOTLY_WHITE,
                     title=dict(text=f'{aba} — {tipo_t} evolução temporal{title_suf}',
                                font=dict(size=14, color='#222')),
-                    height=420, hovermode='x unified',
+                    height=420, hovermode='closest',
                     xaxis=_xaxis('Data'),
                     yaxis=_yaxis(f'{tipo_t} ({unid_t})', cor_eixo),
                     legend=LEGEND_STYLE)
-                st.plotly_chart(fig_t, use_container_width=True)
+                st.plotly_chart(fig_t, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
 
                 # ════════════════════════════════════════════
                 # TABELAS ICC/SEM/MDC + Tendência por período
@@ -6042,11 +6042,11 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                 fig_pwr.update_layout(**PLOTLY_WHITE,
                     title=dict(text=f'{aba} — HR/Pwr ratio{(" — "+agrup_pwr_lbl) if agrup_pwr else ""}',
                                font=dict(size=14, color='#222')),
-                    height=380, hovermode='x unified',
+                    height=380, hovermode='closest',
                     xaxis=_xaxis('Data'),
                     yaxis=_yaxis('HR/Pwr (bpm/W)'),
                     legend=LEGEND_STYLE)
-                st.plotly_chart(fig_pwr, use_container_width=True)
+                st.plotly_chart(fig_pwr, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
                 st.markdown("---")
 
             # ════════════════════════════════════════════════════════════
@@ -6093,11 +6093,11 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                     fig_drag.update_layout(**PLOTLY_WHITE,
                         title=dict(text=f'Drag Factor — {aba}{(" — "+agrup_drag_lbl) if agrup_drag else ""}',
                                    font=dict(size=14, color='#222')),
-                        height=360, hovermode='x unified',
+                        height=360, hovermode='closest',
                         xaxis=_xaxis('Data'),
                         yaxis=_yaxis('Drag Factor'),
                         legend=LEGEND_STYLE)
-                    st.plotly_chart(fig_drag, use_container_width=True)
+                    st.plotly_chart(fig_drag, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
                     c1d, c2d, c3d = st.columns(3)
                     c1d.metric("Drag médio", f"{mu_d:.0f}")
                     c2d.metric("Mínimo",     f"{df_drag[drag_col].min():.0f}")
@@ -6520,7 +6520,7 @@ def tab_corporal(dc, da_full):
     fig1.update_layout(
         title=f'Peso, BF e Calorias — {agrup_lbl} | rolling={roll_w}',
         height=420,
-        hovermode='x unified',
+        hovermode='closest',
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
         yaxis=dict(title='Peso (kg)', title_font=dict(color=CORES['azul']),
                    tickfont=dict(color=CORES['azul'])),
@@ -6534,7 +6534,7 @@ def tab_corporal(dc, da_full):
         xaxis=dict(showgrid=True),
         margin=dict(r=80),
     )
-    st.plotly_chart(fig1, width="stretch")
+    st.plotly_chart(fig1, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
 
     # ── GRÁFICO 2: Calorias + Net ─────────────────────────────────────────────
     st.subheader("🔥 Calorias e Balanço Energético (Net)")
@@ -6571,7 +6571,7 @@ def tab_corporal(dc, da_full):
     fig2.update_layout(
         title=f'Calorias e Net — {agrup_lbl} | rolling={roll_w}',
         height=380,
-        hovermode='x unified',
+        hovermode='closest',
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
         yaxis=dict(title='Calorias (kcal)', title_font=dict(color=CORES['laranja']),
                    tickfont=dict(color=CORES['laranja'])),
@@ -6579,7 +6579,7 @@ def tab_corporal(dc, da_full):
                     tickfont=dict(color=CORES['roxo']),
                     overlaying='y', side='right'),
     )
-    st.plotly_chart(fig2, width="stretch")
+    st.plotly_chart(fig2, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
 
     # ── GRÁFICO 3: Macros % stacked ───────────────────────────────────────────
     st.subheader("🥗 Distribuição de Macronutrientes (%)")
@@ -6607,12 +6607,12 @@ def tab_corporal(dc, da_full):
                 barmode='stack',
                 title=f'Macros % (Carb/Fat/Ptn em kcal) — {agrup_lbl}',
                 height=360,
-                hovermode='x unified',
+                hovermode='closest',
                 legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
                 yaxis=dict(title='% kcal de macros', range=[0, 115]),
             )
             fig3.add_hline(y=100, line_dash='dot', line_color=CORES['cinza'])
-            st.plotly_chart(fig3, width="stretch")
+            st.plotly_chart(fig3, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
 
     st.markdown("---")
 
@@ -6699,8 +6699,8 @@ def tab_corporal(dc, da_full):
         fig4.update_layout(
             barmode='group',
             title=f'Variação Peso e BF por {agrup_lbl} — bandas de ganho/perda',
-            height=450,
-            hovermode='x unified',
+            height=380,
+            hovermode='closest',
             legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
             yaxis=dict(title='Δ Peso (kg)', title_font=dict(color='#27ae60'),
                        tickfont=dict(color='#27ae60'), zeroline=True),
@@ -6708,7 +6708,7 @@ def tab_corporal(dc, da_full):
                         tickfont=dict(color='#2980b9'),
                         overlaying='y', side='right', zeroline=True),
         )
-        st.plotly_chart(fig4, width="stretch")
+        st.plotly_chart(fig4, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
     else:
         st.info("Dados insuficientes de Peso/BF para o gráfico de variação.")
 
@@ -7632,7 +7632,7 @@ def tab_ctl_kj(da_full):
                 yaxis=dict(title='eff = TRIMP/KJ', showgrid=True, gridcolor='#eee'),
                 title=dict(text='Eficiência Fisiológica (TRIMP/KJ) — rolling 4 semanas',
                            font=dict(size=13)))
-            st.plotly_chart(fig_eff, use_container_width=True)
+            st.plotly_chart(fig_eff, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
 
             # Tabela resumo de eficiência actual e tendência
             st.markdown("**Eficiência actual por modalidade × tipo:**")
@@ -7735,7 +7735,7 @@ def tab_ctl_kj(da_full):
             xaxis=dict(showgrid=True, gridcolor='#eee'),
             yaxis=dict(title='Carga', showgrid=True, gridcolor='#eee'),
             title=dict(text='CTL raw vs IF corrigido', font=dict(size=13)))
-        st.plotly_chart(fig_ctl, use_container_width=True)
+        st.plotly_chart(fig_ctl, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
         csv_ts = df_ts.to_csv(index=False).encode('utf-8')
         st.download_button("⬇️ Download série CTL (agrupada)", csv_ts,
                            "series_ctl_v3.csv", "text/csv", key="dl_ts_v3")
@@ -7911,7 +7911,7 @@ def tab_ctl_kj(da_full):
                     xaxis=dict(showgrid=True, gridcolor='#eee'),
                     yaxis=dict(title='eff_delta (%)', showgrid=True, gridcolor='#eee'),
                     title=dict(text='eff_delta — custo interno relativo ao baseline', font=dict(size=12)))
-                st.plotly_chart(fig_d1, use_container_width=True)
+                st.plotly_chart(fig_d1, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
 
                 # ── GRÁFICO 2: KJ/h ao longo do tempo ────────────────────
                 st.markdown("**Gráfico 2 — KJ/h (densidade de trabalho)**")
@@ -7937,7 +7937,7 @@ def tab_ctl_kj(da_full):
                     xaxis=dict(showgrid=True, gridcolor='#eee'),
                     yaxis=dict(title='KJ/h', showgrid=True, gridcolor='#eee'),
                     title=dict(text='KJ/h rolling vs baseline por modalidade', font=dict(size=12)))
-                st.plotly_chart(fig_d2, use_container_width=True)
+                st.plotly_chart(fig_d2, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
 
                 # ── GRÁFICO 3: pwr_inc simulado ───────────────────────────
                 st.markdown("**Gráfico 3 — pwr_inc simulado (%)**")
@@ -7959,7 +7959,7 @@ def tab_ctl_kj(da_full):
                     xaxis=dict(showgrid=True, gridcolor='#eee'),
                     yaxis=dict(title='pwr_inc (%)', showgrid=True, gridcolor='#eee'),
                     title=dict(text='pwr_inc simulado por sessão', font=dict(size=12)))
-                st.plotly_chart(fig_d3, use_container_width=True)
+                st.plotly_chart(fig_d3, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
 
                 st.markdown("---")
 
@@ -8056,7 +8056,7 @@ def tab_ctl_kj(da_full):
                     xaxis=dict(title='eff_delta (%)', showgrid=True, gridcolor='#eee', zeroline=True),
                     yaxis=dict(title='pwr_inc (%)', showgrid=True, gridcolor='#eee'),
                     title=dict(text='eff_delta vs pwr_inc — fadiga vs resposta', font=dict(size=12)))
-                st.plotly_chart(fig_d4, use_container_width=True)
+                st.plotly_chart(fig_d4, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
 
                 st.markdown("---")
 
@@ -8133,7 +8133,7 @@ def tab_cp_model():
     BASE = dict(
         paper_bgcolor="white", plot_bgcolor="white",
         font=dict(color="#111111", size=12),
-        legend=dict(bgcolor="rgba(255,255,255,0.95)", bordercolor="#cccccc",
+        legend=dict(orientation="h", y=-0.28, bgcolor="rgba(255,255,255,0.95)", bordercolor="#cccccc",
                     borderwidth=1, font=dict(color="#111111", size=11),
                     orientation="h", y=-0.30),
         margin=dict(t=60,b=90,l=65,r=30),
@@ -8547,10 +8547,10 @@ def tab_cp_model():
     fig_pd.update_layout(**BASE,
         title=dict(text=f"Power-Duration — {modalidade} ({data_teste})",
                    font=dict(size=14,color="#111")),
-        height=430, hovermode="x unified",
+        height=360, hovermode='closest',
         xaxis=dict(title="Tempo (s)",**AX),
         yaxis=dict(title="Potência (W)",**AX))
-    st.plotly_chart(fig_pd,use_container_width=True)
+    st.plotly_chart(fig_pd, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
 
     # ════════════════════════════════════════════════════════════════════════
     # G2 — Estabilidade CP × Weighting
@@ -8579,7 +8579,7 @@ def tab_cp_model():
         height=320,
         xaxis=dict(title="Weighting",**AX),
         yaxis=dict(title="CP (W)",**AX))
-    st.plotly_chart(fig_stab,use_container_width=True)
+    st.plotly_chart(fig_stab, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
 
     # ════════════════════════════════════════════════════════════════════════
     # G3 — VELOCLINIC (correcto — só pontos + linhas de referência)
@@ -8649,11 +8649,11 @@ def tab_cp_model():
     fig_vc.update_layout(**BASE,
         title=dict(text="Veloclinic — W′_point vs Potência (pontos reais + referências CP/W′)",
                    font=dict(size=13,color="#111")),
-        height=440, hovermode="closest",
+        height=360, hovermode="closest",
         xaxis=dict(title="Potência (W)",**AX),
         yaxis=dict(title="W′_point = t×(P−CP)  [J]",
                    zeroline=True,zerolinecolor="#aaaaaa",**AX))
-    st.plotly_chart(fig_vc,use_container_width=True)
+    st.plotly_chart(fig_vc, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
 
     # Métricas Veloclinic
     vm_rows=[]
@@ -8692,6 +8692,97 @@ def tab_cp_model():
 
 def main():
     days_back, di, df_, mods_sel = render_sidebar()
+
+    # ── CSS Mobile + Landscape hint ──────────────────────────────────────
+    st.markdown("""
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<style>
+/* ── Portrait estreito: aviso de rotação ── */
+.rotate-hint {
+    display: none;
+    position: fixed; top:0; left:0; right:0; bottom:0;
+    background: rgba(0,0,0,0.88);
+    color: white; font-size: 1.1rem;
+    align-items: center; justify-content: center;
+    flex-direction: column; z-index: 9999;
+    text-align: center; padding: 2rem;
+    gap: 1rem;
+}
+@media screen and (max-width: 479px) and (orientation: portrait) {
+    .rotate-hint { display: flex !important; }
+}
+
+/* ── Geral mobile (<768px) ── */
+@media screen and (max-width: 768px) {
+    /* Tabs: scroll horizontal, sem quebra de linha */
+    .stTabs [data-baseweb="tab-list"] {
+        overflow-x: auto !important;
+        flex-wrap: nowrap !important;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+        padding-bottom: 4px;
+    }
+    .stTabs [data-baseweb="tab-list"]::-webkit-scrollbar { display: none; }
+    .stTabs [data-baseweb="tab"] {
+        min-width: 72px !important;
+        font-size: 10px !important;
+        padding: 5px 8px !important;
+        white-space: nowrap;
+    }
+    /* Colunas: sem overflow */
+    div[data-testid="column"] { min-width: 110px; overflow: hidden; }
+    /* DataFrames: scroll horizontal */
+    div[data-testid="stDataFrame"] {
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch;
+        max-width: 100vw;
+    }
+    /* Plotly: esconder barra de ferramentas, permitir pan vertical */
+    .js-plotly-plot .plotly .modebar { display: none !important; }
+    .js-plotly-plot { touch-action: pan-y !important; }
+    /* Inputs e botões: tamanho mínimo de toque (44px) */
+    input[type="number"], input[type="text"] {
+        font-size: 16px !important; min-height: 44px;
+    }
+    .stButton > button { min-height: 44px !important; }
+    /* Padding reduzido */
+    .block-container {
+        padding-left: 0.5rem !important;
+        padding-right: 0.5rem !important;
+        padding-top: 0.5rem !important;
+    }
+    /* Títulos menores */
+    h1 { font-size: 1.3rem !important; }
+    h2 { font-size: 1.1rem !important; }
+    h3 { font-size: 0.95rem !important; }
+    /* Caption/caption */
+    .stCaption { font-size: 0.75rem !important; }
+    /* Metrics: mais compactos */
+    div[data-testid="stMetric"] { padding: 4px !important; }
+    div[data-testid="stMetricValue"] { font-size: 1.1rem !important; }
+}
+
+/* ── Landscape mobile (altura < 500px) ── */
+@media screen and (max-height: 500px) and (orientation: landscape) {
+    .rotate-hint { display: none !important; }
+    .block-container {
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+    }
+    h1 { font-size: 1.1rem !important; }
+}
+</style>
+
+<!-- Overlay de rotação — só aparece em portrait muito estreito -->
+<div class="rotate-hint">
+    <div style="font-size:3.5rem">📱</div>
+    <div style="font-size:2rem">↩️</div>
+    <strong>Roda o ecrã para landscape</strong>
+    <span style="font-size:0.85rem;opacity:0.75">
+        A ATHELTICA funciona melhor na horizontal
+    </span>
+</div>
+""", unsafe_allow_html=True)
 
     st.title("🏃 ATHELTICA Analytics Dashboard")
     st.caption(f"Período: {di.strftime('%d/%m/%Y')} → {df_.strftime('%d/%m/%Y')}  |  "
