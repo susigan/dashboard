@@ -2598,7 +2598,7 @@ def tab_volume(da, dw):
         _fwt=go.Figure()
         _fwt.add_trace(go.Bar(x=mensal['mes'].tolist(),y=mensal['horas'].tolist(),marker_color='#e67e22',opacity=0.85,marker_line_width=0,hovertemplate='%{x}: %{y:.1f}h<extra></extra>'))
         _fwt.add_hline(y=float(mensal['horas'].mean()),line_dash='dash',line_color='#c0392b')
-        _fwt.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20),height=320,xaxis=dict(tickangle=-45,showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111'),showgrid=False),yaxis=dict(title='Horas',showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')))
+        _fwt.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20),height=320,xaxis=dict(tickangle=-45,gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111'), showgrid=False),yaxis=dict(title='Horas',showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')))
         st.plotly_chart(_fwt,use_container_width=True,config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
     else:
         st.info("Sem sessões de WeightTraining no período.")
@@ -2653,7 +2653,7 @@ def tab_volume(da, dw):
             _frpe.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), barmode='stack', height=320,
                 title=dict(text='Volume por Intensidade RPE (Trimestral)', font=dict(size=12, color='#111')),
                 legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),
-                xaxis=dict(tickangle=-45, showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111'), showgrid=False),
+                xaxis=dict(tickangle=-45, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111'), showgrid=False),
                 yaxis=dict(title='Horas', showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')))
             st.plotly_chart(_frpe, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
 
@@ -4790,7 +4790,7 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
         _fTL=go.Figure()
         for tipo in [t for t in ['Bike','Row','Ski','Run','WeightTraining'] if t in pivot_tl.columns]:
             _fTL.add_trace(go.Bar(x=[str(x) for x in pivot_tl.index],y=pivot_tl[tipo].tolist(),name=tipo,marker_color=CORES_MOD.get(tipo,'gray'),marker_line_width=0,opacity=0.85,hovertemplate=tipo+': %{y:.0f}<extra></extra>'))
-        _fTL.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20),barmode='stack',height=340,title=dict(text='Training Load Mensal por Modalidade',font=dict(size=13,color='#111')),legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),xaxis=dict(tickangle=-45,showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111'),showgrid=False),yaxis=dict(title='Training Load',showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')))
+        _fTL.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20),barmode='stack',height=340,title=dict(text='Training Load Mensal por Modalidade',font=dict(size=13,color='#111')),legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),xaxis=dict(tickangle=-45,gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111'), showgrid=False),yaxis=dict(title='Training Load',showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')))
         st.plotly_chart(_fTL,use_container_width=True,config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
 
     st.markdown("---")
@@ -8070,9 +8070,9 @@ def tab_cp_model():
     BASE = dict(
         paper_bgcolor="white", plot_bgcolor="white",
         font=dict(color="#111111", size=12),
-        legend=dict(orientation="h", y=-0.28, bgcolor="rgba(255,255,255,0.95)", bordercolor="#cccccc",
-                    borderwidth=1, font=dict(color="#111111", size=11),
-                    orientation="h", y=-0.30),
+        legend=dict(orientation="h", y=-0.30,
+                    bgcolor="rgba(255,255,255,0.95)", bordercolor="#cccccc",
+                    borderwidth=1, font=dict(color="#111111", size=11)),
         margin=dict(t=60,b=90,l=65,r=30),
     )
     AX = dict(color="#111111", showgrid=True, gridcolor="#eeeeee",
