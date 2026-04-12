@@ -3,6 +3,9 @@ from utils.helpers import *
 from utils.data import *
 import streamlit as st
 from datetime import datetime, timedelta
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+
 
 def render_sidebar():
     st.sidebar.image("https://img.icons8.com/emoji/96/runner-emoji.png", width=60)
