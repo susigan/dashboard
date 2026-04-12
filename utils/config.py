@@ -17,6 +17,9 @@ from itertools import combinations
 from datetime import datetime, timedelta
 import re
 import warnings
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+
 warnings.filterwarnings('ignore')
 plt.style.use('seaborn-v0_8-whitegrid')
 
