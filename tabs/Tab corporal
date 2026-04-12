@@ -1,18 +1,15 @@
-# tabs/tab_corporal.py — ATHELTICA Dashboard
-# Composição Corporal & Nutrição
-# FONTE DA VERDADE — editar aqui, não no app.py
-# Gráficos em Plotly (interactivos, tooltips, mobile-friendly)
-
+from utils.config import *
+from utils.helpers import *
+from utils.data import *
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from scipy.stats import spearmanr, linregress
+from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
-
-from config import CORES
-from utils.helpers import filtrar_principais, norm_tipo
-
+import re as _re
+import warnings
+warnings.filterwarnings('ignore')
 
 def tab_corporal(dc, da_full):
     """
@@ -162,7 +159,7 @@ def tab_corporal(dc, da_full):
                          'Valor': f"{cal_alvo - c_rel['cal_std']:.0f} kcal"},
                         {'Métrica': '📈 Cal. alvo — máximo (+1σ histórico)',
                          'Valor': f"{cal_alvo + c_rel['cal_std']:.0f} kcal"},
-                    ]), width='stretch', hide_index=True)
+                    ]), width="stretch", hide_index=True)
 
                     if c_rel['qcal'] is not None:
                         with st.expander(f"📊 Calorias históricas por quartil de {_var}"):
@@ -178,7 +175,7 @@ def tab_corporal(dc, da_full):
                                     'N semanas':    int(qr['count']),
                                 })
                             st.dataframe(pd.DataFrame(qrows),
-                                         width='stretch', hide_index=True)
+                                         width="stretch", hide_index=True)
                 else:
                     st.info(f"Sem dados suficientes de Calorias para estimar ({_var}).")
 
@@ -288,7 +285,7 @@ def tab_corporal(dc, da_full):
     fig1.update_layout(
         title=f'Peso, BF e Calorias — {agrup_lbl} | rolling={roll_w}',
         height=420,
-        hovermode='x unified',
+        hovermode='closest',
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
         yaxis=dict(title='Peso (kg)', title_font=dict(color=CORES['azul']),
                    tickfont=dict(color=CORES['azul'])),
@@ -302,7 +299,7 @@ def tab_corporal(dc, da_full):
         xaxis=dict(showgrid=True),
         margin=dict(r=80),
     )
-    st.plotly_chart(fig1, width='stretch')
+    st.plotly_chart(fig1, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
 
     # ── GRÁFICO 2: Calorias + Net ─────────────────────────────────────────────
     st.subheader("🔥 Calorias e Balanço Energético (Net)")
@@ -339,7 +336,7 @@ def tab_corporal(dc, da_full):
     fig2.update_layout(
         title=f'Calorias e Net — {agrup_lbl} | rolling={roll_w}',
         height=380,
-        hovermode='x unified',
+        hovermode='closest',
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
         yaxis=dict(title='Calorias (kcal)', title_font=dict(color=CORES['laranja']),
                    tickfont=dict(color=CORES['laranja'])),
@@ -347,7 +344,7 @@ def tab_corporal(dc, da_full):
                     tickfont=dict(color=CORES['roxo']),
                     overlaying='y', side='right'),
     )
-    st.plotly_chart(fig2, width='stretch')
+    st.plotly_chart(fig2, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
 
     # ── GRÁFICO 3: Macros % stacked ───────────────────────────────────────────
     st.subheader("🥗 Distribuição de Macronutrientes (%)")
@@ -375,12 +372,12 @@ def tab_corporal(dc, da_full):
                 barmode='stack',
                 title=f'Macros % (Carb/Fat/Ptn em kcal) — {agrup_lbl}',
                 height=360,
-                hovermode='x unified',
+                hovermode='closest',
                 legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
                 yaxis=dict(title='% kcal de macros', range=[0, 115]),
             )
             fig3.add_hline(y=100, line_dash='dot', line_color=CORES['cinza'])
-            st.plotly_chart(fig3, width='stretch')
+            st.plotly_chart(fig3, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
 
     st.markdown("---")
 
@@ -468,7 +465,7 @@ def tab_corporal(dc, da_full):
             barmode='group',
             title=f'Variação Peso e BF por {agrup_lbl} — bandas de ganho/perda',
             height=450,
-            hovermode='x unified',
+            hovermode='closest',
             legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
             yaxis=dict(title='Δ Peso (kg)', title_font=dict(color='#27ae60'),
                        tickfont=dict(color='#27ae60'), zeroline=True),
@@ -476,7 +473,7 @@ def tab_corporal(dc, da_full):
                         tickfont=dict(color='#2980b9'),
                         overlaying='y', side='right', zeroline=True),
         )
-        st.plotly_chart(fig4, width='stretch')
+        st.plotly_chart(fig4, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
     else:
         st.info("Dados insuficientes de Peso/BF para o gráfico de variação.")
 
@@ -575,7 +572,7 @@ def tab_corporal(dc, da_full):
                     .drop_duplicates(subset=['Alvo','Preditor'], keep='first')
                     .drop(columns=['_ar'])
                     .sort_values(['Alvo','Força'], ascending=[True, True]))
-        st.dataframe(df_c, width='stretch', hide_index=True)
+        st.dataframe(df_c, width="stretch", hide_index=True)
     else:
         st.info("Sem correlações moderadas/fortes. Pode ser necessário mais semanas.")
 
@@ -613,4 +610,13 @@ def tab_corporal(dc, da_full):
             })
         if rows_q:
             st.markdown(f"**Quartis de {alvo_lbl} — base calórica**")
-            st.dataframe(pd.DataFrame(rows_q), width='stretch', hide_index=True)
+            st.dataframe(pd.DataFrame(rows_q), width="stretch", hide_index=True)
+
+
+# Configuração da página — DEVE ser a primeira chamada Streamlit
+st.set_page_config(
+    page_title="ATHELTICA",
+    page_icon="🏃",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
