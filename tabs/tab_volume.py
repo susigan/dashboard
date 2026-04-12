@@ -28,18 +28,17 @@ def tab_volume(da, dw):
     if len(df_cic) > 0:
         pivot = df_cic.pivot_table(index='mes', columns='type', values='horas', aggfunc='sum', fill_value=0).sort_index()
         _fig_sb = go.Figure()
-        if 'pivot' in dir() and len(pivot) > 0:
+        if len(pivot) > 0:
             for _tc in [c for c in pivot.columns if c in CORES_MOD]:
                 _fig_sb.add_trace(go.Bar(x=[str(x) for x in pivot.index],
                     y=pivot[_tc].tolist(), name=_tc,
                     marker_color=CORES_MOD.get(_tc,'gray'),
                     marker_line_width=0, opacity=0.85))
-        # CORREÇÃO: Removido showgrid duplicado (mantive showgrid=False)
         _fig_sb.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), barmode='stack', height=340,
             legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),
             xaxis=dict(tickangle=-45, showgrid=False, gridcolor='#eee', tickfont=dict(color='#111')),
             yaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')))
-        st.plot_lychart(_fig_sb, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
+        st.plotly_chart(_fig_sb, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
         c1, c2 = st.columns(2)
         media = pivot.values.sum() / len(pivot) if len(pivot) > 0 else 0
         c1.metric("Total horas cíclicos", f"{pivot.values.sum():.1f}h")
@@ -54,7 +53,7 @@ def tab_volume(da, dw):
         _fig_gen.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), height=340,
             legend=dict(orientation='h', y=-0.25, font=dict(color='#111')), hovermode='closest',
             xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')), yaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')))
-        st.plot_lychart(_fig_gen, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
+        st.plotly_chart(_fig_gen, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
     else:
         st.info("Sem sessões de WeightTraining no período.")
 
@@ -65,14 +64,12 @@ def tab_volume(da, dw):
         if len(df_xss) > 3:
             df_xss = df_xss.sort_values('Data'); df_xss['xss_s'] = pd.to_numeric(df_xss[xss_col], errors='coerce').rolling(7, min_periods=1).mean()
             _fig_sb = go.Figure()
-            # CORREÇÃO: Adicionado dados ao gráfico XSS (estava vazio)
             _fig_sb.add_trace(go.Scatter(x=df_xss['Data'], y=df_xss['xss_s'], mode='lines', name='XSS (7d)'))
-            # CORREÇÃO: Removido showgrid duplicado
             _fig_sb.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), height=340,
                 legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),
                 xaxis=dict(tickangle=-45, showgrid=False, gridcolor='#eee', tickfont=dict(color='#111')),
                 yaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')))
-            st.plot_lychart(_fig_sb, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
+            st.plotly_chart(_fig_sb, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
 
     st.subheader("📊 Volume de Horas por Intensidade (Trimestral)")
     if 'rpe' in df.columns and 'moving_time' in df.columns:
@@ -87,4 +84,4 @@ def tab_volume(da, dw):
             _fig_gen.update_layout(barmode='stack', paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), height=340,
                 legend=dict(orientation='h', y=-0.25, font=dict(color='#111')), hovermode='closest',
                 xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')), yaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')))
-            st.plot_lychart(_fig_gen, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
+            st.plotly_chart(_fig_gen, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
