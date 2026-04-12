@@ -1,20 +1,71 @@
-# tabs/tab_aquecimento.py — ATHELTICA Dashboard
-# Aquecimento — HR/O2 vs Potência (Annual)
-# Plotly fundo branco | ICC/SEM/MDC por dados | tendência validada por MDC | quartis DF | treino antes
-
+from utils.config import *
+from utils.helpers import *
+from utils.data import *
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from scipy import stats as scipy_stats
-from scipy.stats import linregress, spearmanr, kruskal, mannwhitneyu, f_oneway
-from itertools import combinations
+from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
-import re
+import re as _re
+import warnings
+warnings.filterwarnings('ignore')
 
-from config import CORES
+def _axis(title='', color='#333333', secondary=False):
+    d = dict(title=dict(text=title, font=dict(color=color, size=12)),
+             tickfont=dict(color=color),
+             showgrid=True, gridcolor='#e8e8e8',
+             linecolor='#cccccc', linewidth=1, showline=True,
+             zeroline=False)
+    if secondary:
+        d['overlaying'] = 'y'; d['side'] = 'right'; d['showgrid'] = False
+    return d
 
-# ── Plotly layout ─────────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+PLOTLY_WHITE = dict(paper_bgcolor='white', plot_bgcolor='white',
+                    font=dict(family='Arial', size=12, color='#333333'))
+
+def _axis(title='', color='#333333', secondary=False):
+    d = dict(title=dict(text=title, font=dict(color=color, size=12)),
+             tickfont=dict(color=color),
+             showgrid=True, gridcolor='#e8e8e8',
+             linecolor='#cccccc', linewidth=1, showline=True,
+             zeroline=False)
+    if secondary:
+        d['overlaying'] = 'y'; d['side'] = 'right'; d['showgrid'] = False
+    return d
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+PLOTLY_WHITE = dict(paper_bgcolor='white', plot_bgcolor='white',
+                    font=dict(family='Arial', size=12, color='#333333'))
+
+LEGEND_STYLE = dict(orientation='h', y=1.02, x=0,
+                    bgcolor='rgba(255,255,255,0.9)',
+                    bordercolor='#aaa', borderwidth=1,
+                    font=dict(color='#111111', size=11))
+
+def _xaxis(title='Data', color='#333'):
+    return dict(title=dict(text=title, font=dict(color=color, size=12)),
+                tickfont=dict(color=color),
+                showgrid=True, gridcolor='#e8e8e8',
+                linecolor='#ccc', linewidth=1, showline=True)
+
+def _yaxis(title='', color='#333', secondary=False):
+    d = dict(title=dict(text=title, font=dict(color=color, size=12)),
+             tickfont=dict(color=color),
+             showgrid=True, gridcolor='#e8e8e8',
+             linecolor='#ccc', linewidth=1, showline=True)
+    if secondary:
+        d.update({'overlaying':'y','side':'right','showgrid':False})
+    return d
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+
 PLOTLY_WHITE = dict(paper_bgcolor='white', plot_bgcolor='white',
                     font=dict(family='Arial', size=12, color='#333333'))
 
@@ -196,6 +247,7 @@ def _agrupar_serie(df, col_data, col_val, agrup_code):
 # ════════════════════════════════════════════════════════════════════════════════
 # FUNÇÃO PRINCIPAL
 # ════════════════════════════════════════════════════════════════════════════════
+
 
 def tab_aquecimento(dfs_annual, df_annual, di):
     st.header("🌡️ Aquecimento — HR/O2 vs Potência (Annual)")
@@ -383,12 +435,12 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                 fig_s.update_layout(**PLOTLY_WHITE,
                     title=dict(text=f'{aba} — HR e O2 vs Potência | Z-Score (±2σ) e MDC-95',
                                font=dict(size=14, color='#222')),
-                    height=500, hovermode='x unified',
+                    height=500, hovermode='closest',
                     xaxis=_xaxis('Potência (W)'),
                     yaxis=_yaxis('HR (bpm)', '#c0392b'),
                     yaxis2=_yaxis('SmO2 (%)', '#2471a3', secondary=True),
                     legend=LEGEND_STYLE)
-                st.plotly_chart(fig_s, use_container_width=True)
+                st.plotly_chart(fig_s, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
 
             st.markdown("---")
 
@@ -508,11 +560,11 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                 fig_t.update_layout(**PLOTLY_WHITE,
                     title=dict(text=f'{aba} — {tipo_t} evolução temporal{title_suf}',
                                font=dict(size=14, color='#222')),
-                    height=420, hovermode='x unified',
+                    height=420, hovermode='closest',
                     xaxis=_xaxis('Data'),
                     yaxis=_yaxis(f'{tipo_t} ({unid_t})', cor_eixo),
                     legend=LEGEND_STYLE)
-                st.plotly_chart(fig_t, use_container_width=True)
+                st.plotly_chart(fig_t, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
 
                 # ════════════════════════════════════════════
                 # TABELAS ICC/SEM/MDC + Tendência por período
@@ -636,11 +688,11 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                 fig_pwr.update_layout(**PLOTLY_WHITE,
                     title=dict(text=f'{aba} — HR/Pwr ratio{(" — "+agrup_pwr_lbl) if agrup_pwr else ""}',
                                font=dict(size=14, color='#222')),
-                    height=380, hovermode='x unified',
+                    height=380, hovermode='closest',
                     xaxis=_xaxis('Data'),
                     yaxis=_yaxis('HR/Pwr (bpm/W)'),
                     legend=LEGEND_STYLE)
-                st.plotly_chart(fig_pwr, use_container_width=True)
+                st.plotly_chart(fig_pwr, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
                 st.markdown("---")
 
             # ════════════════════════════════════════════════════════════
@@ -687,11 +739,11 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                     fig_drag.update_layout(**PLOTLY_WHITE,
                         title=dict(text=f'Drag Factor — {aba}{(" — "+agrup_drag_lbl) if agrup_drag else ""}',
                                    font=dict(size=14, color='#222')),
-                        height=360, hovermode='x unified',
+                        height=360, hovermode='closest',
                         xaxis=_xaxis('Data'),
                         yaxis=_yaxis('Drag Factor'),
                         legend=LEGEND_STYLE)
-                    st.plotly_chart(fig_drag, use_container_width=True)
+                    st.plotly_chart(fig_drag, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
                     c1d, c2d, c3d = st.columns(3)
                     c1d.metric("Drag médio", f"{mu_d:.0f}")
                     c2d.metric("Mínimo",     f"{df_drag[drag_col].min():.0f}")
@@ -812,46 +864,27 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                             row[lbl] = (f"{np.mean(vals):.1f} {unid_d}"
                                         if len(vals) >= 1 else '—')
 
-                        # Comparações estatísticas
+                        # Comparações estatísticas — saída compacta
+                        def _comp(v1, v2, lbl, ud):
+                            if len(v1) < 3 or len(v2) < 3: return None
+                            try:
+                                _, p = mannwhitneyu(v1, v2, alternative='two-sided')
+                                delta = np.mean(v1) - np.mean(v2)
+                                if p < 0.05:
+                                    return f"{lbl}: {delta:+.1f} {ud}"
+                                else:
+                                    return f"{lbl}: sem mudança"
+                            except Exception: return None
+
                         comps = []
+                        r = _comp(com_v, sem_v, "Com treino", unid_d)
+                        if r: comps.append(r)
+                        r2 = _comp(pesos_v, cicl_v, "Pesos vs Cíclicos", unid_d)
+                        if r2: comps.append(r2)
+                        r3 = _comp(pesos_v, sem_v, "Pesos vs Sem", unid_d)
+                        if r3 and r2 is None: comps.append(r3)
 
-                        # 1. Sem treino vs Com treino
-                        if len(sem_v) >= 3 and len(com_v) >= 3:
-                            _, p = mannwhitneyu(sem_v, com_v, alternative='two-sided')
-                            delta = np.mean(com_v) - np.mean(sem_v)
-                            if p < 0.05:
-                                dir_s = 'mais alto' if delta > 0 else 'mais baixo'
-                                comps.append(f"Com vs Sem: {dir_s} ({delta:+.1f} {unid_d}, p={p:.3f})")
-                            else:
-                                comps.append(f"Com vs Sem: sem diferença (p={p:.3f})")
-
-                        # 2. Pesos vs Cíclicos
-                        if len(pesos_v) >= 3 and len(cicl_v) >= 3:
-                            _, p2 = mannwhitneyu(pesos_v, cicl_v, alternative='two-sided')
-                            delta2 = np.mean(pesos_v) - np.mean(cicl_v)
-                            if p2 < 0.05:
-                                dir_s2 = 'mais alto' if delta2 > 0 else 'mais baixo'
-                                comps.append(f"Pesos vs Cíclicos: Pesos {dir_s2} ({delta2:+.1f} {unid_d}, p={p2:.3f})")
-                            else:
-                                comps.append(f"Pesos vs Cíclicos: sem diferença (p={p2:.3f})")
-
-                        # 3. Pesos vs Sem treino
-                        if len(pesos_v) >= 3 and len(sem_v) >= 3:
-                            _, p3 = mannwhitneyu(pesos_v, sem_v, alternative='two-sided')
-                            delta3 = np.mean(pesos_v) - np.mean(sem_v)
-                            if p3 < 0.05:
-                                dir_s3 = 'mais alto' if delta3 > 0 else 'mais baixo'
-                                comps.append(f"Pesos vs Sem: {dir_s3} ({delta3:+.1f} {unid_d}, p={p3:.3f})")
-
-                        # 4. Cíclicos vs Sem treino
-                        if len(cicl_v) >= 3 and len(sem_v) >= 3:
-                            _, p4 = mannwhitneyu(cicl_v, sem_v, alternative='two-sided')
-                            delta4 = np.mean(cicl_v) - np.mean(sem_v)
-                            if p4 < 0.05:
-                                dir_s4 = 'mais alto' if delta4 > 0 else 'mais baixo'
-                                comps.append(f"Cíclicos vs Sem: {dir_s4} ({delta4:+.1f} {unid_d}, p={p4:.3f})")
-
-                        row['Comparações'] = " | ".join(comps) if comps else '— (N insuficiente)'
+                        row['Resultado'] = "  |  ".join(comps) if comps else '— (N insuf.)'
                         treino_rows.append(row)
 
                     if treino_rows:
