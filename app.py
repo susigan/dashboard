@@ -57,16 +57,7 @@ CORES_ATIV = {
     'Ski': '#9B59B6',  'WeightTraining': '#F39C12', 'Other': '#7F8C8D',
 }
 
-# Cores por modalidade — disponível globalmente em todas as tabs
-CORES_MOD = {
-    'Bike': CORES['vermelho'],
-    'Row':  CORES['azul'],
-    'Ski':  CORES.get('roxo', '#8e44ad'),
-    'Run':  CORES['verde'],
-    'WeightTraining': CORES['laranja'],
-}
-
-TYPPE_MAP = {
+TYPE_MAP = {
     'VirtualSki': 'Ski', 'AlpineSki': 'Ski', 'Ski': 'Ski', 'NordicSki': 'Ski',
     'VirtualRow': 'Row', 'Rowing': 'Row', 'Row': 'Row',
     'VirtualRide': 'Bike', 'Cycling': 'Bike', 'Ride': 'Bike',
@@ -1424,7 +1415,7 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 yaxis=dict(tickfont=dict(color='#333333')),
                 legend=dict(orientation='h', y=1.08,
                             font=dict(color='#111111', size=11)))
-            st.plotly_chart(fig_kj, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+            st.plotly_chart(fig_kj, use_container_width=True)
 
         # ── Tabela comparativa mensal ─────────────────────────────────────
         if all_mods_m:
@@ -2410,86 +2401,58 @@ def tab_pmc(da):
         ld_plot['ATL'] = ld_plot['ATL'].rolling(3, min_periods=1).mean()
 
     # ── GRÁFICO 1: PMC + Load (TRIMP) ──
-    import plotly.graph_objects as go
-    from plotly.subplots import make_subplots as _make_sp
-
-    _fig_pmc = _make_sp(rows=2, cols=1, shared_xaxes=True,
-                        row_heights=[0.70, 0.30], vertical_spacing=0.04)
-    _dates = ld_plot['Data'].tolist()
-
-    # ── CTL / ATL ──
-    _fig_pmc.add_trace(go.Scatter(x=_dates, y=ld_plot['CTL'].tolist(),
-        name='CTL (Fitness)', line=dict(color=CORES['azul'], width=2.5),
-        hovertemplate='CTL: %{y:.1f}<extra></extra>'), row=1, col=1)
-    _fig_pmc.add_trace(go.Scatter(x=_dates, y=ld_plot['ATL'].tolist(),
-        name='ATL (Fadiga)', line=dict(color=CORES['vermelho'], width=2.5),
-        hovertemplate='ATL: %{y:.1f}<extra></extra>'), row=1, col=1)
-
-    # ── TSB fill (filltozero funciona melhor em subplots) ──
-    _tsb = ld_plot['TSB'].tolist()
-    _tsb_pos = [v if v >= 0 else 0 for v in _tsb]
-    _tsb_neg = [v if v <  0 else 0 for v in _tsb]
-    _fig_pmc.add_trace(go.Scatter(x=_dates, y=_tsb,
-        fill='tozeroy', fillcolor='rgba(39,174,96,0.15)',
-        line=dict(color='rgba(39,174,96,0.6)', width=1),
-        name='TSB (Forma/Fadiga)',
-        hovertemplate='TSB: %{y:.1f}<extra></extra>'), row=1, col=1)
-    _fig_pmc.add_hline(y=0, line_dash='dash', line_color='#999',
-                       line_width=1, row=1, col=1)
-
-    # ── FTLM (normalizado para mesmo eixo que CTL/ATL) ──
+    fig, (ax_pmc, ax_load) = plt.subplots(
+        2, 1, figsize=(16, 9), gridspec_kw={'height_ratios': [2.5, 1]}, sharex=True)
+    fig.subplots_adjust(hspace=0.05)
+    ax_pmc.plot(ld_plot['Data'], ld_plot['CTL'], label='CTL (Fitness)',
+                color=CORES['azul'], linewidth=2.5)
+    ax_pmc.plot(ld_plot['Data'], ld_plot['ATL'], label='ATL (Fadiga)',
+                color=CORES['vermelho'], linewidth=2.5)
+    ax_pmc.fill_between(ld_plot['Data'], 0, ld_plot['TSB'],
+                        where=(ld_plot['TSB'] >= 0),
+                        color=CORES['verde'], alpha=0.25, label='TSB+ (Forma)')
+    ax_pmc.fill_between(ld_plot['Data'], 0, ld_plot['TSB'],
+                        where=(ld_plot['TSB'] < 0),
+                        color=CORES['vermelho'], alpha=0.20, label='TSB- (Fadiga)')
+    ax_pmc.axhline(0, color=CORES['cinza'], linestyle='--', linewidth=0.8)
+    ax_pmc.set_ylabel('CTL / ATL / TSB', fontweight='bold')
+    ax_pmc.grid(True, alpha=0.3)
     if show_ftlm:
-        # Normalizar FTLM para escala do CTL (evita eixo secundário em subplot)
-        _ctl_max = max(ld_plot['CTL'].max(), ld_plot['ATL'].max(), 1)
-        _ftlm_max = max(ld_plot['FTLM'].max(), 1)
-        _ftlm_norm = ld_plot['FTLM'] / _ftlm_max * _ctl_max * 0.85
-        _fig_pmc.add_trace(go.Scatter(x=_dates, y=_ftlm_norm.tolist(),
-            name=f'FTLM (γ={best_g:.2f}, norm)',
-            line=dict(color=CORES['laranja'], width=2, dash='dash'),
-            opacity=0.85,
-            hovertemplate='FTLM: %{y:.1f} (norm)<extra></extra>'), row=1, col=1)
+        ax2 = ax_pmc.twinx()
+        ax2.plot(ld_plot['Data'], ld_plot['FTLM'],
+                 label=f'FTLM (gamma={best_g:.2f})',
+                 color=CORES['laranja'], linewidth=2, linestyle='--', alpha=0.85)
+        ax2.set_ylabel('FTLM', color=CORES['laranja'], fontweight='bold')
+        ax2.tick_params(axis='y', labelcolor=CORES['laranja'])
+        l1, lb1 = ax_pmc.get_legend_handles_labels()
+        l2, lb2 = ax2.get_legend_handles_labels()
+        ax_pmc.legend(l1+l2, lb1+lb2, loc='upper left', fontsize=9)
+    else:
+        ax_pmc.legend(loc='upper left', fontsize=9)
+    ax_pmc.text(0.99, 0.97,
+                f"CTL: {u['CTL']:.1f}  |  ATL: {u['ATL']:.1f}  |  TSB: {u['TSB']:+.1f}",
+                transform=ax_pmc.transAxes, ha='right', va='top', fontsize=9,
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.85))
+    ax_pmc.set_title('PMC — CTL / ATL / TSB / FTLM', fontsize=14, fontweight='bold')
 
-    # ── Anotação CTL/ATL/TSB ──
-    _u_ctl = float(u['CTL']); _u_atl = float(u['ATL']); _u_tsb = float(u['TSB'])
-    _fig_pmc.add_annotation(
-        x=_dates[-1], y=_u_ctl, xref='x', yref='y',
-        text=f"CTL {_u_ctl:.1f} | ATL {_u_atl:.1f} | TSB {_u_tsb:+.1f}",
-        showarrow=False, bgcolor='rgba(255,235,200,0.9)',
-        bordercolor='#aaa', borderwidth=1,
-        font=dict(size=10, color='#111'), xanchor='right', yanchor='top')
-
-    # ── Load bars ──
     trimp_d = df.groupby(['Data', 'type'])['trimp_val'].sum().reset_index()
     trimp_d['Data'] = pd.to_datetime(trimp_d['Data'])
-    tipos_ord = [t for t in ['Bike','Row','Ski','Run','WeightTraining']
+    tipos_ord = [t for t in ['Bike', 'Row', 'Ski', 'Run', 'WeightTraining']
                  if t in trimp_d['type'].unique()]
     tipos_ord += [t for t in trimp_d['type'].unique() if t not in tipos_ord]
+    bot = np.zeros(len(ld_plot))
     for tipo in tipos_ord:
-        dt = trimp_d[trimp_d['type']==tipo][['Data','trimp_val']]
+        dt = trimp_d[trimp_d['type'] == tipo][['Data', 'trimp_val']]
         merged = ld_plot[['Data']].merge(dt, on='Data', how='left').fillna(0)
-        _fig_pmc.add_trace(go.Bar(
-            x=_dates, y=merged['trimp_val'].tolist(),
-            name=tipo, marker_color=get_cor(tipo),
-            marker_line_width=0, opacity=0.85,
-            hovertemplate=tipo+': %{y:.0f}<extra></extra>'), row=2, col=1)
-
-    _layout_pmc = dict(paper_bgcolor='white', plot_bgcolor='white',
-        font=dict(color='#111', size=11),
-        height=460, barmode='stack', hovermode='closest',
-        legend=dict(orientation='h', y=-0.15, font=dict(color='#111', size=10),
-                    bgcolor='rgba(255,255,255,0.9)', bordercolor='#ddd', borderwidth=1),
-        margin=dict(t=50, b=60, l=55, r=40),
-        title=dict(text='PMC — CTL / ATL / TSB' + (' / FTLM' if show_ftlm else ''),
-                   font=dict(size=14, color='#111')))
-    # (FTLM normalizado — sem eixo secundário separado)
-    _fig_pmc.update_layout(**_layout_pmc)
-    _fig_pmc.update_xaxes(showgrid=True, gridcolor='#eee', linecolor='#ccc',
-                          tickfont=dict(color='#111'))
-    _fig_pmc.update_yaxes(showgrid=True, gridcolor='#eee', linecolor='#ccc',
-                          tickfont=dict(color='#111'))
-    _fig_pmc.update_yaxes(title_text='CTL/ATL/TSB', row=1, col=1)
-    _fig_pmc.update_yaxes(title_text='Load (TRIMP)', row=2, col=1)
-    st.plotly_chart(_fig_pmc, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+        ax_load.bar(ld_plot['Data'], merged['trimp_val'].values, bottom=bot,
+                    color=get_cor(tipo), alpha=0.85, width=0.8, label=tipo,
+                    edgecolor='white', linewidth=0.3)
+        bot += merged['trimp_val'].values
+    ax_load.legend(loc='upper left', fontsize=8, ncol=min(5, len(tipos_ord)))
+    ax_load.set_ylabel('Load\n(TRIMP)', fontweight='bold', fontsize=9)
+    ax_load.grid(True, alpha=0.2, axis='y')
+    ax_load.tick_params(axis='x', rotation=45)
+    plt.tight_layout(); st.pyplot(fig); plt.close()
 
     # ── RESUMO PMC ──
     st.subheader("📊 Resumo PMC")
@@ -2572,39 +2535,37 @@ def tab_volume(da, dw):
     df_cic = df[df['type'].isin(ciclicos)].copy()
     if len(df_cic) > 0:
         pivot = df_cic.pivot_table(index='mes', columns='type', values='horas', aggfunc='sum', fill_value=0).sort_index()
-        _fig_vh = go.Figure()
+        fig, ax = plt.subplots(figsize=(14, 6))
+        bottom = np.zeros(len(pivot))
         for tipo in [t for t in ciclicos if t in pivot.columns]:
-            vals = pivot[tipo].tolist()
-            _fig_vh.add_trace(go.Bar(
-                x=[str(x) for x in pivot.index], y=vals,
-                name=tipo, marker_color=CORES_MOD.get(tipo,'gray'),
-                marker_line_width=0, opacity=0.85,
-                hovertemplate=tipo+': %{y:.1f}h<extra></extra>'))
-        _media_h = float(pivot.sum(axis=1).mean())
-        _fig_vh.add_hline(y=_media_h, line_dash='dash', line_color='#111',
-                          annotation_text=f'Média: {_media_h:.1f}h',
-                          annotation_font=dict(color='#111', size=10))
-        _fig_vh.update_layout(paper_bgcolor='white', plot_bgcolor='white',
-            barmode='stack', height=340, font=dict(color='#111'),
-            margin=dict(t=40,b=70,l=50,r=20),
-            legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),
-            xaxis=dict(tickangle=-45, tickfont=dict(size=9,color='#111'), showgrid=False),
-            yaxis=dict(title='Horas', showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')))
-        st.plotly_chart(_fig_vh, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+            vals = pivot[tipo].values
+            ax.bar(range(len(pivot)), vals, bottom=bottom, label=tipo, color=CORES_MOD.get(tipo, 'gray'), alpha=0.85, edgecolor='white')
+            bottom += vals
+        totais = pivot.sum(axis=1).values
+        for i, t in enumerate(totais):
+            if t > 0: ax.text(i, t + 0.1, f'{t:.1f}h', ha='center', va='bottom', fontsize=9, fontweight='bold')
+        ax.set_xticks(range(len(pivot))); ax.set_xticklabels(pivot.index, rotation=45, ha='right')
+        media = totais.mean(); ax.axhline(media, color='black', linestyle='--', alpha=0.5, label=f'Média: {media:.1f}h')
+        ax.set_ylabel('Horas', fontweight='bold'); ax.legend(loc='upper left'); ax.grid(True, alpha=0.3, axis='y')
+        plt.tight_layout(); st.pyplot(fig); plt.close()
         c1, c2 = st.columns(2)
         c1.metric("Total horas cíclicos", f"{pivot.values.sum():.1f}h")
-        c2.metric("Média mensal", f"{_media_h:.1f}h")
+        c2.metric("Média mensal", f"{media:.1f}h")
 
     st.subheader("🏋️ Volume Mensal — WeightTraining (horas)")
     df_wt = da[da['type'] == 'WeightTraining'].copy()
     if len(df_wt) > 0:
         df_wt = add_tempo(df_wt); df_wt['horas'] = (pd.to_numeric(df_wt['moving_time'], errors='coerce') / 3600).fillna(0)
         mensal = df_wt.groupby('mes').agg(horas=('horas', 'sum'), sessoes=('Data', 'count')).reset_index().sort_values('mes')
-        _fwt=go.Figure()
-        _fwt.add_trace(go.Bar(x=mensal['mes'].tolist(),y=mensal['horas'].tolist(),marker_color='#e67e22',opacity=0.85,marker_line_width=0,hovertemplate='%{x}: %{y:.1f}h<extra></extra>'))
-        _fwt.add_hline(y=float(mensal['horas'].mean()),line_dash='dash',line_color='#c0392b')
-        _fwt.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20),height=320,xaxis=dict(tickangle=-45,gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111'), showgrid=False),yaxis=dict(title='Horas',showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')))
-        st.plotly_chart(_fwt,use_container_width=True,config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+        fig, ax = plt.subplots(figsize=(12, 5))
+        ax.bar(range(len(mensal)), mensal['horas'], color=CORES['laranja'], alpha=0.8, edgecolor='white')
+        for i, (h, s) in enumerate(zip(mensal['horas'], mensal['sessoes'])):
+            if h > 0: ax.text(i, h + 0.05, f'{h:.1f}h\n({s}x)', ha='center', va='bottom', fontsize=8)
+        ax.set_xticks(range(len(mensal))); ax.set_xticklabels(mensal['mes'], rotation=45, ha='right')
+        media_wt = mensal['horas'].mean()
+        ax.axhline(media_wt, color='red', linestyle='--', alpha=0.7, label=f'Média: {media_wt:.1f}h')
+        ax.set_ylabel('Horas', fontweight='bold'); ax.legend(); ax.grid(True, alpha=0.3, axis='y')
+        plt.tight_layout(); st.pyplot(fig); plt.close()
     else:
         st.info("Sem sessões de WeightTraining no período.")
 
@@ -2614,32 +2575,16 @@ def tab_volume(da, dw):
         df_xss = df[df['type'].isin(ciclicos)].dropna(subset=[xss_col]).copy()
         if len(df_xss) > 3:
             df_xss = df_xss.sort_values('Data'); df_xss['xss_s'] = pd.to_numeric(df_xss[xss_col], errors='coerce').rolling(7, min_periods=1).mean()
-            _cx1x, _cx2x = st.columns(2)
-            with _cx1x:
-                _fxs = go.Figure()
-                _fxs.add_trace(go.Scatter(x=df_xss['Data'].tolist(),
-                    y=pd.to_numeric(df_xss[xss_col], errors='coerce').tolist(),
-                    mode='lines', name='XSS', line=dict(width=1, color='#aaa'), opacity=0.5))
-                _fxs.add_trace(go.Scatter(x=df_xss['Data'].tolist(),
-                    y=df_xss['xss_s'].tolist(), mode='lines', name='XSS 7d',
-                    line=dict(width=2.5, color='#2980b9')))
-                _fxs.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), height=300,
-                    title=dict(text='Evolução XSS', font=dict(size=12, color='#111')),
-                    legend=dict(orientation='h', y=-0.25, font=dict(color='#111')), hovermode='closest',
-                    xaxis=dict(showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')), yaxis=dict(title='XSS', showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')))
-                st.plotly_chart(_fxs, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
-            with _cx2x:
-                _comp2 = [c for c in ['glycolytic','aerobic','pmax'] if c in df_xss.columns]
-                if _comp2:
-                    _fc2 = go.Figure()
-                    for _c in _comp2:
-                        _fc2.add_trace(go.Bar(x=['Média'], y=[float(df_xss[_c].mean())],
-                            name=_c, hovertemplate=_c+': %{y:.1f}<extra></extra>'))
-                    _fc2.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), height=300, barmode='group',
-                        title=dict(text='Componentes XSS', font=dict(size=12, color='#111')),
-                        legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),
-                        xaxis=dict(showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')), yaxis=dict(showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')))
-                    st.plotly_chart(_fc2, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+            ax1.plot(df_xss['Data'], pd.to_numeric(df_xss[xss_col], errors='coerce'), alpha=0.4, label='XSS')
+            ax1.plot(df_xss['Data'], df_xss['xss_s'], linewidth=2.5, label='XSS 7d')
+            ax1.set_title('Evolução XSS', fontweight='bold'); ax1.legend(); ax1.tick_params(axis='x', rotation=45)
+            comp = [c for c in ['glycolytic', 'aerobic', 'pmax'] if c in df_xss.columns]
+            if comp:
+                med = df_xss.groupby('type')[comp].mean().fillna(0)
+                med.plot(kind='bar', stacked=True, ax=ax2, color=[CORES['vermelho'], CORES['verde'], CORES['laranja']][:len(comp)])
+                ax2.set_title('Componentes por Tipo', fontweight='bold'); ax2.tick_params(axis='x', rotation=45)
+            plt.tight_layout(); st.pyplot(fig); plt.close()
 
     st.subheader("📊 Volume de Horas por Intensidade (Trimestral)")
     if 'rpe' in df.columns and 'moving_time' in df.columns:
@@ -2648,19 +2593,19 @@ def tab_volume(da, dw):
         if len(df_rpe) > 0:
             piv = df_rpe.pivot_table(index='trimestre', columns='rpe_cat', values='horas', aggfunc='sum', fill_value=0).sort_index()
             CORES_RPE = {'Leve': CORES['verde'], 'Moderado': CORES['laranja'], 'Pesado': CORES['vermelho']}
-            _frpe = go.Figure()
+            fig, ax = plt.subplots(figsize=(13, 5))
+            bottom = np.zeros(len(piv))
             for cat in ['Leve', 'Moderado', 'Pesado']:
                 if cat in piv.columns:
-                    _frpe.add_trace(go.Bar(x=[str(x) for x in piv.index],
-                        y=piv[cat].tolist(), name=cat,
-                        marker_color=CORES_RPE.get(cat,'gray'), marker_line_width=0, opacity=0.85,
-                        hovertemplate=cat+': %{y:.1f}h<extra></extra>'))
-            _frpe.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), barmode='stack', height=320,
-                title=dict(text='Volume por Intensidade RPE (Trimestral)', font=dict(size=12, color='#111')),
-                legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),
-                xaxis=dict(tickangle=-45, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111'), showgrid=False),
-                yaxis=dict(title='Horas', showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')))
-            st.plotly_chart(_frpe, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+                    vals = piv[cat].values
+                    ax.bar(range(len(piv)), vals, bottom=bottom, label=cat, color=CORES_RPE.get(cat, 'gray'), alpha=0.85, edgecolor='white')
+                    for i, (v, b) in enumerate(zip(vals, bottom)):
+                        if v > 0.5: ax.text(i, b + v / 2, f'{v:.1f}h', ha='center', va='center', fontsize=8, fontweight='bold', color='white')
+                    bottom += vals
+            ax.set_xticks(range(len(piv))); ax.set_xticklabels(piv.index, rotation=45, ha='right')
+            ax.set_ylabel('Horas', fontweight='bold'); ax.legend(loc='upper left'); ax.grid(True, alpha=0.3, axis='y')
+            ax.set_title('Volume de Horas por Intensidade RPE (Trimestral)', fontsize=12, fontweight='bold')
+            plt.tight_layout(); st.pyplot(fig); plt.close()
 
 # ════════════════════════════════════════════════════════════════════════════════
 # TAB 4 — eFTP
@@ -2684,44 +2629,46 @@ def tab_eftp(da, mods_sel, da_full=None):
     anos_sel = st.multiselect("Filtrar anos", anos, default=list(anos)); df = df[df['ano'].isin(anos_sel)]
     mods = [m for m in mods_sel if m in df['type'].values]
     if not mods: st.info("Nenhuma modalidade com eFTP."); return
-    _fe3=go.Figure()
-    for mod in mods:
-        dm3=df[df['type']==mod].sort_values('Data')
-        _ec='icu_eftp' if 'icu_eftp' in dm3.columns else ecol
-        _cor = CORES_MOD.get(mod, get_cor(mod))
-        if _ec and len(dm3)>0:
-            _fe3.add_trace(go.Scatter(
-                x=dm3['Data'].tolist(),
-                y=pd.to_numeric(dm3[_ec],errors='coerce').tolist(),
-                mode='markers+lines', name=f'eFTP {mod}',
-                marker=dict(size=4, color=_cor),
-                line=dict(width=2, color=_cor),
-                hovertemplate='%{x|%d/%m/%Y}: %{y:.0f}W<extra></extra>'))
-    _fe3.update_layout(
-        paper_bgcolor='white', plot_bgcolor='white',
-        font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20),
-        height=360,
-        title=dict(text='Evolução eFTP por Modalidade', font=dict(size=14,color='#111')),
-        legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),
-        hovermode='closest',
-        xaxis=dict(title='Data', showgrid=True, gridcolor='#eee',
-                   linecolor='#ccc', tickfont=dict(color='#111')),
-        yaxis=dict(title='eFTP (W)', showgrid=True, gridcolor='#eee',
-                   linecolor='#ccc', tickfont=dict(color='#111')))
-    st.plotly_chart(_fe3, use_container_width=True,
-                    config={'displayModeBar': False, 'responsive': True,
-                            'scrollZoom': False, 'modeBarButtonsToRemove': []})
+    fig, axes = plt.subplots(1, len(mods), figsize=(7 * len(mods), 6))
+    if len(mods) == 1: axes = [axes]
+    for ax, mod in zip(axes, mods):
+        dm = df[df['type'] == mod].sort_values('Data'); cm = get_cor(mod)
+        for ano in anos_sel:
+            da_ = dm[dm['ano'] == ano]
+            if len(da_) == 0: continue
+            ax.scatter(da_['Data'], da_[ecol], color=mapa_cor[ano], alpha=0.65, s=35, label=str(ano))
+            if len(da_) >= 3:
+                xn = (da_['Data'] - da_['Data'].min()).dt.days.values; coef = np.polyfit(xn, da_[ecol].values, 1)
+                xp = np.array([xn.min(), xn.max()]); yp = np.poly1d(coef)(xp)
+                dp = [da_['Data'].min() + pd.Timedelta(days=int(x)) for x in xp]
+                ax.plot(dp, yp, color=mapa_cor[ano], linewidth=2, linestyle='--', alpha=0.9)
+                sm = coef[0] * 30
+                ax.annotate(f'{sm:+.1f}W/mês', xy=(dp[1], yp[1]), xytext=(5, 2), textcoords='offset points', fontsize=7.5, color=mapa_cor[ano], fontweight='bold')
+        if len(dm) >= 5:
+            roll = dm.set_index('Data')[ecol].resample('7D').mean().interpolate()
+            ax.plot(roll.index, roll.values, color=cm, linewidth=2, alpha=0.4, label='Média 7d')
+        if len(dm) > 0:
+            mx = dm[ecol].max()
+            ax.axhline(mx, color=cm, linestyle=':', linewidth=1.2, alpha=0.6)
+            ax.annotate(f'Máx: {mx:.0f}W', xy=(dm.loc[dm[ecol].idxmax(), 'Data'], mx), xytext=(0, 6), textcoords='offset points', fontsize=8, color=cm, fontweight='bold', ha='center')
+        ax.set_title(f'eFTP — {mod}', fontsize=13, fontweight='bold', color=cm)
+        ax.set_xlabel('Data'); ax.set_ylabel('eFTP (W)'); ax.tick_params(axis='x', rotation=45); ax.legend(fontsize=8); ax.grid(True, alpha=0.25)
+    plt.suptitle('Evolução eFTP por Modalidade', fontsize=14, fontweight='bold', y=1.02)
+    plt.tight_layout(); st.pyplot(fig); plt.close()
 
     st.subheader("📦 RPE por Modalidade")
     if 'rpe' in da.columns:
         df_r = filtrar_principais(da).copy(); df_r = add_tempo(df_r); df_r = df_r[df_r['type'].isin(mods_sel)].dropna(subset=['rpe'])
         if len(df_r) > 0:
-            _tipos3=[t for t in mods_sel if t in df_r['type'].values]
-            _fbox3=go.Figure()
-            for tip in _tipos3:
-                _fbox3.add_trace(go.Box(y=pd.to_numeric(df_r[df_r['type']==tip]['rpe'],errors='coerce').dropna().tolist(),name=tip,marker_color=CORES_MOD.get(tip,'gray'),boxmean=True))
-            _fbox3.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20),height=300,title=dict(text='RPE por Modalidade',font=dict(size=12,color='#111')),legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),yaxis=dict(title='RPE',showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')),xaxis=dict(showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')))
-            st.plotly_chart(_fbox3,use_container_width=True,config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+            tipos = [t for t in mods_sel if t in df_r['type'].values]
+            sns.boxplot(data=df_r, x='type', y='rpe', order=tipos, palette={t: get_cor(t) for t in tipos}, ax=ax1)
+            ax1.set_title('RPE por Modalidade', fontweight='bold'); ax1.tick_params(axis='x', rotation=45)
+            if 'mes' in df_r.columns:
+                meses = sorted(df_r['mes'].unique())[-12:]; df_rm = df_r[df_r['mes'].isin(meses)]
+                sns.violinplot(data=df_rm, x='mes', y='rpe', palette='Set2', ax=ax2)
+                ax2.set_title('RPE por Mês', fontweight='bold'); ax2.tick_params(axis='x', rotation=45)
+            plt.tight_layout(); st.pyplot(fig); plt.close()
 
     st.markdown("---")
     # ── TABELAS eFTP + KM/KJ — filtro próprio + agrupamento ─────────────────────
@@ -3171,7 +3118,7 @@ def tab_zones(da, mods_sel):
             yaxis=dict(title='%', tickfont=dict(color='#333333'),
                        showgrid=True, gridcolor='#eeeeee', range=[0,108]))
         with col1:
-            st.plotly_chart(fig_hr_mod, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+            st.plotly_chart(fig_hr_mod, use_container_width=True)
 
         # HR Geral pizza
         ts_hr = {z: dh_ano[c].sum()
@@ -3185,9 +3132,9 @@ def tab_zones(da, mods_sel):
         fig_hr_gen.update_layout(**PW,
             title=dict(text=f'❤️ HR Geral — {ano_sel}', font=dict(color='#222', size=13)),
             height=380, showlegend=True,
-            legend=dict(orientation="h", y=-0.28, font=dict(color='#111111', size=11)))
+            legend=dict(font=dict(color='#111111', size=11)))
         with col2:
-            st.plotly_chart(fig_hr_gen, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+            st.plotly_chart(fig_hr_gen, use_container_width=True)
 
     # RPE por modalidade
     col3, col4 = st.columns(2)
@@ -3220,7 +3167,7 @@ def tab_zones(da, mods_sel):
             yaxis=dict(title='%', tickfont=dict(color='#333333'),
                        showgrid=True, gridcolor='#eeeeee', range=[0,108]))
         with col3:
-            st.plotly_chart(fig_rpe_mod, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+            st.plotly_chart(fig_rpe_mod, use_container_width=True)
 
         ts_rpe = {z: piv_r[z].sum() for z in CORES_RPE.keys()}
         fig_rpe_gen = go.Figure(go.Pie(
@@ -3232,9 +3179,9 @@ def tab_zones(da, mods_sel):
         fig_rpe_gen.update_layout(**PW,
             title=dict(text=f'🎯 RPE Geral — {ano_sel}', font=dict(color='#222', size=13)),
             height=380, showlegend=True,
-            legend=dict(orientation="h", y=-0.28, font=dict(color='#111111', size=11)))
+            legend=dict(font=dict(color='#111111', size=11)))
         with col4:
-            st.plotly_chart(fig_rpe_gen, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+            st.plotly_chart(fig_rpe_gen, use_container_width=True)
 
     st.markdown("---")
 
@@ -3680,7 +3627,7 @@ def tab_correlacoes(da, dw):
                 yaxis=dict(title='Δ HRV (%)', tickfont=dict(color='#111'),
                            showgrid=True, gridcolor='#ddd', zeroline=True,
                            zerolinecolor='#888', zerolinewidth=1.5))
-            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+            st.plotly_chart(fig, use_container_width=True)
         with col_r:
             if any(d is not None for d in deltas_rhr):
                 fig2 = go.Figure()
@@ -3701,7 +3648,7 @@ def tab_correlacoes(da, dw):
                     yaxis=dict(title='Δ RHR (bpm)', tickfont=dict(color='#111'),
                                showgrid=True, gridcolor='#ddd', zeroline=True,
                                zerolinecolor='#888', zerolinewidth=1.5))
-                st.plotly_chart(fig2, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+                st.plotly_chart(fig2, use_container_width=True)
             else:
                 st.info("Sem dados de RHR.")
 
@@ -3860,7 +3807,7 @@ def tab_correlacoes(da, dw):
                     xaxis=dict(title='RPE', tickfont=dict(color='#111'), showgrid=True, gridcolor='#ddd'),
                     yaxis=dict(title='HRV (ms)', tickfont=dict(color='#111'), showgrid=True, gridcolor='#ddd'),
                     showlegend=False)
-                st.plotly_chart(fig_sc1, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+                st.plotly_chart(fig_sc1, use_container_width=True)
 
     with col2:
         if 'hrv' in dw.columns and 'rhr' in dw.columns:
@@ -3885,7 +3832,7 @@ def tab_correlacoes(da, dw):
                     xaxis=dict(title='HRV (ms)', tickfont=dict(color='#111'), showgrid=True, gridcolor='#ddd'),
                     yaxis=dict(title='RHR (bpm)', tickfont=dict(color='#111'), showgrid=True, gridcolor='#ddd'),
                     showlegend=False)
-                st.plotly_chart(fig_sc2, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+                st.plotly_chart(fig_sc2, use_container_width=True)
 
     st.markdown("---")
 
@@ -3903,14 +3850,19 @@ def tab_correlacoes(da, dw):
         import matplotlib.pyplot as plt
         import seaborn as sns
         n = len(mets_num)
-        import numpy as _npH
-        _mskH=_npH.triu(_npH.ones_like(corr_mat.values,dtype=bool),k=1)
-        _cHM=corr_mat.columns.tolist()
-        _zHM=[[float(corr_mat.values[r][c]) if not _mskH[r][c] else None for c in range(len(_cHM))] for r in range(len(_cHM))]
-        _tHM=[[f'{corr_mat.values[r][c]:.2f}' if not _mskH[r][c] else '' for c in range(len(_cHM))] for r in range(len(_cHM))]
-        _figHM=go.Figure(go.Heatmap(z=_zHM,x=_cHM,y=_cHM,text=_tHM,texttemplate='%{text}',textfont=dict(size=9,color='#111'),colorscale='RdBu',zmid=0,zmin=-1,zmax=1,colorbar=dict(title='r',tickfont=dict(color='#111'))))
-        _figHM.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20),height=max(320,n*35),title=dict(text='Correlações Wellness',font=dict(size=13,color='#111')),xaxis=dict(tickangle=-45,tickfont=dict(size=9,color='#111')),yaxis=dict(tickfont=dict(size=9,color='#111'),autorange='reversed'))
-        st.plotly_chart(_figHM,use_container_width=True,config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+        fig_hm, ax_hm = plt.subplots(figsize=(min(8, n*1.2), min(7, n*1.0)))
+        mask = np.triu(np.ones_like(corr_mat, dtype=bool))
+        sns.heatmap(corr_mat, mask=mask, annot=True, fmt='.2f',
+                    cmap='RdYlGn', center=0, ax=ax_hm, square=True,
+                    linewidths=0.5, vmin=-1, vmax=1,
+                    cbar_kws={'shrink':0.8},
+                    annot_kws={'size':9, 'color':'#111111'})
+        ax_hm.set_title('Correlações Wellness (Pearson)', fontsize=12,
+                         fontweight='bold', color='#111111')
+        ax_hm.tick_params(axis='both', labelsize=9, labelcolor='#111111')
+        plt.tight_layout()
+        st.pyplot(fig_hm)
+        plt.close()
 
         def _forca_str(r):
             a = abs(r)
@@ -4361,7 +4313,7 @@ def tab_correlacoes(da, dw):
                        showgrid=True, gridcolor='#ddd'),
             yaxis=dict(title='HRV relativo dia seguinte', tickfont=dict(color='#111'),
                        showgrid=True, gridcolor='#ddd'))
-        st.plotly_chart(fig_b1, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+        st.plotly_chart(fig_b1, use_container_width=True)
         st.caption("HRV_rel = HRV / média_7d (remove tendência individual). "
                    "log(KJ) = escala logarítmica (captura não-linearidade).")
 
@@ -4415,7 +4367,7 @@ def tab_correlacoes(da, dw):
                        showgrid=True, gridcolor='#ddd'),
             yaxis=dict(title='HRV relativo (t)', tickfont=dict(color='#111'),
                        showgrid=True, gridcolor='#ddd'))
-        st.plotly_chart(fig_b2, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+        st.plotly_chart(fig_b2, use_container_width=True)
         st.caption("ATL↑ → HRV_rel↓ esperado. Se r < -0.2 com p<0.05 = fadiga detectável.")
 
     # ════════════════════════════════════════════════════════════════════
@@ -4541,37 +4493,56 @@ def tab_recovery(dw):
     st.markdown("---")
     n_dias = st.slider("Dias a mostrar", 14, min(len(rec), 365), min(90, len(rec)))
     df_tl = rec.tail(n_dias).copy()
-    _fRS=go.Figure()
-    _fRS.add_hrect(y0=80,y1=100,fillcolor='rgba(39,174,96,0.12)',line_width=0,annotation_text='Excelente',annotation_position='top left',annotation_font=dict(size=9,color='#27ae60'))
-    _fRS.add_hrect(y0=60,y1=80,fillcolor='rgba(241,196,15,0.10)',line_width=0,annotation_text='Bom',annotation_position='top left',annotation_font=dict(size=9,color='#f39c12'))
-    _fRS.add_hrect(y0=40,y1=60,fillcolor='rgba(230,126,34,0.08)',line_width=0,annotation_text='Moderado',annotation_position='top left',annotation_font=dict(size=9,color='#e67e22'))
-    _fRS.add_hrect(y0=0,y1=40,fillcolor='rgba(231,76,60,0.08)',line_width=0,annotation_text='Baixo',annotation_position='top left',annotation_font=dict(size=9,color='#e74c3c'))
-    _xRS=list(range(len(df_tl)));_scRS=df_tl['recovery_score'].values.tolist()
-    _cRS=[CORES['verde'] if s>=80 else CORES['amarelo'] if s>=60 else CORES['laranja'] if s>=40 else CORES['vermelho'] for s in _scRS]
-    _fRS.add_trace(go.Scatter(x=_xRS,y=_scRS,mode='lines+markers',name='Recovery Score',line=dict(color=CORES['azul_escuro'],width=2,opacity=0.7),marker=dict(color=_cRS,size=8,line=dict(width=2,color='white')),hovertemplate='dia %{x}: %{y:.0f}<extra></extra>'))
-    if len(df_tl)>=7:
-        _fRS.add_trace(go.Scatter(x=_xRS,y=pd.Series(_scRS).rolling(7,min_periods=3).mean().tolist(),mode='lines',name='Média 7d',line=dict(color='#2c3e50',width=2,dash='dash')))
-    _dtRS=df_tl['Data'].dt.strftime('%d/%m').tolist();_stRS=max(1,len(_xRS)//10)
-    _fRS.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20),height=340,title=dict(text='Recovery Score — Timeline',font=dict(size=14,color='#111')),legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),xaxis=dict(tickvals=_xRS[::_stRS],ticktext=_dtRS[::_stRS],tickangle=-45,showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')),yaxis=dict(title='Recovery Score',range=[0,105],showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')))
-    st.plotly_chart(_fRS,use_container_width=True,config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+    fig, ax = plt.subplots(figsize=(14, 5))
+    ax.axhspan(80, 100, alpha=0.15, color=CORES['verde'], label='Excelente (80–100)')
+    ax.axhspan(60, 80, alpha=0.15, color=CORES['amarelo'], label='Bom (60–79)')
+    ax.axhspan(40, 60, alpha=0.15, color=CORES['laranja'], label='Moderado (40–59)')
+    ax.axhspan(0, 40, alpha=0.15, color=CORES['vermelho'], label='Baixo (0–39)')
+    x = range(len(df_tl)); sc = df_tl['recovery_score'].values
+    cpts = [CORES['verde'] if s >= 80 else CORES['amarelo'] if s >= 60 else CORES['laranja'] if s >= 40 else CORES['vermelho'] for s in sc]
+    ax.plot(x, sc, color=CORES['azul_escuro'], linewidth=2, alpha=0.7)
+    ax.scatter(x, sc, c=cpts, s=70, edgecolors='white', linewidths=2, zorder=5)
+    if len(df_tl) >= 7: ax.plot(x, pd.Series(sc).rolling(7, min_periods=3).mean(), color=CORES['roxo'], linewidth=2.5, linestyle='--', label='Média 7d', alpha=0.8)
+    datas = df_tl['Data'].dt.strftime('%d/%m'); step = max(1, len(x) // 10)
+    ax.set_xticks(list(x)[::step]); ax.set_xticklabels([datas.iloc[i] for i in range(0, len(datas), step)], rotation=45)
+    ax.set_ylim(0, 105); ax.legend(loc='upper left', fontsize=9); ax.grid(True, alpha=0.3)
+    ax.set_title('Recovery Score — Timeline', fontsize=14, fontweight='bold')
+    plt.tight_layout(); st.pyplot(fig); plt.close()
 
     st.subheader("📊 HRV com Normal Range")
-    _fHV=go.Figure()
-    _xHV=list(range(len(df_tl)));_dHV=df_tl['Data'].dt.strftime('%d/%m').tolist();_sHV=max(1,len(_xHV)//10)
-    _hHV=pd.to_numeric(df_tl['hrv'],errors='coerce').tolist()
+    fig2, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 9), height_ratios=[2, 1.2])
+    xr = range(len(df_tl)); dr = df_tl['Data'].dt.strftime('%d/%m'); sr = max(1, len(xr) // 10)
     if df_tl['normal_range_inf'].notna().any():
-        _fHV.add_trace(go.Scatter(x=_xHV+_xHV[::-1],y=pd.to_numeric(df_tl['normal_range_sup'],errors='coerce').tolist()+pd.to_numeric(df_tl['normal_range_inf'],errors='coerce').tolist()[::-1],fill='toself',fillcolor='rgba(39,174,96,0.12)',line=dict(color='rgba(0,0,0,0)'),name='Normal range',hoverinfo='skip'))
-    _fHV.add_trace(go.Scatter(x=_xHV,y=_hHV,mode='lines+markers',name='HRV (LnrMSSD)',line=dict(color=CORES['azul'],width=2),marker=dict(size=4),hovertemplate='dia %{x}: %{y:.2f}<extra></extra>'))
-    if 'hrv7' in df_tl.columns:
-        _fHV.add_trace(go.Scatter(x=_xHV,y=pd.to_numeric(df_tl['hrv7'],errors='coerce').tolist(),mode='lines',name='HRV 7d',line=dict(color=CORES['vermelho'],width=2,dash='dash')))
-    _fHV.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20),height=300,title=dict(text='HRV com Normal Range',font=dict(size=12,color='#111')),legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),xaxis=dict(tickvals=_xHV[::_sHV],ticktext=_dHV[::_sHV],tickangle=-45,showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')),yaxis=dict(title='LnrMSSD',showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')))
-    st.plotly_chart(_fHV,use_container_width=True,config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
-    if 'hrv_cv' in df_tl.columns:
-        _fCV=go.Figure()
-        _fCV.add_trace(go.Scatter(x=_xHV,y=pd.to_numeric(df_tl['hrv_cv'],errors='coerce').tolist(),mode='lines',name='CV% HRV',line=dict(color='#8e44ad',width=2)))
-        _fCV.add_hline(y=10,line_dash='dash',line_color='#e74c3c',annotation_text='10%',annotation_font=dict(color='#e74c3c',size=9))
-        _fCV.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20),height=220,title=dict(text='CV% HRV',font=dict(size=12,color='#111')),legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),xaxis=dict(tickvals=_xHV[::_sHV],ticktext=_dHV[::_sHV],tickangle=-45,showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')),yaxis=dict(title='CV%',showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')))
-        st.plotly_chart(_fCV,use_container_width=True,config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+        ax1.fill_between(xr, df_tl['normal_range_inf'], df_tl['normal_range_sup'], alpha=0.25, color=CORES['azul'], label='Normal Range HRV')
+    if df_tl['hrv_baseline'].notna().any():
+        ax1.plot(xr, df_tl['hrv_baseline'], color=CORES['roxo'], linestyle='--', linewidth=2, label='Baseline 14d')
+    hv = df_tl['hrv'].values
+    chr_list = [CORES['verde'] if (not pd.isna(df_tl['normal_range_sup'].iloc[i]) and not pd.isna(hv[i]) and hv[i] > df_tl['normal_range_sup'].iloc[i])
+                else CORES['vermelho'] if (not pd.isna(df_tl['normal_range_inf'].iloc[i]) and not pd.isna(hv[i]) and hv[i] < df_tl['normal_range_inf'].iloc[i])
+                else CORES['azul'] for i in range(len(df_tl))]
+    ax1.plot(xr, hv, color=CORES['preto'], linewidth=2, alpha=0.6)
+    ax1.scatter(xr, hv, c=chr_list, s=70, edgecolors='white', linewidths=2, zorder=5)
+    ax1.legend(loc='upper right', fontsize=9); ax1.grid(True, alpha=0.3); ax1.set_ylabel('HRV (ms)', fontweight='bold')
+    ax1.set_title('HRV com Normal Range (HRV4Training)', fontsize=13, fontweight='bold')
+    _cv_col = 'hrv_cv_7d' if 'hrv_cv_7d' in df_tl.columns else 'hrv_cv7' if 'hrv_cv7' in df_tl.columns else None
+    cv_s = df_tl[_cv_col].copy() if _cv_col else pd.Series(dtype=float)
+    if cv_s.notna().sum() >= 5:
+        cv_b = cv_s.rolling(14, min_periods=5).mean(); cv_sd = cv_s.rolling(14, min_periods=5).std()
+        cv_inf = cv_b - 0.5 * cv_sd; cv_sup = cv_b + 0.5 * cv_sd
+        ax2.fill_between(xr, cv_inf, cv_sup, alpha=0.25, color=CORES['laranja'], label='Normal Range CV%')
+        ax2.plot(xr, cv_b, color=CORES['roxo'], linestyle='--', linewidth=1.8, alpha=0.8)
+        cv_v = cv_s.values
+        ccv = [CORES['verde'] if (not pd.isna(cv_sup.iloc[i]) and not pd.isna(cv_v[i]) and cv_v[i] > cv_sup.iloc[i])
+               else CORES['vermelho'] if (not pd.isna(cv_inf.iloc[i]) and not pd.isna(cv_v[i]) and cv_v[i] < cv_inf.iloc[i])
+               else CORES['azul'] for i in range(len(df_tl))]
+        ax2.plot(xr, cv_v, color=CORES['preto'], linewidth=1.8, alpha=0.6)
+        ax2.scatter(xr, cv_v, c=ccv, s=55, edgecolors='white', linewidths=1.5, zorder=5)
+        ax2.axhline(3, color=CORES['cinza'], linestyle=':', alpha=0.5); ax2.axhline(10, color=CORES['cinza'], linestyle=':', alpha=0.5)
+        ax2.legend(loc='upper right', fontsize=8)
+    for axr in [ax1, ax2]:
+        axr.set_xticks(list(xr)[::sr]); axr.set_xticklabels([dr.iloc[i] for i in range(0, len(dr), sr)], rotation=45); axr.grid(True, alpha=0.3)
+    ax2.set_ylabel('CV% HRV', fontweight='bold'); ax2.set_title('CV% com Normal Range', fontsize=12, fontweight='bold')
+    plt.tight_layout(); st.pyplot(fig2); plt.close()
 
     st.subheader("📊 BPE — Z-Score Semanal (Método SWC)")
     mets_bpe = [m for m in ['hrv', 'rhr', 'sleep_quality', 'fatiga', 'stress'] if m in dw.columns and dw[m].notna().any()]
@@ -4599,11 +4570,20 @@ def tab_recovery(dw):
         for i, met in enumerate(dados_bpe.keys()):
             z = dados_bpe[met]['zscore'].values; mat[i, :len(z)] = (-z if met == 'rhr' else z)[:len(semanas)]
         cmap = LinearSegmentedColormap.from_list('bpe', [CORES['vermelho'], CORES['amarelo'], CORES['verde']], N=100)
-        import numpy as _npB
-        _zBP=[[float(mat[r][c]) if not _npB.isnan(mat[r][c]) else None for c in range(mat.shape[1])] for r in range(mat.shape[0])]
-        _fBP=go.Figure(go.Heatmap(z=_zBP,x=[str(s) for s in semanas.index],y=list(nomes.values()),colorscale='RdYlGn',zmid=0,zmin=-2,zmax=2,colorbar=dict(title='Z-Score',tickfont=dict(color='#111')),hovertemplate='%{x}<br>%{y}: %{z:.2f}<extra></extra>'))
-        _fBP.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20),height=max(280,len(nomes)*35),title=dict(text='BPE — Z-Score com SWC',font=dict(size=13,color='#111')),xaxis=dict(tickangle=-45,tickfont=dict(size=9,color='#111')),yaxis=dict(tickfont=dict(size=9,color='#111')))
-        st.plotly_chart(_fBP,use_container_width=True,config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+        fig, ax = plt.subplots(figsize=(max(14, len(semanas) * 0.9), max(5, nm * 1.1)))
+        im = ax.imshow(mat, cmap=cmap, aspect='auto', vmin=-2, vmax=2)
+        nomes = {'hrv': 'HRV', 'rhr': 'RHR (inv)', 'sleep_quality': 'Sono', 'fatiga': 'Energia', 'stress': 'Relaxamento'}
+        ax.set_yticks(range(nm)); ax.set_yticklabels([nomes.get(m, m) for m in dados_bpe.keys()], fontsize=11)
+        slbls = [s.split('-W')[1] if '-W' in s else s for s in semanas]
+        ax.set_xticks(range(len(semanas))); ax.set_xticklabels([f'S{s}' for s in slbls], rotation=45, fontsize=9)
+        for i in range(nm):
+            for j in range(len(semanas)):
+                v = mat[i, j]; tc = 'white' if abs(v) > 1 else 'black'
+                ax.text(j, i, f'{v:.1f}', ha='center', va='center', fontsize=9, fontweight='bold', color=tc)
+        cbar = plt.colorbar(im, ax=ax, shrink=0.8); cbar.set_label('Z-Score BPE (múltiplos de SWC)')
+        cbar.set_ticks([-2, -1, 0, 1, 2]); cbar.set_ticklabels(['🔴 -2', '🟠 -1', '0', '🟡 +1', '🟢 +2'])
+        ax.set_title('BPE — Blocos de Padrão Específico (Z-Score com SWC)', fontsize=13, fontweight='bold')
+        plt.tight_layout(); st.pyplot(fig); plt.close()
 
     st.subheader("🏋️ HRV-Guided Training (LnrMSSD)")
     if len(dw) >= 14 and 'hrv' in dw.columns and dw['hrv'].notna().sum() >= 14:
@@ -4618,17 +4598,25 @@ def tab_recovery(dw):
         n_hg = st.slider("Dias HRV-Guided", 14, min(len(df_hg), 180), min(60, len(df_hg)))
         df_p = df_hg.tail(n_hg).copy(); xh = range(len(df_p)); dh = df_p['Data'].dt.strftime('%d/%m'); sh = max(1, len(xh) // 15)
         ch = [CORES['verde'] if i == 'HIIT' else CORES['laranja'] if i == 'Recuperação' else CORES['cinza'] for i in df_p['intens']]
-        _fHG=go.Figure()
-        _xHG=list(xh)
-        _fHG.add_trace(go.Scatter(x=_xHG,y=pd.to_numeric(df_p['LnrMSSD'],errors='coerce').tolist(),mode='lines+markers',name='LnrMSSD',line=dict(color=CORES['azul'],width=2),marker=dict(color=ch,size=8,line=dict(width=1,color='white')),hovertemplate='%{x}: %{y:.2f}<extra></extra>'))
-        if 'baseline' in df_p.columns:
-            _fHG.add_trace(go.Scatter(x=_xHG,y=pd.to_numeric(df_p['baseline'],errors='coerce').tolist(),mode='lines',name='Baseline',line=dict(color='#111',width=1.5,dash='dash')))
-        if 'upper' in df_p.columns and 'lower' in df_p.columns:
-            _up=pd.to_numeric(df_p['upper'],errors='coerce').tolist();_lo=pd.to_numeric(df_p['lower'],errors='coerce').tolist()
-            _fHG.add_trace(go.Scatter(x=_xHG+_xHG[::-1],y=_up+_lo[::-1],fill='toself',fillcolor='rgba(39,174,96,0.12)',line=dict(color='rgba(0,0,0,0)'),name='±0.5 SD',hoverinfo='skip'))
-        _shHG=max(1,len(_xHG)//12)
-        _fHG.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20),height=320,title=dict(text='HRV-Guided Training — LnrMSSD',font=dict(size=13,color='#111')),legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),hovermode='closest',xaxis=dict(tickvals=_xHG[::_shHG],ticktext=dh.tolist()[::_shHG] if hasattr(dh,'tolist') else _xHG[::_shHG],tickangle=-45,showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')),yaxis=dict(title='LnrMSSD',showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')))
-        st.plotly_chart(_fHG,use_container_width=True,config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+        fig3, (ah1, ah2) = plt.subplots(2, 1, figsize=(15, 10))
+        ah1.plot(xh, df_p['LnrMSSD'], '-', alpha=0.6, color=CORES['azul'], linewidth=2, label='LnrMSSD')
+        ah1.scatter(xh, df_p['LnrMSSD'], c=ch, s=80, edgecolors='white', linewidths=2, zorder=5)
+        ah1.plot(xh, df_p['bm'], color=CORES['verde_escuro'], linestyle='--', linewidth=2.5, label=f'Baseline ({dias_fam}d)', alpha=0.8)
+        ah1.plot(xh, df_p['lsup'], color=CORES['laranja'], linestyle=':', linewidth=2, label='±0.5 DP', alpha=0.7)
+        ah1.plot(xh, df_p['linf'], color=CORES['laranja'], linestyle=':', linewidth=2, alpha=0.7)
+        ah1.fill_between(xh, df_p['linf'], df_p['lsup'], alpha=0.15, color=CORES['verde'], label='Zona HIIT')
+        ah1.legend(loc='best', fontsize=9); ah1.grid(True, alpha=0.3); ah1.set_ylabel('LnrMSSD', fontweight='bold')
+        ah1.set_title(f'HRV-Guided Training — Baseline Rolling ({dias_fam}d)', fontsize=13, fontweight='bold')
+        ah1.set_xticks(list(xh)[::sh]); ah1.set_xticklabels([dh.iloc[i] for i in range(0, len(dh), sh)], rotation=45)
+        ah2.axhline(0, color=CORES['verde_escuro'], linestyle='-', linewidth=2, alpha=0.8)
+        ah2.axhline(0.5, color=CORES['laranja'], linestyle=':', linewidth=2); ah2.axhline(-0.5, color=CORES['laranja'], linestyle=':', linewidth=2)
+        ah2.fill_between(xh, -0.5, 0.5, alpha=0.2, color=CORES['verde'], label='Zona HIIT')
+        ah2.scatter(xh, df_p['desvio'], c=ch, alpha=0.7, s=60, edgecolors='white', linewidths=1)
+        ah2.plot(xh, df_p['desvio'], color=CORES['cinza'], alpha=0.4, linewidth=1)
+        ah2.set_ylim(-3, 3); ah2.legend(loc='best', fontsize=9); ah2.grid(True, alpha=0.3)
+        ah2.set_ylabel('Desvio (DP)', fontweight='bold'); ah2.set_title('Desvio LnrMSSD do Baseline', fontsize=12, fontweight='bold')
+        ah2.set_xticks(list(xh)[::sh]); ah2.set_xticklabels([dh.iloc[i] for i in range(0, len(dh), sh)], rotation=45)
+        plt.tight_layout(); st.pyplot(fig3); plt.close()
         df_val = df_hg[df_hg['bm'].notna()]
         if len(df_val) > 0:
             hiit_n = (df_val['intens'] == 'HIIT').sum(); rec_n = (df_val['intens'] == 'Recuperação').sum(); total_n = len(df_val)
@@ -4654,12 +4642,19 @@ def tab_wellness(dw):
     if not mets: st.warning("Sem métricas wellness."); return
     sel = st.multiselect("Métricas", mets, default=mets[:5])
     if not sel: return
-    _fWM=go.Figure()
-    _xWM=list(range(len(dw)));_dWM=pd.to_datetime(dw['Data']).dt.strftime('%d/%m').tolist();_sWM=max(1,len(_xWM)//12)
-    for metric in sel:
-        _fWM.add_trace(go.Scatter(x=_xWM,y=pd.to_numeric(dw[metric],errors='coerce').tolist(),mode='lines',name=metric,hovertemplate='%{x}: %{y:.1f}<extra></extra>'))
-    _fWM.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20),height=max(300,len(sel)*80),title=dict(text='Métricas Wellness',font=dict(size=14,color='#111')),legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),hovermode='closest',xaxis=dict(tickvals=_xWM[::_sWM],ticktext=_dWM[::_sWM],tickangle=-45,showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')),yaxis=dict(showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')))
-    st.plotly_chart(_fWM,use_container_width=True,config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+    fig, axes = plt.subplots(len(sel), 1, figsize=(14, 3 * len(sel)), sharex=True)
+    if len(sel) == 1: axes = [axes]
+    x = range(len(dw)); datas = pd.to_datetime(dw['Data']).dt.strftime('%d/%m')
+    CM = {'hrv': CORES['verde'], 'rhr': CORES['vermelho'], 'sleep_quality': CORES['roxo'],
+          'fatiga': CORES['laranja'], 'stress': CORES['vermelho_escuro'], 'humor': CORES['verde_escuro'], 'soreness': CORES['azul']}
+    for ax, met in zip(axes, sel):
+        v = pd.to_numeric(dw[met], errors='coerce').values
+        ax.plot(x, v, color=CM.get(met, CORES['azul']), linewidth=2, marker='o', markersize=4)
+        if len(v) >= 7: ax.plot(x, pd.Series(v).rolling(7, min_periods=3).mean(), color=CORES['preto'], linewidth=1.5, linestyle='--', alpha=0.5, label='Média 7d')
+        ax.set_ylabel(met.replace('_', ' ').title(), fontweight='bold'); ax.grid(True, alpha=0.3); ax.legend(fontsize=8)
+    step = max(1, len(x) // 12); axes[-1].set_xticks(list(x)[::step])
+    axes[-1].set_xticklabels([datas.iloc[i] for i in range(0, len(datas), step)], rotation=45)
+    plt.suptitle('Métricas Wellness', fontsize=14, fontweight='bold'); plt.tight_layout(); st.pyplot(fig); plt.close()
     st.subheader("📋 Resumo (últimos 7 dias)")
     if len(dw) >= 7:
         u7 = dw.tail(7); rows = []
@@ -4811,11 +4806,25 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
         df_tl = df_tl[df_tl['type'].isin(['Bike', 'Run', 'Row', 'Ski', 'WeightTraining'])]
         pivot_tl = df_tl.pivot_table(index='mes', columns='type', values='session_rpe', aggfunc='sum', fill_value=0).sort_index()
         CORES_MOD = {'Bike': CORES['vermelho'], 'Run': CORES['verde'], 'Row': CORES['azul'], 'Ski': CORES['roxo'], 'WeightTraining': CORES['laranja']}
-        _fTL=go.Figure()
-        for tipo in [t for t in ['Bike','Row','Ski','Run','WeightTraining'] if t in pivot_tl.columns]:
-            _fTL.add_trace(go.Bar(x=[str(x) for x in pivot_tl.index],y=pivot_tl[tipo].tolist(),name=tipo,marker_color=CORES_MOD.get(tipo,'gray'),marker_line_width=0,opacity=0.85,hovertemplate=tipo+': %{y:.0f}<extra></extra>'))
-        _fTL.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20),barmode='stack',height=340,title=dict(text='Training Load Mensal por Modalidade',font=dict(size=13,color='#111')),legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),xaxis=dict(tickangle=-45,gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111'), showgrid=False),yaxis=dict(title='Training Load',showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')))
-        st.plotly_chart(_fTL,use_container_width=True,config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+        fig, ax = plt.subplots(figsize=(16, 6))
+        bottom = np.zeros(len(pivot_tl))
+        for tipo in [t for t in ['Bike', 'Row', 'Ski', 'Run', 'WeightTraining'] if t in pivot_tl.columns]:
+            vals = pivot_tl[tipo].values
+            ax.bar(range(len(pivot_tl)), vals, bottom=bottom, label=tipo,
+                   color=CORES_MOD.get(tipo, '#888'), alpha=0.85, edgecolor='white', linewidth=0.5)
+            for i, (v, b) in enumerate(zip(vals, bottom)):
+                if v > 50:
+                    ax.text(i, b + v/2, f'{v:.0f}', ha='center', va='center', fontsize=7, fontweight='bold', color='white')
+            bottom += vals
+        totais = pivot_tl.sum(axis=1).values
+        for i, t in enumerate(totais):
+            if t > 0: ax.text(i, t + 5, f'{t:.0f}', ha='center', va='bottom', fontsize=8, fontweight='bold')
+        ax.set_xticks(range(len(pivot_tl)))
+        ax.set_xticklabels(pivot_tl.index, rotation=45, ha='right')
+        ax.axhline(totais.mean(), color='black', linestyle='--', alpha=0.5, label=f'Média: {totais.mean():.0f}')
+        ax.set_ylabel('Training Load (TRIMP)'); ax.legend(loc='upper left', fontsize=9); ax.grid(True, alpha=0.3, axis='y')
+        ax.set_title('Training Load Mensal por Modalidade', fontsize=13, fontweight='bold')
+        plt.tight_layout(); st.pyplot(fig); plt.close()
 
     st.markdown("---")
 
@@ -4829,29 +4838,49 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
     else:
         # Overall
         st.markdown("**Overall CTL vs ATL**")
-        _fCA=go.Figure()
-        for _mv,(_cs,_ds) in [('CTL',(CORES['azul'],'solid')),('ATL',(CORES['vermelho'],'dash')),('TSB',(CORES['verde'],'dot'))]:
-            if _mv in df_ca.columns:
-                _fCA.add_trace(go.Scatter(x=pd.to_datetime(df_ca['Data']).tolist(),y=pd.to_numeric(df_ca[_mv],errors='coerce').tolist(),mode='lines',name=_mv,line=dict(color=_cs,width=2.5,dash=_ds),hovertemplate='%{x|%d/%m}: %{y:.1f}<extra></extra>'))
-        _fCA.add_hline(y=0,line_dash='dash',line_color='#aaa',line_width=1)
-        _fCA.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20),height=340,title=dict(text='CTL / ATL / TSB',font=dict(size=13,color='#111')),legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),hovermode='closest',xaxis=dict(title='Data',showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')),yaxis=dict(showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')))
-        st.plotly_chart(_fCA,use_container_width=True,config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+        fig, ax = plt.subplots(figsize=(16, 7))
+        for metrica, (cor_s, cor_l, sty) in [
+            ('CTL', (CORES['azul'],    CORES['azul_escuro'],    '-')),
+            ('ATL', (CORES['vermelho'],CORES['vermelho_escuro'],'--'))]:
+            if metrica not in poli.get('overall', {}): continue
+            dm = poli['overall'][metrica]
+            gk = 'grau3' if 'grau3' in dm else 'grau2'
+            if gk not in dm: continue
+            d = dm[gk]; x, y, poly, r2 = d['x'], d['y'], d['poly'], d['r2']
+            xs = np.linspace(x.min(), x.max(), 200)
+            ax.scatter(x, y, alpha=0.3, s=40, color=cor_s, edgecolors='white', linewidths=1, label=f'{metrica} dados')
+            ax.plot(xs, poly(xs), linewidth=3, color=cor_l, linestyle=sty,
+                    label=f'{metrica} Poly{gk.replace("grau","")} (R²={r2:.3f})')
+        ax.set_xlabel('Dias'); ax.set_ylabel('Carga (TRIMP)')
+        ax.set_title('CTL vs ATL Overall — Polynomial Fit', fontsize=13, fontweight='bold')
+        ax.legend(fontsize=10); ax.grid(True, alpha=0.3)
+        plt.tight_layout(); st.pyplot(fig); plt.close()
 
         # Por modalidade — separado e combinado
         tipos_poli = {k.replace('tipo_', ''): k for k in poli if k.startswith('tipo_')}
         if tipos_poli:
             st.markdown("**Por Modalidade**")
             n_t = len(tipos_poli); ncols = 2; nrows = (n_t + 1) // 2
-            _fPL=go.Figure()
-            if 'tipos_poli' in dir() and 'df_poly' in dir():
-                for _tn,_tk in sorted(tipos_poli.items()):
-                    if _tk in df_poly.columns:
-                        _xP=pd.to_datetime(df_poly['Data']).tolist();_yP=pd.to_numeric(df_poly[_tk],errors='coerce').tolist()
-                        _fPL.add_trace(go.Scatter(x=_xP,y=_yP,mode='markers',name=f'{_tn} raw',marker=dict(size=4,opacity=0.5,color=CORES_MOD.get(_tn,'gray'))))
-                        if f'{_tk}_fit' in df_poly.columns:
-                            _fPL.add_trace(go.Scatter(x=_xP,y=pd.to_numeric(df_poly[f'{_tk}_fit'],errors='coerce').tolist(),mode='lines',name=f'{_tn} fit',line=dict(color=CORES_MOD.get(_tn,'gray'),width=2.5)))
-            _fPL.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20),height=360,title=dict(text='CTL/ATL — Polynomial Fit',font=dict(size=13,color='#111')),legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),hovermode='closest',xaxis=dict(title='Data',showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')),yaxis=dict(showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')))
-            st.plotly_chart(_fPL,use_container_width=True,config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+            fig, axes = plt.subplots(nrows, ncols, figsize=(16, 6*nrows))
+            axes_flat = axes.flatten() if n_t > 1 else [axes] if ncols*nrows == 1 else axes.flatten()
+            for idx, (tipo_n, tipo_k) in enumerate(sorted(tipos_poli.items())):
+                ax = axes_flat[idx]
+                for metrica, cor, sty in [('CTL', CORES['azul'], '-'), ('ATL', CORES['vermelho'], '--')]:
+                    if metrica not in poli[tipo_k]: continue
+                    dm = poli[tipo_k][metrica]
+                    gk = 'grau3' if 'grau3' in dm else 'grau2'
+                    if gk not in dm: continue
+                    d = dm[gk]; x, y, poly, r2 = d['x'], d['y'], d['poly'], d['r2']
+                    xs = np.linspace(x.min(), x.max(), 150)
+                    ax.scatter(x, y, alpha=0.35, s=40, color=cor, edgecolors='white', linewidths=1)
+                    ax.plot(xs, poly(xs), linewidth=2.5, color=cor, linestyle=sty,
+                            label=f'{metrica} R²={r2:.3f}')
+                ax.set_title(f'{tipo_n} — CTL/ATL Polynomial', fontsize=11, fontweight='bold')
+                ax.set_xlabel('Dias'); ax.set_ylabel('Carga'); ax.legend(fontsize=9); ax.grid(True, alpha=0.3)
+            for idx in range(n_t, len(axes_flat)):
+                axes_flat[idx].set_visible(False)
+            plt.suptitle('CTL/ATL por Modalidade — Polynomial Fit', fontsize=13, fontweight='bold', y=1.01)
+            plt.tight_layout(); st.pyplot(fig); plt.close()
 
     st.markdown("---")
 
@@ -4875,12 +4904,22 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
                 mat[i, :len(z)] = (-z if met == 'rhr' else z)[:len(semanas)]
             from matplotlib.colors import LinearSegmentedColormap as _LSC
             cmap_bpe = _LSC.from_list('bpe', [CORES['vermelho'], CORES['amarelo'], CORES['verde']], N=100)
-            import numpy as _npA
-            _zBA=[[float(mat[r][c]) if not _npA.isnan(mat[r][c]) else None for c in range(mat.shape[1])] for r in range(mat.shape[0])]
-            _yBA=list(nomes_bpe.values()) if 'nomes_bpe' in dir() else [str(i) for i in range(mat.shape[0])]
-            _fBA=go.Figure(go.Heatmap(z=_zBA,x=[str(s) for s in semanas.index],y=_yBA,colorscale='RdYlGn',zmid=0,zmin=-2,zmax=2,colorbar=dict(title='Z-Score',tickfont=dict(color='#111')),hovertemplate='%{x}<br>%{y}: %{z:.2f}<extra></extra>'))
-            _fBA.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20),height=max(280,mat.shape[0]*35),title=dict(text='BPE — Z-Score com SWC',font=dict(size=13,color='#111')),xaxis=dict(tickangle=-45,tickfont=dict(size=9,color='#111')),yaxis=dict(tickfont=dict(size=9,color='#111')))
-            st.plotly_chart(_fBA,use_container_width=True,config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+            fig, ax = plt.subplots(figsize=(max(14, len(semanas)*0.9), max(5, nm*1.2)))
+            im = ax.imshow(mat, cmap=cmap_bpe, aspect='auto', vmin=-2, vmax=2)
+            ax.set_yticks(range(nm))
+            ax.set_yticklabels([nomes_bpe.get(m, m) for m in dados_bpe], fontsize=11)
+            sem_labels = [str(s).split('-W')[1] if '-W' in str(s) else str(s) for s in semanas]
+            ax.set_xticks(range(len(semanas)))
+            ax.set_xticklabels([f'S{s}' for s in sem_labels], rotation=45, fontsize=10)
+            for i in range(nm):
+                for j in range(len(semanas)):
+                    v = mat[i, j]; cor_t = 'white' if abs(v) > 1 else 'black'
+                    ax.text(j, i, f'{v:.1f}', ha='center', va='center', fontsize=9, fontweight='bold', color=cor_t)
+            cbar = plt.colorbar(im, ax=ax, shrink=0.8)
+            cbar.set_label('Z-Score BPE (múltiplos de SWC)')
+            cbar.set_ticks([-2,-1,0,1,2]); cbar.set_ticklabels(['🔴-2','-1','0','+1','🟢+2'])
+            ax.set_title('BPE — Blocos de Padrão Específico (Z-Score com SWC)', fontsize=13, fontweight='bold')
+            plt.tight_layout(); st.pyplot(fig); plt.close()
     else:
         st.info("Mínimo 14 dias de wellness para BPE.")
 
@@ -5750,12 +5789,12 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                 fig_s.update_layout(**PLOTLY_WHITE,
                     title=dict(text=f'{aba} — HR e O2 vs Potência | Z-Score (±2σ) e MDC-95',
                                font=dict(size=14, color='#222')),
-                    height=400, hovermode='closest',
+                    height=500, hovermode='x unified',
                     xaxis=_xaxis('Potência (W)'),
                     yaxis=_yaxis('HR (bpm)', '#c0392b'),
                     yaxis2=_yaxis('SmO2 (%)', '#2471a3', secondary=True),
                     legend=LEGEND_STYLE)
-                st.plotly_chart(fig_s, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+                st.plotly_chart(fig_s, use_container_width=True)
 
             st.markdown("---")
 
@@ -5875,11 +5914,11 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                 fig_t.update_layout(**PLOTLY_WHITE,
                     title=dict(text=f'{aba} — {tipo_t} evolução temporal{title_suf}',
                                font=dict(size=14, color='#222')),
-                    height=420, hovermode='closest',
+                    height=420, hovermode='x unified',
                     xaxis=_xaxis('Data'),
                     yaxis=_yaxis(f'{tipo_t} ({unid_t})', cor_eixo),
                     legend=LEGEND_STYLE)
-                st.plotly_chart(fig_t, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+                st.plotly_chart(fig_t, use_container_width=True)
 
                 # ════════════════════════════════════════════
                 # TABELAS ICC/SEM/MDC + Tendência por período
@@ -6003,11 +6042,11 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                 fig_pwr.update_layout(**PLOTLY_WHITE,
                     title=dict(text=f'{aba} — HR/Pwr ratio{(" — "+agrup_pwr_lbl) if agrup_pwr else ""}',
                                font=dict(size=14, color='#222')),
-                    height=380, hovermode='closest',
+                    height=380, hovermode='x unified',
                     xaxis=_xaxis('Data'),
                     yaxis=_yaxis('HR/Pwr (bpm/W)'),
                     legend=LEGEND_STYLE)
-                st.plotly_chart(fig_pwr, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+                st.plotly_chart(fig_pwr, use_container_width=True)
                 st.markdown("---")
 
             # ════════════════════════════════════════════════════════════
@@ -6054,11 +6093,11 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                     fig_drag.update_layout(**PLOTLY_WHITE,
                         title=dict(text=f'Drag Factor — {aba}{(" — "+agrup_drag_lbl) if agrup_drag else ""}',
                                    font=dict(size=14, color='#222')),
-                        height=360, hovermode='closest',
+                        height=360, hovermode='x unified',
                         xaxis=_xaxis('Data'),
                         yaxis=_yaxis('Drag Factor'),
                         legend=LEGEND_STYLE)
-                    st.plotly_chart(fig_drag, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+                    st.plotly_chart(fig_drag, use_container_width=True)
                     c1d, c2d, c3d = st.columns(3)
                     c1d.metric("Drag médio", f"{mu_d:.0f}")
                     c2d.metric("Mínimo",     f"{df_drag[drag_col].min():.0f}")
@@ -6481,7 +6520,7 @@ def tab_corporal(dc, da_full):
     fig1.update_layout(
         title=f'Peso, BF e Calorias — {agrup_lbl} | rolling={roll_w}',
         height=420,
-        hovermode='closest',
+        hovermode='x unified',
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
         yaxis=dict(title='Peso (kg)', title_font=dict(color=CORES['azul']),
                    tickfont=dict(color=CORES['azul'])),
@@ -6495,7 +6534,7 @@ def tab_corporal(dc, da_full):
         xaxis=dict(showgrid=True),
         margin=dict(r=80),
     )
-    st.plotly_chart(fig1, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+    st.plotly_chart(fig1, width="stretch")
 
     # ── GRÁFICO 2: Calorias + Net ─────────────────────────────────────────────
     st.subheader("🔥 Calorias e Balanço Energético (Net)")
@@ -6532,7 +6571,7 @@ def tab_corporal(dc, da_full):
     fig2.update_layout(
         title=f'Calorias e Net — {agrup_lbl} | rolling={roll_w}',
         height=380,
-        hovermode='closest',
+        hovermode='x unified',
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
         yaxis=dict(title='Calorias (kcal)', title_font=dict(color=CORES['laranja']),
                    tickfont=dict(color=CORES['laranja'])),
@@ -6540,7 +6579,7 @@ def tab_corporal(dc, da_full):
                     tickfont=dict(color=CORES['roxo']),
                     overlaying='y', side='right'),
     )
-    st.plotly_chart(fig2, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+    st.plotly_chart(fig2, width="stretch")
 
     # ── GRÁFICO 3: Macros % stacked ───────────────────────────────────────────
     st.subheader("🥗 Distribuição de Macronutrientes (%)")
@@ -6568,12 +6607,12 @@ def tab_corporal(dc, da_full):
                 barmode='stack',
                 title=f'Macros % (Carb/Fat/Ptn em kcal) — {agrup_lbl}',
                 height=360,
-                hovermode='closest',
+                hovermode='x unified',
                 legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
                 yaxis=dict(title='% kcal de macros', range=[0, 115]),
             )
             fig3.add_hline(y=100, line_dash='dot', line_color=CORES['cinza'])
-            st.plotly_chart(fig3, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+            st.plotly_chart(fig3, width="stretch")
 
     st.markdown("---")
 
@@ -6660,8 +6699,8 @@ def tab_corporal(dc, da_full):
         fig4.update_layout(
             barmode='group',
             title=f'Variação Peso e BF por {agrup_lbl} — bandas de ganho/perda',
-            height=380,
-            hovermode='closest',
+            height=450,
+            hovermode='x unified',
             legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
             yaxis=dict(title='Δ Peso (kg)', title_font=dict(color='#27ae60'),
                        tickfont=dict(color='#27ae60'), zeroline=True),
@@ -6669,7 +6708,7 @@ def tab_corporal(dc, da_full):
                         tickfont=dict(color='#2980b9'),
                         overlaying='y', side='right', zeroline=True),
         )
-        st.plotly_chart(fig4, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+        st.plotly_chart(fig4, width="stretch")
     else:
         st.info("Dados insuficientes de Peso/BF para o gráfico de variação.")
 
@@ -7593,7 +7632,7 @@ def tab_ctl_kj(da_full):
                 yaxis=dict(title='eff = TRIMP/KJ', showgrid=True, gridcolor='#eee'),
                 title=dict(text='Eficiência Fisiológica (TRIMP/KJ) — rolling 4 semanas',
                            font=dict(size=13)))
-            st.plotly_chart(fig_eff, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+            st.plotly_chart(fig_eff, use_container_width=True)
 
             # Tabela resumo de eficiência actual e tendência
             st.markdown("**Eficiência actual por modalidade × tipo:**")
@@ -7696,7 +7735,7 @@ def tab_ctl_kj(da_full):
             xaxis=dict(showgrid=True, gridcolor='#eee'),
             yaxis=dict(title='Carga', showgrid=True, gridcolor='#eee'),
             title=dict(text='CTL raw vs IF corrigido', font=dict(size=13)))
-        st.plotly_chart(fig_ctl, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+        st.plotly_chart(fig_ctl, use_container_width=True)
         csv_ts = df_ts.to_csv(index=False).encode('utf-8')
         st.download_button("⬇️ Download série CTL (agrupada)", csv_ts,
                            "series_ctl_v3.csv", "text/csv", key="dl_ts_v3")
@@ -7872,7 +7911,7 @@ def tab_ctl_kj(da_full):
                     xaxis=dict(showgrid=True, gridcolor='#eee'),
                     yaxis=dict(title='eff_delta (%)', showgrid=True, gridcolor='#eee'),
                     title=dict(text='eff_delta — custo interno relativo ao baseline', font=dict(size=12)))
-                st.plotly_chart(fig_d1, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+                st.plotly_chart(fig_d1, use_container_width=True)
 
                 # ── GRÁFICO 2: KJ/h ao longo do tempo ────────────────────
                 st.markdown("**Gráfico 2 — KJ/h (densidade de trabalho)**")
@@ -7898,7 +7937,7 @@ def tab_ctl_kj(da_full):
                     xaxis=dict(showgrid=True, gridcolor='#eee'),
                     yaxis=dict(title='KJ/h', showgrid=True, gridcolor='#eee'),
                     title=dict(text='KJ/h rolling vs baseline por modalidade', font=dict(size=12)))
-                st.plotly_chart(fig_d2, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+                st.plotly_chart(fig_d2, use_container_width=True)
 
                 # ── GRÁFICO 3: pwr_inc simulado ───────────────────────────
                 st.markdown("**Gráfico 3 — pwr_inc simulado (%)**")
@@ -7920,7 +7959,7 @@ def tab_ctl_kj(da_full):
                     xaxis=dict(showgrid=True, gridcolor='#eee'),
                     yaxis=dict(title='pwr_inc (%)', showgrid=True, gridcolor='#eee'),
                     title=dict(text='pwr_inc simulado por sessão', font=dict(size=12)))
-                st.plotly_chart(fig_d3, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+                st.plotly_chart(fig_d3, use_container_width=True)
 
                 st.markdown("---")
 
@@ -8017,7 +8056,7 @@ def tab_ctl_kj(da_full):
                     xaxis=dict(title='eff_delta (%)', showgrid=True, gridcolor='#eee', zeroline=True),
                     yaxis=dict(title='pwr_inc (%)', showgrid=True, gridcolor='#eee'),
                     title=dict(text='eff_delta vs pwr_inc — fadiga vs resposta', font=dict(size=12)))
-                st.plotly_chart(fig_d4, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+                st.plotly_chart(fig_d4, use_container_width=True)
 
                 st.markdown("---")
 
@@ -8094,9 +8133,9 @@ def tab_cp_model():
     BASE = dict(
         paper_bgcolor="white", plot_bgcolor="white",
         font=dict(color="#111111", size=12),
-        legend=dict(orientation="h", y=-0.30,
-                    bgcolor="rgba(255,255,255,0.95)", bordercolor="#cccccc",
-                    borderwidth=1, font=dict(color="#111111", size=11)),
+        legend=dict(bgcolor="rgba(255,255,255,0.95)", bordercolor="#cccccc",
+                    borderwidth=1, font=dict(color="#111111", size=11),
+                    orientation="h", y=-0.30),
         margin=dict(t=60,b=90,l=65,r=30),
     )
     AX = dict(color="#111111", showgrid=True, gridcolor="#eeeeee",
@@ -8508,10 +8547,10 @@ def tab_cp_model():
     fig_pd.update_layout(**BASE,
         title=dict(text=f"Power-Duration — {modalidade} ({data_teste})",
                    font=dict(size=14,color="#111")),
-        height=360, hovermode='closest',
+        height=430, hovermode="x unified",
         xaxis=dict(title="Tempo (s)",**AX),
         yaxis=dict(title="Potência (W)",**AX))
-    st.plotly_chart(fig_pd, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+    st.plotly_chart(fig_pd,use_container_width=True)
 
     # ════════════════════════════════════════════════════════════════════════
     # G2 — Estabilidade CP × Weighting
@@ -8540,7 +8579,7 @@ def tab_cp_model():
         height=320,
         xaxis=dict(title="Weighting",**AX),
         yaxis=dict(title="CP (W)",**AX))
-    st.plotly_chart(fig_stab, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+    st.plotly_chart(fig_stab,use_container_width=True)
 
     # ════════════════════════════════════════════════════════════════════════
     # G3 — VELOCLINIC (correcto — só pontos + linhas de referência)
@@ -8610,11 +8649,11 @@ def tab_cp_model():
     fig_vc.update_layout(**BASE,
         title=dict(text="Veloclinic — W′_point vs Potência (pontos reais + referências CP/W′)",
                    font=dict(size=13,color="#111")),
-        height=360, hovermode="closest",
+        height=440, hovermode="closest",
         xaxis=dict(title="Potência (W)",**AX),
         yaxis=dict(title="W′_point = t×(P−CP)  [J]",
                    zeroline=True,zerolinecolor="#aaaaaa",**AX))
-    st.plotly_chart(fig_vc, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+    st.plotly_chart(fig_vc,use_container_width=True)
 
     # Métricas Veloclinic
     vm_rows=[]
@@ -8653,76 +8692,6 @@ def tab_cp_model():
 
 def main():
     days_back, di, df_, mods_sel = render_sidebar()
-
-    # ── CSS Mobile + Landscape hint ──────────────────────────────────────
-    st.markdown("""
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<style>
-/* ── Portrait estreito: aviso de rotação ── */
-/* landscape hint removido */
-
-/* ── Geral mobile (<768px) ── */
-@media screen and (max-width: 768px) {
-    /* Tabs: scroll horizontal, sem quebra de linha */
-    .stTabs [data-baseweb="tab-list"] {
-        overflow-x: auto !important;
-        flex-wrap: nowrap !important;
-        -webkit-overflow-scrolling: touch;
-        scrollbar-width: none;
-        padding-bottom: 4px;
-    }
-    .stTabs [data-baseweb="tab-list"]::-webkit-scrollbar { display: none; }
-    .stTabs [data-baseweb="tab"] {
-        min-width: 72px !important;
-        font-size: 10px !important;
-        padding: 5px 8px !important;
-        white-space: nowrap;
-    }
-    /* Colunas: sem overflow */
-    div[data-testid="column"] { min-width: 110px; overflow: hidden; }
-    /* DataFrames: scroll horizontal */
-    div[data-testid="stDataFrame"] {
-        overflow-x: auto !important;
-        -webkit-overflow-scrolling: touch;
-        max-width: 100vw;
-    }
-    /* Plotly: esconder barra de ferramentas, permitir pan vertical */
-    .js-plotly-plot .plotly .modebar { display: none !important; }
-    .js-plotly-plot { touch-action: pan-y !important; }
-    /* Inputs e botões: tamanho mínimo de toque (44px) */
-    input[type="number"], input[type="text"] {
-        font-size: 16px !important; min-height: 44px;
-    }
-    .stButton > button { min-height: 44px !important; }
-    /* Padding reduzido */
-    .block-container {
-        padding-left: 0.5rem !important;
-        padding-right: 0.5rem !important;
-        padding-top: 0.5rem !important;
-    }
-    /* Títulos menores */
-    h1 { font-size: 1.3rem !important; }
-    h2 { font-size: 1.1rem !important; }
-    h3 { font-size: 0.95rem !important; }
-    /* Caption/caption */
-    .stCaption { font-size: 0.75rem !important; }
-    /* Metrics: mais compactos */
-    div[data-testid="stMetric"] { padding: 4px !important; }
-    div[data-testid="stMetricValue"] { font-size: 1.1rem !important; }
-}
-
-/* ── Landscape mobile (altura < 500px) ── */
-@media screen and (max-height: 500px) and (orientation: landscape) {
-    .block-container {
-        padding-left: 1rem !important;
-        padding-right: 1rem !important;
-    }
-    h1 { font-size: 1.1rem !important; }
-}
-</style>
-
-<!-- Landscape hint removido -->
-""", unsafe_allow_html=True)
 
     st.title("🏃 ATHELTICA Analytics Dashboard")
     st.caption(f"Período: {di.strftime('%d/%m/%Y')} → {df_.strftime('%d/%m/%Y')}  |  "
