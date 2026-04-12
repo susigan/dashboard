@@ -1,17 +1,15 @@
-# tabs/tab_eftp.py — ATHELTICA Dashboard
-# eFTP: evolução + RPE + tabelas históricas (eFTP/KM/kJ/Sessões) + correlações
-# Tabelas e correlações usam da_full (histórico completo) independente do sidebar
-
+from utils.config import *
+from utils.helpers import *
+from utils.data import *
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-from scipy.stats import linregress, spearmanr
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
-
-from config import CORES, CORES_ATIV
-from utils.helpers import filtrar_principais, add_tempo, get_cor, norm_tipo
+import re as _re
+import warnings
+warnings.filterwarnings('ignore')
 
 def tab_eftp(da, mods_sel, da_full=None):
     st.header("⚡ Evolução do eFTP por Modalidade")
@@ -25,46 +23,39 @@ def tab_eftp(da, mods_sel, da_full=None):
     anos_sel = st.multiselect("Filtrar anos", anos, default=list(anos)); df = df[df['ano'].isin(anos_sel)]
     mods = [m for m in mods_sel if m in df['type'].values]
     if not mods: st.info("Nenhuma modalidade com eFTP."); return
-    fig, axes = plt.subplots(1, len(mods), figsize=(7 * len(mods), 6))
-    if len(mods) == 1: axes = [axes]
-    for ax, mod in zip(axes, mods):
-        dm = df[df['type'] == mod].sort_values('Data'); cm = get_cor(mod)
-        for ano in anos_sel:
-            da_ = dm[dm['ano'] == ano]
-            if len(da_) == 0: continue
-            ax.scatter(da_['Data'], da_[ecol], color=mapa_cor[ano], alpha=0.65, s=35, label=str(ano))
-            if len(da_) >= 3:
-                xn = (da_['Data'] - da_['Data'].min()).dt.days.values; coef = np.polyfit(xn, da_[ecol].values, 1)
-                xp = np.array([xn.min(), xn.max()]); yp = np.poly1d(coef)(xp)
-                dp = [da_['Data'].min() + pd.Timedelta(days=int(x)) for x in xp]
-                ax.plot(dp, yp, color=mapa_cor[ano], linewidth=2, linestyle='--', alpha=0.9)
-                sm = coef[0] * 30
-                ax.annotate(f'{sm:+.1f}W/mês', xy=(dp[1], yp[1]), xytext=(5, 2), textcoords='offset points', fontsize=7.5, color=mapa_cor[ano], fontweight='bold')
-        if len(dm) >= 5:
-            roll = dm.set_index('Data')[ecol].resample('7D').mean().interpolate()
-            ax.plot(roll.index, roll.values, color=cm, linewidth=2, alpha=0.4, label='Média 7d')
-        if len(dm) > 0:
-            mx = dm[ecol].max()
-            ax.axhline(mx, color=cm, linestyle=':', linewidth=1.2, alpha=0.6)
-            ax.annotate(f'Máx: {mx:.0f}W', xy=(dm.loc[dm[ecol].idxmax(), 'Data'], mx), xytext=(0, 6), textcoords='offset points', fontsize=8, color=cm, fontweight='bold', ha='center')
-        ax.set_title(f'eFTP — {mod}', fontsize=13, fontweight='bold', color=cm)
-        ax.set_xlabel('Data'); ax.set_ylabel('eFTP (W)'); ax.tick_params(axis='x', rotation=45); ax.legend(fontsize=8); ax.grid(True, alpha=0.25)
-    plt.suptitle('Evolução eFTP por Modalidade', fontsize=14, fontweight='bold', y=1.02)
-    plt.tight_layout(); st.pyplot(fig); plt.close()
+    _fig_eftp_m = go.Figure()
+    if 'mods' in dir() and mods:
+        for _mod in mods:
+            _dm = df[df['type']==_mod].sort_values('Data')
+            _ec2 = 'icu_eftp' if 'icu_eftp' in _dm.columns else ecol
+            _cor = CORES_MOD.get(_mod, get_cor(_mod))
+            if _ec2 and len(_dm) > 0:
+                _fig_eftp_m.add_trace(go.Scatter(
+                    x=_dm['Data'].tolist(),
+                    y=pd.to_numeric(_dm[_ec2],errors='coerce').tolist(),
+                    mode='markers+lines', name=f'eFTP {_mod}',
+                    line=dict(color=_cor, width=2),
+                    marker=dict(size=4, color=_cor)))
+    _fig_eftp_m.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), height=360,
+        title=dict(text='Evolução eFTP por Modalidade', font=dict(size=14,color='#111')),
+        legend=dict(orientation='h', y=-0.25, font=dict(color='#111')), hovermode='closest',
+        xaxis=dict(title='Data', showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')), yaxis=dict(title='eFTP (W)', showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')))
+    st.plotly_chart(_fig_eftp_m, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
 
     st.subheader("📦 RPE por Modalidade")
     if 'rpe' in da.columns:
         df_r = filtrar_principais(da).copy(); df_r = add_tempo(df_r); df_r = df_r[df_r['type'].isin(mods_sel)].dropna(subset=['rpe'])
         if len(df_r) > 0:
-            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
-            tipos = [t for t in mods_sel if t in df_r['type'].values]
-            sns.boxplot(data=df_r, x='type', y='rpe', order=tipos, palette={t: get_cor(t) for t in tipos}, ax=ax1)
-            ax1.set_title('RPE por Modalidade', fontweight='bold'); ax1.tick_params(axis='x', rotation=45)
-            if 'mes' in df_r.columns:
-                meses = sorted(df_r['mes'].unique())[-12:]; df_rm = df_r[df_r['mes'].isin(meses)]
-                sns.violinplot(data=df_rm, x='mes', y='rpe', palette='Set2', ax=ax2)
-                ax2.set_title('RPE por Mês', fontweight='bold'); ax2.tick_params(axis='x', rotation=45)
-            plt.tight_layout(); st.pyplot(fig); plt.close()
+            _tipos_bp = [t for t in mods_sel if 'df_r' in dir() and t in df_r['type'].values] if 'mods_sel' in dir() else []
+            _fig_rpe_b = go.Figure()
+            for _tip in _tipos_bp:
+                _vrpe = pd.to_numeric(df_r[df_r['type']==_tip]['rpe'],errors='coerce').dropna().tolist() if 'df_r' in dir() else []
+                _fig_rpe_b.add_trace(go.Box(y=_vrpe, name=_tip,
+                    marker_color=CORES_MOD.get(_tip, '#888'), boxmean=True))
+            _fig_rpe_b.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), height=300,
+                title=dict(text='RPE por Modalidade', font=dict(size=12,color='#111')),
+                legend=dict(orientation='h', y=-0.25, font=dict(color='#111')), yaxis=dict(title='RPE', showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')), xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')))
+            st.plotly_chart(_fig_rpe_b, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
 
     st.markdown("---")
     # ── TABELAS eFTP + KM/KJ — filtro próprio + agrupamento ─────────────────────
@@ -113,7 +104,7 @@ def tab_eftp(da, mods_sel, da_full=None):
         """Agrupa df_in por período (Ano / Mês / Semana) e devolve coluna label."""
         df_in = df_in.copy()
         if agrup == "Ano":
-            df_in['_periodo'] = df_in['Data'].dt.to_period('A')
+            df_in['_periodo'] = df_in['Data'].dt.to_period('Y')
             fmt = lambda p: str(p.year)
         elif agrup == "Semana":
             df_in['_periodo'] = df_in['Data'].dt.to_period('W')
@@ -188,7 +179,7 @@ def tab_eftp(da, mods_sel, da_full=None):
             rows_e.append(tend_e)
 
             st.dataframe(pd.DataFrame(rows_e),
-                         use_container_width=True, hide_index=True)
+                         width="stretch", hide_index=True)
     else:
         st.caption("Sem dados de eFTP disponíveis.")
 
@@ -240,7 +231,7 @@ def tab_eftp(da, mods_sel, da_full=None):
                 'Distance':      f"{r['_km_s']:.0f} km" if pd.notna(r['_km_s']) and r['_km_s'] > 0 else '—',
                 'Moving Time':   f"{mt_h}h{mt_m:02d}m",
                 'kJ':            f"{r['_kj_s']:.0f}" if pd.notna(r['_kj_s']) and r['_kj_s'] > 0 else '—',
-                'Sessions':      int(r['_ses']),
+                'Sessions':      str(int(r['_ses'])),
             })
 
         if not rows_v: continue
@@ -274,7 +265,7 @@ def tab_eftp(da, mods_sel, da_full=None):
         })
 
         st.dataframe(pd.DataFrame(rows_v),
-                     use_container_width=True, hide_index=True)
+                     width="stretch", hide_index=True)
 
 
     st.markdown("---")
@@ -372,7 +363,7 @@ def tab_eftp(da, mods_sel, da_full=None):
             if len(df_mod) < 10: continue
 
             all_results = []
-            for label, code in [("Semanal", "W"), ("Mensal", "M"), ("Anual", "A")]:
+            for label, code in [("Semanal", "W"), ("Mensal", "M"), ("Anual", "Y")]:
                 all_results.extend(_corr_periodo(df_mod, label, code))
 
             if not all_results:
@@ -386,7 +377,7 @@ def tab_eftp(da, mods_sel, da_full=None):
                             .drop_duplicates(subset=['Variável'], keep='first')
                             .drop(columns=['_ar'])
                             .sort_values('Força', ascending=True))
-            st.dataframe(df_res, use_container_width=True, hide_index=True)
+            st.dataframe(df_res, width="stretch", hide_index=True)
 
         if not any(
             len(df[df['type']==t]) >= 10 and
@@ -396,3 +387,31 @@ def tab_eftp(da, mods_sel, da_full=None):
             st.info("Dados insuficientes para análise de correlação.")
     else:
         st.info("Coluna icu_eftp não disponível para análise de correlação.")
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 5 — HR ZONES + RPE ZONES + CORRELAÇÃO
+# ════════════════════════════════════════════════════════════════════════════════
+
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# MÓDULO: tabs/tab_zones.py
+# ════════════════════════════════════════════════════════════════════════════
+
+def _zonas_bp(ax_bar, ax_pie, por_tipo, total_seg, cores_zona, tit_bar, tit_pie):
+    zonas = list(cores_zona.keys()); bottom = np.zeros(len(por_tipo))
+    for zona in zonas:
+        if zona not in por_tipo.columns: continue
+        vals = por_tipo[zona].values
+        ax_bar.bar(por_tipo.index, vals, bottom=bottom, color=cores_zona[zona], label=zona, edgecolor='white', linewidth=0.5)
+        for i, (v, b) in enumerate(zip(vals, bottom)):
+            if v > 5: ax_bar.text(i, b + v / 2, f'{v:.0f}%', ha='center', va='center', fontsize=9, fontweight='bold', color='white')
+        bottom += vals
+    ax_bar.set_ylim(0, 100); ax_bar.set_ylabel('% sessões', fontweight='bold')
+    ax_bar.set_title(tit_bar, fontweight='bold'); ax_bar.legend(loc='upper right', fontsize=8); ax_bar.grid(True, alpha=0.2, axis='y')
+    lp = [l for l, v in total_seg.items() if v > 0]; sp = [v for v in total_seg.values() if v > 0]
+    if sum(sp) > 0:
+        _, _, ats = ax_pie.pie(sp, labels=lp, autopct='%1.1f%%', colors=[cores_zona[l] for l in lp], startangle=90, wedgeprops=dict(edgecolor='white', linewidth=2), pctdistance=0.75)
+        for at in ats: at.set_fontweight('bold'); at.set_fontsize(10)
+    ax_pie.set_title(tit_pie, fontweight='bold')
