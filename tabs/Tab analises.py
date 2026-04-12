@@ -1,26 +1,15 @@
-# tabs/tab_analises.py — ATHELTICA Dashboard
-
+from utils.config import *
+from utils.helpers import *
+from utils.data import *
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-from matplotlib.lines import Line2D
-from scipy import stats as scipy_stats
-from scipy.stats import pearsonr
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
-
-from config import CORES, CORES_ATIV, TYPE_MAP, VALID_TYPES
-from utils.helpers import (filtrar_principais, add_tempo, get_cor,
-                            calcular_bpe, calcular_recovery,
-                            calcular_polinomios_carga, analisar_falta_estimulo)
-
-# MÓDULO: tabs/tab_analises.py
-# ════════════════════════════════════════════════════════════════════════════
-
-# ════════════════════════════════════════════════════════════════════════════════
-# FUNÇÕES AUXILIARES — ANÁLISES AVANÇADAS (do original Python/SQLite)
-# ════════════════════════════════════════════════════════════════════════════════
+import re as _re
+import warnings
+warnings.filterwarnings('ignore')
 
 def calcular_polinomios_carga(df_act_full):
     """
@@ -76,54 +65,6 @@ def calcular_polinomios_carga(df_act_full):
                     pass
     resultados['_ld'] = ld
     return resultados
-
-def analisar_falta_estimulo(df_act_full, janela_dias=14):
-    """Análise de falta de estímulo por modalidade — igual ao original."""
-    df = filtrar_principais(df_act_full).copy()
-    df['Data'] = pd.to_datetime(df['Data'])
-    if 'moving_time' not in df.columns or 'rpe' not in df.columns:
-        return None
-    df['rpe_fill'] = df['rpe'].fillna(df['rpe'].median())
-    df['load_val'] = (df['moving_time'] / 60) * df['rpe_fill']
-    ld = df.groupby('Data')['load_val'].sum().reset_index().sort_values('Data')
-    idx = pd.date_range(ld['Data'].min(), datetime.now().date())
-    ld = ld.set_index('Data').reindex(idx, fill_value=0).reset_index(); ld.columns = ['Data', 'load_val']
-    ld['CTL'] = ld['load_val'].ewm(span=42, adjust=False).mean()
-    ld['ATL'] = ld['load_val'].ewm(span=7, adjust=False).mean()
-
-    data_limite = pd.Timestamp.now() - pd.Timedelta(days=janela_dias)
-    carga_rec = ld[ld['Data'] >= data_limite].copy()
-    if len(carga_rec) == 0:
-        return None
-
-    resultados = {}
-    for mod in ['Bike', 'Run', 'Row', 'Ski']:
-        df_mod = df[(df['type'] == mod) & (df['Data'] >= data_limite)]
-        dias_ativ = df_mod['Data'].nunique()
-        freq = dias_ativ / max(janela_dias, 1)
-
-        atl_m = carga_rec['ATL'].mean()
-        ctl_m = carga_rec['CTL'].mean()
-        gap = ((ctl_m - atl_m) / ctl_m * 100) if ctl_m > 0 else 0
-        dias_atl_baixo = (carga_rec['ATL'] < carga_rec['CTL']).sum()
-
-        x_s = np.arange(len(carga_rec))
-        slope = np.polyfit(x_s, carga_rec['ATL'].values, 1)[0] if len(carga_rec) > 1 else 0
-        slope_norm = max(0, min(1, (slope + 5) / 10))
-
-        need = (
-            min(1, max(0, gap / 50)) * 100 * 0.4 +
-            min(1, dias_atl_baixo / max(len(carga_rec), 1)) * 100 * 0.3 +
-            (1 - slope_norm) * 100 * 0.2 +
-            (1 - freq) * 100 * 0.1
-        )
-        prio = 'ALTA' if need >= 70 else 'MÉDIA' if need >= 40 else 'BAIXA'
-        resultados[mod] = {
-            'need_score': need, 'prioridade': prio,
-            'gap_relativo': gap, 'dias_atl_menor_ctl': int(dias_atl_baixo),
-            'dias_com_atividade': dias_ativ, 'atl_medio': atl_m, 'ctl_medio': ctl_m
-        }
-    return dict(sorted(resultados.items(), key=lambda x: x[1]['need_score'], reverse=True))
 
 def tabela_resumo_por_tipo_df(da):
     """Tabela resumo por tipo igual ao original."""
@@ -184,12 +125,12 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
     st.subheader("📋 Resumo de Atividades por Modalidade")
     df_res = tabela_resumo_por_tipo_df(da_full)
     if len(df_res) > 0:
-        st.dataframe(df_res, use_container_width=True, hide_index=True)
+        st.dataframe(df_res, width="stretch", hide_index=True)
 
     st.subheader("🏆 Top 10 Sessões por Potência Média")
     df_rank = tabela_ranking_power_df(da_full, n=10)
     if len(df_rank) > 0:
-        st.dataframe(df_rank, use_container_width=True, hide_index=True)
+        st.dataframe(df_rank, width="stretch", hide_index=True)
 
     st.markdown("---")
 
@@ -203,25 +144,18 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
         df_tl = df_tl[df_tl['type'].isin(['Bike', 'Run', 'Row', 'Ski', 'WeightTraining'])]
         pivot_tl = df_tl.pivot_table(index='mes', columns='type', values='session_rpe', aggfunc='sum', fill_value=0).sort_index()
         CORES_MOD = {'Bike': CORES['vermelho'], 'Run': CORES['verde'], 'Row': CORES['azul'], 'Ski': CORES['roxo'], 'WeightTraining': CORES['laranja']}
-        fig, ax = plt.subplots(figsize=(16, 6))
-        bottom = np.zeros(len(pivot_tl))
-        for tipo in [t for t in ['Bike', 'Row', 'Ski', 'Run', 'WeightTraining'] if t in pivot_tl.columns]:
-            vals = pivot_tl[tipo].values
-            ax.bar(range(len(pivot_tl)), vals, bottom=bottom, label=tipo,
-                   color=CORES_MOD.get(tipo, '#888'), alpha=0.85, edgecolor='white', linewidth=0.5)
-            for i, (v, b) in enumerate(zip(vals, bottom)):
-                if v > 50:
-                    ax.text(i, b + v/2, f'{v:.0f}', ha='center', va='center', fontsize=7, fontweight='bold', color='white')
-            bottom += vals
-        totais = pivot_tl.sum(axis=1).values
-        for i, t in enumerate(totais):
-            if t > 0: ax.text(i, t + 5, f'{t:.0f}', ha='center', va='bottom', fontsize=8, fontweight='bold')
-        ax.set_xticks(range(len(pivot_tl)))
-        ax.set_xticklabels(pivot_tl.index, rotation=45, ha='right')
-        ax.axhline(totais.mean(), color='black', linestyle='--', alpha=0.5, label=f'Média: {totais.mean():.0f}')
-        ax.set_ylabel('Training Load (TRIMP)'); ax.legend(loc='upper left', fontsize=9); ax.grid(True, alpha=0.3, axis='y')
-        ax.set_title('Training Load Mensal por Modalidade', fontsize=13, fontweight='bold')
-        plt.tight_layout(); st.pyplot(fig); plt.close()
+        _fig_sb = go.Figure()
+        if 'pivot' in dir() and len(pivot) > 0:
+            for _tc in [c for c in pivot.columns if c in CORES_MOD]:
+                _fig_sb.add_trace(go.Bar(x=[str(x) for x in pivot.index],
+                    y=pivot[_tc].tolist(), name=_tc,
+                    marker_color=CORES_MOD.get(_tc,'gray'),
+                    marker_line_width=0, opacity=0.85))
+        _fig_sb.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), barmode='stack', height=340,
+            legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),
+            xaxis=dict(tickangle=-45, showgrid=True, gridcolor='#eee', tickfont=dict(color='#111'), showgrid=False),
+            yaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')))
+        st.plotly_chart(_fig_sb, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
 
     st.markdown("---")
 
@@ -235,49 +169,24 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
     else:
         # Overall
         st.markdown("**Overall CTL vs ATL**")
-        fig, ax = plt.subplots(figsize=(16, 7))
-        for metrica, (cor_s, cor_l, sty) in [
-            ('CTL', (CORES['azul'],    CORES['azul_escuro'],    '-')),
-            ('ATL', (CORES['vermelho'],CORES['vermelho_escuro'],'--'))]:
-            if metrica not in poli.get('overall', {}): continue
-            dm = poli['overall'][metrica]
-            gk = 'grau3' if 'grau3' in dm else 'grau2'
-            if gk not in dm: continue
-            d = dm[gk]; x, y, poly, r2 = d['x'], d['y'], d['poly'], d['r2']
-            xs = np.linspace(x.min(), x.max(), 200)
-            ax.scatter(x, y, alpha=0.3, s=40, color=cor_s, edgecolors='white', linewidths=1, label=f'{metrica} dados')
-            ax.plot(xs, poly(xs), linewidth=3, color=cor_l, linestyle=sty,
-                    label=f'{metrica} Poly{gk.replace("grau","")} (R²={r2:.3f})')
-        ax.set_xlabel('Dias'); ax.set_ylabel('Carga (TRIMP)')
-        ax.set_title('CTL vs ATL Overall — Polynomial Fit', fontsize=13, fontweight='bold')
-        ax.legend(fontsize=10); ax.grid(True, alpha=0.3)
-        plt.tight_layout(); st.pyplot(fig); plt.close()
+        _fig_gen = go.Figure()
+        _fig_gen.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), height=340,
+            legend=dict(orientation='h', y=-0.25, font=dict(color='#111')), hovermode='closest',
+            xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')), yaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')))
+        st.plotly_chart(_fig_gen, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
+        # TODO: chart content (converted from matplotlib)
 
         # Por modalidade — separado e combinado
         tipos_poli = {k.replace('tipo_', ''): k for k in poli if k.startswith('tipo_')}
         if tipos_poli:
             st.markdown("**Por Modalidade**")
             n_t = len(tipos_poli); ncols = 2; nrows = (n_t + 1) // 2
-            fig, axes = plt.subplots(nrows, ncols, figsize=(16, 6*nrows))
-            axes_flat = axes.flatten() if n_t > 1 else [axes] if ncols*nrows == 1 else axes.flatten()
-            for idx, (tipo_n, tipo_k) in enumerate(sorted(tipos_poli.items())):
-                ax = axes_flat[idx]
-                for metrica, cor, sty in [('CTL', CORES['azul'], '-'), ('ATL', CORES['vermelho'], '--')]:
-                    if metrica not in poli[tipo_k]: continue
-                    dm = poli[tipo_k][metrica]
-                    gk = 'grau3' if 'grau3' in dm else 'grau2'
-                    if gk not in dm: continue
-                    d = dm[gk]; x, y, poly, r2 = d['x'], d['y'], d['poly'], d['r2']
-                    xs = np.linspace(x.min(), x.max(), 150)
-                    ax.scatter(x, y, alpha=0.35, s=40, color=cor, edgecolors='white', linewidths=1)
-                    ax.plot(xs, poly(xs), linewidth=2.5, color=cor, linestyle=sty,
-                            label=f'{metrica} R²={r2:.3f}')
-                ax.set_title(f'{tipo_n} — CTL/ATL Polynomial', fontsize=11, fontweight='bold')
-                ax.set_xlabel('Dias'); ax.set_ylabel('Carga'); ax.legend(fontsize=9); ax.grid(True, alpha=0.3)
-            for idx in range(n_t, len(axes_flat)):
-                axes_flat[idx].set_visible(False)
-            plt.suptitle('CTL/ATL por Modalidade — Polynomial Fit', fontsize=13, fontweight='bold', y=1.01)
-            plt.tight_layout(); st.pyplot(fig); plt.close()
+            _fig_gen = go.Figure()
+            _fig_gen.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), height=340,
+                legend=dict(orientation='h', y=-0.25, font=dict(color='#111')), hovermode='closest',
+                xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')), yaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')))
+            st.plotly_chart(_fig_gen, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
+            # TODO: chart content (converted from matplotlib)
 
     st.markdown("---")
 
@@ -301,22 +210,19 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
                 mat[i, :len(z)] = (-z if met == 'rhr' else z)[:len(semanas)]
             from matplotlib.colors import LinearSegmentedColormap as _LSC
             cmap_bpe = _LSC.from_list('bpe', [CORES['vermelho'], CORES['amarelo'], CORES['verde']], N=100)
-            fig, ax = plt.subplots(figsize=(max(14, len(semanas)*0.9), max(5, nm*1.2)))
-            im = ax.imshow(mat, cmap=cmap_bpe, aspect='auto', vmin=-2, vmax=2)
-            ax.set_yticks(range(nm))
-            ax.set_yticklabels([nomes_bpe.get(m, m) for m in dados_bpe], fontsize=11)
-            sem_labels = [str(s).split('-W')[1] if '-W' in str(s) else str(s) for s in semanas]
-            ax.set_xticks(range(len(semanas)))
-            ax.set_xticklabels([f'S{s}' for s in sem_labels], rotation=45, fontsize=10)
-            for i in range(nm):
-                for j in range(len(semanas)):
-                    v = mat[i, j]; cor_t = 'white' if abs(v) > 1 else 'black'
-                    ax.text(j, i, f'{v:.1f}', ha='center', va='center', fontsize=9, fontweight='bold', color=cor_t)
-            cbar = plt.colorbar(im, ax=ax, shrink=0.8)
-            cbar.set_label('Z-Score BPE (múltiplos de SWC)')
-            cbar.set_ticks([-2,-1,0,1,2]); cbar.set_ticklabels(['🔴-2','-1','0','+1','🟢+2'])
-            ax.set_title('BPE — Blocos de Padrão Específico (Z-Score com SWC)', fontsize=13, fontweight='bold')
-            plt.tight_layout(); st.pyplot(fig); plt.close()
+            import numpy as _npIM
+            _zIM = [[float(mat[r][c]) if not _npIM.isnan(mat[r][c]) else None
+                     for c in range(mat.shape[1])] for r in range(mat.shape[0])]
+            _yIM = list(nomes.values()) if 'nomes' in dir() else [str(i) for i in range(mat.shape[0])]
+            _fIM = go.Figure(go.Heatmap(z=_zIM,
+                x=[str(s) for s in semanas.index] if 'semanas' in dir() else [],
+                y=_yIM, colorscale='RdYlGn', zmid=0, zmin=-2, zmax=2,
+                colorbar=dict(title='Z', tickfont=dict(color='#111'))))
+            _fIM.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), height=max(280, len(_yIM)*35),
+                title=dict(text='BPE — Z-Score com SWC', font=dict(size=13,color='#111')),
+                xaxis=dict(tickangle=-45, tickfont=dict(size=9,color='#111')),
+                yaxis=dict(tickfont=dict(size=9,color='#111')))
+            st.plotly_chart(_fIM, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
     else:
         st.info("Mínimo 14 dias de wellness para BPE.")
 
@@ -324,27 +230,126 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
 
     # ── Secção 5: Falta de Estímulo ─────────────────────────────────────────
     st.subheader("🎯 Análise de Falta de Estímulo por Modalidade")
+    st.caption(
+        "Need Score v4 — A=Share(25%) B=Quality(25%) C=Load(20%) D=FTLM(20%) E=A×B(10%) | "
+        "Need_volume=A+C | Need_intensity=B+D | Overload por score acumulado (≥2/3)")
+
+    # ── Controlos de prioridade e preset K ───────────────────────────────────
+    st.markdown("**⚙️ Configuração de Prioridades**")
+    col_k, col_sp = st.columns([1, 3])
+    with col_k:
+        preset_k = st.selectbox("Preset influência",
+            ["Conservador (K=6)", "Balanceado (K=10)", "Agressivo (K=15)"],
+            index=1, key="prio_preset")
+        K = {"Conservador (K=6)": 6, "Balanceado (K=10)": 10,
+             "Agressivo (K=15)": 15}[preset_k]
+        st.caption(f"K={K} — quanto a preferência influencia a ordenação")
+
+    with col_sp:
+        _mods_disp = ['Bike', 'Row', 'Ski', 'Run']
+        pc1, pc2, pc3, pc4 = st.columns(4)
+        prio_1 = pc1.selectbox("🥇 Prioridade 1 (Foco)", _mods_disp, index=0, key="prio1")
+        prio_2 = pc2.selectbox("🥈 Prioridade 2 (Foco)", _mods_disp, index=1, key="prio2")
+        prio_3 = pc3.selectbox("🥉 Prioridade 3 (Manutenção)", _mods_disp, index=2, key="prio3")
+        prio_4 = pc4.selectbox("4️⃣  Prioridade 4 (Manutenção)", _mods_disp, index=3, key="prio4")
+
+    prio_rank = {prio_1: 1, prio_2: 2, prio_3: 3, prio_4: 4}
+    max_rank  = 4
+    grupo_foco = {prio_1, prio_2}
+    grupo_man  = {prio_3, prio_4}
+
+    st.markdown("---")
     c1, c2 = st.columns(2)
     for col_w, janela, label in [(c1, 7, "7 dias"), (c2, 14, "14 dias")]:
-        res = analisar_falta_estimulo(da_full, janela)
+        res, df_debug = analisar_falta_estimulo(da_full, janela_dias=janela)
         with col_w:
             st.markdown(f"**📅 Janela {label}**")
-            if res:
-                rows_fe = []
-                for mod, d in res.items():
-                    pe = "🔴" if d['prioridade']=='ALTA' else "🟡" if d['prioridade']=='MÉDIA' else "🟢"
-                    rows_fe.append({'Modalidade': mod, 'Need Score': f"{d['need_score']:.1f}",
-                                    'Prioridade': f"{pe} {d['prioridade']}",
-                                    'Gap CTL-ATL': f"{d['gap_relativo']:.1f}%",
-                                    'Dias ATL<CTL': d['dias_atl_menor_ctl'],
-                                    'Dias c/ Ativ.': d['dias_com_atividade']})
-                st.dataframe(pd.DataFrame(rows_fe), use_container_width=True, hide_index=True)
-                top = list(res.keys())[0]
-                pe = "🔴" if res[top]['prioridade']=='ALTA' else "🟡" if res[top]['prioridade']=='MÉDIA' else "🟢"
-                st.info(f"{pe} Foco recomendado: **{top}** (Score: {res[top]['need_score']:.1f})")
-            else:
+            if not res:
                 st.info("Dados insuficientes.")
+                continue
 
+            # ── Calcular Need_final com bónus de prioridade ────────────────
+            rows_foco = []
+            rows_man  = []
+            for mod, d in res.items():
+                rank  = prio_rank.get(mod, 4)
+                peso  = (max_rank + 1 - rank) / max_rank
+                bonus = peso * K * (1 - d['need_score'] / 100)
+
+                need_final = d['need_score'] + bonus
+
+                # Overload: Need_final × 0.5
+                ol_flag = ""
+                intens  = "NORMAL"
+                if d['overload']:
+                    need_final *= 0.5
+                    ol_flag = " ⚠️"
+                    intens  = "LOW — reduzir intensidade"
+
+                # Cap manutenção: nunca passa de 40
+                if mod in grupo_man:
+                    need_final = min(need_final, 40)
+
+                # Piso mínimo
+                need_final = max(need_final, 10)
+
+                # Prioridade final
+                pf = ('ALTA' if need_final >= 70 else
+                      'MÉDIA' if need_final >= 40 else 'BAIXA')
+
+                row_d = {
+                    'Modalidade':   f"{'🎯' if mod in grupo_foco else '🔧'} {mod}{ol_flag}",
+                    'Need base':    f"{d['need_score']:.1f}",
+                    'Bónus prio':   f"+{bonus:.1f}",
+                    'Need final':   f"{need_final:.1f}",
+                    'Prioridade':   pf,
+                    'Vol / Int':    f"{d['need_vol']:.0f} / {d['need_int_prescr']:.0f}",
+                    'Prescrição':   d.get('prescricao','—'),
+                }
+                if mod in grupo_foco:
+                    rows_foco.append((need_final, row_d))
+                else:
+                    rows_man.append((need_final, row_d))
+
+            # Ordenar cada grupo por Need_final
+            rows_foco.sort(key=lambda x: x[0], reverse=True)
+            rows_man.sort( key=lambda x: x[0], reverse=True)
+
+            # Mostrar separado por grupo
+            if rows_foco:
+                st.markdown("🎯 **Foco**")
+                st.dataframe(pd.DataFrame([r for _, r in rows_foco]),
+                             width="stretch", hide_index=True)
+            if rows_man:
+                st.markdown("🔧 **Manutenção**")
+                st.dataframe(pd.DataFrame([r for _, r in rows_man]),
+                             width="stretch", hide_index=True)
+
+            # Recomendação: top do grupo foco
+            if rows_foco:
+                top_mod  = rows_foco[0][1]['Modalidade'].replace('🎯 ','').replace('🔧 ','').replace(' ⚠️','')
+                top_need = rows_foco[0][0]
+                top_ol   = res.get(top_mod, {}).get('overload', False)
+                top_d = res.get(top_mod, {})
+                top_prescr = top_d.get('prescricao', '—')
+                if top_ol:
+                    st.warning(f"⚠️ **{top_mod}**: overload — {top_prescr}")
+                else:
+                    st.info(f"🎯 **{top_mod}** (score {top_need:.1f}) — {top_prescr}")
+
+            # Debug expandível
+            if df_debug is not None and len(df_debug) > 0:
+                with st.expander(f"🔬 Debug componentes — {label}"):
+                    st.dataframe(df_debug, width="stretch", hide_index=True)
+                    csv_b = df_debug.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label=f"⬇️ Download debug CSV ({label})",
+                        data=csv_b,
+                        file_name=f"need_score_debug_{label.replace(' ','_')}.csv",
+                        mime="text/csv",
+                        key=f"dl_debug_{janela}")
+
+    st.markdown("---")
     st.markdown("---")
 
 
@@ -424,7 +429,7 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
                     cv_rows.append({'Variável': label, 'Média': f"{s.mean():.2f}",
                                     'STD': f"{s.std():.2f}", 'CV%': f"{cv:.1f}%", 'Interpretação': interp})
                 if cv_rows:
-                    st.dataframe(pd.DataFrame(cv_rows), use_container_width=True, hide_index=True)
+                    st.dataframe(pd.DataFrame(cv_rows), width="stretch", hide_index=True)
                 else:
                     st.info("Sem dados suficientes para CV.")
 
@@ -446,7 +451,7 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
                     else:               tendencia = "→ Platô"
                     trend_rows.append({'Variável': label, f'Slope ({unid})': f"{slope:+.4f}", 'Tendência': tendencia})
                 if trend_rows:
-                    st.dataframe(pd.DataFrame(trend_rows), use_container_width=True, hide_index=True)
+                    st.dataframe(pd.DataFrame(trend_rows), width="stretch", hide_index=True)
 
                 # Correlações por trimestre (eFTP vs AllWorkFTP)
                 if 'icu_eftp' in df_mod.columns and 'AllWorkFTP' in df_mod.columns and len(trimestres) > 0:
@@ -460,7 +465,7 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
                                           'AllWorkFTP mediana (kJ)': f"{dt['AllWorkFTP'].median():.1f}" if dt['AllWorkFTP'].notna().any() else '—',
                                           'N': len(dt)})
                     if trim_rows:
-                        st.dataframe(pd.DataFrame(trim_rows), use_container_width=True, hide_index=True)
+                        st.dataframe(pd.DataFrame(trim_rows), width="stretch", hide_index=True)
 
             # ── PASSO 3: Correlações |r| > 0.4 ─────────────────────────────
             with st.expander("🔗 PASSO 3 — Correlações Avançadas (|r| > 0.4)"):
@@ -481,7 +486,7 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
                                     corr_rows.append({'Var 1': v1, 'Var 2': v2,
                                                       'r': f"{cv:.3f}", 'Força': forca, 'Direção': direcao})
                         if corr_rows:
-                            st.dataframe(pd.DataFrame(corr_rows), use_container_width=True, hide_index=True)
+                            st.dataframe(pd.DataFrame(corr_rows), width="stretch", hide_index=True)
                         else:
                             st.info("Nenhuma correlação > 0.4 encontrada.")
                     else:
@@ -503,7 +508,7 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
                             row['Horas/sessão']    = f"{dt['duration_hours'].mean():.2f}h"
                         saz_rows.append(row)
                     if saz_rows:
-                        st.dataframe(pd.DataFrame(saz_rows), use_container_width=True, hide_index=True)
+                        st.dataframe(pd.DataFrame(saz_rows), width="stretch", hide_index=True)
                 else:
                     st.info("Apenas 1 trimestre de dados — sem análise sazonal.")
 
@@ -517,7 +522,7 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
                         n_cat = dist.get(cat, 0)
                         rpe_rows.append({'Categoria': cat.capitalize(),
                                          'N': n_cat, '%': f"{n_cat/total*100:.1f}%"})
-                    st.dataframe(pd.DataFrame(rpe_rows), use_container_width=True, hide_index=True)
+                    st.dataframe(pd.DataFrame(rpe_rows), width="stretch", hide_index=True)
 
                     # Por trimestre
                     if len(trimestres) > 1:
@@ -534,7 +539,7 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
                                 row[cat.capitalize()+' %'] = f"{pct:.0f}%"
                             trim_rpe.append(row)
                         if trim_rpe:
-                            st.dataframe(pd.DataFrame(trim_rpe), use_container_width=True, hide_index=True)
+                            st.dataframe(pd.DataFrame(trim_rpe), width="stretch", hide_index=True)
                 else:
                     st.info("Sem dados de RPE para análise de categorias.")
 
@@ -596,7 +601,7 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
         c2.metric("ATL (Fadiga)",   f"{u_s['ATL']:.0f}")
         c3.metric("TSB (Forma)",    f"{u_s['CTL']-u_s['ATL']:+.0f}")
         c4.metric("Atividades 7d",  len(df7))
-        c5.metric("Horas 7d",       f"{horas7:.1f}h")
+        c5.metric("Horas 7d",       fmt_dur(horas7))
     if len(dw) > 0:
         cw1, cw2 = st.columns(2)
         if 'hrv' in dw.columns:
@@ -655,4 +660,247 @@ plt.style.use('seaborn-v0_8-whitegrid')
 
 # ════════════════════════════════════════════════════════════════════════════════
 # FUNÇÕES AUXILIARES
+# ════════════════════════════════════════════════════════════════════════════════
+
+
+
+
+PLOTLY_WHITE = dict(paper_bgcolor='white', plot_bgcolor='white',
+                    font=dict(family='Arial', size=12, color='#333333'))
+
+def _axis(title='', color='#333333', secondary=False):
+    d = dict(title=dict(text=title, font=dict(color=color, size=12)),
+             tickfont=dict(color=color),
+             showgrid=True, gridcolor='#e8e8e8',
+             linecolor='#cccccc', linewidth=1, showline=True,
+             zeroline=False)
+    if secondary:
+        d['overlaying'] = 'y'; d['side'] = 'right'; d['showgrid'] = False
+    return d
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+PLOTLY_WHITE = dict(paper_bgcolor='white', plot_bgcolor='white',
+                    font=dict(family='Arial', size=12, color='#333333'))
+
+def _axis(title='', color='#333333', secondary=False):
+    d = dict(title=dict(text=title, font=dict(color=color, size=12)),
+             tickfont=dict(color=color),
+             showgrid=True, gridcolor='#e8e8e8',
+             linecolor='#cccccc', linewidth=1, showline=True,
+             zeroline=False)
+    if secondary:
+        d['overlaying'] = 'y'; d['side'] = 'right'; d['showgrid'] = False
+    return d
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+PLOTLY_WHITE = dict(paper_bgcolor='white', plot_bgcolor='white',
+                    font=dict(family='Arial', size=12, color='#333333'))
+
+LEGEND_STYLE = dict(orientation='h', y=1.02, x=0,
+                    bgcolor='rgba(255,255,255,0.9)',
+                    bordercolor='#aaa', borderwidth=1,
+                    font=dict(color='#111111', size=11))
+
+def _xaxis(title='Data', color='#333'):
+    return dict(title=dict(text=title, font=dict(color=color, size=12)),
+                tickfont=dict(color=color),
+                showgrid=True, gridcolor='#e8e8e8',
+                linecolor='#ccc', linewidth=1, showline=True)
+
+def _yaxis(title='', color='#333', secondary=False):
+    d = dict(title=dict(text=title, font=dict(color=color, size=12)),
+             tickfont=dict(color=color),
+             showgrid=True, gridcolor='#e8e8e8',
+             linecolor='#ccc', linewidth=1, showline=True)
+    if secondary:
+        d.update({'overlaying':'y','side':'right','showgrid':False})
+    return d
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+PLOTLY_WHITE = dict(paper_bgcolor='white', plot_bgcolor='white',
+                    font=dict(family='Arial', size=12, color='#333333'))
+
+LEGEND_STYLE = dict(orientation='h', y=1.02, x=0,
+                    bgcolor='rgba(255,255,255,0.9)',
+                    bordercolor='#aaa', borderwidth=1,
+                    font=dict(color='#111111', size=11))
+
+def _xaxis(title='Data', color='#333'):
+    return dict(title=dict(text=title, font=dict(color=color, size=12)),
+                tickfont=dict(color=color),
+                showgrid=True, gridcolor='#e8e8e8',
+                linecolor='#ccc', linewidth=1, showline=True)
+
+def _yaxis(title='', color='#333', secondary=False):
+    d = dict(title=dict(text=title, font=dict(color=color, size=12)),
+             tickfont=dict(color=color),
+             showgrid=True, gridcolor='#e8e8e8',
+             linecolor='#ccc', linewidth=1, showline=True)
+    if secondary:
+        d.update({'overlaying':'y','side':'right','showgrid':False})
+    return d
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _extrair_pot(col):
+    m = re.search(r'(\d+)[_\s]*W', str(col).upper())
+    return int(m.group(1)) if m else None
+
+def _detectar_drag_col(df):
+    for c in ['Drag_Factor','Drag Factor','DragFactor','drag_factor','Drag','drag','DF']:
+        if c in df.columns: return c
+    for c in df.columns:
+        if 'DRAG' in str(c).upper(): return c
+    return None
+
+def _calcular_icc_sem_mdc(valores, tipo='HR'):
+    """
+    ICC calculado dos próprios dados via diferenças consecutivas.
+    SEM de curto prazo: CV_curto = min(CV_dados_consec, CV_max_literatura)
+      HR:   CV_max = 4%  (literatura: 1-3%, Achten & Jeukendrup 2003)
+      SmO2: CV_max = 8%  (literatura: 3-8% NIRS, Davie 2018)
+    MDC₉₅ = CV_curto × média × 1.96
+    """
+    v = np.array(valores, dtype=float)
+    v = v[~np.isnan(v)]
+    n = len(v)
+    if n < 3:
+        return None
+    media = np.mean(v)
+    std   = np.std(v, ddof=1)
+    if media == 0:
+        return None
+
+    # ICC via variância intra (diferenças consecutivas) vs variância total
+    if n >= 4:
+        diffs    = np.diff(v)
+        var_intra = np.var(diffs, ddof=1) / 2
+        var_total = np.var(v, ddof=1)
+        icc = max(0.0, min(1.0, (var_total - var_intra) / var_total))
+    else:
+        icc = max(0.0, 1.0 - (1.0 / max(n, 2)))
+
+    # CV de curto prazo: dos próprios dados (diferenças consecutivas)
+    if n >= 4:
+        cv_curto_dados = (np.std(np.diff(v), ddof=1) / np.sqrt(2)) / media
+    else:
+        cv_curto_dados = std / media
+
+    # Limitar pelo máximo da literatura
+    cv_max = 0.04 if tipo == 'HR' else 0.08  # 4% HR | 8% SmO2
+    cv_curto = min(cv_curto_dados, cv_max)
+
+    # SEM e MDC baseados no CV de curto prazo
+    sem    = cv_curto * media / np.sqrt(2)
+    sem_pc = cv_curto * 100
+    mdc95  = cv_curto * media * 1.96
+    mdc_pc = (mdc95 / media) * 100
+
+    if   icc >= 0.90: icc_qual = "✅ Excelente (≥0.90)"
+    elif icc >= 0.75: icc_qual = "🟢 Boa (0.75–0.90)"
+    elif icc >= 0.50: icc_qual = "🟡 Moderada (0.50–0.75)"
+    else:              icc_qual = "⚠️ Fraca (<0.50)"
+
+    return dict(n=n, media=media, std=std,
+                icc=icc, icc_qual=icc_qual,
+                cv_curto=cv_curto, cv_dados=cv_curto_dados, cv_max=cv_max,
+                sem=sem, sem_pc=sem_pc,
+                mdc95=mdc95, mdc_pc=mdc_pc)
+
+def _limpar_ruido_sem(series, icc_dict, limiar_multiplo=2.0):
+    """
+    Remove pontos que desviam > limiar × SEM da média local (rolling 5).
+    Retorna série limpa e máscara de ruído.
+    """
+    if icc_dict is None or len(series) < 4:
+        return series, np.zeros(len(series), dtype=bool)
+    sem   = icc_dict['sem']
+    media_local = series.rolling(5, min_periods=2, center=True).mean().fillna(series.mean())
+    ruido = (series - media_local).abs() > limiar_multiplo * sem
+    limpa = series.copy()
+    limpa[ruido] = np.nan
+    return limpa, ruido.values
+
+def _calcular_tendencia_com_mdc(df_col, col_data, col_val, mdc95):
+    """
+    Calcula tendência para uma janela temporal.
+    Valida com MDC: |Δ| > MDC → usa 4 métodos para confirmar direcção.
+    Retorna dict com classificação, delta, N, passa_mdc.
+    """
+    from scipy.stats import theilslopes
+    df = df_col[[col_data, col_val]].dropna().sort_values(col_data)
+    df[col_data] = pd.to_datetime(df[col_data])
+    n = len(df)
+    if n < 3:
+        return {'classif': '— (N<3)', 'delta': None, 'passa_mdc': None, 'n': n}
+
+    y   = df[col_val].values.astype(float)
+    x   = (df[col_data] - df[col_data].min()).dt.days.values.astype(float)
+    delta = y[-1] - y[0]  # mudança observada: último - primeiro
+
+    # Valida com MDC
+    if mdc95 is not None and abs(delta) <= mdc95:
+        return {'classif': f'→ Estável (Δ{delta:+.1f} ≤ MDC{mdc95:.1f})',
+                'delta': delta, 'passa_mdc': False, 'n': n}
+
+    # 4 métodos
+    try:
+        sl, _, _, pv, _   = linregress(x, y)
+        tau, p_k           = spearmanr(x, y)
+        th_sl, _, _, _     = theilslopes(y, x)
+        mid                = max(1, n // 2)
+        _, p_t             = scipy_stats.ttest_ind(y[:mid], y[mid:]) if mid >= 2 else (0, 1)
+
+        conf = 0
+        if pv  < 0.05 and abs(sl) > 0:                              conf += 2
+        if p_k < 0.05:                                               conf += 2
+        if (th_sl > 0 and sl > 0) or (th_sl < 0 and sl < 0):        conf += 1
+        if p_t < 0.05:                                               conf += 1
+
+        if conf < 2:
+            classif = f'→ Estável (Δ{delta:+.1f}, conf insuf.)'
+        elif sl > 0:
+            classif = f'↗ Aumentando (Δ{delta:+.1f} > MDC)'
+        else:
+            classif = f'↘ Diminuindo (Δ{delta:+.1f} > MDC)'
+    except Exception:
+        classif = f'→ Estável (Δ{delta:+.1f})'
+
+    return {'classif': classif, 'delta': delta, 'passa_mdc': True, 'n': n}
+
+def _controles_grafico(aba, secao, n_data):
+    c1, c2 = st.columns([2, 1])
+    agrup_lbl = c1.selectbox("Agrupar por",
+        ["Sessão (sem agrup.)", "Mês", "Trimestre", "Ano"],
+        key=f"agrup_{aba}_{secao}")
+    agrup_map = {"Sessão (sem agrup.)": None, "Mês":"M", "Trimestre":"Q", "Ano":"A"}
+    agrup_code = agrup_map[agrup_lbl]
+    roll = c2.slider("Rolling (sessões)", 1, min(12, max(1, n_data-1)), 3,
+                     key=f"roll_{aba}_{secao}")
+    return agrup_code, agrup_lbl, roll
+
+def _agrupar_serie(df, col_data, col_val, agrup_code):
+    d = df[[col_data, col_val]].dropna().copy()
+    d[col_data] = pd.to_datetime(d[col_data])
+    d['_p'] = d[col_data].dt.to_period(agrup_code)
+    agg = d.groupby('_p')[col_val].agg(['mean','std','count']).reset_index()
+    agg['_ts'] = agg['_p'].dt.to_timestamp()
+    if agrup_code == 'M':
+        agg['_lbl'] = agg['_p'].dt.strftime('%b %Y')
+    elif agrup_code == 'Q':
+        agg['_lbl'] = agg['_p'].apply(
+            lambda p: f"Q{((p.start_time.month-1)//3)+1} {p.start_time.year}")
+    else:
+        agg['_lbl'] = agg['_p'].dt.strftime('%Y')
+    return agg
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# FUNÇÃO PRINCIPAL
 # ════════════════════════════════════════════════════════════════════════════════
