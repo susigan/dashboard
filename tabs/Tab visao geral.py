@@ -9,6 +9,9 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import re as _re
 import warnings
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+
 warnings.filterwarnings('ignore')
 
 def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
