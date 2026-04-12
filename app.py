@@ -2584,7 +2584,7 @@ def tab_volume(da, dw):
         st.plotly_chart(_fig_vh, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
         c1, c2 = st.columns(2)
         c1.metric("Total horas cíclicos", f"{pivot.values.sum():.1f}h")
-        c2.metric("Média mensal", f"{media:.1f}h")
+        c2.metric("Média mensal", f"{_media_h:.1f}h")
 
     st.subheader("🏋️ Volume Mensal — WeightTraining (horas)")
     df_wt = da[da['type'] == 'WeightTraining'].copy()
@@ -8631,19 +8631,7 @@ def main():
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <style>
 /* ── Portrait estreito: aviso de rotação ── */
-.rotate-hint {
-    display: none;
-    position: fixed; top:0; left:0; right:0; bottom:0;
-    background: rgba(0,0,0,0.88);
-    color: white; font-size: 1.1rem;
-    align-items: center; justify-content: center;
-    flex-direction: column; z-index: 9999;
-    text-align: center; padding: 2rem;
-    gap: 1rem;
-}
-@media screen and (max-width: 479px) and (orientation: portrait) {
-    .rotate-hint { display: flex !important; }
-}
+/* landscape hint removido */
 
 /* ── Geral mobile (<768px) ── */
 @media screen and (max-width: 768px) {
@@ -8697,7 +8685,6 @@ def main():
 
 /* ── Landscape mobile (altura < 500px) ── */
 @media screen and (max-height: 500px) and (orientation: landscape) {
-    .rotate-hint { display: none !important; }
     .block-container {
         padding-left: 1rem !important;
         padding-right: 1rem !important;
@@ -8706,15 +8693,7 @@ def main():
 }
 </style>
 
-<!-- Overlay de rotação — só aparece em portrait muito estreito -->
-<div class="rotate-hint">
-    <div style="font-size:3.5rem">📱</div>
-    <div style="font-size:2rem">↩️</div>
-    <strong>Roda o ecrã para landscape</strong>
-    <span style="font-size:0.85rem;opacity:0.75">
-        A ATHELTICA funciona melhor na horizontal
-    </span>
-</div>
+<!-- Landscape hint removido -->
 """, unsafe_allow_html=True)
 
     st.title("🏃 ATHELTICA Analytics Dashboard")
