@@ -1,24 +1,15 @@
-# tabs/tab_padrao.py — ATHELTICA Dashboard
-# Aba Padrão — padrão semanal de actividade, RPE, Recovery Score, HRV/HR
-
+from utils.config import *
+from utils.helpers import *
+from utils.data import *
 import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
-
-from utils.helpers import norm_tipo, calcular_recovery
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-DIAS_SEMANA = ['Seg','Ter','Qua','Qui','Sex','Sáb','Dom']
-# Monday=0 ... Sunday=6
-DIA_MAP = {0:'Seg',1:'Ter',2:'Qua',3:'Qui',4:'Sex',5:'Sáb',6:'Dom'}
-
-RPE_ZONAS = {
-    'Z1 (Leve)':   (1,   4.9),
-    'Z2 (Mod.)':   (5,   6.9),
-    'Z3 (Pesado)': (7,  10.0),
-}
+import re as _re
+import warnings
+warnings.filterwarnings('ignore')
 
 def _zona_rpe(v):
     try:
@@ -468,3 +459,7 @@ def tab_padrao(da_full, dw_full):
             st.info("Sem dados de HRV suficientes.")
     else:
         st.info("Sem dados de HRV/RHR.")
+
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 13 — CTL vs KJ  (análise dTRIMP/dKJ)
+# ════════════════════════════════════════════════════════════════════════════
