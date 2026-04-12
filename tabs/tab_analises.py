@@ -148,15 +148,15 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
         pivot_tl = df_tl.pivot_table(index='mes', columns='type', values='session_rpe', aggfunc='sum', fill_value=0).sort_index()
         CORES_MOD = {'Bike': CORES['vermelho'], 'Run': CORES['verde'], 'Row': CORES['azul'], 'Ski': CORES['roxo'], 'WeightTraining': CORES['laranja']}
         _fig_sb = go.Figure()
-        if 'pivot' in dir() and len(pivot) > 0:
-            for _tc in [c for c in pivot.columns if c in CORES_MOD]:
-                _fig_sb.add_trace(go.Bar(x=[str(x) for x in pivot.index],
-                    y=pivot[_tc].tolist(), name=_tc,
+        if len(pivot_tl) > 0:
+            for _tc in [c for c in pivot_tl.columns if c in CORES_MOD]:
+                _fig_sb.add_trace(go.Bar(x=[str(x) for x in pivot_tl.index],
+                    y=pivot_tl[_tc].tolist(), name=_tc,
                     marker_color=CORES_MOD.get(_tc,'gray'),
                     marker_line_width=0, opacity=0.85))
         _fig_sb.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), barmode='stack', height=340,
             legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),
-            xaxis=dict(tickangle=-45, showgrid=True, gridcolor='#eee', tickfont=dict(color='#111'), showgrid=False),
+            xaxis=dict(tickangle=-45, showgrid=False, gridcolor='#eee', tickfont=dict(color='#111')),
             yaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')))
         st.plotly_chart(_fig_sb, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
 
@@ -216,9 +216,9 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
             import numpy as _npIM
             _zIM = [[float(mat[r][c]) if not _npIM.isnan(mat[r][c]) else None
                      for c in range(mat.shape[1])] for r in range(mat.shape[0])]
-            _yIM = list(nomes.values()) if 'nomes' in dir() else [str(i) for i in range(mat.shape[0])]
+            _yIM = list(nomes_bpe.values())
             _fIM = go.Figure(go.Heatmap(z=_zIM,
-                x=[str(s) for s in semanas.index] if 'semanas' in dir() else [],
+                x=[str(s) for s in semanas],
                 y=_yIM, colorscale='RdYlGn', zmid=0, zmin=-2, zmax=2,
                 colorbar=dict(title='Z', tickfont=dict(color='#111'))))
             _fIM.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), height=max(280, len(_yIM)*35),
