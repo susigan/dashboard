@@ -1,16 +1,15 @@
-# tabs/tab_pmc.py — ATHELTICA Dashboard
-# PMC: CTL/ATL/FTLM + TRIMP bars + Resumo + FTLM
-# (tabelas eFTP/KM/Correlações movidas para tab_eftp)
-
+from utils.config import *
+from utils.helpers import *
+from utils.data import *
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-from scipy.stats import linregress, spearmanr
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
-
-from config import CORES, CORES_ATIV
-from utils.helpers import filtrar_principais, add_tempo, get_cor
+import re as _re
+import warnings
+warnings.filterwarnings('ignore')
 
 def tab_pmc(da):
     """
@@ -82,58 +81,69 @@ def tab_pmc(da):
         ld_plot['ATL'] = ld_plot['ATL'].rolling(3, min_periods=1).mean()
 
     # ── GRÁFICO 1: PMC + Load (TRIMP) ──
-    fig, (ax_pmc, ax_load) = plt.subplots(
-        2, 1, figsize=(16, 9), gridspec_kw={'height_ratios': [2.5, 1]}, sharex=True)
-    fig.subplots_adjust(hspace=0.05)
-    ax_pmc.plot(ld_plot['Data'], ld_plot['CTL'], label='CTL (Fitness)',
-                color=CORES['azul'], linewidth=2.5)
-    ax_pmc.plot(ld_plot['Data'], ld_plot['ATL'], label='ATL (Fadiga)',
-                color=CORES['vermelho'], linewidth=2.5)
-    ax_pmc.fill_between(ld_plot['Data'], 0, ld_plot['TSB'],
-                        where=(ld_plot['TSB'] >= 0),
-                        color=CORES['verde'], alpha=0.25, label='TSB+ (Forma)')
-    ax_pmc.fill_between(ld_plot['Data'], 0, ld_plot['TSB'],
-                        where=(ld_plot['TSB'] < 0),
-                        color=CORES['vermelho'], alpha=0.20, label='TSB- (Fadiga)')
-    ax_pmc.axhline(0, color=CORES['cinza'], linestyle='--', linewidth=0.8)
-    ax_pmc.set_ylabel('CTL / ATL / TSB', fontweight='bold')
-    ax_pmc.grid(True, alpha=0.3)
+    _fig_pmc = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                             row_heights=[0.70, 0.30], vertical_spacing=0.04)
+    _dates = ld_plot['Data'].tolist()
+
+    _fig_pmc.add_trace(go.Scatter(x=_dates, y=ld_plot['CTL'].tolist(),
+        name='CTL (Fitness)', line=dict(color=CORES['azul'], width=2.5),
+        hovertemplate='CTL: %{y:.1f}<extra></extra>'), row=1, col=1)
+    _fig_pmc.add_trace(go.Scatter(x=_dates, y=ld_plot['ATL'].tolist(),
+        name='ATL (Fadiga)', line=dict(color=CORES['vermelho'], width=2.5),
+        hovertemplate='ATL: %{y:.1f}<extra></extra>'), row=1, col=1)
+
+    _fig_pmc.add_trace(go.Scatter(x=_dates, y=ld_plot['TSB'].tolist(),
+        fill='tozeroy', fillcolor='rgba(39,174,96,0.15)',
+        line=dict(color='rgba(39,174,96,0.5)', width=1),
+        name='TSB (Forma/Fadiga)',
+        hovertemplate='TSB: %{y:.1f}<extra></extra>'), row=1, col=1)
+    _fig_pmc.add_hline(y=0, line_dash='dash', line_color='#999', line_width=1, row=1, col=1)
+
     if show_ftlm:
-        ax2 = ax_pmc.twinx()
-        ax2.plot(ld_plot['Data'], ld_plot['FTLM'],
-                 label=f'FTLM (gamma={best_g:.2f})',
-                 color=CORES['laranja'], linewidth=2, linestyle='--', alpha=0.85)
-        ax2.set_ylabel('FTLM', color=CORES['laranja'], fontweight='bold')
-        ax2.tick_params(axis='y', labelcolor=CORES['laranja'])
-        l1, lb1 = ax_pmc.get_legend_handles_labels()
-        l2, lb2 = ax2.get_legend_handles_labels()
-        ax_pmc.legend(l1+l2, lb1+lb2, loc='upper left', fontsize=9)
-    else:
-        ax_pmc.legend(loc='upper left', fontsize=9)
-    ax_pmc.text(0.99, 0.97,
-                f"CTL: {u['CTL']:.1f}  |  ATL: {u['ATL']:.1f}  |  TSB: {u['TSB']:+.1f}",
-                transform=ax_pmc.transAxes, ha='right', va='top', fontsize=9,
-                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.85))
-    ax_pmc.set_title('PMC — CTL / ATL / TSB / FTLM', fontsize=14, fontweight='bold')
+        _ctl_max  = max(ld_plot['CTL'].max(), ld_plot['ATL'].max(), 1)
+        _ftlm_max = max(ld_plot['FTLM'].max(), 1)
+        _ftlm_n   = ld_plot['FTLM'] / _ftlm_max * _ctl_max * 0.85
+        _fig_pmc.add_trace(go.Scatter(x=_dates, y=_ftlm_n.tolist(),
+            name=f'FTLM (γ={best_g:.2f}, norm)',
+            line=dict(color=CORES['laranja'], width=2, dash='dash'), opacity=0.85,
+            hovertemplate='FTLM: %{y:.1f}<extra></extra>'), row=1, col=1)
+
+    _u_ctl = float(u['CTL']); _u_atl = float(u['ATL']); _u_tsb = float(u['TSB'])
+    _fig_pmc.add_annotation(
+        x=_dates[-1], y=_u_ctl, xref='x', yref='y',
+        text=f"CTL {_u_ctl:.1f} | ATL {_u_atl:.1f} | TSB {_u_tsb:+.1f}",
+        showarrow=False, bgcolor='rgba(255,235,200,0.9)',
+        bordercolor='#aaa', borderwidth=1,
+        font=dict(size=10, color='#111'), xanchor='right', yanchor='top')
 
     trimp_d = df.groupby(['Data', 'type'])['trimp_val'].sum().reset_index()
     trimp_d['Data'] = pd.to_datetime(trimp_d['Data'])
-    tipos_ord = [t for t in ['Bike', 'Row', 'Ski', 'Run', 'WeightTraining']
+    tipos_ord = [t for t in ['Bike','Row','Ski','Run','WeightTraining']
                  if t in trimp_d['type'].unique()]
     tipos_ord += [t for t in trimp_d['type'].unique() if t not in tipos_ord]
-    bot = np.zeros(len(ld_plot))
     for tipo in tipos_ord:
-        dt = trimp_d[trimp_d['type'] == tipo][['Data', 'trimp_val']]
-        merged = ld_plot[['Data']].merge(dt, on='Data', how='left').fillna(0)
-        ax_load.bar(ld_plot['Data'], merged['trimp_val'].values, bottom=bot,
-                    color=get_cor(tipo), alpha=0.85, width=0.8, label=tipo,
-                    edgecolor='white', linewidth=0.3)
-        bot += merged['trimp_val'].values
-    ax_load.legend(loc='upper left', fontsize=8, ncol=min(5, len(tipos_ord)))
-    ax_load.set_ylabel('Load\n(TRIMP)', fontweight='bold', fontsize=9)
-    ax_load.grid(True, alpha=0.2, axis='y')
-    ax_load.tick_params(axis='x', rotation=45)
-    plt.tight_layout(); st.pyplot(fig); plt.close()
+        _dt = trimp_d[trimp_d['type']==tipo][['Data','trimp_val']]
+        _merged = ld_plot[['Data']].merge(_dt, on='Data', how='left').fillna(0)
+        _fig_pmc.add_trace(go.Bar(
+            x=_dates, y=_merged['trimp_val'].tolist(),
+            name=tipo, marker_color=get_cor(tipo),
+            marker_line_width=0, opacity=0.85,
+            hovertemplate=tipo+': %{y:.0f}<extra></extra>'), row=2, col=1)
+
+    _fig_pmc.update_layout(
+        paper_bgcolor='white', plot_bgcolor='white',
+        font=dict(color='#111', size=11), height=460,
+        barmode='stack', hovermode='closest',
+        legend=dict(orientation='h', y=-0.15, font=dict(color='#111', size=10),
+                    bgcolor='rgba(255,255,255,0.9)', bordercolor='#ddd', borderwidth=1),
+        margin=dict(t=50, b=60, l=55, r=40),
+        title=dict(text='PMC — CTL / ATL / TSB' + (' / FTLM' if show_ftlm else ''),
+                   font=dict(size=14, color='#111')))
+    _fig_pmc.update_xaxes(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111'))
+    _fig_pmc.update_yaxes(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111'))
+    _fig_pmc.update_yaxes(title_text='CTL/ATL/TSB', row=1, col=1)
+    _fig_pmc.update_yaxes(title_text='Load (TRIMP)', row=2, col=1)
+    st.plotly_chart(_fig_pmc, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
 
     # ── RESUMO PMC ──
     st.subheader("📊 Resumo PMC")
@@ -155,7 +165,7 @@ def tab_pmc(da):
         {'Métrica': 'ATL max histórico',    'Valor': f"{ld['ATL'].max():.1f}",
          'Interpretação': 'Pico de fadiga no período carregado.'},
     ])
-    st.dataframe(resumo, use_container_width=True, hide_index=True)
+    st.dataframe(resumo, width="stretch", hide_index=True)
 
     # ── FTLM — explicação + resultado atual ──
     st.subheader("🔁 FTLM — Fast Training Load Monitor")
@@ -191,3 +201,14 @@ O ATL usa sempre span=7 (fixo). O FTLM usa γ=`{best_g:.3f}`
 (equivalente a span≈{int(round(2/best_g - 1))}), **optimizado para os teus dados**,
 tornando-o mais sensível ao teu padrão específico de treino.
         """)
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 3 — VOLUME & CARGA
+# ════════════════════════════════════════════════════════════════════════════════
+
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# MÓDULO: tabs/tab_volume.py
+# ════════════════════════════════════════════════════════════════════════════
