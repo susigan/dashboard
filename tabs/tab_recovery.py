@@ -5,9 +5,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+from matplotlib.colors import LinearSegmentedColormap
 from datetime import datetime, timedelta
-import re as _re
 import warnings
 import sys, os as _os
 sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
@@ -34,15 +33,15 @@ def tab_recovery(dw):
     _fig_gen.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), height=340,
         legend=dict(orientation='h', y=-0.25, font=dict(color='#111')), hovermode='closest',
         xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')), yaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')))
-    st.plotly_chart(_fig_gen, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
+    st.plotly_chart(_fig_gen, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, key="recovery_chart_1")
     # TODO: chart content (converted from matplotlib)
 
     st.subheader("📊 HRV com Normal Range")
-    _fig_gen = go.Figure()
-    _fig_gen.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), height=340,
+    _fig_gen2 = go.Figure()
+    _fig_gen2.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), height=340,
         legend=dict(orientation='h', y=-0.25, font=dict(color='#111')), hovermode='closest',
         xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')), yaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')))
-    st.plotly_chart(_fig_gen, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
+    st.plotly_chart(_fig_gen2, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, key="recovery_chart_2")
     # TODO: chart content (converted from matplotlib)
 
     st.subheader("📊 BPE — Z-Score Semanal (Método SWC)")
@@ -68,22 +67,23 @@ def tab_recovery(dw):
     if dados_bpe:
         semanas = list(dados_bpe[list(dados_bpe.keys())[0]]['ano_semana'])
         nm = len(dados_bpe); mat = np.zeros((nm, len(semanas)))
+        nomes_bpe = {'hrv': 'HRV', 'rhr': 'RHR (inv)', 'sleep_quality': 'Sono',
+                     'fatiga': 'Energia', 'stress': 'Relaxamento'}
         for i, met in enumerate(dados_bpe.keys()):
             z = dados_bpe[met]['zscore'].values; mat[i, :len(z)] = (-z if met == 'rhr' else z)[:len(semanas)]
-        cmap = LinearSegmentedColormap.from_list('bpe', [CORES['vermelho'], CORES['amarelo'], CORES['verde']], N=100)
         import numpy as _npIM
         _zIM = [[float(mat[r][c]) if not _npIM.isnan(mat[r][c]) else None
                  for c in range(mat.shape[1])] for r in range(mat.shape[0])]
-        _yIM = list(nomes.values()) if 'nomes' in dir() else [str(i) for i in range(mat.shape[0])]
+        _yIM = list(nomes_bpe.values())
         _fIM = go.Figure(go.Heatmap(z=_zIM,
-            x=[str(s) for s in semanas.index] if 'semanas' in dir() else [],
+            x=[str(s) for s in semanas],
             y=_yIM, colorscale='RdYlGn', zmid=0, zmin=-2, zmax=2,
             colorbar=dict(title='Z', tickfont=dict(color='#111'))))
         _fIM.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), height=max(280, len(_yIM)*35),
             title=dict(text='BPE — Z-Score com SWC', font=dict(size=13,color='#111')),
             xaxis=dict(tickangle=-45, tickfont=dict(size=9,color='#111')),
             yaxis=dict(tickfont=dict(size=9,color='#111')))
-        st.plotly_chart(_fIM, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
+        st.plotly_chart(_fIM, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, key="recovery_chart_3")
 
     st.subheader("🏋️ HRV-Guided Training (LnrMSSD)")
     if len(dw) >= 14 and 'hrv' in dw.columns and dw['hrv'].notna().sum() >= 14:
@@ -98,11 +98,11 @@ def tab_recovery(dw):
         n_hg = st.slider("Dias HRV-Guided", 14, min(len(df_hg), 180), min(60, len(df_hg)))
         df_p = df_hg.tail(n_hg).copy(); xh = range(len(df_p)); dh = df_p['Data'].dt.strftime('%d/%m'); sh = max(1, len(xh) // 15)
         ch = [CORES['verde'] if i == 'HIIT' else CORES['laranja'] if i == 'Recuperação' else CORES['cinza'] for i in df_p['intens']]
-        _fig_gen = go.Figure()
-        _fig_gen.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), height=340,
+        _fig_gen3 = go.Figure()
+        _fig_gen3.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), height=340,
             legend=dict(orientation='h', y=-0.25, font=dict(color='#111')), hovermode='closest',
             xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')), yaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')))
-        st.plotly_chart(_fig_gen, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
+        st.plotly_chart(_fig_gen3, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, key="recovery_chart_4")
         # TODO: chart content (converted from matplotlib)
         df_val = df_hg[df_hg['bm'].notna()]
         if len(df_val) > 0:
@@ -111,13 +111,3 @@ def tab_recovery(dw):
             c1.metric("Dias HIIT", f"{hiit_n} ({hiit_n/total_n*100:.0f}%)")
             c2.metric("Dias Recuperação", f"{rec_n} ({rec_n/total_n*100:.0f}%)")
             c3.metric("Prescrição HOJE", '✅ HIIT' if df_val.iloc[-1]['intens'] == 'HIIT' else '🟠 Recuperação')
-
-# ════════════════════════════════════════════════════════════════════════════════
-# TAB 8 — WELLNESS
-# ════════════════════════════════════════════════════════════════════════════════
-
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# MÓDULO: tabs/tab_wellness.py
-# ════════════════════════════════════════════════════════════════════════════
