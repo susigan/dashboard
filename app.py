@@ -57,7 +57,16 @@ CORES_ATIV = {
     'Ski': '#9B59B6',  'WeightTraining': '#F39C12', 'Other': '#7F8C8D',
 }
 
-TYPE_MAP = {
+# Cores por modalidade — disponível globalmente em todas as tabs
+CORES_MOD = {
+    'Bike': CORES['vermelho'],
+    'Row':  CORES['azul'],
+    'Ski':  CORES.get('roxo', '#8e44ad'),
+    'Run':  CORES['verde'],
+    'WeightTraining': CORES['laranja'],
+}
+
+TYPPE_MAP = {
     'VirtualSki': 'Ski', 'AlpineSki': 'Ski', 'Ski': 'Ski', 'NordicSki': 'Ski',
     'VirtualRow': 'Row', 'Rowing': 'Row', 'Row': 'Row',
     'VirtualRide': 'Bike', 'Cycling': 'Bike', 'Ride': 'Bike',
@@ -2678,11 +2687,30 @@ def tab_eftp(da, mods_sel, da_full=None):
     _fe3=go.Figure()
     for mod in mods:
         dm3=df[df['type']==mod].sort_values('Data')
-        _ec='icu_eftp' if 'icu_eftp' in dm3.columns else None
+        _ec='icu_eftp' if 'icu_eftp' in dm3.columns else ecol
+        _cor = CORES_MOD.get(mod, get_cor(mod))
         if _ec and len(dm3)>0:
-            _fe3.add_trace(go.Scatter(x=dm3['Data'].tolist(),y=pd.to_numeric(dm3[_ec],errors='coerce').tolist(),mode='markers+lines',name=f'eFTP {mod}',marker=dict(size=4,color=CORES_MOD.get(mod,'gray')),line=dict(width=2,color=CORES_MOD.get(mod,'gray')),hovertemplate='%{x|%d/%m}: %{y:.0f}W<extra></extra>'))
-    _fe3.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20),height=360,title=dict(text='Evolução eFTP por Modalidade',font=dict(size=14,color='#111')),legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),hovermode='closest',xaxis=dict(title='Data',showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')),yaxis=dict(title='eFTP (W)',showgrid=True, gridcolor='#eee', linecolor='#ccc', tickfont=dict(color='#111')))
-    st.plotly_chart(_fe3,use_container_width=True,config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False, 'modeBarButtonsToRemove': []})
+            _fe3.add_trace(go.Scatter(
+                x=dm3['Data'].tolist(),
+                y=pd.to_numeric(dm3[_ec],errors='coerce').tolist(),
+                mode='markers+lines', name=f'eFTP {mod}',
+                marker=dict(size=4, color=_cor),
+                line=dict(width=2, color=_cor),
+                hovertemplate='%{x|%d/%m/%Y}: %{y:.0f}W<extra></extra>'))
+    _fe3.update_layout(
+        paper_bgcolor='white', plot_bgcolor='white',
+        font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20),
+        height=360,
+        title=dict(text='Evolução eFTP por Modalidade', font=dict(size=14,color='#111')),
+        legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),
+        hovermode='closest',
+        xaxis=dict(title='Data', showgrid=True, gridcolor='#eee',
+                   linecolor='#ccc', tickfont=dict(color='#111')),
+        yaxis=dict(title='eFTP (W)', showgrid=True, gridcolor='#eee',
+                   linecolor='#ccc', tickfont=dict(color='#111')))
+    st.plotly_chart(_fe3, use_container_width=True,
+                    config={'displayModeBar': False, 'responsive': True,
+                            'scrollZoom': False, 'modeBarButtonsToRemove': []})
 
     st.subheader("📦 RPE por Modalidade")
     if 'rpe' in da.columns:
@@ -8788,3 +8816,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
