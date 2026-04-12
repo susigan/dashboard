@@ -1530,7 +1530,7 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                     if '→' in v: return 'color:#7f8c8d'
                     return ''
                 delta_cols = [c for c in df_s.columns if c.startswith('Δ')]
-                return df_s.style.applymap(_c, subset=delta_cols) if delta_cols else df_s.style
+                return df_s.style.map(_c, subset=delta_cols) if delta_cols else df_s.style
 
             all_mods_pp = sorted(set(list(mes_p.keys()) + list(mes_pp.keys())))
             _cb1, _cb2 = st.columns(2)
