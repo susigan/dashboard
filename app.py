@@ -3,6 +3,10 @@
 # Ponto de entrada. Toda a lógica está em tabs/ e utils/
 # ══════════════════════════════════════════════════════════════════════════════
 
+import sys, os
+# Garante que o directório do app está no path — necessário no Streamlit Cloud
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 import streamlit as st
 st.set_page_config(
     page_title="ATHELTICA",
@@ -73,13 +77,13 @@ def main():
             if len(ar) > 0:
                 ar2 = ar.copy(); ar2['Data'] = ar2['Data'].astype(str)
                 cs = [c for c in ['Data','type','name','moving_time','rpe','power_avg','icu_eftp'] if c in ar2.columns]
-                st.dataframe(ar2[cs].sort_values('Data',ascending=False).head(5), hide_index=True)
+                st.dataframe(ar2[cs].sort_values('Data', ascending=False).head(5), hide_index=True)
         with c2:
             st.markdown("**Wellness**")
             if len(wr) > 0:
                 wr2 = wr.copy(); wr2['Data'] = wr2['Data'].astype(str)
                 cw = [c for c in ['Data','hrv','rhr','sleep_quality','fatiga','stress'] if c in wr2.columns]
-                st.dataframe(wr2[cw].sort_values('Data',ascending=False).head(5), hide_index=True)
+                st.dataframe(wr2[cw].sort_values('Data', ascending=False).head(5), hide_index=True)
 
     (tab1,tab2,tab3,tab4,tab5,tab6,tab7,
      tab8,tab9,tab10,tab11,tab12,tab13,tab14) = st.tabs([
