@@ -2416,30 +2416,29 @@ def tab_pmc(da):
         name='ATL (Fadiga)', line=dict(color=CORES['vermelho'], width=2.5),
         hovertemplate='ATL: %{y:.1f}<extra></extra>'), row=1, col=1)
 
-    # ── TSB fill ──
+    # ── TSB fill (filltozero funciona melhor em subplots) ──
     _tsb = ld_plot['TSB'].tolist()
     _tsb_pos = [v if v >= 0 else 0 for v in _tsb]
-    _tsb_neg = [v if v < 0 else 0 for v in _tsb]
-    _fig_pmc.add_trace(go.Scatter(x=_dates+_dates[::-1],
-        y=_tsb_pos+[0]*len(_dates),
-        fill='toself', fillcolor='rgba(39,174,96,0.20)',
-        line=dict(color='rgba(0,0,0,0)'), name='TSB+ (Forma)',
-        hoverinfo='skip'), row=1, col=1)
-    _fig_pmc.add_trace(go.Scatter(x=_dates+_dates[::-1],
-        y=_tsb_neg+[0]*len(_dates),
-        fill='toself', fillcolor='rgba(231,76,60,0.18)',
-        line=dict(color='rgba(0,0,0,0)'), name='TSB- (Fadiga)',
-        hoverinfo='skip'), row=1, col=1)
-    _fig_pmc.add_hline(y=0, line_dash='dash', line_color='#aaa',
+    _tsb_neg = [v if v <  0 else 0 for v in _tsb]
+    _fig_pmc.add_trace(go.Scatter(x=_dates, y=_tsb,
+        fill='tozeroy', fillcolor='rgba(39,174,96,0.15)',
+        line=dict(color='rgba(39,174,96,0.6)', width=1),
+        name='TSB (Forma/Fadiga)',
+        hovertemplate='TSB: %{y:.1f}<extra></extra>'), row=1, col=1)
+    _fig_pmc.add_hline(y=0, line_dash='dash', line_color='#999',
                        line_width=1, row=1, col=1)
 
-    # ── FTLM (eixo secundário) ──
+    # ── FTLM (normalizado para mesmo eixo que CTL/ATL) ──
     if show_ftlm:
-        _fig_pmc.add_trace(go.Scatter(x=_dates, y=ld_plot['FTLM'].tolist(),
-            name=f'FTLM (γ={best_g:.2f})',
+        # Normalizar FTLM para escala do CTL (evita eixo secundário em subplot)
+        _ctl_max = max(ld_plot['CTL'].max(), ld_plot['ATL'].max(), 1)
+        _ftlm_max = max(ld_plot['FTLM'].max(), 1)
+        _ftlm_norm = ld_plot['FTLM'] / _ftlm_max * _ctl_max * 0.85
+        _fig_pmc.add_trace(go.Scatter(x=_dates, y=_ftlm_norm.tolist(),
+            name=f'FTLM (γ={best_g:.2f}, norm)',
             line=dict(color=CORES['laranja'], width=2, dash='dash'),
-            opacity=0.85, yaxis='y3',
-            hovertemplate='FTLM: %{y:.1f}<extra></extra>'), row=1, col=1)
+            opacity=0.85,
+            hovertemplate='FTLM: %{y:.1f} (norm)<extra></extra>'), row=1, col=1)
 
     # ── Anotação CTL/ATL/TSB ──
     _u_ctl = float(u['CTL']); _u_atl = float(u['ATL']); _u_tsb = float(u['TSB'])
@@ -2463,7 +2462,7 @@ def tab_pmc(da):
             x=_dates, y=merged['trimp_val'].tolist(),
             name=tipo, marker_color=get_cor(tipo),
             marker_line_width=0, opacity=0.85,
-            hovertemplate=f'{tipo}: %{y:.0f}<extra></extra>'), row=2, col=1)
+            hovertemplate=tipo+': %{y:.0f}<extra></extra>'), row=2, col=1)
 
     _layout_pmc = dict(paper_bgcolor='white', plot_bgcolor='white',
         font=dict(color='#111', size=11),
@@ -2473,10 +2472,7 @@ def tab_pmc(da):
         margin=dict(t=50, b=60, l=55, r=40),
         title=dict(text='PMC — CTL / ATL / TSB' + (' / FTLM' if show_ftlm else ''),
                    font=dict(size=14, color='#111')))
-    if show_ftlm:
-        _layout_pmc['yaxis3'] = dict(overlaying='y', side='right',
-            title='FTLM', titlefont=dict(color=CORES['laranja']),
-            tickfont=dict(color=CORES['laranja']), showgrid=False)
+    # (FTLM normalizado — sem eixo secundário separado)
     _fig_pmc.update_layout(**_layout_pmc)
     _fig_pmc.update_xaxes(showgrid=True, gridcolor='#eee', linecolor='#ccc',
                           tickfont=dict(color='#111'))
