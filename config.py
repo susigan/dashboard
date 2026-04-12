@@ -1,16 +1,28 @@
-# config.py — ATHELTICA Dashboard
-# Constantes, cores, URLs, mapas de colunas
+import streamlit as st
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from matplotlib.lines import Line2D
+from matplotlib.colors import LinearSegmentedColormap
+import seaborn as sns
+import gspread
+from gspread_dataframe import get_as_dataframe
+from google.oauth2.service_account import Credentials
+from scipy import stats as scipy_stats
+from scipy.stats import pearsonr, linregress, spearmanr, theilslopes, kruskal, mannwhitneyu
+from itertools import combinations
+from datetime import datetime, timedelta
+import re
+import warnings
+warnings.filterwarnings('ignore')
+plt.style.use('seaborn-v0_8-whitegrid')
 
-# MÓDULO: config.py
-# ════════════════════════════════════════════════════════════════════════════
-
-# ════════════════════════════════════════════════════════════════════════════════
-# config.py — ATHELTICA Dashboard
-# Constantes, cores, mapeamentos de colunas
-# Editar aqui para alterar URLs, cores ou mapeamentos sem tocar noutros ficheiros.
-# ════════════════════════════════════════════════════════════════════════════════
-
+# ── URLs e credenciais ────────────────────────────────────────────────────────
 WELLNESS_URL  = "https://docs.google.com/spreadsheets/d/10pefcY6VI4Z45M8Y69D6JxIoqOkjzSlSpV1PMLXoYlI/edit#gid=286320937"
+FOOD_URL      = "https://docs.google.com/spreadsheets/d/10pefcY6VI4Z45M8Y69D6JxIoqOkjzSlSpV1PMLXoYlI/edit?usp=sharing"
 TRAINING_URL  = "https://docs.google.com/spreadsheets/d/1RE4SISd53WmAgQo8J-k2SE_OG0w5m4dbgLHvZHPxKvw/edit?usp=sharing"
 # Planilha Annual — AquecSki, AquecBike, AquecRow (igual ao original Python)
 ANNUAL_SPREADSHEET_ID = "1AEKhDrda9xhxRQA_1ty3z3oPELzH6oANa6L0cysJSMk"
@@ -35,7 +47,7 @@ TYPE_MAP = {
     'VirtualRow': 'Row', 'Rowing': 'Row', 'Row': 'Row',
     'VirtualRide': 'Bike', 'Cycling': 'Bike', 'Ride': 'Bike',
     'Bike': 'Bike', 'MountainBike': 'Bike', 'GravelRide': 'Bike',
-    'VirtualRun': 'Run', 'Running': 'Run', 'Run': 'Run', 'TrailRun': 'Run',
+    'VirtualRun': 'Run', 'Running': 'Run', 'Run': 'Run', 'TrailRun': 'Run', 'Treadmill': 'Run',
     'WeightTraining': 'WeightTraining',
 }
 VALID_TYPES = ['Bike', 'Row', 'Run', 'Ski', 'WeightTraining']
@@ -89,8 +101,23 @@ MAPA_TRAINING = {
     'icu_joules': ['icu_joules'], 'icu_weight': ['icu_weight'],
     'AllWorkFTP': ['AllWorkFTP'], 'WorkHourKgoverCP': ['WorkHourKgoverCP'],
     'WorkHour':   ['WorkHour'],
+    # ── 3-zone power model (desde 2023) ─────────────────────────────────
+    'z1_kj':  ['Z1KJ'],
+    'z2_kj':  ['Z2KJ'],
+    'z3_kj':  ['Z3KJ'],
+    'z1_pwr': ['Z1Pw'],
+    'z2_pwr': ['Z2pwr'],
+    'z3_pwr': ['ZPwr'],
+    'z1_sec': ['Z1sec'],
+    'z2_sec': ['Z2sec'],
+    'z3_sec': ['Z3sec'],
 }
 
-
-
-# ════════════════════════════════════════════════════════════════════════════
+# Cores por modalidade — global, disponível em todas as tabs
+CORES_MOD = {
+    'Bike': CORES['vermelho'],
+    'Row':  CORES['azul'],
+    'Ski':  CORES['roxo'],
+    'Run':  CORES['verde'],
+    'WeightTraining': CORES['laranja'],
+}
