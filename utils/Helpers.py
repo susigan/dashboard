@@ -1,4 +1,7 @@
 from utils.config import *
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+
 
 # ════════════════════════════════════════════════════════════════════════════
 # MÓDULO: utils/helpers.py
