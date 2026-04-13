@@ -27,22 +27,100 @@ def tab_recovery(dw):
     _cv7 = u.get('hrv_cv_7d', u.get('hrv_cv7', u.get('hrv_cv', None)))
     c4.metric("CV% 7d", f"{_cv7:.1f}%" if _cv7 is not None and pd.notna(_cv7) else "—")
     st.markdown("---")
+    
     n_dias = st.slider("Dias a mostrar", 14, min(len(rec), 365), min(90, len(rec)))
     df_tl = rec.tail(n_dias).copy()
+    
+    # GRÁFICO 1: Recovery Score ao longo do tempo
     _fig_gen = go.Figure()
-    _fig_gen.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), height=340,
-        legend=dict(orientation='h', y=-0.25, font=dict(color='#111')), hovermode='closest',
-        xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')), yaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')))
+    # ADICIONADO: Trace com dados reais
+    _fig_gen.add_trace(go.Scatter(
+        x=df_tl['Data'], 
+        y=df_tl['recovery_score'],
+        mode='lines+markers',
+        name='Recovery Score',
+        line=dict(color=CORES.get('azul', '#1f77b4'), width=2),
+        marker=dict(size=6)
+    ))
+    # Linha de referência em 80
+    _fig_gen.add_hline(y=80, line_dash="dash", line_color="green", annotation_text="Excelente")
+    _fig_gen.add_hline(y=60, line_dash="dash", line_color="orange", annotation_text="Bom")
+    _fig_gen.add_hline(y=40, line_dash="dash", line_color="red", annotation_text="Moderado")
+    
+    _fig_gen.update_layout(
+        title='Recovery Score ao longo do tempo',
+        paper_bgcolor='white', plot_bgcolor='white', 
+        font=dict(color='#111'), 
+        margin=dict(t=50,b=70,l=55,r=20), 
+        height=340,
+        legend=dict(orientation='h', y=-0.25, font=dict(color='#111')), 
+        hovermode='closest',
+        xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')), 
+        yaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111'), range=[0, 100])
+    )
     st.plotly_chart(_fig_gen, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, key="recovery_chart_1")
-    # TODO: chart content (converted from matplotlib)
 
     st.subheader("📊 HRV com Normal Range")
+    
+    # GRÁFICO 2: HRV com bandas de normalidade
     _fig_gen2 = go.Figure()
-    _fig_gen2.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), height=340,
-        legend=dict(orientation='h', y=-0.25, font=dict(color='#111')), hovermode='closest',
-        xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')), yaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')))
+    df_hrv = df_tl[['Data', 'hrv', 'hrv_baseline']].dropna()
+    
+    if len(df_hrv) > 0:
+        # Calcular bandas ±1 SD
+        hrv_mean = df_hrv['hrv'].mean()
+        hrv_std = df_hrv['hrv'].std()
+        
+        # HRV real
+        _fig_gen2.add_trace(go.Scatter(
+            x=df_hrv['Data'],
+            y=df_hrv['hrv'],
+            mode='lines+markers',
+            name='HRV',
+            line=dict(color=CORES.get('verde', '#2ecc71'), width=2)
+        ))
+        
+        # Baseline
+        _fig_gen2.add_trace(go.Scatter(
+            x=df_hrv['Data'],
+            y=df_hrv['hrv_baseline'],
+            mode='lines',
+            name='Baseline',
+            line=dict(color='gray', width=2, dash='dash')
+        ))
+        
+        # Bandas de normalidade
+        _fig_gen2.add_trace(go.Scatter(
+            x=df_hrv['Data'],
+            y=[hrv_mean + hrv_std] * len(df_hrv),
+            mode='lines',
+            name='+1 SD',
+            line=dict(color='rgba(0,0,0,0)', width=0),
+            showlegend=False
+        ))
+        _fig_gen2.add_trace(go.Scatter(
+            x=df_hrv['Data'],
+            y=[hrv_mean - hrv_std] * len(df_hrv),
+            mode='lines',
+            name='-1 SD',
+            line=dict(color='rgba(0,0,0,0)', width=0),
+            fill='tonexty',
+            fillcolor='rgba(46, 204, 113, 0.2)',
+            showlegend=False
+        ))
+    
+    _fig_gen2.update_layout(
+        title='HRV com Faixa Normal (±1 SD)',
+        paper_bgcolor='white', plot_bgcolor='white', 
+        font=dict(color='#111'), 
+        margin=dict(t=50,b=70,l=55,r=20), 
+        height=340,
+        legend=dict(orientation='h', y=-0.25, font=dict(color='#111')), 
+        hovermode='closest',
+        xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')), 
+        yaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111'))
+    )
     st.plotly_chart(_fig_gen2, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, key="recovery_chart_2")
-    # TODO: chart content (converted from matplotlib)
 
     st.subheader("📊 BPE — Z-Score Semanal (Método SWC)")
     mets_bpe = [m for m in ['hrv', 'rhr', 'sleep_quality', 'fatiga', 'stress'] if m in dw.columns and dw[m].notna().any()]
@@ -96,14 +174,67 @@ def tab_recovery(dw):
         df_hg['desvio'] = (df_hg['LnrMSSD'] - df_hg['bm']) / df_hg['bs']
         df_hg['intens'] = df_hg.apply(lambda r: 'HIIT' if pd.notna(r['bm']) and r['linf'] <= r['LnrMSSD'] <= r['lsup'] else ('Recuperação' if pd.notna(r['bm']) else 'Sem dados'), axis=1)
         n_hg = st.slider("Dias HRV-Guided", 14, min(len(df_hg), 180), min(60, len(df_hg)))
-        df_p = df_hg.tail(n_hg).copy(); xh = range(len(df_p)); dh = df_p['Data'].dt.strftime('%d/%m'); sh = max(1, len(xh) // 15)
-        ch = [CORES['verde'] if i == 'HIIT' else CORES['laranja'] if i == 'Recuperação' else CORES['cinza'] for i in df_p['intens']]
+        df_p = df_hg.tail(n_hg).copy()
+        
+        # GRÁFICO 4: HRV-Guided Training
         _fig_gen3 = go.Figure()
-        _fig_gen3.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), height=340,
-            legend=dict(orientation='h', y=-0.25, font=dict(color='#111')), hovermode='closest',
-            xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')), yaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')))
+        
+        if len(df_p) > 0:
+            # LnrMSSD
+            _fig_gen3.add_trace(go.Scatter(
+                x=df_p['Data'],
+                y=df_p['LnrMSSD'],
+                mode='lines+markers',
+                name='LnrMSSD',
+                line=dict(color='blue', width=2),
+                marker=dict(
+                    color=['green' if i == 'HIIT' else 'orange' if i == 'Recuperação' else 'gray' for i in df_p['intens']],
+                    size=8
+                )
+            ))
+            
+            # Bandas
+            _fig_gen3.add_trace(go.Scatter(
+                x=df_p['Data'],
+                y=df_p['lsup'],
+                mode='lines',
+                name='Limite Superior',
+                line=dict(color='green', width=1, dash='dash'),
+                showlegend=True
+            ))
+            _fig_gen3.add_trace(go.Scatter(
+                x=df_p['Data'],
+                y=df_p['linf'],
+                mode='lines',
+                name='Limite Inferior',
+                line=dict(color='green', width=1, dash='dash'),
+                fill='tonexty',
+                fillcolor='rgba(46, 204, 113, 0.1)',
+                showlegend=True
+            ))
+            
+            # Baseline
+            _fig_gen3.add_trace(go.Scatter(
+                x=df_p['Data'],
+                y=df_p['bm'],
+                mode='lines',
+                name='Baseline',
+                line=dict(color='gray', width=2)
+            ))
+        
+        _fig_gen3.update_layout(
+            title='HRV-Guided Training (LnrMSSD)',
+            paper_bgcolor='white', plot_bgcolor='white', 
+            font=dict(color='#111'), 
+            margin=dict(t=50,b=70,l=55,r=20), 
+            height=340,
+            legend=dict(orientation='h', y=-0.25, font=dict(color='#111')), 
+            hovermode='closest',
+            xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')), 
+            yaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111'))
+        )
         st.plotly_chart(_fig_gen3, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, key="recovery_chart_4")
-        # TODO: chart content (converted from matplotlib)
+        
         df_val = df_hg[df_hg['bm'].notna()]
         if len(df_val) > 0:
             hiit_n = (df_val['intens'] == 'HIIT').sum(); rec_n = (df_val['intens'] == 'Recuperação').sum(); total_n = len(df_val)
