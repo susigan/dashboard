@@ -99,27 +99,24 @@ def tab_recovery(dw):
         lambda x: calcular_slope(x), raw=False
     )
     
-    # 5. THRESHOLD BASEADO NO SWC (não no percentil)
-    # Plews usa o SWC individual para definir mudanças significativas
-    # Consideramos "redução significativa" quando Ln rMSSD < baseline - SWC
-    # e "aumento significativo" quando Ln rMSSD > baseline + SWC
+    # 5. LIMITES BASEADOS APENAS EM SWC (removido o 0.97 arbitrário)
+    df_hrv['limite_inferior'] = df_hrv['ln_baseline'] * (1 - df_hrv['SWC']/100)
+    df_hrv['limite_superior'] = df_hrv['ln_baseline'] * (1 + df_hrv['SWC']/100)
     
-    df_hrv['limite_inferior'] = df_hrv['ln_baseline'] - (df_hrv['SWC'] / 100 * df_hrv['ln_baseline'])
-    df_hrv['limite_superior'] = df_hrv['ln_baseline'] + (df_hrv['SWC'] / 100 * df_hrv['ln_baseline'])
-    
-    # 6. THRESHOLD DO CV% (adaptativo baseado no histórico do atleta)
-    # Plews 2012: NFOR associado a redução no CV% + declínio no Ln rMSSD
+    # 6. THRESHOLD DO CV% com SWC_CV (0.5 × CV do CV% histórico)
     cv_historico = df_hrv['cv_lnrmssd'].dropna()
     if len(cv_historico) > 20:
         cv_mean = cv_historico.mean()
         cv_std = cv_historico.std()
-        # Threshold: média - 0.5 SD (valores abaixo indicam baixa variabilidade)
-        CV_THRESHOLD = max(0.5, cv_mean - (0.5 * cv_std))
+        # SWC do CV% = 0.5 × (SD/Mean × 100)
+        cv_cv = (cv_std / cv_mean) * 100 if cv_mean > 0 else 0
+        SWC_CV = 0.5 * cv_cv
+        CV_THRESHOLD = cv_mean - SWC_CV  # Threshold para CV baixo
     else:
-        CV_THRESHOLD = 1.0
+        cv_mean = 1.0
+        CV_THRESHOLD = 0.5
     
     # Classificação das 4 zonas COM DETECÇÃO DE NFOR PLEWS (2012)
-    # NFOR = Redução no CV% (baixa variabilidade) + Declínio no Ln rMSSD (slope negativo)
     def classificar_zona_plews(row):
         ln = row['LnrMSSD']
         base_ln = row['ln_baseline']
@@ -130,37 +127,44 @@ def tab_recovery(dw):
         if pd.isna(cv) or pd.isna(base_ln) or pd.isna(swc):
             return 'Sem dados', '#808080'
         
-        # Cálculo do desvio em relação ao SWC (em %)
-        desvio_pct = ((ln - base_ln) / base_ln) * 100
-        swc_pct = swc
+        # Suprimido: abaixo de baseline - SWC (removido o 0.97 arbitrário)
+        suprimido = ln < (base_ln * (1 - swc/100))
         
-        # Verificar se está dentro da SWC (zona trivial)
-        dentro_swc = abs(desvio_pct) <= swc_pct
+        # Elevado: acima de baseline + SWC
+        elevado = ln > (base_ln * (1 + swc/100))
         
-        # DETECÇÃO DE NFOR (Plews 2012):
-        # CV% reduzido (abaixo do threshold) + Slope negativo (declínio contínuo)
+        # Normal: dentro da SWC
+        normal = not suprimido and not elevado
+        
+        # CV% baixo: abaixo do threshold (sistema "travado")
         cv_baixo = cv < CV_THRESHOLD
-        declinio = slope_7d < -0.01 if pd.notna(slope_7d) else False  # slope negativo significativo
         
-        # NFOR: Baixa variabilidade (sistema "travado") + declínio no HRV
-        if cv_baixo and declinio and ln < base_ln:
-            return 'NFOR (Overreaching)', '#8b0000'  # Vermelho escuro
+        # CV% alto: acima da média + SWC_CV (não implementado explicitamente, mas inferido)
+        cv_alto = cv > (cv_mean + (cv_mean - CV_THRESHOLD)) if cv_mean > 0 else cv > 2.0
         
-        # Accumulated Fatigue: Suprimido mas com variabilidade normal/baixa
-        if ln < (base_ln * (1 - swc_pct/100)) and not cv_baixo:
+        # Slope negativo significativo
+        declinio = slope_7d < -0.01 if pd.notna(slope_7d) else False
+        
+        # NFOR (Plews 2012): CV baixo + declínio + suprimido
+        if cv_baixo and declinio and suprimido:
+            return 'NFOR (Overreaching)', '#8b0000'
+        
+        # Accumulated Fatigue (CORRIGIDO): CV baixo + suprimido (sem declínio)
+        # Era: not cv_baixo (errado) | Agora: cv_baixo (correto)
+        if suprimido and cv_baixo and not declinio:
             return 'Accumulated Fatigue', '#e74c3c'
         
-        # Maladaptation: Alta variabilidade (CV alto) + suprimido
-        if not cv_baixo and ln < base_ln * 0.97:
+        # Maladaptation: CV alto + suprimido
+        if suprimido and cv_alto:
             return 'Maladaptation', '#f1c40f'
         
-        # Coping Well: Normal e dentro da SWC
-        if dentro_swc and not cv_baixo:
-            return 'Coping Well', '#27ae60'
-        
-        # Stable: Alta variabilidade mas dentro da baseline
-        if not cv_baixo and ln >= base_ln * 0.97:
+        # Stable: CV alto + normal
+        if normal and cv_alto:
             return 'Stable', '#2c3e50'
+        
+        # Coping Well: Normal e CV normal/baixo
+        if normal and not cv_alto:
+            return 'Coping Well', '#27ae60'
         
         return 'Transição', '#95a5a6'
     
@@ -177,7 +181,7 @@ def tab_recovery(dw):
         st.warning("Dados insuficientes após cálculos.")
         return
     
-    # GRÁFICO COMBINADO LnRMSSD + CV% + SLOPE (NOVO)
+    # GRÁFICO COMBINADO LnRMSSD + CV% + SLOPE
     fig = go.Figure()
     
     # Eixo Y esquerdo: LnRMSSD em pontos coloridos por zona
@@ -308,7 +312,7 @@ def tab_recovery(dw):
                    config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, 
                    key="recovery_plews_chart")
     
-    # Status atual com análise de NFOR - VERSÃO CORRIGIDA
+    # Status atual com análise de NFOR
     ultimo = df_plot.iloc[-1]
     
     st.markdown("### 📊 Status Atual (Método Plews et al.)")
@@ -322,14 +326,13 @@ def tab_recovery(dw):
         texto_branco = zona_status in ['NFOR (Overreaching)', 'Accumulated Fatigue', 'Stable']
         texto_cor = '#ffffff' if texto_branco else '#000000'
         
-        # Montar HTML de forma segura (sem variáveis vazias no meio)
+        # Montar HTML de forma segura
         html_status = f"""<div style="padding: 15px; border-radius: 10px; background-color: {cor_status}; border-left: 5px solid #ffffff;">"""
         html_status += f"""<h4 style="margin: 0; color: {texto_cor};">{zona_status}</h4>"""
         html_status += f"""<p style="margin: 5px 0 0 0; color: {texto_cor}; font-size: 12px;">"""
         html_status += f"""LnRMSSD: {ultimo['LnrMSSD']:.3f} | Baseline: {ultimo['ln_baseline']:.3f}<br>"""
         html_status += f"""SWC: ±{ultimo['SWC']:.2f}% | Slope 7d: {ultimo.get('slope_7d', 0):.4f}"""
         
-        # Só adiciona o alerta se for NFOR (evita tags vazias)
         if 'NFOR' in zona_status:
             html_status += f"""<br><b style="color: #ffffff; font-size: 16px;">⚠️ ALERTA CRÍTICO!</b>"""
         
@@ -351,7 +354,7 @@ def tab_recovery(dw):
         delta_texto = "Declínio ⚠️" if slope_val < -0.01 else "Estável/Aumento"
         st.metric("Tendência 7d", f"{slope_val:.4f}/dia", delta=delta_texto)
     
-    # Guia de Interpretação - CORRIGIDO com texto branco para contraste
+    # Guia de Interpretação
     st.markdown("""
     <style>
     .zona-box { padding: 10px; border-radius: 5px; margin-bottom: 10px; }
