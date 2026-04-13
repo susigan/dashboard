@@ -308,7 +308,7 @@ def tab_recovery(dw):
                    config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, 
                    key="recovery_plews_chart")
     
-    # Status atual com análise de NFOR - CORRIGIDO
+    # Status atual com análise de NFOR - VERSÃO CORRIGIDA
     ultimo = df_plot.iloc[-1]
     
     st.markdown("### 📊 Status Atual (Método Plews et al.)")
@@ -318,27 +318,27 @@ def tab_recovery(dw):
         cor_status = ultimo['cor_zona']
         zona_status = ultimo['zona']
         
-        # Determinar cor do texto baseada no fundo (contraste)
-        texto_cor = '#ffffff' if zona_status in ['NFOR (Overreaching)', 'Accumulated Fatigue', 'Stable'] else '#000000'
+        # Determinar cor do texto baseada no fundo
+        texto_branco = zona_status in ['NFOR (Overreaching)', 'Accumulated Fatigue', 'Stable']
+        texto_cor = '#ffffff' if texto_branco else '#000000'
         
-        alerta_nfor = ""
+        # Montar HTML de forma segura (sem variáveis vazias no meio)
+        html_status = f"""<div style="padding: 15px; border-radius: 10px; background-color: {cor_status}; border-left: 5px solid #ffffff;">"""
+        html_status += f"""<h4 style="margin: 0; color: {texto_cor};">{zona_status}</h4>"""
+        html_status += f"""<p style="margin: 5px 0 0 0; color: {texto_cor}; font-size: 12px;">"""
+        html_status += f"""LnRMSSD: {ultimo['LnrMSSD']:.3f} | Baseline: {ultimo['ln_baseline']:.3f}<br>"""
+        html_status += f"""SWC: ±{ultimo['SWC']:.2f}% | Slope 7d: {ultimo.get('slope_7d', 0):.4f}"""
+        
+        # Só adiciona o alerta se for NFOR (evita tags vazias)
         if 'NFOR' in zona_status:
-            alerta_nfor = "<br><b style='color: #ffffff; font-size: 16px;'>⚠️ ALERTA CRÍTICO!</b>"
+            html_status += f"""<br><b style="color: #ffffff; font-size: 16px;">⚠️ ALERTA CRÍTICO!</b>"""
         
-        st.markdown(f"""
-        <div style="padding: 15px; border-radius: 10px; background-color: {cor_status}; border-left: 5px solid {cor_status};">
-            <h4 style="margin: 0; color: {texto_cor};">{zona_status}</h4>
-            <p style="margin: 5px 0 0 0; color: {texto_cor}; font-size: 12px;">
-                LnRMSSD: {ultimo['LnrMSSD']:.3f} | Baseline: {ultimo['ln_baseline']:.3f}<br>
-                SWC: ±{ultimo['SWC']:.2f}% | Slope 7d: {ultimo.get('slope_7d', 0):.4f}
-                {alerta_nfor}
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
+        html_status += """</p></div>"""
+        
+        st.markdown(html_status, unsafe_allow_html=True)
     
     with cols[1]:
-        cv_atual = ultimo['cv_lnrmssd']
-        st.metric("CV% Atual", f"{cv_atual:.2f}%", 
+        st.metric("CV% Atual", f"{ultimo['cv_lnrmssd']:.2f}%", 
                  delta=f"Threshold: {CV_THRESHOLD:.2f}%")
     
     with cols[2]:
@@ -348,8 +348,8 @@ def tab_recovery(dw):
     
     with cols[3]:
         slope_val = ultimo.get('slope_7d', 0)
-        st.metric("Tendência 7d", f"{slope_val:.4f}/dia",
-                 delta="Declínio" if slope_val < -0.01 else "Estável/Aumento")
+        delta_texto = "Declínio ⚠️" if slope_val < -0.01 else "Estável/Aumento"
+        st.metric("Tendência 7d", f"{slope_val:.4f}/dia", delta=delta_texto)
     
     # Guia de Interpretação - CORRIGIDO com texto branco para contraste
     st.markdown("""
