@@ -184,28 +184,27 @@ def tab_recovery(dw):
             )
         ))
 
-    # ── Baseline (linha tracejada escura) ────────────────────────────────
+    # ── Baseline (linha tracejada ESCURA E GROSSA) ─────────────────────────
     fig.add_trace(go.Scatter(
         x=df_plot['Data'], y=df_plot['baseline'],
         name=f'Baseline ({baseline_w}d)',
-        line=dict(color='#2c3e50', width=2, dash='dash'),
+        line=dict(color='#2c3e50', width=4, dash='dash'),  # ← WIDTH 4 (era 2)
         hovertemplate='Baseline: %{y:.3f}<extra></extra>'
     ))
 
-    # ── SWC band: upper → lower com fill ─────────────────────────────────
+    # ── SWC band: maior opacidade ────────────────────────────────────────
     fig.add_trace(go.Scatter(
         x=df_plot['Data'], y=df_plot['upper'],
-        line=dict(color='rgba(44,62,80,0.25)', width=1),
+        line=dict(color='rgba(44,62,80,0.40)', width=1),  # ← opacidade 0.40
         showlegend=False, hoverinfo='skip'
     ))
     fig.add_trace(go.Scatter(
         x=df_plot['Data'], y=df_plot['lower'],
-        fill='tonexty', fillcolor='rgba(44,62,80,0.10)',
-        line=dict(color='rgba(44,62,80,0.25)', width=1),
+        fill='tonexty', fillcolor='rgba(44,62,80,0.20)',  # ← fill 0.20 (era 0.10)
+        line=dict(color='rgba(44,62,80,0.40)', width=1),  # ← opacidade 0.40
         name='SWC band',
         hovertemplate='SWC lower: %{y:.3f}<extra></extra>'
     ))
-
     # ── CV% no eixo Y2 ───────────────────────────────────────────────────
     fig.add_trace(go.Scatter(
         x=df_plot['Data'], y=df_plot['cv'],
@@ -215,22 +214,22 @@ def tab_recovery(dw):
         yaxis='y2',
         hovertemplate='CV%: %{y:.2f}%<extra></extra>'
     ))
-    # Threshold cv_low
+    # Threshold cv_low (LINHA GROSSA)
     fig.add_trace(go.Scatter(
         x=[df_plot['Data'].iloc[0], df_plot['Data'].iloc[-1]],
         y=[cv_low, cv_low],
         name=f'CV low ({cv_low:.2f}%)',
         yaxis='y2',
-        line=dict(color='#e67e22', width=1.5, dash='dot'),
+        line=dict(color='#e67e22', width=3, dash='dot'),  # ← WIDTH 3 (era 1.5)
         hoverinfo='skip'
     ))
-    # Threshold cv_high
+    # Threshold cv_high (LINHA GROSSA)
     fig.add_trace(go.Scatter(
         x=[df_plot['Data'].iloc[0], df_plot['Data'].iloc[-1]],
         y=[cv_high, cv_high],
         name=f'CV high ({cv_high:.2f}%)',
         yaxis='y2',
-        line=dict(color='#c0392b', width=1.5, dash='dot'),
+        line=dict(color='#c0392b', width=3, dash='dot'),  # ← WIDTH 3 (era 1.5)
         hoverinfo='skip'
     ))
 
@@ -248,7 +247,9 @@ def tab_recovery(dw):
                     bgcolor='rgba(255,255,255,0.9)'),
         yaxis=dict(title='LnRMSSD',
                    showgrid=True, gridcolor='#eee',
-                   tickfont=dict(color='#111')),
+                   tickfont=dict(color='#111'),
+                   range=[0, 8],              # ← EIXO FIXO 0-8
+                   dtick=1),                   # ← opcional: marca de 1 em 1
         yaxis2=dict(title=f'CV% ({janela_cv}d)',
                     overlaying='y', side='right',
                     showgrid=False,
@@ -257,10 +258,6 @@ def tab_recovery(dw):
                     range=[0, max(3.0, df_plot['cv'].max() * 1.3)]),
         xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111'))
     )
-    
-    st.plotly_chart(fig, use_container_width=True,
-                    config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False},
-                key="rec_main_chart")
 
     # ── Status actual ────────────────────────────────────────────────────
     ultimo = df_plot.iloc[-1]
