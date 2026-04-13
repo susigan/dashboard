@@ -140,32 +140,46 @@ def tab_recovery(dw):
         cv_baixo = cv < CV_THRESHOLD
         
         # CV% alto: acima da média + SWC_CV (não implementado explicitamente, mas inferido)
-        cv_alto = cv > (cv_mean + (cv_mean - CV_THRESHOLD)) if cv_mean > 0 else cv > 2.0
-        
-        # Slope negativo significativo
-        declinio = slope_7d < -0.01 if pd.notna(slope_7d) else False
-        
-        # NFOR (Plews 2012): CV baixo + declínio + suprimido
-        if cv_baixo and declinio and suprimido:
+        def classificar_zona_plews(row):
+        ln = row['LnrMSSD']
+        base = row['ln_baseline']
+        swc = row['SWC']
+        cv = row['cv_lnrmssd']
+        slope = row.get('slope_7d', np.nan)
+    
+        if pd.isna(cv) or pd.isna(base) or pd.isna(swc):
+            return 'Sem dados', '#808080'
+    
+        # SWC bounds
+        lower = base * (1 - swc/100)
+        upper = base * (1 + swc/100)
+    
+        suprimido = ln < lower
+        elevado = ln > upper
+        normal = not suprimido and not elevado
+    
+        # CV analysis
+        cv_baixo = cv < CV_THRESHOLD
+        cv_alto  = cv > (cv_mean + SWC_CV)
+    
+        declinio = slope < -0.01 if pd.notna(slope) else False
+    
+        # 🔴 NFOR (Plews)
+        if cv_baixo and declinio:
             return 'NFOR (Overreaching)', '#8b0000'
-        
-        # Accumulated Fatigue (CORRIGIDO): CV baixo + suprimido (sem declínio)
-        # Era: not cv_baixo (errado) | Agora: cv_baixo (correto)
-        if suprimido and cv_baixo and not declinio:
-            return 'Accumulated Fatigue', '#e74c3c'
-        
-        # Maladaptation: CV alto + suprimido
-        if suprimido and cv_alto:
-            return 'Maladaptation', '#f1c40f'
-        
-        # Stable: CV alto + normal
-        if normal and cv_alto:
-            return 'Stable', '#2c3e50'
-        
-        # Coping Well: Normal e CV normal/baixo
-        if normal and not cv_alto:
-            return 'Coping Well', '#27ae60'
-        
+    
+        # 🟠 Functional Overreaching (normal response)
+        if suprimido and not cv_baixo:
+            return 'Functional Overreaching', '#e67e22'
+    
+        # 🟡 Positive Adaptation
+        if normal and not declinio:
+            return 'Positive Adaptation', '#27ae60'
+    
+        # 🔵 High Variability (system responsive)
+        if cv_alto:
+            return 'High Variability', '#2c3e50'
+    
         return 'Transição', '#95a5a6'
     
     if 'rhr' in df_hrv.columns:
