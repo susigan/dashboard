@@ -234,7 +234,7 @@ def tab_recovery(dw):
         hoverinfo='skip'
     ))
 
-        fig.update_layout(
+    fig.update_layout(
         paper_bgcolor='white', plot_bgcolor='white',
         font=dict(color='#111', size=12),
         height=500, barmode='relative',
@@ -257,10 +257,10 @@ def tab_recovery(dw):
                     range=[0, max(3.0, df_plot['cv'].max() * 1.3)]),
         xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111'))
     )
-
+    
     st.plotly_chart(fig, use_container_width=True,
                     config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False},
-                    key="rec_main_chart")
+                key="rec_main_chart")
 
     # ── Status actual ────────────────────────────────────────────────────
     ultimo = df_plot.iloc[-1]
