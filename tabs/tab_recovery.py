@@ -308,7 +308,7 @@ def tab_recovery(dw):
                    config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, 
                    key="recovery_plews_chart")
     
-    # Status atual com análise de NFOR
+    # Status atual com análise de NFOR - CORRIGIDO
     ultimo = df_plot.iloc[-1]
     
     st.markdown("### 📊 Status Atual (Método Plews et al.)")
@@ -318,15 +318,17 @@ def tab_recovery(dw):
         cor_status = ultimo['cor_zona']
         zona_status = ultimo['zona']
         
-        # Alerta especial para NFOR
+        # Determinar cor do texto baseada no fundo (contraste)
+        texto_cor = '#ffffff' if zona_status in ['NFOR (Overreaching)', 'Accumulated Fatigue', 'Stable'] else '#000000'
+        
         alerta_nfor = ""
         if 'NFOR' in zona_status:
-            alerta_nfor = "<br><b style='color: #8b0000;'>⚠️ ALERTA: Possível Overreaching!</b>"
+            alerta_nfor = "<br><b style='color: #ffffff; font-size: 16px;'>⚠️ ALERTA CRÍTICO!</b>"
         
         st.markdown(f"""
-        <div style="padding: 15px; border-radius: 10px; background-color: {cor_status}20; border-left: 5px solid {cor_status};">
-            <h4 style="margin: 0; color: {cor_status};">{zona_status}</h4>
-            <p style="margin: 5px 0 0 0; color: #000000; font-size: 12px;">
+        <div style="padding: 15px; border-radius: 10px; background-color: {cor_status}; border-left: 5px solid {cor_status};">
+            <h4 style="margin: 0; color: {texto_cor};">{zona_status}</h4>
+            <p style="margin: 5px 0 0 0; color: {texto_cor}; font-size: 12px;">
                 LnRMSSD: {ultimo['LnrMSSD']:.3f} | Baseline: {ultimo['ln_baseline']:.3f}<br>
                 SWC: ±{ultimo['SWC']:.2f}% | Slope 7d: {ultimo.get('slope_7d', 0):.4f}
                 {alerta_nfor}
@@ -349,58 +351,66 @@ def tab_recovery(dw):
         st.metric("Tendência 7d", f"{slope_val:.4f}/dia",
                  delta="Declínio" if slope_val < -0.01 else "Estável/Aumento")
     
-    # Legenda explicativa atualizada com NFOR
-    st.markdown("---")
+    # Guia de Interpretação - CORRIGIDO com texto branco para contraste
     st.markdown("""
+    <style>
+    .zona-box { padding: 10px; border-radius: 5px; margin-bottom: 10px; }
+    .zona-coping { background-color: #27ae60; color: white; border-left: 4px solid #1e8449; }
+    .zona-stable { background-color: #2c3e50; color: white; border-left: 4px solid #1a252f; }
+    .zona-mal { background-color: #f1c40f; color: #000; border-left: 4px solid #d4ac0d; }
+    .zona-fatigue { background-color: #e74c3c; color: white; border-left: 4px solid #c0392b; }
+    .zona-nfor { background-color: #8b0000; color: white; border-left: 4px solid #5c0000; }
+    </style>
+    
     ### 📖 Guia de Interpretação (Baseado em Plews et al. 2012, 2016)
     
     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px;">
     
-    <div style="padding: 10px; background-color: #27ae6020; border-left: 4px solid #27ae60; border-radius: 5px;">
-        <b style="color: #27ae60;">🟢 Coping Well</b><br>
-        <span style="color: #000000; font-size: 12px;">
+    <div class="zona-box zona-coping">
+        <b>🟢 Coping Well</b><br>
+        <span style="font-size: 12px;">
         Dentro da SWC (±0.5×CV) + variabilidade normal<br>
         <b>Ação:</b> Continue o treino planejado
         </span>
     </div>
     
-    <div style="padding: 10px; background-color: #2c3e5020; border-left: 4px solid #2c3e50; border-radius: 5px;">
-        <b style="color: #2c3e50;">⚫ Stable</b><br>
-        <span style="color: #000000; font-size: 12px;">
+    <div class="zona-box zona-stable">
+        <b>⚫ Stable</b><br>
+        <span style="font-size: 12px;">
         Alta variabilidade (CV% alto) + LnRMSSD normal<br>
         <b>Ação:</b> Monitore, sistema responsivo
         </span>
     </div>
     
-    <div style="padding: 10px; background-color: #f1c40f20; border-left: 4px solid #f1c40f; border-radius: 5px;">
-        <b style="color: #d4ac0d;">🟡 Maladaptation</b><br>
-        <span style="color: #000000; font-size: 12px;">
+    <div class="zona-box zona-mal">
+        <b>🟡 Maladaptation</b><br>
+        <span style="font-size: 12px;">
         Alta variabilidade + LnRMSSD suprimido (>SWC)<br>
         <b>Ação:</b> Reduza intensidade, estresse agudo
         </span>
     </div>
     
-    <div style="padding: 10px; background-color: #e74c3c20; border-left: 4px solid #e74c3c; border-radius: 5px;">
-        <b style="color: #e74c3c;">🔴 Accumulated Fatigue</b><br>
-        <span style="color: #000000; font-size: 12px;">
+    <div class="zona-box zona-fatigue">
+        <b>🔴 Accumulated Fatigue</b><br>
+        <span style="font-size: 12px;">
         CV% normal + LnRMSSD suprimido continuamente<br>
         <b>Ação:</b> Descanso prioritário
         </span>
     </div>
     
-    <div style="padding: 10px; background-color: #8b000020; border-left: 4px solid #8b0000; border-radius: 5px; grid-column: 1 / -1;">
-        <b style="color: #8b0000;">⚠️ NFOR (Non-Functional Overreaching)</b><br>
-        <span style="color: #000000; font-size: 12px;">
+    <div class="zona-box zona-nfor" style="grid-column: 1 / -1;">
+        <b>⚠️ NFOR (Non-Functional Overreaching)</b><br>
+        <span style="font-size: 12px;">
         <b>CV% reduzido</b> (sistema "travado") + <b>Declínio contínuo</b> (slope negativo) + LnRMSSD abaixo da SWC<br>
-        <b>Ação:</b> PARAR treino intensidade! Risco de overtraining e doenças (herpes zoster, etc.) conforme Plews 2012.
+        <b>Ação:</b> PARAR treino intensidade! Risco de overtraining conforme Plews 2012.
         </span>
     </div>
     
     </div>
     
-    <p style="margin-top: 15px; font-size: 12px; color: #555;">
-    <b>Referência:</b> Plews DJ, et al. (2012). Heart rate variability in elite triathletes: is variation in variability the key to effective training? 
-    <i>Eur J Appl Physiol</i>. 112:3729-3741.
+    <p style="margin-top: 15px; font-size: 11px; color: #666; font-style: italic;">
+    Referência: Plews DJ, et al. (2012). Heart rate variability in elite triathletes: is variation in variability the key to effective training? 
+    Eur J Appl Physiol. 112:3729-3741.
     </p>
     """, unsafe_allow_html=True)
     
