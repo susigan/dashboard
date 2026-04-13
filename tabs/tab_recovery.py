@@ -397,8 +397,17 @@ def tab_recovery(dw):
             margin=dict(t=50, b=70, l=60, r=40),
             height=340,
             legend=dict(orientation='h', y=-0.25, font=dict(color='#000000')),
-            xaxis=dict(showgrid=True, gridcolor='#e0e0e0', tickfont=dict(color='#000000'), titlefont=dict(color='#000000')),
-            yaxis=dict(showgrid=True, gridcolor='#e0e0e0', tickfont=dict(color='#000000'), titlefont=dict(color='#000000'), title='LnRMSSD')
+            xaxis=dict(
+                showgrid=True, 
+                gridcolor='#e0e0e0', 
+                tickfont=dict(color='#000000'),
+                title=dict(font=dict(color='#000000'))  # CORRIGIDO: titlefont → title + font
+            ),
+            yaxis=dict(
+                showgrid=True, 
+                gridcolor='#e0e0e0', 
+                tickfont=dict(color='#000000'), 
+                title=dict(text='LnRMSSD', font=dict(color='#000000'))
         )
         
         st.plotly_chart(_fig_hg, use_container_width=True, 
