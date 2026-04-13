@@ -389,6 +389,7 @@ def tab_recovery(dw):
                 name='Baseline', line=dict(color='#34495e', width=2)
             ))
         
+        # ✅ CÓDIGO CORRIGIDO - HRV-Guided Training
         _fig_hg.update_layout(
             title=dict(text='HRV-Guided Training', font=dict(color='#000000')),
             paper_bgcolor='white',
@@ -401,13 +402,14 @@ def tab_recovery(dw):
                 showgrid=True, 
                 gridcolor='#e0e0e0', 
                 tickfont=dict(color='#000000'),
-                title=dict(font=dict(color='#000000'))  # CORRIGIDO: titlefont → title + font
+                title=dict(font=dict(color='#000000'))  # ✅ CORRIGIDO: titlefont removido
             ),
             yaxis=dict(
                 showgrid=True, 
                 gridcolor='#e0e0e0', 
                 tickfont=dict(color='#000000'), 
-                title=dict(text='LnRMSSD', font=dict(color='#000000'))
+                title=dict(text='LnRMSSD', font=dict(color='#000000'))  # ✅ CORRIGIDO: title + font aninhado
+            )
         )
         
         st.plotly_chart(_fig_hg, use_container_width=True, 
