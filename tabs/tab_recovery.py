@@ -16,20 +16,28 @@ warnings.filterwarnings('ignore')
 
 def tab_recovery(dw):
     st.header("🔋 Recovery Score & HRV Analysis")
-    if len(dw) == 0 or 'hrv' not in dw.columns: st.warning("Sem dados de wellness/HRV."); return
+    if len(dw) == 0 or 'hrv' not in dw.columns: 
+        st.warning("Sem dados de wellness/HRV.")
+        return
+    
     rec = calcular_recovery(dw)
-    if len(rec) == 0: return
-    u = rec.iloc[-1]; score = u['recovery_score']
+    if len(rec) == 0: 
+        return
+    
+    u = rec.iloc[-1]
+    score = u['recovery_score']
     cat = ('🟢 Excelente' if score >= 80 else '🟡 Bom' if score >= 60 else '🟠 Moderado' if score >= 40 else '🔴 Baixo')
+    
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Recovery Score", f"{score:.0f}/100", delta=cat)
     c2.metric("HRV atual", f"{u['hrv']:.0f} ms" if pd.notna(u['hrv']) else "—")
     c3.metric("Baseline HRV", f"{u['hrv_baseline']:.0f} ms" if pd.notna(u['hrv_baseline']) else "—")
     _cv7 = u.get('hrv_cv_7d', u.get('hrv_cv7', u.get('hrv_cv', None)))
     c4.metric("CV% 7d", f"{_cv7:.1f}%" if _cv7 is not None and pd.notna(_cv7) else "—")
+    
     st.markdown("---")
     
-    # Configurações de janela
+    # Configurações
     col1, col2 = st.columns(2)
     with col1:
         n_dias = st.slider("Dias a mostrar", 14, min(len(dw), 365), min(90, len(dw)), key="dias_hrv")
@@ -53,7 +61,7 @@ def tab_recovery(dw):
         st.warning("Dados insuficientes após filtrar HRV válido.")
         return
     
-    # Baseline de 60 dias (média móvel)
+    # Baseline de 60 dias
     baseline_dias = 60
     df_hrv['ln_baseline'] = df_hrv['LnrMSSD'].rolling(baseline_dias, min_periods=14).mean()
     df_hrv['ln_std'] = df_hrv['LnrMSSD'].rolling(baseline_dias, min_periods=14).std()
@@ -63,29 +71,65 @@ def tab_recovery(dw):
     df_hrv['ln_std_short'] = df_hrv['LnrMSSD'].rolling(janela_cv, min_periods=3).std()
     df_hrv['cv_lnrmssd'] = (df_hrv['ln_std_short'] / df_hrv['ln_mean_short']) * 100
     
-    # Classificação das 4 zonas (modelo Altini)
-    # Threshold CV% = 1.0 (baseado na literatura de HRV)
-    CV_THRESHOLD = 1.0
+    # THRESHOLD ADAPTATIVO: Percentil 75 do CV% histórico do usuário
+    # Usar dados históricos completos (não só o período filtrado)
+    dw_full = dw.copy()
+    dw_full['LnrMSSD_full'] = np.where(dw_full['hrv'] > 0, np.log(dw_full['hrv']), np.nan)
+    dw_full = dw_full.dropna(subset=['LnrMSSD_full'])
     
+    if len(dw_full) >= janela_cv + 10:
+        dw_full['ln_mean_temp'] = dw_full['LnrMSSD_full'].rolling(janela_cv, min_periods=3).mean()
+        dw_full['ln_std_temp'] = dw_full['LnrMSSD_full'].rolling(janela_cv, min_periods=3).std()
+        dw_full['cv_temp'] = (dw_full['ln_std_temp'] / dw_full['ln_mean_temp']) * 100
+        cv_historico = dw_full['cv_temp'].dropna()
+        
+        if len(cv_historico) > 20:
+            # Percentil 75 como threshold (mais conservador que média)
+            CV_THRESHOLD = np.percentile(cv_historico, 75)
+            # Limites práticos baseados na literatura
+            CV_THRESHOLD = max(0.8, min(CV_THRESHOLD, 2.0))
+        else:
+            CV_THRESHOLD = 1.0  # Default se poucos dados
+    else:
+        CV_THRESHOLD = 1.0  # Default
+    
+    # Classificação das 4 zonas (modelo Altini atualizado)
+    # Verificar também RHR se disponível
     def classificar_zona(row):
         cv = row['cv_lnrmssd']
         ln = row['LnrMSSD']
-        base = row['ln_baseline']
+        base_ln = row['ln_baseline']
         
-        if pd.isna(cv) or pd.isna(base):
+        # RHR se disponível
+        rhr = row.get('rhr', np.nan)
+        base_rhr = row.get('rhr_baseline', np.nan)
+        
+        if pd.isna(cv) or pd.isna(base_ln):
             return 'Sem dados', '#808080'
         
-        cv_estavel = cv < CV_THRESHOLD
-        ln_normal = ln >= base * 0.98  # 2% de tolerância abaixo do baseline
+        cv_alto = cv > CV_THRESHOLD
+        ln_baixo = ln < base_ln * 0.97  # 3% abaixo do baseline
+        rhr_alto = False
+        if not pd.isna(rhr) and not pd.isna(base_rhr) and base_rhr > 0:
+            rhr_alto = rhr > base_rhr * 1.03  # 3% acima do baseline
         
-        if cv_estavel and ln_normal:
-            return 'Coping Well', '#27ae60'      # Verde
-        elif cv_estavel and not ln_normal:
-            return 'Fatigue', '#f39c12'          # Amarelo/Laranja
-        elif not cv_estavel and ln_normal:
-            return 'Stable', '#3498db'           # Azul
+        # Lógica das 4 zonas segundo descrição oficial:
+        if not cv_alto and not ln_baixo:
+            # CV baixo + LnRMSSD normal/alto = Coping well
+            return 'Coping Well', '#27ae60'  # Verde
+        elif cv_alto and (ln_baixo or rhr_alto):
+            # CV alto + (LnRMSSD baixo ou RHR alto) = Maladaptation
+            return 'Maladaptation', '#f1c40f'  # Amarelo
+        elif not cv_alto and ln_baixo:
+            # CV baixo + LnRMSSD baixo = Accumulated fatigue
+            return 'Accumulated Fatigue', '#e74c3c'  # Vermelho
         else:
-            return 'Maladaptation', '#e74c3c'    # Vermelho
+            # CV alto + LnRMSSD normal = Stable
+            return 'Stable', '#2c3e50'  # Cinza escuro
+    
+    # Calcular baseline RHR se disponível
+    if 'rhr' in df_hrv.columns:
+        df_hrv['rhr_baseline'] = df_hrv['rhr'].rolling(baseline_dias, min_periods=14).mean()
     
     df_hrv[['zona', 'cor_zona']] = df_hrv.apply(
         lambda row: pd.Series(classificar_zona(row)), axis=1
@@ -97,102 +141,16 @@ def tab_recovery(dw):
         st.warning("Dados insuficientes após cálculos.")
         return
     
-    # Criar figura com subplots
-    fig = make_subplots(
-        rows=2, cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.08,
-        subplot_titles=(
-            f'CV% LnRMSSD ({janela_cv}d) com Baseline ({baseline_dias}d) — Threshold: {CV_THRESHOLD}%',
-            'LnRMSSD com Classificação de Status (Altini et al.)'
-        ),
-        row_heights=[0.4, 0.6]
-    )
+    # GRÁFICO COMBINADO: CV% (linha, eixo Y direito) + LnRMSSD (pontos, eixo Y esquerdo)
+    fig = go.Figure()
     
-    # === GRÁFICO 1: CV% LnRMSSD ===
-    # Linha do CV%
-    fig.add_trace(
-        go.Scatter(
-            x=df_plot['Data'],
-            y=df_plot['cv_lnrmssd'],
-            mode='lines',
-            name=f'CV% ({janela_cv}d)',
-            line=dict(color='#2c3e50', width=2),
-            hovertemplate='Data: %{x}<br>CV%: %{y:.2f}%<extra></extra>'
-        ),
-        row=1, col=1
-    )
-    
-    # Threshold 1.0%
-    fig.add_hline(
-        y=CV_THRESHOLD, 
-        line_dash="dash", 
-        line_color="red", 
-        line_width=2,
-        annotation_text=f"Threshold CV% = {CV_THRESHOLD}%",
-        annotation_position="right",
-        row=1, col=1
-    )
-    
-    # Zona ideal (abaixo de 1.0%)
-    fig.add_hrect(
-        y0=0, 
-        y1=CV_THRESHOLD,
-        fillcolor="green", 
-        opacity=0.1,
-        line_width=0,
-        row=1, col=1
-    )
-    
-    # === GRÁFICO 2: LnRMSSD com pontos coloridos ===
-    # Linha de baseline
-    fig.add_trace(
-        go.Scatter(
-            x=df_plot['Data'],
-            y=df_plot['ln_baseline'],
-            mode='lines',
-            name=f'Baseline ({baseline_dias}d)',
-            line=dict(color='gray', width=2, dash='dash'),
-            hovertemplate='Data: %{x}<br>Baseline: %{y:.3f}<extra></extra>'
-        ),
-        row=2, col=1
-    )
-    
-    # Banda de ±1 SD do baseline
-    fig.add_trace(
-        go.Scatter(
-            x=df_plot['Data'],
-            y=df_plot['ln_baseline'] + df_plot['ln_std'],
-            mode='lines',
-            name='+1 SD',
-            line=dict(color='rgba(0,0,0,0)', width=0),
-            showlegend=False,
-            hoverinfo='skip'
-        ),
-        row=2, col=1
-    )
-    
-    fig.add_trace(
-        go.Scatter(
-            x=df_plot['Data'],
-            y=df_plot['ln_baseline'] - df_plot['ln_std'],
-            mode='lines',
-            name='-1 SD',
-            line=dict(color='rgba(0,0,0,0)', width=0),
-            fill='tonexty',
-            fillcolor='rgba(128, 128, 128, 0.15)',
-            showlegend=True,
-            hoverinfo='skip'
-        ),
-        row=2, col=1
-    )
-    
-    # Pontos LnRMSSD coloridos por zona
-    for zona, cor in [
-        ('Coping Well', '#27ae60'),
-        ('Fatigue', '#f39c12'),
-        ('Stable', '#3498db'),
-        ('Maladaptation', '#e74c3c')
+    # Eixo Y esquerdo: LnRMSSD em pontos coloridos por zona
+    for zona, cor, descricao in [
+        ('Coping Well', '#27ae60', 'Bem - continue o plano'),
+        ('Stable', '#2c3e50', 'Estável - monitore'),
+        ('Maladaptation', '#f1c40f', 'Maladaptação - reduza carga'),
+        ('Accumulated Fatigue', '#e74c3c', 'Fadiga acumulada - descanse'),
+        ('Sem dados', '#808080', 'Sem classificação')
     ]:
         df_zona = df_plot[df_plot['zona'] == zona]
         if len(df_zona) > 0:
@@ -201,112 +159,324 @@ def tab_recovery(dw):
                     x=df_zona['Data'],
                     y=df_zona['LnrMSSD'],
                     mode='markers',
-                    name=zona,
+                    name=f'{zona}',
                     marker=dict(
                         color=cor,
-                        size=10,
-                        line=dict(width=1, color='white')
+                        size=12,
+                        line=dict(width=2, color='white'),
+                        symbol='circle'
                     ),
-                    hovertemplate=f'<b>{zona}</b><br>Data: %{{x}}<br>LnRMSSD: %{{y:.3f}}<br>CV%: %{{customdata:.2f}}%<extra></extra>',
+                    yaxis='y1',
+                    hovertemplate=f'<b>{zona}</b><br>{descricao}<br>Data: %{{x}}<br>LnRMSSD: %{{y:.3f}}<br>CV%: %{{customdata:.2f}}%<extra></extra>',
                     customdata=df_zona['cv_lnrmssd']
-                ),
-                row=2, col=1
+                )
             )
     
-    # Layout geral
+    # Linha de baseline LnRMSSD
+    fig.add_trace(
+        go.Scatter(
+            x=df_plot['Data'],
+            y=df_plot['ln_baseline'],
+            mode='lines',
+            name=f'Baseline LnRMSSD ({baseline_dias}d)',
+            line=dict(color='#34495e', width=2, dash='dash'),
+            yaxis='y1',
+            hovertemplate='Data: %{x}<br>Baseline: %{y:.3f}<extra></extra>'
+        )
+    )
+    
+    # Banda de ±1 SD do baseline
+    fig.add_trace(
+        go.Scatter(
+            x=df_plot['Data'],
+            y=df_plot['ln_baseline'] + df_plot['ln_std'],
+            mode='lines',
+            name='±1 SD',
+            line=dict(color='rgba(52, 73, 94, 0.3)', width=1),
+            yaxis='y1',
+            showlegend=False,
+            hoverinfo='skip'
+        )
+    )
+    
+    fig.add_trace(
+        go.Scatter(
+            x=df_plot['Data'],
+            y=df_plot['ln_baseline'] - df_plot['ln_std'],
+            mode='lines',
+            line=dict(color='rgba(52, 73, 94, 0.3)', width=1),
+            fill='tonexty',
+            fillcolor='rgba(52, 73, 94, 0.1)',
+            yaxis='y1',
+            showlegend=True,
+            name='Faixa normal (±1 SD)',
+            hoverinfo='skip'
+        )
+    )
+    
+    # Eixo Y direito: CV% em linha
+    fig.add_trace(
+        go.Scatter(
+            x=df_plot['Data'],
+            y=df_plot['cv_lnrmssd'],
+            mode='lines+markers',
+            name=f'CV% LnRMSSD ({janela_cv}d)',
+            line=dict(color='#e67e22', width=2),
+            marker=dict(size=6, symbol='diamond'),
+            yaxis='y2',
+            hovertemplate='Data: %{x}<br>CV%: %{y:.2f}%<extra></extra>'
+        )
+    )
+    
+    # Threshold adaptativo
+    fig.add_hline(
+        y=CV_THRESHOLD, 
+        line_dash="dash", 
+        line_color="#c0392b", 
+        line_width=2,
+        annotation_text=f"Threshold CV% = {CV_THRESHOLD:.2f}% (P75 histórico)",
+        annotation_position="right",
+        annotation_font_color='#000000',
+        yaxis='y2'
+    )
+    
+    # Zona abaixo do threshold (ideal)
+    fig.add_hrect(
+        y0=0, 
+        y1=CV_THRESHOLD,
+        fillcolor="green", 
+        opacity=0.05,
+        line_width=0,
+        yaxis='y2'
+    )
+    
+    # Layout com eixos duplos - TODOS OS TEXTOS EM PRETO
     fig.update_layout(
+        title=dict(
+            text=f'LnRMSSD (pontos) + CV% (linha) — Threshold adaptativo: {CV_THRESHOLD:.2f}%',
+            font=dict(color='#000000', size=14)
+        ),
         paper_bgcolor='white',
         plot_bgcolor='white',
-        font=dict(color='#111', size=12),
-        margin=dict(t=80, b=70, l=60, r=40),
-        height=600,
+        font=dict(color='#000000', size=12),
+        margin=dict(t=80, b=100, l=80, r=80),
+        height=500,
         showlegend=True,
         legend=dict(
             orientation='h',
-            y=-0.15,
+            y=-0.2,
             x=0.5,
             xanchor='center',
-            font=dict(size=11)
+            font=dict(color='#000000', size=10),
+            bgcolor='rgba(255,255,255,0.9)'
         ),
-        hovermode='x unified'
+        hovermode='x unified',
+        # Eixo Y esquerdo (LnRMSSD)
+        yaxis=dict(
+            title=dict(text='LnRMSSD', font=dict(color='#000000')),
+            titlefont=dict(color='#000000'),
+            tickfont=dict(color='#000000'),
+            showgrid=True,
+            gridcolor='#e0e0e0',
+            side='left'
+        ),
+        # Eixo Y direito (CV%)
+        yaxis2=dict(
+            title=dict(text=f'CV% ({janela_cv}d)', font=dict(color='#000000')),
+            titlefont=dict(color='#000000'),
+            tickfont=dict(color='#000000'),
+            overlaying='y',
+            side='right',
+            showgrid=False,
+            range=[0, max(2.5, df_plot['cv_lnrmssd'].max() * 1.3, CV_THRESHOLD * 1.5)]
+        ),
+        # Eixo X
+        xaxis=dict(
+            title=dict(text='Data', font=dict(color='#000000')),
+            titlefont=dict(color='#000000'),
+            tickfont=dict(color='#000000'),
+            showgrid=True,
+            gridcolor='#e0e0e0'
+        )
     )
     
-    # Eixos Y
-    fig.update_yaxes(
-        title_text=f'CV% LnRMSSD ({janela_cv}d)',
-        showgrid=True, 
-        gridcolor='#eee',
-        tickfont=dict(color='#111'),
-        range=[0, max(2.5, df_plot['cv_lnrmssd'].max() * 1.2)],
-        row=1, col=1
-    )
+    st.plotly_chart(fig, use_container_width=True, 
+                   config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, 
+                   key="recovery_altini_chart")
     
-    fig.update_yaxes(
-        title_text='LnRMSSD',
-        showgrid=True, 
-        gridcolor='#eee',
-        tickfont=dict(color='#111'),
-        row=2, col=1
-    )
+    # Status atual em cards coloridos
+    ultimo = df_plot.iloc[-1]
     
-    fig.update_xaxes(
-        showgrid=True,
-        gridcolor='#eee',
-        tickfont=dict(color='#111'),
-        row=2, col=1
-    )
+    st.markdown("### 📊 Status Atual")
+    cols = st.columns([2, 1, 1, 1])
     
-    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, key="recovery_altini_chart")
+    with cols[0]:
+        cor_status = ultimo['cor_zona']
+        zona_status = ultimo['zona']
+        
+        st.markdown(f"""
+        <div style="padding: 15px; border-radius: 10px; background-color: {cor_status}20; border-left: 5px solid {cor_status};">
+            <h4 style="margin: 0; color: {cor_status};">{zona_status}</h4>
+            <p style="margin: 5px 0 0 0; color: #000000; font-size: 12px;">
+                CV%: {ultimo['cv_lnrmssd']:.2f}% | 
+                LnRMSSD: {ultimo['LnrMSSD']:.3f} | 
+                Baseline: {ultimo['ln_baseline']:.3f}
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with cols[1]:
+        st.metric("CV% Atual", f"{ultimo['cv_lnrmssd']:.2f}%", 
+                 delta=f"Threshold: {CV_THRESHOLD:.2f}%")
+    
+    with cols[2]:
+        ln_pct = (ultimo['LnrMSSD'] / ultimo['ln_baseline'] - 1) * 100
+        st.metric("LnRMSSD vs Base", f"{ln_pct:+.1f}%")
+    
+    with cols[3]:
+        st.metric("Threshold", f"{CV_THRESHOLD:.2f}%", 
+                 delta="Adaptativo (P75)")
     
     # Legenda explicativa
     st.markdown("""
-    ### 📊 Interpretação das Zonas (Modelo Altini et al.)
+    ### 📖 Guia de Interpretação (Modelo Altini)
     
-    | Zona | Cor | Condição | Interpretação |
-    |------|-----|----------|---------------|
-    | **🟢 Coping Well** | Verde | CV% < 1.0% + LnRMSSD ≥ baseline | **Recuperando bem** — pronto para carga de treino |
-    | **🟡 Fatigue** | Amarelo | CV% < 1.0% + LnRMSSD < baseline | **Fadiga funcional** — necessita descanso ativo |
-    | **🔵 Stable** | Azul | CV% ≥ 1.0% + LnRMSSD ≥ baseline | **Variável mas estável** — monitorar, carga moderada |
-    | **🔴 Maladaptation** | Vermelho | CV% ≥ 1.0% + LnRMSSD < baseline | **Estresse crônico** — risco de overtraining, descanso obrigatório |
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px;">
     
-    **Threshold CV% = 1.0%** — baseado em literatura de HRV (Flatt & Esco, 2016; Altini, 2020)
-    """)
+    <div style="padding: 10px; background-color: #27ae6020; border-left: 4px solid #27ae60; border-radius: 5px;">
+        <b style="color: #27ae60;">🟢 Coping Well</b><br>
+        <span style="color: #000000; font-size: 12px;">
+        CV% ≤ threshold + LnRMSSD normal/alto<br>
+        <b>Ação:</b> Continue o plano de treino
+        </span>
+    </div>
     
-    # Status atual
-    ultimo = df_plot.iloc[-1]
-    col_status, col_cv, col_ln = st.columns(3)
+    <div style="padding: 10px; background-color: #2c3e5020; border-left: 4px solid #2c3e50; border-radius: 5px;">
+        <b style="color: #2c3e50;">⚫ Stable</b><br>
+        <span style="color: #000000; font-size: 12px;">
+        CV% > threshold + LnRMSSD normal<br>
+        <b>Ação:</b> Monitore, variação alta mas estável
+        </span>
+    </div>
     
-    with col_status:
-        st.metric(
-            "Status Atual",
-            ultimo['zona'],
-            delta="Bom" if ultimo['zona'] in ['Coping Well', 'Stable'] else "Atenção"
+    <div style="padding: 10px; background-color: #f1c40f20; border-left: 4px solid #f1c40f; border-radius: 5px;">
+        <b style="color: #d4ac0d;">🟡 Maladaptation</b><br>
+        <span style="color: #000000; font-size: 12px;">
+        CV% > threshold + (LnRMSSD baixo ou RHR alto)<br>
+        <b>Ação:</b> Reduza intensidade, estresse agudo
+        </span>
+    </div>
+    
+    <div style="padding: 10px; background-color: #e74c3c20; border-left: 4px solid #e74c3c; border-radius: 5px;">
+        <b style="color: #e74c3c;">🔴 Accumulated Fatigue</b><br>
+        <span style="color: #000000; font-size: 12px;">
+        CV% ≤ threshold + LnRMSSD suprimido<br>
+        <b>Ação:</b> Descanso prioritário, fadiga crônica
+        </span>
+    </div>
+    
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # HRV-Guided Training (mantido como estava antes)
+    st.markdown("---")
+    st.subheader("🏋️ HRV-Guided Training (LnrMSSD)")
+    
+    if len(dw) >= 14 and 'hrv' in dw.columns and dw['hrv'].notna().sum() >= 14:
+        df_hg = dw.copy().sort_values('Data')
+        df_hg['Data'] = pd.to_datetime(df_hg['Data'])
+        df_hg['LnrMSSD'] = np.where(df_hg['hrv'] > 0, np.log(df_hg['hrv']), np.nan)
+        df_hg = df_hg.dropna(subset=['LnrMSSD'])
+        
+        dias_fam = st.slider("Dias baseline rolling", 7, 28, 14, key="hg_baseline")
+        df_hg['bm'] = df_hg['LnrMSSD'].rolling(dias_fam, min_periods=dias_fam).mean()
+        df_hg['bs'] = df_hg['LnrMSSD'].rolling(dias_fam, min_periods=dias_fam).std()
+        df_hg['linf'] = df_hg['bm'] - 0.5 * df_hg['bs']
+        df_hg['lsup'] = df_hg['bm'] + 0.5 * df_hg['bs']
+        df_hg['desvio'] = (df_hg['LnrMSSD'] - df_hg['bm']) / df_hg['bs']
+        df_hg['intens'] = df_hg.apply(
+            lambda r: 'HIIT' if pd.notna(r['bm']) and r['linf'] <= r['LnrMSSD'] <= r['lsup'] 
+            else ('Recuperação' if pd.notna(r['bm']) else 'Sem dados'), 
+            axis=1
         )
-    
-    with col_cv:
-        st.metric(
-            f"CV% ({janela_cv}d)",
-            f"{ultimo['cv_lnrmssd']:.2f}%",
-            delta="Estável" if ultimo['cv_lnrmssd'] < CV_THRESHOLD else "Variável"
+        
+        n_hg = st.slider("Dias HRV-Guided", 14, min(len(df_hg), 180), min(60, len(df_hg)), key="hg_dias")
+        df_p = df_hg.tail(n_hg).copy()
+        
+        # Gráfico HRV-Guided - TODOS OS TEXTOS EM PRETO
+        _fig_hg = go.Figure()
+        
+        if len(df_p) > 0:
+            # Pontos coloridos por intensidade
+            for intensidade, cor in [('HIIT', '#27ae60'), ('Recuperação', '#f39c12'), ('Sem dados', '#95a5a6')]:
+                df_i = df_p[df_p['intens'] == intensidade]
+                if len(df_i) > 0:
+                    _fig_hg.add_trace(go.Scatter(
+                        x=df_i['Data'],
+                        y=df_i['LnrMSSD'],
+                        mode='markers',
+                        name=intensidade,
+                        marker=dict(color=cor, size=10, line=dict(width=1, color='white')),
+                        hovertemplate=f'<b>{intensidade}</b><br>Data: %{{x}}<br>LnRMSSD: %{{y:.3f}}<extra></extra>'
+                    ))
+            
+            # Linhas de referência
+            _fig_hg.add_trace(go.Scatter(
+                x=df_p['Data'], y=df_p['lsup'], mode='lines',
+                name='Limite Superior', line=dict(color='#27ae60', width=1, dash='dash'),
+                hoverinfo='skip'
+            ))
+            _fig_hg.add_trace(go.Scatter(
+                x=df_p['Data'], y=df_p['linf'], mode='lines',
+                name='Limite Inferior', line=dict(color='#27ae60', width=1, dash='dash'),
+                fill='tonexty', fillcolor='rgba(39, 174, 96, 0.1)',
+                hoverinfo='skip'
+            ))
+            _fig_hg.add_trace(go.Scatter(
+                x=df_p['Data'], y=df_p['bm'], mode='lines',
+                name='Baseline', line=dict(color='#34495e', width=2)
+            ))
+        
+        _fig_hg.update_layout(
+            title=dict(text='HRV-Guided Training', font=dict(color='#000000')),
+            paper_bgcolor='white',
+            plot_bgcolor='white',
+            font=dict(color='#000000'),
+            margin=dict(t=50, b=70, l=60, r=40),
+            height=340,
+            legend=dict(orientation='h', y=-0.25, font=dict(color='#000000')),
+            xaxis=dict(showgrid=True, gridcolor='#e0e0e0', tickfont=dict(color='#000000'), titlefont=dict(color='#000000')),
+            yaxis=dict(showgrid=True, gridcolor='#e0e0e0', tickfont=dict(color='#000000'), titlefont=dict(color='#000000'), title='LnRMSSD')
         )
+        
+        st.plotly_chart(_fig_hg, use_container_width=True, 
+                       config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, 
+                       key="recovery_hg_chart")
+        
+        # Métricas
+        df_val = df_hg[df_hg['bm'].notna()]
+        if len(df_val) > 0:
+            hiit_n = (df_val['intens'] == 'HIIT').sum()
+            rec_n = (df_val['intens'] == 'Recuperação').sum()
+            total_n = len(df_val)
+            
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Dias HIIT", f"{hiit_n} ({hiit_n/total_n*100:.0f}%)")
+            c2.metric("Dias Recuperação", f"{rec_n} ({rec_n/total_n*100:.0f}%)")
+            c3.metric("Prescrição HOJE", 
+                     '✅ HIIT' if df_val.iloc[-1]['intens'] == 'HIIT' else '🟠 Recuperação')
     
-    with col_ln:
-        ln_pct = (ultimo['LnrMSSD'] / ultimo['ln_baseline'] - 1) * 100
-        st.metric(
-            "LnRMSSD vs Baseline",
-            f"{ultimo['LnrMSSD']:.3f}",
-            delta=f"{ln_pct:+.1f}%"
-        )
-
-    # Continuação: BPE e HRV-Guided Training (mantidos do código anterior)
+    # BPE (mantido)
     st.markdown("---")
     st.subheader("📊 BPE — Z-Score Semanal (Método SWC)")
-    mets_bpe = [m for m in ['hrv', 'rhr', 'sleep_quality', 'fatiga', 'stress'] if m in dw.columns and dw[m].notna().any()]
+    
+    mets_bpe = [m for m in ['hrv', 'rhr', 'sleep_quality', 'fatiga', 'stress'] 
+                if m in dw.columns and dw[m].notna().any()]
     n_semanas_disp = max(1, len(dw) // 7)
     _skip_bpe = n_semanas_disp < 4
+    
     if _skip_bpe:
         st.info(f"Dados insuficientes para BPE (min 4 semanas, disponivel: {n_semanas_disp}).")
-        n_sem = n_semanas_disp
     else:
         _slider_max = min(52, n_semanas_disp)
         _slider_val = min(16, _slider_max)
@@ -314,89 +484,56 @@ def tab_recovery(dw):
             n_sem = st.slider("Semanas (BPE)", 4, _slider_max, _slider_val, key="bpe_sem")
         else:
             n_sem = _slider_max
-            st.caption(f"BPE: {n_sem} semanas disponíveis")
-    dados_bpe = {}
-    if not _skip_bpe:
+        
+        dados_bpe = {}
         for met in mets_bpe:
             s = calcular_bpe(dw, met, 60)
-            if len(s) > 0: dados_bpe[met] = s.tail(n_sem)
-    if dados_bpe:
-        semanas = list(dados_bpe[list(dados_bpe.keys())[0]]['ano_semana'])
-        nm = len(dados_bpe); mat = np.zeros((nm, len(semanas)))
-        nomes_bpe = {'hrv': 'HRV', 'rhr': 'RHR (inv)', 'sleep_quality': 'Sono',
-                     'fatiga': 'Energia', 'stress': 'Relaxamento'}
-        for i, met in enumerate(dados_bpe.keys()):
-            z = dados_bpe[met]['zscore'].values; mat[i, :len(z)] = (-z if met == 'rhr' else z)[:len(semanas)]
-        import numpy as _npIM
-        _zIM = [[float(mat[r][c]) if not _npIM.isnan(mat[r][c]) else None
-                 for c in range(mat.shape[1])] for r in range(mat.shape[0])]
-        _yIM = list(nomes_bpe.values())
-        _fIM = go.Figure(go.Heatmap(z=_zIM,
-            x=[str(s) for s in semanas],
-            y=_yIM, colorscale='RdYlGn', zmid=0, zmin=-2, zmax=2,
-            colorbar=dict(title='Z', tickfont=dict(color='#111'))))
-        _fIM.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), height=max(280, len(_yIM)*35),
-            title=dict(text='BPE — Z-Score com SWC', font=dict(size=13,color='#111')),
-            xaxis=dict(tickangle=-45, tickfont=dict(size=9,color='#111')),
-            yaxis=dict(tickfont=dict(size=9,color='#111')))
-        st.plotly_chart(_fIM, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, key="recovery_bpe_chart")
-
-    st.subheader("🏋️ HRV-Guided Training (LnrMSSD)")
-    if len(dw) >= 14 and 'hrv' in dw.columns and dw['hrv'].notna().sum() >= 14:
-        df_hg = dw.copy().sort_values('Data'); df_hg['Data'] = pd.to_datetime(df_hg['Data'])
-        df_hg['LnrMSSD'] = np.where(df_hg['hrv'] > 0, np.log(df_hg['hrv']), np.nan); df_hg = df_hg.dropna(subset=['LnrMSSD'])
-        dias_fam = st.slider("Dias baseline rolling", 7, 28, 14, key="hg_baseline")
-        df_hg['bm'] = df_hg['LnrMSSD'].rolling(dias_fam, min_periods=dias_fam).mean()
-        df_hg['bs'] = df_hg['LnrMSSD'].rolling(dias_fam, min_periods=dias_fam).std()
-        df_hg['linf'] = df_hg['bm'] - 0.5 * df_hg['bs']; df_hg['lsup'] = df_hg['bm'] + 0.5 * df_hg['bs']
-        df_hg['desvio'] = (df_hg['LnrMSSD'] - df_hg['bm']) / df_hg['bs']
-        df_hg['intens'] = df_hg.apply(lambda r: 'HIIT' if pd.notna(r['bm']) and r['linf'] <= r['LnrMSSD'] <= r['lsup'] else ('Recuperação' if pd.notna(r['bm']) else 'Sem dados'), axis=1)
-        n_hg = st.slider("Dias HRV-Guided", 14, min(len(df_hg), 180), min(60, len(df_hg)), key="hg_dias")
-        df_p = df_hg.tail(n_hg).copy()
+            if len(s) > 0: 
+                dados_bpe[met] = s.tail(n_sem)
         
-        # Gráfico HRV-Guided
-        _fig_hg = go.Figure()
-        
-        if len(df_p) > 0:
-            # LnrMSSD com cores por intensidade
-            cores_hg = ['green' if i == 'HIIT' else 'orange' if i == 'Recuperação' else 'gray' for i in df_p['intens']]
-            _fig_hg.add_trace(go.Scatter(
-                x=df_p['Data'],
-                y=df_p['LnrMSSD'],
-                mode='markers',
-                name='LnrMSSD',
-                marker=dict(color=cores_hg, size=10, line=dict(width=1, color='white'))
+        if dados_bpe:
+            semanas = list(dados_bpe[list(dados_bpe.keys())[0]]['ano_semana'])
+            nm = len(dados_bpe)
+            mat = np.zeros((nm, len(semanas)))
+            nomes_bpe = {
+                'hrv': 'HRV', 
+                'rhr': 'RHR (inv)', 
+                'sleep_quality': 'Sono',
+                'fatiga': 'Energia', 
+                'stress': 'Relaxamento'
+            }
+            
+            for i, met in enumerate(dados_bpe.keys()):
+                z = dados_bpe[met]['zscore'].values
+                mat[i, :len(z)] = (-z if met == 'rhr' else z)[:len(semanas)]
+            
+            import numpy as _npIM
+            _zIM = [[float(mat[r][c]) if not _npIM.isnan(mat[r][c]) else None
+                     for c in range(mat.shape[1])] for r in range(mat.shape[0])]
+            _yIM = [nomes_bpe.get(m, m) for m in dados_bpe.keys()]
+            
+            _fIM = go.Figure(go.Heatmap(
+                z=_zIM,
+                x=[str(s) for s in semanas],
+                y=_yIM, 
+                colorscale='RdYlGn', 
+                zmid=0, 
+                zmin=-2, 
+                zmax=2,
+                colorbar=dict(title='Z', tickfont=dict(color='#000000'))
             ))
             
-            # Bandas
-            _fig_hg.add_trace(go.Scatter(
-                x=df_p['Data'], y=df_p['lsup'], mode='lines',
-                name='Limite Superior', line=dict(color='green', width=1, dash='dash')
-            ))
-            _fig_hg.add_trace(go.Scatter(
-                x=df_p['Data'], y=df_p['linf'], mode='lines',
-                name='Limite Inferior', line=dict(color='green', width=1, dash='dash'),
-                fill='tonexty', fillcolor='rgba(46, 204, 113, 0.1)'
-            ))
-            _fig_hg.add_trace(go.Scatter(
-                x=df_p['Data'], y=df_p['bm'], mode='lines',
-                name='Baseline', line=dict(color='gray', width=2)
-            ))
-        
-        _fig_hg.update_layout(
-            title='HRV-Guided Training',
-            paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'),
-            margin=dict(t=50,b=70,l=55,r=20), height=340,
-            legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),
-            xaxis=dict(showgrid=True, gridcolor='#eee'),
-            yaxis=dict(showgrid=True, gridcolor='#eee', title='LnRMSSD')
-        )
-        st.plotly_chart(_fig_hg, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, key="recovery_hg_chart")
-        
-        df_val = df_hg[df_hg['bm'].notna()]
-        if len(df_val) > 0:
-            hiit_n = (df_val['intens'] == 'HIIT').sum(); rec_n = (df_val['intens'] == 'Recuperação').sum(); total_n = len(df_val)
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Dias HIIT", f"{hiit_n} ({hiit_n/total_n*100:.0f}%)")
-            c2.metric("Dias Recuperação", f"{rec_n} ({rec_n/total_n*100:.0f}%)")
-            c3.metric("Prescrição HOJE", '✅ HIIT' if df_val.iloc[-1]['intens'] == 'HIIT' else '🟠 Recuperação')
+            _fIM.update_layout(
+                paper_bgcolor='white', 
+                plot_bgcolor='white', 
+                font=dict(color='#000000'),
+                margin=dict(t=50, b=70, l=55, r=20), 
+                height=max(280, len(_yIM)*35),
+                title=dict(text='BPE — Z-Score com SWC', font=dict(size=13, color='#000000')),
+                xaxis=dict(tickangle=-45, tickfont=dict(size=9, color='#000000')),
+                yaxis=dict(tickfont=dict(size=9, color='#000000'))
+            )
+            
+            st.plotly_chart(_fIM, use_container_width=True, 
+                           config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, 
+                           key="recovery_bpe_chart")
