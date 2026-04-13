@@ -6,8 +6,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from datetime import datetime, timedelta
+from datetime import datetime
 import warnings
 import sys, os as _os
 from scipy import stats
@@ -61,7 +60,8 @@ def tab_recovery(dw):
         st.warning("Poucos dados.")
         return
 
-        baseline = 7 if "Mode 1" in modo_modelo else 60
+    # ✅ CORREÇÃO AQUI
+    baseline = 7 if "Mode 1" in modo_modelo else 60
 
     df['baseline'] = df['LnrMSSD'].rolling(baseline, min_periods=5).mean()
     df['std'] = df['LnrMSSD'].rolling(baseline, min_periods=5).std()
@@ -130,7 +130,6 @@ def tab_recovery(dw):
 
     df_plot = df.dropna(subset=['baseline', 'cv'])
 
-    # 🔥 FIX DO ERRO (IndexError)
     if len(df_plot) == 0:
         st.warning("Sem dados suficientes após processamento.")
         return
@@ -197,7 +196,6 @@ def tab_recovery(dw):
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # 🔥 FIX DEFINITIVO DO ERRO
     ultimo = df_plot.iloc[-1]
 
     st.markdown("### Status Atual")
