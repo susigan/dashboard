@@ -53,7 +53,7 @@ def tab_recovery(dw):
         st.warning("Dados de HRV insuficientes para análise de tendências.")
         return
     
-    # Calcular LnRMSSD
+    # Calcular LnRMSSD (log natural do RMSSD)
     df_hrv['LnrMSSD'] = np.where(df_hrv['hrv'] > 0, np.log(df_hrv['hrv']), np.nan)
     df_hrv = df_hrv.dropna(subset=['LnrMSSD'])
     
@@ -71,20 +71,32 @@ def tab_recovery(dw):
     df_hrv['ln_std_short'] = df_hrv['LnrMSSD'].rolling(janela_cv, min_periods=3).std()
     df_hrv['cv_lnrmssd'] = (df_hrv['ln_std_short'] / df_hrv['ln_mean_short']) * 100
     
-    # THRESHOLD ADAPTATIVO: Percentil 75 do CV% histórico
-    dw_full = dw.copy()
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # THRESHOLD ADAPTATIVO CORRIGIDO
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # Calcula threshold baseado no histórico real do atleta (últimos 90 dias ou todo histórico)
+    dias_historico_threshold = min(90, len(dw))  # Usa até 90 dias de histórico
+    dw_full = dw.copy().tail(dias_historico_threshold)
     dw_full['LnrMSSD_full'] = np.where(dw_full['hrv'] > 0, np.log(dw_full['hrv']), np.nan)
     dw_full = dw_full.dropna(subset=['LnrMSSD_full'])
     
-    if len(dw_full) >= janela_cv + 10:
+    if len(dw_full) >= janela_cv + 5:
+        # Calcula CV% para todo histórico disponível
         dw_full['ln_mean_temp'] = dw_full['LnrMSSD_full'].rolling(janela_cv, min_periods=3).mean()
         dw_full['ln_std_temp'] = dw_full['LnrMSSD_full'].rolling(janela_cv, min_periods=3).std()
         dw_full['cv_temp'] = (dw_full['ln_std_temp'] / dw_full['ln_mean_temp']) * 100
         cv_historico = dw_full['cv_temp'].dropna()
         
-        if len(cv_historico) > 20:
-            CV_THRESHOLD = np.percentile(cv_historico, 75)
-            CV_THRESHOLD = max(0.8, min(CV_THRESHOLD, 2.0))
+        if len(cv_historico) > 10:
+            # NOVO: Usa média + 0.5*SD do histórico como threshold (mais sensível que P75)
+            # Ou pode usar P75 se preferir: np.percentile(cv_historico, 75)
+            CV_THRESHOLD = cv_historico.mean() + (0.5 * cv_historico.std())
+            
+            # Garante mínimo de 0.5% para evitar threshold muito baixo em dados muito estáveis
+            CV_THRESHOLD = max(0.5, CV_THRESHOLD)
+            
+            # Info para o usuário
+            st.caption(f"📊 Threshold CV% adaptativo: {CV_THRESHOLD:.2f}% (Média: {cv_historico.mean():.2f}%, SD: {cv_historico.std():.2f}%)")
         else:
             CV_THRESHOLD = 1.0
     else:
@@ -103,10 +115,10 @@ def tab_recovery(dw):
             return 'Sem dados', '#808080'
         
         cv_alto = cv > CV_THRESHOLD
-        ln_baixo = ln < base_ln * 0.97
+        ln_baixo = ln < base_ln * 0.97  # 3% abaixo do baseline
         rhr_alto = False
         if not pd.isna(rhr) and not pd.isna(base_rhr) and base_rhr > 0:
-            rhr_alto = rhr > base_rhr * 1.03
+            rhr_alto = rhr > base_rhr * 1.03  # 3% acima do baseline RHR
         
         if not cv_alto and not ln_baixo:
             return 'Coping Well', '#27ae60'
@@ -130,10 +142,10 @@ def tab_recovery(dw):
         st.warning("Dados insuficientes após cálculos.")
         return
     
-    # GRÁFICO COMBINADO
+    # GRÁFICO COMBINADO LnRMSSD + CV%
     fig = go.Figure()
     
-    # Eixo Y esquerdo: LnRMSSD em pontos coloridos
+    # Eixo Y esquerdo: LnRMSSD em pontos coloridos por zona
     for zona, cor in [
         ('Coping Well', '#27ae60'),
         ('Stable', '#2c3e50'),
@@ -151,7 +163,7 @@ def tab_recovery(dw):
                     name=zona,
                     marker=dict(color=cor, size=12, line=dict(width=2, color='white')),
                     yaxis='y1',
-                    hovertemplate=f'<b>{zona}</b><br>Data: %{{x}}<br>LnRMSSD: %{{y:.3f}}<br>CV%: %{{customdata:.2f}}%<extra></extra>',
+                    hovertemplate=f'<b>{zona}</b><br>Data: %{{x|%d/%m/%Y}}<br>LnRMSSD: %{{y:.3f}}<br>CV%: %{{customdata:.2f}}%<extra></extra>',
                     customdata=df_zona['cv_lnrmssd']
                 )
             )
@@ -164,11 +176,12 @@ def tab_recovery(dw):
             mode='lines',
             name=f'Baseline LnRMSSD ({baseline_dias}d)',
             line=dict(color='#34495e', width=2, dash='dash'),
-            yaxis='y1'
+            yaxis='y1',
+            hovertemplate='Baseline: %{y:.3f}<extra></extra>'
         )
     )
     
-    # Banda de ±1 SD
+    # Banda de ±1 SD do LnRMSSD
     fig.add_trace(
         go.Scatter(
             x=df_plot['Data'],
@@ -196,7 +209,7 @@ def tab_recovery(dw):
         )
     )
     
-    # Eixo Y direito: CV% em linha
+    # Eixo Y direito: CV% em linha laranja
     fig.add_trace(
         go.Scatter(
             x=df_plot['Data'],
@@ -205,11 +218,12 @@ def tab_recovery(dw):
             name=f'CV% LnRMSSD ({janela_cv}d)',
             line=dict(color='#e67e22', width=2),
             marker=dict(size=6, symbol='diamond'),
-            yaxis='y2'
+            yaxis='y2',
+            hovertemplate='CV%: %{y:.2f}%<extra></extra>'
         )
     )
     
-    # LINHA DE THRESHOLD ADAPTATIVO (CORREÇÃO: como trace, não add_hline)
+    # Linha de Threshold Adaptativo
     fig.add_trace(
         go.Scatter(
             x=[df_plot['Data'].iloc[0], df_plot['Data'].iloc[-1]],
@@ -222,7 +236,7 @@ def tab_recovery(dw):
         )
     )
     
-    # Layout
+    # Layout do gráfico combinado
     fig.update_layout(
         title=dict(
             text=f'LnRMSSD (pontos) + CV% (linha) — Threshold adaptativo: {CV_THRESHOLD:.2f}%',
@@ -239,18 +253,23 @@ def tab_recovery(dw):
         yaxis=dict(
             title=dict(text='LnRMSSD', font=dict(color='#000000')),
             tickfont=dict(color='#000000'),
-            showgrid=True, gridcolor='#e0e0e0', side='left'
+            showgrid=True, 
+            gridcolor='#e0e0e0', 
+            side='left'
         ),
         yaxis2=dict(
-            title=dict(text=f'CV% ({janela_cv}d)', font=dict(color='#000000')),
-            tickfont=dict(color='#000000'),
-            overlaying='y', side='right', showgrid=False,
+            title=dict(text=f'CV% ({janela_cv}d)', font=dict(color='#e67e22')),
+            tickfont=dict(color='#e67e22'),
+            overlaying='y', 
+            side='right', 
+            showgrid=False,
             range=[0, max(2.5, df_plot['cv_lnrmssd'].max() * 1.3, CV_THRESHOLD * 1.5)]
         ),
         xaxis=dict(
             title=dict(text='Data', font=dict(color='#000000')),
             tickfont=dict(color='#000000'),
-            showgrid=True, gridcolor='#e0e0e0'
+            showgrid=True, 
+            gridcolor='#e0e0e0'
         )
     )
     
@@ -261,7 +280,7 @@ def tab_recovery(dw):
     # Status atual
     ultimo = df_plot.iloc[-1]
     
-    st.markdown("### 📊 Status Atual")
+    st.markdown("### 📊 Status Atual (Modelo Altini)")
     cols = st.columns([2, 1, 1, 1])
     
     with cols[0]:
@@ -289,7 +308,7 @@ def tab_recovery(dw):
     
     with cols[3]:
         st.metric("Threshold", f"{CV_THRESHOLD:.2f}%", 
-                 delta="Adaptativo (P75)")
+                 delta=f"Base: {cv_historico.mean():.2f}%")
     
     # Legenda explicativa
     st.markdown("""
@@ -300,8 +319,8 @@ def tab_recovery(dw):
     <div style="padding: 10px; background-color: #27ae6020; border-left: 4px solid #27ae60; border-radius: 5px;">
         <b style="color: #27ae60;">🟢 Coping Well</b><br>
         <span style="color: #000000; font-size: 12px;">
-        CV% ≤ threshold + LnRMSSD normal/alto<br>
-        <b>Ação:</b> Continue o plano de treino
+        CV% ≤ threshold + LnRMSSD normal<br>
+        <b>Ação:</b> Continue o plano de treino normal
         </span>
     </div>
     
@@ -309,7 +328,7 @@ def tab_recovery(dw):
         <b style="color: #2c3e50;">⚫ Stable</b><br>
         <span style="color: #000000; font-size: 12px;">
         CV% > threshold + LnRMSSD normal<br>
-        <b>Ação:</b> Monitore, variação alta mas estável
+        <b>Ação:</b> Monitore, alta variação mas estável
         </span>
     </div>
     
@@ -332,22 +351,35 @@ def tab_recovery(dw):
     </div>
     """, unsafe_allow_html=True)
     
-    # HRV-Guided Training (mantido como estava)
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # HRV-GUIDED TRAINING - ESTILO ORIGINAL RESTAURADO
+    # ═══════════════════════════════════════════════════════════════════════════════
     st.markdown("---")
-    st.subheader("🏋️ HRV-Guided Training (LnrMSSD)")
+    st.subheader("🏋️ HRV-Guided Training (LnrMSSD ±0.5 SD)")
     
     if len(dw) >= 14 and 'hrv' in dw.columns and dw['hrv'].notna().sum() >= 14:
         df_hg = dw.copy().sort_values('Data')
         df_hg['Data'] = pd.to_datetime(df_hg['Data'])
+        
+        # Calcula LnRMSSD (não usa RMSSD cru, usa o log)
         df_hg['LnrMSSD'] = np.where(df_hg['hrv'] > 0, np.log(df_hg['hrv']), np.nan)
         df_hg = df_hg.dropna(subset=['LnrMSSD'])
         
+        # Parâmetros configuráveis
         dias_fam = st.slider("Dias baseline rolling", 7, 28, 14, key="hg_baseline")
+        
+        # Cálculo do baseline móvel e desvio padrão
         df_hg['bm'] = df_hg['LnrMSSD'].rolling(dias_fam, min_periods=dias_fam).mean()
         df_hg['bs'] = df_hg['LnrMSSD'].rolling(dias_fam, min_periods=dias_fam).std()
+        
+        # Faixa de decisão: ±0.5 desvio padrão (conforme método original)
         df_hg['linf'] = df_hg['bm'] - 0.5 * df_hg['bs']
         df_hg['lsup'] = df_hg['bm'] + 0.5 * df_hg['bs']
+        
+        # Cálculo do desvio padronizado (z-score)
         df_hg['desvio'] = (df_hg['LnrMSSD'] - df_hg['bm']) / df_hg['bs']
+        
+        # Classificação: se dentro da faixa ±0.5 SD → HIIT, senão → Recuperação
         df_hg['intens'] = df_hg.apply(
             lambda r: 'HIIT' if pd.notna(r['bm']) and r['linf'] <= r['LnrMSSD'] <= r['lsup'] 
             else ('Recuperação' if pd.notna(r['bm']) else 'Sem dados'), 
@@ -357,11 +389,16 @@ def tab_recovery(dw):
         n_hg = st.slider("Dias HRV-Guided", 14, min(len(df_hg), 180), min(60, len(df_hg)), key="hg_dias")
         df_p = df_hg.tail(n_hg).copy()
         
-        # Gráfico HRV-Guided
+        # CRIAÇÃO DO GRÁFICO HRV-GUIDED (ESTILO ORIGINAL)
         _fig_hg = go.Figure()
         
         if len(df_p) > 0:
-            for intensidade, cor in [('HIIT', '#27ae60'), ('Recuperação', '#f39c12'), ('Sem dados', '#95a5a6')]:
+            # Pontos coloridos por intensidade (verde = HIIT, laranja = Recuperação)
+            for intensidade, cor in [
+                ('HIIT', '#27ae60'), 
+                ('Recuperação', '#f39c12'), 
+                ('Sem dados', '#95a5a6')
+            ]:
                 df_i = df_p[df_p['intens'] == intensidade]
                 if len(df_i) > 0:
                     _fig_hg.add_trace(go.Scatter(
@@ -369,29 +406,48 @@ def tab_recovery(dw):
                         y=df_i['LnrMSSD'],
                         mode='markers',
                         name=intensidade,
-                        marker=dict(color=cor, size=10, line=dict(width=1, color='white')),
-                        hovertemplate=f'<b>{intensidade}</b><br>Data: %{{x}}<br>LnRMSSD: %{{y:.3f}}<extra></extra>'
+                        marker=dict(
+                            color=cor, 
+                            size=10, 
+                            line=dict(width=1, color='white')
+                        ),
+                        hovertemplate=f'<b>{intensidade}</b><br>Data: %{{x|%d/%m/%Y}}<br>LnRMSSD: %{{y:.3f}}<extra></extra>'
                     ))
             
+            # Linha de limite superior (verde tracejado)
             _fig_hg.add_trace(go.Scatter(
-                x=df_p['Data'], y=df_p['lsup'], mode='lines',
-                name='Limite Superior', line=dict(color='#27ae60', width=1, dash='dash'),
+                x=df_p['Data'], 
+                y=df_p['lsup'], 
+                mode='lines',
+                name='Limite Superior (+0.5 SD)',
+                line=dict(color='#27ae60', width=1, dash='dash'),
                 hoverinfo='skip'
             ))
+            
+            # Linha de limite inferior (verde tracejado + fill)
             _fig_hg.add_trace(go.Scatter(
-                x=df_p['Data'], y=df_p['linf'], mode='lines',
-                name='Limite Inferior', line=dict(color='#27ae60', width=1, dash='dash'),
-                fill='tonexty', fillcolor='rgba(39, 174, 96, 0.1)',
+                x=df_p['Data'], 
+                y=df_p['linf'], 
+                mode='lines',
+                name='Limite Inferior (-0.5 SD)',
+                line=dict(color='#27ae60', width=1, dash='dash'),
+                fill='tonexty', 
+                fillcolor='rgba(39, 174, 96, 0.1)',  # área verde clara entre as linhas
                 hoverinfo='skip'
             ))
+            
+            # Linha de baseline central (cinza escuro)
             _fig_hg.add_trace(go.Scatter(
-                x=df_p['Data'], y=df_p['bm'], mode='lines',
-                name='Baseline', line=dict(color='#34495e', width=2)
+                x=df_p['Data'], 
+                y=df_p['bm'], 
+                mode='lines',
+                name=f'Baseline ({dias_fam}d)',
+                line=dict(color='#34495e', width=2)
             ))
         
-        # ✅ CÓDIGO CORRIGIDO - HRV-Guided Training
+        # Layout do HRV-Guided (corrigido sem titlefont)
         _fig_hg.update_layout(
-            title=dict(text='HRV-Guided Training', font=dict(color='#000000')),
+            title=dict(text='HRV-Guided Training — Decisão baseada em LnRMSSD', font=dict(color='#000000')),
             paper_bgcolor='white',
             plot_bgcolor='white',
             font=dict(color='#000000'),
@@ -402,13 +458,13 @@ def tab_recovery(dw):
                 showgrid=True, 
                 gridcolor='#e0e0e0', 
                 tickfont=dict(color='#000000'),
-                title=dict(font=dict(color='#000000'))  # ✅ CORRIGIDO: titlefont removido
+                title=dict(text='Data', font=dict(color='#000000'))
             ),
             yaxis=dict(
                 showgrid=True, 
                 gridcolor='#e0e0e0', 
-                tickfont=dict(color='#000000'), 
-                title=dict(text='LnRMSSD', font=dict(color='#000000'))  # ✅ CORRIGIDO: title + font aninhado
+                tickfont=dict(color='#000000'),
+                title=dict(text='LnRMSSD', font=dict(color='#000000'))
             )
         )
         
@@ -416,6 +472,7 @@ def tab_recovery(dw):
                        config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, 
                        key="recovery_hg_chart")
         
+        # Métricas de resumo
         df_val = df_hg[df_hg['bm'].notna()]
         if len(df_val) > 0:
             hiit_n = (df_val['intens'] == 'HIIT').sum()
