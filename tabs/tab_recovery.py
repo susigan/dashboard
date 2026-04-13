@@ -426,6 +426,161 @@ def tab_recovery(dw):
     else:
         st.info("Mínimo 14 dias de HRV para HRV-Guided Training.")
 
+
+    # ════════════════════════════════════════════════════════════════════════
+    # HRV-GUIDED TRAINING — Versão RMSSD Bruto (ms)
+    # ════════════════════════════════════════════════════════════════════════
+    st.subheader("🏋️ HRV-Guided Training (RMSSD bruto - ms)")
+
+    if len(dw) >= 14 and dw['hrv'].notna().sum() >= 14:
+        df_hg = dw.copy().sort_values('Data')
+        df_hg['Data'] = pd.to_datetime(df_hg['Data'])
+        
+        # Usar RMSSD bruto em vez de LnRMSSD
+        df_hg['RMSSD'] = df_hg['hrv'].where(df_hg['hrv'] > 0)
+        df_hg = df_hg.dropna(subset=['RMSSD'])
+
+        hg_c1, hg_c2 = st.columns(2)
+        dias_fam = hg_c1.slider("Dias baseline rolling", 7, 28, 14, key="hg_baseline_raw")
+        n_hg     = hg_c2.slider("Dias a mostrar", 14, min(len(df_hg), 180),
+                                  min(60, len(df_hg)), key="hg_dias_raw")
+
+        # Cálculos em valores absolutos (ms)
+        df_hg['bm']    = df_hg['RMSSD'].rolling(dias_fam, min_periods=dias_fam).mean()
+        df_hg['bs']    = df_hg['RMSSD'].rolling(dias_fam, min_periods=dias_fam).std()
+        df_hg['linf']  = df_hg['bm'] - 0.5 * df_hg['bs']
+        df_hg['lsup']  = df_hg['bm'] + 0.5 * df_hg['bs']
+        
+        # Desvio em unidades de DP (z-score)
+        df_hg['desvio_dp'] = (df_hg['RMSSD'] - df_hg['bm']) / df_hg['bs'].replace(0, np.nan)
+        
+        # Prescrição: dentro de ±0.5 DP = HIIT, fora = Recuperação
+        df_hg['intens'] = df_hg.apply(
+            lambda r: 'HIIT'       if pd.notna(r['bm']) and r['linf'] <= r['RMSSD'] <= r['lsup']
+            else ('Recuperação'    if pd.notna(r['bm']) else 'Sem dados'), axis=1)
+
+        df_p = df_hg.tail(n_hg).copy()
+
+        # Cores por intensidade
+        COR_MAP = {'HIIT': '#27ae60', 'Recuperação': '#f39c12', 'Sem dados': '#95a5a6'}
+
+        # ── Subplot 2 painéis ─────────────────────────────────────────────
+        _fig_hg = make_subplots(
+            rows=2, cols=1, shared_xaxes=True,
+            row_heights=[0.65, 0.35], vertical_spacing=0.06,
+            subplot_titles=[
+                f'RMSSD (ms) — Baseline {dias_fam}d ± 0.5 DP',
+                'Desvio do Baseline (unidades de DP)'
+            ]
+        )
+
+        # Painel superior: scatter colorido por prescrição
+        for intensidade, cor in COR_MAP.items():
+            df_i = df_p[df_p['intens'] == intensidade]
+            if len(df_i) == 0:
+                continue
+            _fig_hg.add_trace(go.Scatter(
+                x=df_i['Data'], y=df_i['RMSSD'],
+                mode='markers', name=intensidade,
+                marker=dict(color=cor, size=10, line=dict(width=1.5, color='white')),
+                hovertemplate=f'<b>{intensidade}</b><br>%{{x|%d/%m}}: %{{y:.1f}} ms<extra></extra>'
+            ), row=1, col=1)
+
+        # Banda ±0.5 DP (fill) - agora em valores absolutos
+        _fig_hg.add_trace(go.Scatter(
+            x=df_p['Data'], y=df_p['lsup'],
+            line=dict(color='rgba(39,174,96,0.4)', width=1),
+            showlegend=False, hoverinfo='skip'
+        ), row=1, col=1)
+        _fig_hg.add_trace(go.Scatter(
+            x=df_p['Data'], y=df_p['linf'],
+            fill='tonexty', fillcolor='rgba(39,174,96,0.12)',
+            line=dict(color='rgba(39,174,96,0.4)', width=1),
+            name='Zona HIIT (±0.5 DP)', hoverinfo='skip'
+        ), row=1, col=1)
+
+        # Baseline
+        _fig_hg.add_trace(go.Scatter(
+            x=df_p['Data'], y=df_p['bm'],
+            name=f'Baseline {dias_fam}d',
+            line=dict(color='#2c3e50', width=2, dash='dash'),
+            hovertemplate='Baseline: %{y:.1f} ms<extra></extra>'
+        ), row=1, col=1)
+
+        # Painel inferior: desvio em DP com scatter colorido + fill ±0.5
+        _fig_hg.add_hrect(y0=-0.5, y1=0.5, fillcolor='rgba(39,174,96,0.10)',
+                          line_width=0, row=2, col=1)
+        _fig_hg.add_hline(y=0,    line_dash='solid', line_color='#27ae60',
+                          line_width=1.5, row=2, col=1)
+        _fig_hg.add_hline(y=0.5,  line_dash='dot',   line_color='#f39c12',
+                          line_width=1,   row=2, col=1)
+        _fig_hg.add_hline(y=-0.5, line_dash='dot',   line_color='#f39c12',
+                          line_width=1,   row=2, col=1)
+
+        for intensidade, cor in COR_MAP.items():
+            df_i = df_p[df_p['intens'] == intensidade]
+            if len(df_i) == 0:
+                continue
+            _fig_hg.add_trace(go.Scatter(
+                x=df_i['Data'], y=df_i['desvio_dp'],
+                mode='markers', name=intensidade,
+                showlegend=False,
+                marker=dict(color=cor, size=7, opacity=0.8,
+                            line=dict(width=1, color='white')),
+                hovertemplate=f'%{{x|%d/%m}}: %{{y:.2f}} DP<extra></extra>'
+            ), row=2, col=1)
+
+        # Linha de desvio
+        _fig_hg.add_trace(go.Scatter(
+            x=df_p['Data'], y=df_p['desvio_dp'],
+            mode='lines', line=dict(color='#7f8c8d', width=1, dash='dot'),
+            showlegend=False, hoverinfo='skip'
+        ), row=2, col=1)
+
+        _fig_hg.update_layout(
+            paper_bgcolor='white', plot_bgcolor='white',
+            font=dict(color='#111', size=11),
+            height=520,
+            hovermode='x unified',
+            margin=dict(t=60, b=70, l=60, r=40),
+            legend=dict(orientation='h', y=-0.18, font=dict(color='#111', size=10),
+                        bgcolor='rgba(255,255,255,0.9)')
+        )
+        _fig_hg.update_xaxes(showgrid=True, gridcolor='#eee',
+                              tickfont=dict(color='#111'))
+        _fig_hg.update_yaxes(showgrid=True, gridcolor='#eee',
+                              tickfont=dict(color='#111'), row=1, col=1,
+                              title_text='RMSSD (ms)')
+        _fig_hg.update_yaxes(showgrid=True, gridcolor='#eee',
+                              tickfont=dict(color='#111'), row=2, col=1,
+                              title_text='Desvio (DP)',
+                              range=[-3.2, 3.2], zeroline=True,
+                              zerolinecolor='#27ae60', zerolinewidth=1.5)
+
+        st.plotly_chart(_fig_hg, use_container_width=True,
+                        config={'displayModeBar': False, 'responsive': True,
+                                'scrollZoom': False},
+                        key="rec_hg_raw_chart")
+
+        # ── Métricas resumo ───────────────────────────────────────────────
+        df_val = df_hg[df_hg['bm'].notna()]
+        if len(df_val) > 0:
+            hiit_n  = (df_val['intens'] == 'HIIT').sum()
+            rec_n   = (df_val['intens'] == 'Recuperação').sum()
+            total_n = len(df_val)
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Dias HIIT",       f"{hiit_n} ({hiit_n/total_n*100:.0f}%)")
+            m2.metric("Dias Recuperação", f"{rec_n} ({rec_n/total_n*100:.0f}%)")
+            
+            # Valor atual em ms
+            val_hoje = df_val.iloc[-1]['RMSSD']
+            m3.metric("Prescrição HOJE",
+                      '✅ HIIT' if df_val.iloc[-1]['intens'] == 'HIIT'
+                      else '🟠 Recuperação',
+                      help=f"RMSSD: {val_hoje:.1f} ms")
+    else:
+        st.info("Mínimo 14 dias de HRV para HRV-Guided Training.")
+
     # ════════════════════════════════════════════════════════════════════════
     # BPE — Z-Score Semanal
     # ════════════════════════════════════════════════════════════════════════
