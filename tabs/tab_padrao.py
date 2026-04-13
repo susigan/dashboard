@@ -14,6 +14,9 @@ sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))
 
 warnings.filterwarnings('ignore')
 
+# CORREÇÃO: Definição da variável faltante
+DIAS_SEMANA = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom']
+
 def _zona_rpe(v):
     try:
         v = float(v)
@@ -345,7 +348,8 @@ def tab_padrao(da_full, dw_full):
             rows_ativ.append(row)
 
         if rows_ativ:
-            st.dataframe(pd.DataFrame(rows_ativ), width="stretch", hide_index=True)
+            # CORREÇÃO: use_container_width em vez de width="stretch"
+            st.dataframe(pd.DataFrame(rows_ativ), use_container_width=True, hide_index=True)
         else:
             st.info("Sem dados de actividade suficientes.")
     else:
@@ -383,7 +387,8 @@ def tab_padrao(da_full, dw_full):
             rows_rpe.append(row)
 
         if rows_rpe:
-            st.dataframe(pd.DataFrame(rows_rpe), width="stretch", hide_index=True)
+            # CORREÇÃO: use_container_width em vez de width="stretch"
+            st.dataframe(pd.DataFrame(rows_rpe), use_container_width=True, hide_index=True)
         else:
             st.info("Sem dados de RPE suficientes.")
     else:
@@ -409,7 +414,8 @@ def tab_padrao(da_full, dw_full):
             rows_rec.append(row)
 
         if rows_rec:
-            st.dataframe(pd.DataFrame(rows_rec), width="stretch", hide_index=True)
+            # CORREÇÃO: use_container_width em vez de width="stretch"
+            st.dataframe(pd.DataFrame(rows_rec), use_container_width=True, hide_index=True)
         else:
             st.info("Sem dados de wellness suficientes.")
     else:
@@ -462,7 +468,3 @@ def tab_padrao(da_full, dw_full):
             st.info("Sem dados de HRV suficientes.")
     else:
         st.info("Sem dados de HRV/RHR.")
-
-# ════════════════════════════════════════════════════════════════════════════
-# TAB 13 — CTL vs KJ  (análise dTRIMP/dKJ)
-# ════════════════════════════════════════════════════════════════════════════
