@@ -128,12 +128,12 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
     st.subheader("📋 Resumo de Atividades por Modalidade")
     df_res = tabela_resumo_por_tipo_df(da_full)
     if len(df_res) > 0:
-        st.dataframe(df_res, width="stretch", hide_index=True)
+        st.dataframe(df_res, use_container_width=True, hide_index=True)
 
     st.subheader("🏆 Top 10 Sessões por Potência Média")
     df_rank = tabela_ranking_power_df(da_full, n=10)
     if len(df_rank) > 0:
-        st.dataframe(df_rank, width="stretch", hide_index=True)
+        st.dataframe(df_rank, use_container_width=True, hide_index=True)
 
     st.markdown("---")
 
@@ -158,7 +158,7 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
             legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),
             xaxis=dict(tickangle=-45, showgrid=False, gridcolor='#eee', tickfont=dict(color='#111')),
             yaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')))
-        st.plotly_chart(_fig_sb, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
+        st.plotly_chart(_fig_sb, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, key="analises_training_load")
 
     st.markdown("---")
 
@@ -172,11 +172,11 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
     else:
         # Overall
         st.markdown("**Overall CTL vs ATL**")
-        _fig_gen = go.Figure()
-        _fig_gen.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), height=340,
+        _fig_gen1 = go.Figure()
+        _fig_gen1.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), height=340,
             legend=dict(orientation='h', y=-0.25, font=dict(color='#111')), hovermode='closest',
             xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')), yaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')))
-        st.plotly_chart(_fig_gen, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
+        st.plotly_chart(_fig_gen1, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, key="analises_ctl_overall")
         # TODO: chart content (converted from matplotlib)
 
         # Por modalidade — separado e combinado
@@ -184,11 +184,11 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
         if tipos_poli:
             st.markdown("**Por Modalidade**")
             n_t = len(tipos_poli); ncols = 2; nrows = (n_t + 1) // 2
-            _fig_gen = go.Figure()
-            _fig_gen.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), height=340,
+            _fig_gen2 = go.Figure()
+            _fig_gen2.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), height=340,
                 legend=dict(orientation='h', y=-0.25, font=dict(color='#111')), hovermode='closest',
                 xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')), yaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')))
-            st.plotly_chart(_fig_gen, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
+            st.plotly_chart(_fig_gen2, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, key="analises_ctl_modalidade")
             # TODO: chart content (converted from matplotlib)
 
     st.markdown("---")
@@ -225,7 +225,7 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
                 title=dict(text='BPE — Z-Score com SWC', font=dict(size=13,color='#111')),
                 xaxis=dict(tickangle=-45, tickfont=dict(size=9,color='#111')),
                 yaxis=dict(tickfont=dict(size=9,color='#111')))
-            st.plotly_chart(_fIM, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
+            st.plotly_chart(_fIM, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, key="analises_bpe")
     else:
         st.info("Mínimo 14 dias de wellness para BPE.")
 
@@ -322,11 +322,11 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
             if rows_foco:
                 st.markdown("🎯 **Foco**")
                 st.dataframe(pd.DataFrame([r for _, r in rows_foco]),
-                             width="stretch", hide_index=True)
+                             use_container_width=True, hide_index=True)
             if rows_man:
                 st.markdown("🔧 **Manutenção**")
                 st.dataframe(pd.DataFrame([r for _, r in rows_man]),
-                             width="stretch", hide_index=True)
+                             use_container_width=True, hide_index=True)
 
             # Recomendação: top do grupo foco
             if rows_foco:
@@ -343,7 +343,7 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
             # Debug expandível
             if df_debug is not None and len(df_debug) > 0:
                 with st.expander(f"🔬 Debug componentes — {label}"):
-                    st.dataframe(df_debug, width="stretch", hide_index=True)
+                    st.dataframe(df_debug, use_container_width=True, hide_index=True)
                     csv_b = df_debug.to_csv(index=False).encode('utf-8')
                     st.download_button(
                         label=f"⬇️ Download debug CSV ({label})",
@@ -432,7 +432,7 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
                     cv_rows.append({'Variável': label, 'Média': f"{s.mean():.2f}",
                                     'STD': f"{s.std():.2f}", 'CV%': f"{cv:.1f}%", 'Interpretação': interp})
                 if cv_rows:
-                    st.dataframe(pd.DataFrame(cv_rows), width="stretch", hide_index=True)
+                    st.dataframe(pd.DataFrame(cv_rows), use_container_width=True, hide_index=True)
                 else:
                     st.info("Sem dados suficientes para CV.")
 
@@ -454,7 +454,7 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
                     else:               tendencia = "→ Platô"
                     trend_rows.append({'Variável': label, f'Slope ({unid})': f"{slope:+.4f}", 'Tendência': tendencia})
                 if trend_rows:
-                    st.dataframe(pd.DataFrame(trend_rows), width="stretch", hide_index=True)
+                    st.dataframe(pd.DataFrame(trend_rows), use_container_width=True, hide_index=True)
 
                 # Correlações por trimestre (eFTP vs AllWorkFTP)
                 if 'icu_eftp' in df_mod.columns and 'AllWorkFTP' in df_mod.columns and len(trimestres) > 0:
@@ -468,7 +468,7 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
                                           'AllWorkFTP mediana (kJ)': f"{dt['AllWorkFTP'].median():.1f}" if dt['AllWorkFTP'].notna().any() else '—',
                                           'N': len(dt)})
                     if trim_rows:
-                        st.dataframe(pd.DataFrame(trim_rows), width="stretch", hide_index=True)
+                        st.dataframe(pd.DataFrame(trim_rows), use_container_width=True, hide_index=True)
 
             # ── PASSO 3: Correlações |r| > 0.4 ─────────────────────────────
             with st.expander("🔗 PASSO 3 — Correlações Avançadas (|r| > 0.4)"):
@@ -489,7 +489,7 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
                                     corr_rows.append({'Var 1': v1, 'Var 2': v2,
                                                       'r': f"{cv:.3f}", 'Força': forca, 'Direção': direcao})
                         if corr_rows:
-                            st.dataframe(pd.DataFrame(corr_rows), width="stretch", hide_index=True)
+                            st.dataframe(pd.DataFrame(corr_rows), use_container_width=True, hide_index=True)
                         else:
                             st.info("Nenhuma correlação > 0.4 encontrada.")
                     else:
@@ -511,7 +511,7 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
                             row['Horas/sessão']    = f"{dt['duration_hours'].mean():.2f}h"
                         saz_rows.append(row)
                     if saz_rows:
-                        st.dataframe(pd.DataFrame(saz_rows), width="stretch", hide_index=True)
+                        st.dataframe(pd.DataFrame(saz_rows), use_container_width=True, hide_index=True)
                 else:
                     st.info("Apenas 1 trimestre de dados — sem análise sazonal.")
 
@@ -525,7 +525,7 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
                         n_cat = dist.get(cat, 0)
                         rpe_rows.append({'Categoria': cat.capitalize(),
                                          'N': n_cat, '%': f"{n_cat/total*100:.1f}%"})
-                    st.dataframe(pd.DataFrame(rpe_rows), width="stretch", hide_index=True)
+                    st.dataframe(pd.DataFrame(rpe_rows), use_container_width=True, hide_index=True)
 
                     # Por trimestre
                     if len(trimestres) > 1:
@@ -542,7 +542,7 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
                                 row[cat.capitalize()+' %'] = f"{pct:.0f}%"
                             trim_rpe.append(row)
                         if trim_rpe:
-                            st.dataframe(pd.DataFrame(trim_rpe), width="stretch", hide_index=True)
+                            st.dataframe(pd.DataFrame(trim_rpe), use_container_width=True, hide_index=True)
                 else:
                     st.info("Sem dados de RPE para análise de categorias.")
 
@@ -630,280 +630,3 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
 - CTL/ATL usa TRIMP = (moving_time_min × RPE) — escala ~300-500 (igual ao Python original)
 - BPE usa SWC (Hopkins 2009) — mais sensível que Z-Score tradicional
         """)
-
-
-
-
-# ════════════════════════════════════════════════════════════════════════════════
-# TAB 10 — AQUECIMENTO (Annual)
-# ════════════════════════════════════════════════════════════════════════════════
-# ════════════════════════════════════════════════════════════════════════════════
-# tabs/tab_aquecimento.py — ATHELTICA Dashboard — v4
-# Aba de Aquecimento — análise completa dos dados Annual
-#
-# CORRECÇÕES v4:
-#   - Slider rolling average DENTRO de cada secção temporal (HR e O2 independentes)
-#   - Detecção robusta de Drag Factor (múltiplos nomes possíveis de coluna)
-#   - Diagnóstico de colunas para debug
-#   - Evolução temporal O2 com slider próprio
-#   - Drag Factor para AquecSki E AquecRow
-#
-# Equivalente ao código original Python:
-#   1. HR/O2 vs Potência (Z-Score, SEM, MDC)
-#   2. Evolução temporal HR com slider rolling próprio (4 métodos)
-#   3. Evolução temporal O2 com slider rolling próprio (4 métodos)
-#   4. HR/Pwr ratio
-#   5. Drag Factor evolução temporal (AquecRow E AquecSki)
-#   6. Correlação Drag Factor vs HR e O2 por W (tabela + scatter)
-#   7. SEM/MDC por grupo Drag Factor (3 partes)
-# ════════════════════════════════════════════════════════════════════════════════
-
-warnings.filterwarnings('ignore')
-plt.style.use('seaborn-v0_8-whitegrid')
-
-# ════════════════════════════════════════════════════════════════════════════════
-# FUNÇÕES AUXILIARES
-# ════════════════════════════════════════════════════════════════════════════════
-
-
-
-
-PLOTLY_WHITE = dict(paper_bgcolor='white', plot_bgcolor='white',
-                    font=dict(family='Arial', size=12, color='#333333'))
-
-def _axis(title='', color='#333333', secondary=False):
-    d = dict(title=dict(text=title, font=dict(color=color, size=12)),
-             tickfont=dict(color=color),
-             showgrid=True, gridcolor='#e8e8e8',
-             linecolor='#cccccc', linewidth=1, showline=True,
-             zeroline=False)
-    if secondary:
-        d['overlaying'] = 'y'; d['side'] = 'right'; d['showgrid'] = False
-    return d
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-
-PLOTLY_WHITE = dict(paper_bgcolor='white', plot_bgcolor='white',
-                    font=dict(family='Arial', size=12, color='#333333'))
-
-def _axis(title='', color='#333333', secondary=False):
-    d = dict(title=dict(text=title, font=dict(color=color, size=12)),
-             tickfont=dict(color=color),
-             showgrid=True, gridcolor='#e8e8e8',
-             linecolor='#cccccc', linewidth=1, showline=True,
-             zeroline=False)
-    if secondary:
-        d['overlaying'] = 'y'; d['side'] = 'right'; d['showgrid'] = False
-    return d
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-
-PLOTLY_WHITE = dict(paper_bgcolor='white', plot_bgcolor='white',
-                    font=dict(family='Arial', size=12, color='#333333'))
-
-LEGEND_STYLE = dict(orientation='h', y=1.02, x=0,
-                    bgcolor='rgba(255,255,255,0.9)',
-                    bordercolor='#aaa', borderwidth=1,
-                    font=dict(color='#111111', size=11))
-
-def _xaxis(title='Data', color='#333'):
-    return dict(title=dict(text=title, font=dict(color=color, size=12)),
-                tickfont=dict(color=color),
-                showgrid=True, gridcolor='#e8e8e8',
-                linecolor='#ccc', linewidth=1, showline=True)
-
-def _yaxis(title='', color='#333', secondary=False):
-    d = dict(title=dict(text=title, font=dict(color=color, size=12)),
-             tickfont=dict(color=color),
-             showgrid=True, gridcolor='#e8e8e8',
-             linecolor='#ccc', linewidth=1, showline=True)
-    if secondary:
-        d.update({'overlaying':'y','side':'right','showgrid':False})
-    return d
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-
-PLOTLY_WHITE = dict(paper_bgcolor='white', plot_bgcolor='white',
-                    font=dict(family='Arial', size=12, color='#333333'))
-
-LEGEND_STYLE = dict(orientation='h', y=1.02, x=0,
-                    bgcolor='rgba(255,255,255,0.9)',
-                    bordercolor='#aaa', borderwidth=1,
-                    font=dict(color='#111111', size=11))
-
-def _xaxis(title='Data', color='#333'):
-    return dict(title=dict(text=title, font=dict(color=color, size=12)),
-                tickfont=dict(color=color),
-                showgrid=True, gridcolor='#e8e8e8',
-                linecolor='#ccc', linewidth=1, showline=True)
-
-def _yaxis(title='', color='#333', secondary=False):
-    d = dict(title=dict(text=title, font=dict(color=color, size=12)),
-             tickfont=dict(color=color),
-             showgrid=True, gridcolor='#e8e8e8',
-             linecolor='#ccc', linewidth=1, showline=True)
-    if secondary:
-        d.update({'overlaying':'y','side':'right','showgrid':False})
-    return d
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _extrair_pot(col):
-    m = re.search(r'(\d+)[_\s]*W', str(col).upper())
-    return int(m.group(1)) if m else None
-
-def _detectar_drag_col(df):
-    for c in ['Drag_Factor','Drag Factor','DragFactor','drag_factor','Drag','drag','DF']:
-        if c in df.columns: return c
-    for c in df.columns:
-        if 'DRAG' in str(c).upper(): return c
-    return None
-
-def _calcular_icc_sem_mdc(valores, tipo='HR'):
-    """
-    ICC calculado dos próprios dados via diferenças consecutivas.
-    SEM de curto prazo: CV_curto = min(CV_dados_consec, CV_max_literatura)
-      HR:   CV_max = 4%  (literatura: 1-3%, Achten & Jeukendrup 2003)
-      SmO2: CV_max = 8%  (literatura: 3-8% NIRS, Davie 2018)
-    MDC₉₅ = CV_curto × média × 1.96
-    """
-    v = np.array(valores, dtype=float)
-    v = v[~np.isnan(v)]
-    n = len(v)
-    if n < 3:
-        return None
-    media = np.mean(v)
-    std   = np.std(v, ddof=1)
-    if media == 0:
-        return None
-
-    # ICC via variância intra (diferenças consecutivas) vs variância total
-    if n >= 4:
-        diffs    = np.diff(v)
-        var_intra = np.var(diffs, ddof=1) / 2
-        var_total = np.var(v, ddof=1)
-        icc = max(0.0, min(1.0, (var_total - var_intra) / var_total))
-    else:
-        icc = max(0.0, 1.0 - (1.0 / max(n, 2)))
-
-    # CV de curto prazo: dos próprios dados (diferenças consecutivas)
-    if n >= 4:
-        cv_curto_dados = (np.std(np.diff(v), ddof=1) / np.sqrt(2)) / media
-    else:
-        cv_curto_dados = std / media
-
-    # Limitar pelo máximo da literatura
-    cv_max = 0.04 if tipo == 'HR' else 0.08  # 4% HR | 8% SmO2
-    cv_curto = min(cv_curto_dados, cv_max)
-
-    # SEM e MDC baseados no CV de curto prazo
-    sem    = cv_curto * media / np.sqrt(2)
-    sem_pc = cv_curto * 100
-    mdc95  = cv_curto * media * 1.96
-    mdc_pc = (mdc95 / media) * 100
-
-    if   icc >= 0.90: icc_qual = "✅ Excelente (≥0.90)"
-    elif icc >= 0.75: icc_qual = "🟢 Boa (0.75–0.90)"
-    elif icc >= 0.50: icc_qual = "🟡 Moderada (0.50–0.75)"
-    else:              icc_qual = "⚠️ Fraca (<0.50)"
-
-    return dict(n=n, media=media, std=std,
-                icc=icc, icc_qual=icc_qual,
-                cv_curto=cv_curto, cv_dados=cv_curto_dados, cv_max=cv_max,
-                sem=sem, sem_pc=sem_pc,
-                mdc95=mdc95, mdc_pc=mdc_pc)
-
-def _limpar_ruido_sem(series, icc_dict, limiar_multiplo=2.0):
-    """
-    Remove pontos que desviam > limiar × SEM da média local (rolling 5).
-    Retorna série limpa e máscara de ruído.
-    """
-    if icc_dict is None or len(series) < 4:
-        return series, np.zeros(len(series), dtype=bool)
-    sem   = icc_dict['sem']
-    media_local = series.rolling(5, min_periods=2, center=True).mean().fillna(series.mean())
-    ruido = (series - media_local).abs() > limiar_multiplo * sem
-    limpa = series.copy()
-    limpa[ruido] = np.nan
-    return limpa, ruido.values
-
-def _calcular_tendencia_com_mdc(df_col, col_data, col_val, mdc95):
-    """
-    Calcula tendência para uma janela temporal.
-    Valida com MDC: |Δ| > MDC → usa 4 métodos para confirmar direcção.
-    Retorna dict com classificação, delta, N, passa_mdc.
-    """
-    from scipy.stats import theilslopes
-    df = df_col[[col_data, col_val]].dropna().sort_values(col_data)
-    df[col_data] = pd.to_datetime(df[col_data])
-    n = len(df)
-    if n < 3:
-        return {'classif': '— (N<3)', 'delta': None, 'passa_mdc': None, 'n': n}
-
-    y   = df[col_val].values.astype(float)
-    x   = (df[col_data] - df[col_data].min()).dt.days.values.astype(float)
-    delta = y[-1] - y[0]  # mudança observada: último - primeiro
-
-    # Valida com MDC
-    if mdc95 is not None and abs(delta) <= mdc95:
-        return {'classif': f'→ Estável (Δ{delta:+.1f} ≤ MDC{mdc95:.1f})',
-                'delta': delta, 'passa_mdc': False, 'n': n}
-
-    # 4 métodos
-    try:
-        sl, _, _, pv, _   = linregress(x, y)
-        tau, p_k           = spearmanr(x, y)
-        th_sl, _, _, _     = theilslopes(y, x)
-        mid                = max(1, n // 2)
-        _, p_t             = scipy_stats.ttest_ind(y[:mid], y[mid:]) if mid >= 2 else (0, 1)
-
-        conf = 0
-        if pv  < 0.05 and abs(sl) > 0:                              conf += 2
-        if p_k < 0.05:                                               conf += 2
-        if (th_sl > 0 and sl > 0) or (th_sl < 0 and sl < 0):        conf += 1
-        if p_t < 0.05:                                               conf += 1
-
-        if conf < 2:
-            classif = f'→ Estável (Δ{delta:+.1f}, conf insuf.)'
-        elif sl > 0:
-            classif = f'↗ Aumentando (Δ{delta:+.1f} > MDC)'
-        else:
-            classif = f'↘ Diminuindo (Δ{delta:+.1f} > MDC)'
-    except Exception:
-        classif = f'→ Estável (Δ{delta:+.1f})'
-
-    return {'classif': classif, 'delta': delta, 'passa_mdc': True, 'n': n}
-
-def _controles_grafico(aba, secao, n_data):
-    c1, c2 = st.columns([2, 1])
-    agrup_lbl = c1.selectbox("Agrupar por",
-        ["Sessão (sem agrup.)", "Mês", "Trimestre", "Ano"],
-        key=f"agrup_{aba}_{secao}")
-    agrup_map = {"Sessão (sem agrup.)": None, "Mês":"M", "Trimestre":"Q", "Ano":"A"}
-    agrup_code = agrup_map[agrup_lbl]
-    roll = c2.slider("Rolling (sessões)", 1, min(12, max(1, n_data-1)), 3,
-                     key=f"roll_{aba}_{secao}")
-    return agrup_code, agrup_lbl, roll
-
-def _agrupar_serie(df, col_data, col_val, agrup_code):
-    d = df[[col_data, col_val]].dropna().copy()
-    d[col_data] = pd.to_datetime(d[col_data])
-    d['_p'] = d[col_data].dt.to_period(agrup_code)
-    agg = d.groupby('_p')[col_val].agg(['mean','std','count']).reset_index()
-    agg['_ts'] = agg['_p'].dt.to_timestamp()
-    if agrup_code == 'M':
-        agg['_lbl'] = agg['_p'].dt.strftime('%b %Y')
-    elif agrup_code == 'Q':
-        agg['_lbl'] = agg['_p'].apply(
-            lambda p: f"Q{((p.start_time.month-1)//3)+1} {p.start_time.year}")
-    else:
-        agg['_lbl'] = agg['_p'].dt.strftime('%Y')
-    return agg
-
-
-# ════════════════════════════════════════════════════════════════════════════════
-# FUNÇÃO PRINCIPAL
-# ════════════════════════════════════════════════════════════════════════════════
