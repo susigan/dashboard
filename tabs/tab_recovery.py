@@ -73,18 +73,11 @@ def tab_recovery(dw):
     ) * 100
 
     # ── SWC = Smallest Worthwhile Change = 0.5 * CV do baseline ──────────────
-    # Representa a menor mudança fisiologicamente relevante no LnrMSSD.
-    # Calculado como 0.5 * std_baseline / baseline * 100 (em %).
     df['SWC']   = 0.5 * (df['std'] / df['baseline'] * 100)
     df['upper'] = df['baseline'] * (1 + df['SWC'] / 100)
     df['lower'] = df['baseline'] * (1 - df['SWC'] / 100)
 
     # ── Thresholds de CV: média ± 0.5 SD do histórico de CV ──────────────────
-    # cv_low  = limiar inferior — CV abaixo disso = HRV estável (pouca variação)
-    # cv_high = limiar superior — CV acima disso = HRV instável (muita variação)
-    # Usados para separar "Accumulated Fatigue" (LnrMSSD baixo + CV baixo, HRV
-    # suprimido de forma consistente) de "Maladaptation" (LnrMSSD baixo + CV alto,
-    # resposta inconsistente ao treino).
     cv_hist = df['cv'].dropna()
     if len(cv_hist) > 10:
         cv_mean = cv_hist.mean()
@@ -102,11 +95,6 @@ def tab_recovery(dw):
     df['slope'] = df['LnrMSSD'].rolling(7, min_periods=5).apply(slope_fn)
 
     # ── Classificação Mode 1 — Altini ────────────────────────────────────────
-    # Lógica: 2×2 entre posição relativa ao baseline e estabilidade do CV
-    #   LnrMSSD baixo + CV baixo  → Accumulated Fatigue (fadiga crónica, HRV suprimido)
-    #   LnrMSSD baixo + CV alto   → Maladaptation (resposta inconsistente)
-    #   LnrMSSD alto  + CV baixo  → Good Adaptation (adaptação positiva, estado ideal)
-    #   LnrMSSD alto  + CV alto   → High Variability (atenção: instável mesmo sendo alto)
     def altini(r):
         if pd.isna(r['cv']) or pd.isna(r['baseline']):
             return 'Sem dados', '#808080'
@@ -121,10 +109,6 @@ def tab_recovery(dw):
         return 'Normal', '#95a5a6'
 
     # ── Classificação Mode 2 — Plews ─────────────────────────────────────────
-    # Lógica baseada em slope (tendência) + posição vs SWC:
-    #   Slope negativo + CV baixo → NFOR (non-functional overreaching, fadiga severa)
-    #   LnrMSSD abaixo do lower SWC → Overreaching agudo
-    #   CV alto → High Variability (instabilidade autonómica)
     def plews(r):
         if pd.isna(r['cv']) or pd.isna(r['baseline']):
             return 'Sem dados', '#808080'
@@ -164,7 +148,6 @@ def tab_recovery(dw):
             continue
         cor = zonas_vistas[zona]
         d   = df_plot[df_plot['zona'] == zona]
-        # Converter cor hex para rgba com transparência 0.55
         r_h, g_h, b_h = int(cor[1:3],16), int(cor[3:5],16), int(cor[5:7],16)
         cor_fill = f'rgba({r_h},{g_h},{b_h},0.55)'
         cor_line = f'rgba({r_h},{g_h},{b_h},0.85)'
@@ -188,20 +171,20 @@ def tab_recovery(dw):
     fig.add_trace(go.Scatter(
         x=df_plot['Data'], y=df_plot['baseline'],
         name=f'Baseline ({baseline_w}d)',
-        line=dict(color='#2c3e50', width=4, dash='dash'),  # ← WIDTH 4 (era 2)
+        line=dict(color='#2c3e50', width=4, dash='dash'),
         hovertemplate='Baseline: %{y:.3f}<extra></extra>'
     ))
 
     # ── SWC band: maior opacidade ────────────────────────────────────────
     fig.add_trace(go.Scatter(
         x=df_plot['Data'], y=df_plot['upper'],
-        line=dict(color='rgba(44,62,80,0.40)', width=1),  # ← opacidade 0.40
+        line=dict(color='rgba(44,62,80,0.40)', width=1),
         showlegend=False, hoverinfo='skip'
     ))
     fig.add_trace(go.Scatter(
         x=df_plot['Data'], y=df_plot['lower'],
-        fill='tonexty', fillcolor='rgba(44,62,80,0.20)',  # ← fill 0.20 (era 0.10)
-        line=dict(color='rgba(44,62,80,0.40)', width=1),  # ← opacidade 0.40
+        fill='tonexty', fillcolor='rgba(44,62,80,0.20)',
+        line=dict(color='rgba(44,62,80,0.40)', width=1),
         name='SWC band',
         hovertemplate='SWC lower: %{y:.3f}<extra></extra>'
     ))
@@ -220,7 +203,7 @@ def tab_recovery(dw):
         y=[cv_low, cv_low],
         name=f'CV low ({cv_low:.2f}%)',
         yaxis='y2',
-        line=dict(color='#e67e22', width=3, dash='dot'),  # ← WIDTH 3 (era 1.5)
+        line=dict(color='#e67e22', width=3, dash='dot'),
         hoverinfo='skip'
     ))
     # Threshold cv_high (LINHA GROSSA)
@@ -229,7 +212,7 @@ def tab_recovery(dw):
         y=[cv_high, cv_high],
         name=f'CV high ({cv_high:.2f}%)',
         yaxis='y2',
-        line=dict(color='#c0392b', width=3, dash='dot'),  # ← WIDTH 3 (era 1.5)
+        line=dict(color='#c0392b', width=3, dash='dot'),
         hoverinfo='skip'
     ))
 
@@ -248,8 +231,8 @@ def tab_recovery(dw):
         yaxis=dict(title='LnRMSSD',
                    showgrid=True, gridcolor='#eee',
                    tickfont=dict(color='#111'),
-                   range=[0, 8],              # ← EIXO FIXO 0-8
-                   dtick=1),                   # ← opcional: marca de 1 em 1
+                   range=[0, 8],
+                   dtick=1),
         yaxis2=dict(title=f'CV% ({janela_cv}d)',
                     overlaying='y', side='right',
                     showgrid=False,
@@ -258,6 +241,11 @@ def tab_recovery(dw):
                     range=[0, max(3.0, df_plot['cv'].max() * 1.3)]),
         xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111'))
     )
+
+    st.plotly_chart(fig, use_container_width=True,
+                    config={'displayModeBar': False, 'responsive': True,
+                            'scrollZoom': False},
+                    key="rec_main_chart")
 
     # ── Status actual ────────────────────────────────────────────────────
     ultimo = df_plot.iloc[-1]
@@ -276,10 +264,57 @@ def tab_recovery(dw):
                delta=f"baseline: {ultimo['baseline']:.3f}")
     cs4.metric("Slope 7d", f"{ultimo['slope']:.4f}" if pd.notna(ultimo['slope']) else "—")
 
+    # ════════════════════════════════════════════════════════════════════════
+    # EXPLICAÇÃO DO STATUS E CÁLCULO
+    # ════════════════════════════════════════════════════════════════════════
+    with st.expander("📖 Como foi calculado este resultado?", expanded=True):
+        if "Mode 1" in modo_modelo:
+            st.markdown("""
+            **Mode 1 — Altini (Baseline Curto)**
+            
+            **Lógica:** Matriz 2×2 baseada na posição do LnRMSSD vs Baseline e estabilidade do CV (Coeficiente de Variação).
+            
+            | Condição | Significado | Interpretação |
+            |----------|-------------|---------------|
+            | **Accumulated Fatigue** | LnRMSSD < Baseline + CV < low | Fadiga crônica acumulada. HRV está consistentemente suprimido abaixo do baseline com baixa variação. Indica necessidade de descanso. |
+            | **Maladaptation** | LnRMSSD < Baseline + CV > high | Resposta inconsistente ao treino. HRV baixo mas com alta variabilidade, indicando instabilidade do sistema nervoso autônomo. |
+            | **Good Adaptation** | LnRMSSD > Baseline + CV < low | Estado ideal! HRV elevado e estável. Sistema bem recuperado e adaptado. |
+            | **High Variability** | LnRMSSD > Baseline + CV > high | Atenção: HRV está elevado mas instável. Pode indicar sobrecompensação ou estresse agudo não resolvido. |
+            | **Normal** | Valores intermediários | Estado neutro, sem sinais claros de fadiga ou supercompensação. |
+            
+            **Cálculos:**
+            - **Baseline**: Média móvel de 7 dias do LnRMSSD
+            - **CV%**: Desvio padrão / média × 100 (janela de {janela_cv} dias)
+            - **Thresholds CV**: Média histórica ± 0.5 DP do CV
+            - **Status atual**: {zona_atual} (CV={cv_atual:.2f}%, vs baseline={baseline_atual:.3f})
+            """.format(janela_cv=janela_cv, zona_atual=ultimo['zona'], 
+                      cv_atual=ultimo['cv'], baseline_atual=ultimo['baseline']))
+        else:
+            st.markdown("""
+            **Mode 2 — Plews (Baseline Longo)**
+            
+            **Lógica:** Baseada na tendência (slope 7d) + posição relativa à banda SWC (Smallest Worthwhile Change).
+            
+            | Condição | Significado | Interpretação |
+            |----------|-------------|---------------|
+            | **NFOR** (Non-Functional Overreaching) | CV < low + Slope negativo | Fadiga severa funcional. HRV estável mas em declínio contínuo. Risco de overtraining. |
+            | **Overreaching** | LnRMSSD < Lower SWC | HRV abaixo da banda de variação mínima importante. Indica sobrecrecheamento agudo. |
+            | **High Variability** | CV > high | Instabilidade autonômica. Resposta ao treino inconsistente, possível estresse não funcional. |
+            | **Normal** | Dentro dos parâmetros normais | Recuperação adequada, pronto para carga de treino. |
+            
+            **Cálculos:**
+            - **Baseline**: Média móvel de 60 dias do LnRMSSD (mais estável, menos sensível a flutuações agudas)
+            - **SWC (Smallest Worthwhile Change)**: 0.5 × (DP do baseline / baseline) × 100
+            - **Bandas**: Baseline ± SWC%
+            - **Slope 7d**: Coeficiente angular da regressão linear dos últimos 7 dias
+            - **Status atual**: {zona_atual} (Slope={slope_atual:.4f}, vs SWC lower={lower_atual:.3f})
+            """.format(zona_atual=ultimo['zona'], slope_atual=ultimo['slope'] if pd.notna(ultimo['slope']) else 0,
+                      lower_atual=ultimo['lower']))
+
     st.markdown("---")
 
     # ════════════════════════════════════════════════════════════════════════
-    # HRV-GUIDED TRAINING — 2 painéis: LnrMSSD colorido + Desvio em DP
+    # HRV-GUIDED TRAINING — 2 painéis: LnrMSSD colorido + Desvio em DP (±5)
     # ════════════════════════════════════════════════════════════════════════
     st.subheader("🏋️ HRV-Guided Training (LnrMSSD)")
 
@@ -298,28 +333,37 @@ def tab_recovery(dw):
         df_hg['bs']    = df_hg['LnrMSSD'].rolling(dias_fam, min_periods=dias_fam).std()
         df_hg['linf']  = df_hg['bm'] - 0.5 * df_hg['bs']
         df_hg['lsup']  = df_hg['bm'] + 0.5 * df_hg['bs']
-        # Desvio em unidades de DP (quantos DP acima/abaixo do baseline)
         df_hg['desvio_dp'] = (df_hg['LnrMSSD'] - df_hg['bm']) / df_hg['bs'].replace(0, np.nan)
         df_hg['intens'] = df_hg.apply(
             lambda r: 'HIIT'       if pd.notna(r['bm']) and r['linf'] <= r['LnrMSSD'] <= r['lsup']
             else ('Recuperação'    if pd.notna(r['bm']) else 'Sem dados'), axis=1)
 
+        # Guardar para análise de correlação posterior
+        df_analysis = df_hg.copy()
+        df_hg_raw = dw.copy().sort_values('Data')
+        df_hg_raw['Data'] = pd.to_datetime(df_hg_raw['Data'])
+        df_hg_raw['RMSSD'] = df_hg_raw['hrv'].where(df_hg_raw['hrv'] > 0)
+        df_hg_raw = df_hg_raw.dropna(subset=['RMSSD'])
+        df_hg_raw['bm_raw'] = df_hg_raw['RMSSD'].rolling(dias_fam, min_periods=dias_fam).mean()
+        df_hg_raw['bs_raw'] = df_hg_raw['RMSSD'].rolling(dias_fam, min_periods=dias_fam).std()
+        df_hg_raw['desvio_dp_raw'] = (df_hg_raw['RMSSD'] - df_hg_raw['bm_raw']) / df_hg_raw['bs_raw'].replace(0, np.nan)
+        df_hg_raw['intens_raw'] = df_hg_raw.apply(
+            lambda r: 'HIIT' if pd.notna(r['bm_raw']) and (r['bm_raw'] - 0.5*r['bs_raw']) <= r['RMSSD'] <= (r['bm_raw'] + 0.5*r['bs_raw'])
+            else ('Recuperação' if pd.notna(r['bm_raw']) else 'Sem dados'), axis=1)
+
         df_p = df_hg.tail(n_hg).copy()
 
-        # Cores por intensidade
         COR_MAP = {'HIIT': '#27ae60', 'Recuperação': '#f39c12', 'Sem dados': '#95a5a6'}
 
-        # ── Subplot 2 painéis ─────────────────────────────────────────────
         _fig_hg = make_subplots(
             rows=2, cols=1, shared_xaxes=True,
             row_heights=[0.65, 0.35], vertical_spacing=0.06,
             subplot_titles=[
                 f'LnrMSSD — Baseline {dias_fam}d ± 0.5 DP',
-                'Desvio do Baseline (unidades de DP)'
+                'Desvio do Baseline (unidades de DP) — Range ±5'
             ]
         )
 
-        # Painel superior: scatter colorido por prescrição
         for intensidade, cor in COR_MAP.items():
             df_i = df_p[df_p['intens'] == intensidade]
             if len(df_i) == 0:
@@ -332,7 +376,6 @@ def tab_recovery(dw):
                 hovertemplate=f'<b>{intensidade}</b><br>%{{x|%d/%m}}: %{{y:.3f}}<extra></extra>'
             ), row=1, col=1)
 
-        # Banda ±0.5 DP (fill)
         _fig_hg.add_trace(go.Scatter(
             x=df_p['Data'], y=df_p['lsup'],
             line=dict(color='rgba(39,174,96,0.4)', width=1),
@@ -345,7 +388,6 @@ def tab_recovery(dw):
             name='Zona HIIT (±0.5 DP)', hoverinfo='skip'
         ), row=1, col=1)
 
-        # Baseline
         _fig_hg.add_trace(go.Scatter(
             x=df_p['Data'], y=df_p['bm'],
             name=f'Baseline {dias_fam}d',
@@ -353,15 +395,20 @@ def tab_recovery(dw):
             hovertemplate='Baseline: %{y:.3f}<extra></extra>'
         ), row=1, col=1)
 
-        # Painel inferior: desvio em DP com scatter colorido + fill ±0.5
-        _fig_hg.add_hrect(y0=-0.5, y1=0.5, fillcolor='rgba(39,174,96,0.10)',
+        # Painel inferior: Desvio com range expandido para ±5 DP
+        _fig_hg.add_hrect(y0=-0.5, y1=0.5, fillcolor='rgba(39,174,96,0.20)',
+                          line_width=0, row=2, col=1, annotation_text="Zona HIIT", 
+                          annotation_position="left")
+        _fig_hg.add_hrect(y0=-5, y1=-0.5, fillcolor='rgba(243,156,18,0.10)',
                           line_width=0, row=2, col=1)
-        _fig_hg.add_hline(y=0,    line_dash='solid', line_color='#27ae60',
+        _fig_hg.add_hrect(y0=0.5, y1=5, fillcolor='rgba(243,156,18,0.10)',
+                          line_width=0, row=2, col=1)
+        _fig_hg.add_hline(y=0, line_dash='solid', line_color='#27ae60',
                           line_width=1.5, row=2, col=1)
-        _fig_hg.add_hline(y=0.5,  line_dash='dot',   line_color='#f39c12',
-                          line_width=1,   row=2, col=1)
-        _fig_hg.add_hline(y=-0.5, line_dash='dot',   line_color='#f39c12',
-                          line_width=1,   row=2, col=1)
+        _fig_hg.add_hline(y=0.5, line_dash='dot', line_color='#f39c12',
+                          line_width=1, row=2, col=1)
+        _fig_hg.add_hline(y=-0.5, line_dash='dot', line_color='#f39c12',
+                          line_width=1, row=2, col=1)
 
         for intensidade, cor in COR_MAP.items():
             df_i = df_p[df_p['intens'] == intensidade]
@@ -376,7 +423,6 @@ def tab_recovery(dw):
                 hovertemplate=f'%{{x|%d/%m}}: %{{y:.2f}} DP<extra></extra>'
             ), row=2, col=1)
 
-        # Linha de desvio
         _fig_hg.add_trace(go.Scatter(
             x=df_p['Data'], y=df_p['desvio_dp'],
             mode='lines', line=dict(color='#7f8c8d', width=1, dash='dot'),
@@ -400,7 +446,8 @@ def tab_recovery(dw):
         _fig_hg.update_yaxes(showgrid=True, gridcolor='#eee',
                               tickfont=dict(color='#111'), row=2, col=1,
                               title_text='Desvio (DP)',
-                              range=[-3.2, 3.2], zeroline=True,
+                              range=[-5, 5],  # ALTERADO: Range expandido para ±5
+                              zeroline=True,
                               zerolinecolor='#27ae60', zerolinewidth=1.5)
 
         st.plotly_chart(_fig_hg, use_container_width=True,
@@ -420,161 +467,234 @@ def tab_recovery(dw):
             m3.metric("Prescrição HOJE",
                       '✅ HIIT' if df_val.iloc[-1]['intens'] == 'HIIT'
                       else '🟠 Recuperação')
-    else:
-        st.info("Mínimo 14 dias de HRV para HRV-Guided Training.")
 
-
-    # ════════════════════════════════════════════════════════════════════════
-    # HRV-GUIDED TRAINING — Versão RMSSD Bruto (ms)
-    # ════════════════════════════════════════════════════════════════════════
-    st.subheader("🏋️ HRV-Guided Training (RMSSD bruto - ms)")
-
-    if len(dw) >= 14 and dw['hrv'].notna().sum() >= 14:
-        df_hg = dw.copy().sort_values('Data')
-        df_hg['Data'] = pd.to_datetime(df_hg['Data'])
+        # ════════════════════════════════════════════════════════════════════════
+        # ANÁLISE DE CORRELAÇÃO — HRV Guided vs Mode 1/Mode 2
+        # ════════════════════════════════════════════════════════════════════════
+        st.markdown("---")
+        st.subheader("📊 Análise de Correlação: HRV-Guided vs Recovery Modes")
         
-        # Usar RMSSD bruto em vez de LnRMSSD
-        df_hg['RMSSD'] = df_hg['hrv'].where(df_hg['hrv'] > 0)
-        df_hg = df_hg.dropna(subset=['RMSSD'])
-
-        hg_c1, hg_c2 = st.columns(2)
-        dias_fam = hg_c1.slider("Dias baseline rolling", 7, 28, 14, key="hg_baseline_raw")
-        n_hg     = hg_c2.slider("Dias a mostrar", 14, min(len(df_hg), 180),
-                                  min(60, len(df_hg)), key="hg_dias_raw")
-
-        # Cálculos em valores absolutos (ms)
-        df_hg['bm']    = df_hg['RMSSD'].rolling(dias_fam, min_periods=dias_fam).mean()
-        df_hg['bs']    = df_hg['RMSSD'].rolling(dias_fam, min_periods=dias_fam).std()
-        df_hg['linf']  = df_hg['bm'] - 0.5 * df_hg['bs']
-        df_hg['lsup']  = df_hg['bm'] + 0.5 * df_hg['bs']
+        # Preparar dados para análise
+        # Juntar classificações do Mode 1 e Mode 2 no dataframe de análise
+        df_corr = df_analysis.copy()
         
-        # Desvio em unidades de DP (z-score)
-        df_hg['desvio_dp'] = (df_hg['RMSSD'] - df_hg['bm']) / df_hg['bs'].replace(0, np.nan)
+        # Recalcular zonas Mode 1 e Mode 2 para todo o histórico
+        df_corr['baseline_7'] = df_corr['LnrMSSD'].rolling(7, min_periods=5).mean()
+        df_corr['baseline_60'] = df_corr['LnrMSSD'].rolling(60, min_periods=30).mean()
+        df_corr['std_7'] = df_corr['LnrMSSD'].rolling(7, min_periods=5).std()
+        df_corr['std_60'] = df_corr['LnrMSSD'].rolling(60, min_periods=30).std()
         
-        # Prescrição: dentro de ±0.5 DP = HIIT, fora = Recuperação
-        df_hg['intens'] = df_hg.apply(
-            lambda r: 'HIIT'       if pd.notna(r['bm']) and r['linf'] <= r['RMSSD'] <= r['lsup']
-            else ('Recuperação'    if pd.notna(r['bm']) else 'Sem dados'), axis=1)
-
-        df_p = df_hg.tail(n_hg).copy()
-
-        # Cores por intensidade
-        COR_MAP = {'HIIT': '#27ae60', 'Recuperação': '#f39c12', 'Sem dados': '#95a5a6'}
-
-        # ── Subplot 2 painéis ─────────────────────────────────────────────
-        _fig_hg = make_subplots(
-            rows=2, cols=1, shared_xaxes=True,
-            row_heights=[0.65, 0.35], vertical_spacing=0.06,
-            subplot_titles=[
-                f'RMSSD (ms) — Baseline {dias_fam}d ± 0.5 DP',
-                'Desvio do Baseline (unidades de DP)'
-            ]
+        # CV móvel de 7 dias
+        df_corr['cv_7'] = (df_corr['LnrMSSD'].rolling(7, min_periods=3).std() / 
+                          df_corr['LnrMSSD'].rolling(7, min_periods=3).mean()) * 100
+        
+        # Thresholds CV
+        cv_hist_full = df_corr['cv_7'].dropna()
+        if len(cv_hist_full) > 10:
+            cv_m = cv_hist_full.mean()
+            cv_s = cv_hist_full.std()
+            cv_l = max(0.1, cv_m - 0.5 * cv_s)
+            cv_h = cv_m + 0.5 * cv_s
+        else:
+            cv_l, cv_h = 0.5, 1.5
+        
+        # Slope 7d
+        df_corr['slope_7'] = df_corr['LnrMSSD'].rolling(7, min_periods=5).apply(slope_fn)
+        
+        # SWC para Mode 2
+        df_corr['SWC_60'] = 0.5 * (df_corr['std_60'] / df_corr['baseline_60'] * 100)
+        df_corr['lower_60'] = df_corr['baseline_60'] * (1 - df_corr['SWC_60'] / 100)
+        
+        # Classificação Mode 1 (Altini)
+        def altini_full(r):
+            if pd.isna(r['cv_7']) or pd.isna(r['baseline_7']):
+                return 'Sem_dados'
+            if r['LnrMSSD'] < r['baseline_7'] and r['cv_7'] < cv_l:
+                return 'Accumulated_Fatigue'
+            if r['LnrMSSD'] < r['baseline_7'] and r['cv_7'] > cv_h:
+                return 'Maladaptation'
+            if r['LnrMSSD'] > r['baseline_7'] and r['cv_7'] < cv_l:
+                return 'Good_Adaptation'
+            if r['LnrMSSD'] > r['baseline_7'] and r['cv_7'] > cv_h:
+                return 'High_Variability'
+            return 'Normal'
+        
+        # Classificação Mode 2 (Plews)
+        def plews_full(r):
+            if pd.isna(r['cv_7']) or pd.isna(r['baseline_60']):
+                return 'Sem_dados'
+            declinio = r['slope_7'] < -0.01 if pd.notna(r['slope_7']) else False
+            if r['cv_7'] < cv_l and declinio:
+                return 'NFOR'
+            if r['LnrMSSD'] < r['lower_60']:
+                return 'Overreaching'
+            if r['cv_7'] > cv_h:
+                return 'High_Variability'
+            return 'Normal'
+        
+        df_corr['mode1_zone'] = df_corr.apply(altini_full, axis=1)
+        df_corr['mode2_zone'] = df_corr.apply(plews_full, axis=1)
+        
+        # Criar variáveis binárias para HIIT (1) vs Recuperação (0)
+        df_corr['hiit_ln'] = (df_corr['intens'] == 'HIIT').astype(int)
+        
+        # Juntar com RMSSD bruto
+        df_corr = df_corr.merge(
+            df_hg_raw[['Data', 'intens_raw']], 
+            on='Data', 
+            how='left'
         )
-
-        # Painel superior: scatter colorido por prescrição
-        for intensidade, cor in COR_MAP.items():
-            df_i = df_p[df_p['intens'] == intensidade]
-            if len(df_i) == 0:
-                continue
-            _fig_hg.add_trace(go.Scatter(
-                x=df_i['Data'], y=df_i['RMSSD'],
-                mode='markers', name=intensidade,
-                marker=dict(color=cor, size=10, line=dict(width=1.5, color='white')),
-                hovertemplate=f'<b>{intensidade}</b><br>%{{x|%d/%m}}: %{{y:.1f}} ms<extra></extra>'
-            ), row=1, col=1)
-
-        # Banda ±0.5 DP (fill) - agora em valores absolutos
-        _fig_hg.add_trace(go.Scatter(
-            x=df_p['Data'], y=df_p['lsup'],
-            line=dict(color='rgba(39,174,96,0.4)', width=1),
-            showlegend=False, hoverinfo='skip'
-        ), row=1, col=1)
-        _fig_hg.add_trace(go.Scatter(
-            x=df_p['Data'], y=df_p['linf'],
-            fill='tonexty', fillcolor='rgba(39,174,96,0.12)',
-            line=dict(color='rgba(39,174,96,0.4)', width=1),
-            name='Zona HIIT (±0.5 DP)', hoverinfo='skip'
-        ), row=1, col=1)
-
-        # Baseline
-        _fig_hg.add_trace(go.Scatter(
-            x=df_p['Data'], y=df_p['bm'],
-            name=f'Baseline {dias_fam}d',
-            line=dict(color='#2c3e50', width=2, dash='dash'),
-            hovertemplate='Baseline: %{y:.1f} ms<extra></extra>'
-        ), row=1, col=1)
-
-        # Painel inferior: desvio em DP com scatter colorido + fill ±0.5
-        _fig_hg.add_hrect(y0=-0.5, y1=0.5, fillcolor='rgba(39,174,96,0.10)',
-                          line_width=0, row=2, col=1)
-        _fig_hg.add_hline(y=0,    line_dash='solid', line_color='#27ae60',
-                          line_width=1.5, row=2, col=1)
-        _fig_hg.add_hline(y=0.5,  line_dash='dot',   line_color='#f39c12',
-                          line_width=1,   row=2, col=1)
-        _fig_hg.add_hline(y=-0.5, line_dash='dot',   line_color='#f39c12',
-                          line_width=1,   row=2, col=1)
-
-        for intensidade, cor in COR_MAP.items():
-            df_i = df_p[df_p['intens'] == intensidade]
-            if len(df_i) == 0:
-                continue
-            _fig_hg.add_trace(go.Scatter(
-                x=df_i['Data'], y=df_i['desvio_dp'],
-                mode='markers', name=intensidade,
-                showlegend=False,
-                marker=dict(color=cor, size=7, opacity=0.8,
-                            line=dict(width=1, color='white')),
-                hovertemplate=f'%{{x|%d/%m}}: %{{y:.2f}} DP<extra></extra>'
-            ), row=2, col=1)
-
-        # Linha de desvio
-        _fig_hg.add_trace(go.Scatter(
-            x=df_p['Data'], y=df_p['desvio_dp'],
-            mode='lines', line=dict(color='#7f8c8d', width=1, dash='dot'),
-            showlegend=False, hoverinfo='skip'
-        ), row=2, col=1)
-
-        _fig_hg.update_layout(
-            paper_bgcolor='white', plot_bgcolor='white',
-            font=dict(color='#111', size=11),
-            height=520,
-            hovermode='x unified',
-            margin=dict(t=60, b=70, l=60, r=40),
-            legend=dict(orientation='h', y=-0.18, font=dict(color='#111', size=10),
-                        bgcolor='rgba(255,255,255,0.9)')
-        )
-        _fig_hg.update_xaxes(showgrid=True, gridcolor='#eee',
-                              tickfont=dict(color='#111'))
-        _fig_hg.update_yaxes(showgrid=True, gridcolor='#eee',
-                              tickfont=dict(color='#111'), row=1, col=1,
-                              title_text='RMSSD (ms)')
-        _fig_hg.update_yaxes(showgrid=True, gridcolor='#eee',
-                              tickfont=dict(color='#111'), row=2, col=1,
-                              title_text='Desvio (DP)',
-                              range=[-3.2, 3.2], zeroline=True,
-                              zerolinecolor='#27ae60', zerolinewidth=1.5)
-
-        st.plotly_chart(_fig_hg, use_container_width=True,
-                        config={'displayModeBar': False, 'responsive': True,
-                                'scrollZoom': False},
-                        key="rec_hg_raw_chart")
-
-        # ── Métricas resumo ───────────────────────────────────────────────
-        df_val = df_hg[df_hg['bm'].notna()]
-        if len(df_val) > 0:
-            hiit_n  = (df_val['intens'] == 'HIIT').sum()
-            rec_n   = (df_val['intens'] == 'Recuperação').sum()
-            total_n = len(df_val)
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Dias HIIT",       f"{hiit_n} ({hiit_n/total_n*100:.0f}%)")
-            m2.metric("Dias Recuperação", f"{rec_n} ({rec_n/total_n*100:.0f}%)")
+        df_corr['hiit_raw'] = (df_corr['intens_raw'] == 'HIIT').astype(int)
+        
+        # Criar variáveis binárias para cada zona Mode 1 e Mode 2
+        mode1_zones = ['Accumulated_Fatigue', 'Maladaptation', 'Good_Adaptation', 'High_Variability', 'Normal']
+        mode2_zones = ['NFOR', 'Overreaching', 'High_Variability', 'Normal']
+        
+        for zone in mode1_zones:
+            df_corr[f'm1_{zone}'] = (df_corr['mode1_zone'] == zone).astype(int)
+        
+        for zone in mode2_zones:
+            df_corr[f'm2_{zone}'] = (df_corr['mode2_zone'] == zone).astype(int)
+        
+        # Calcular rolling de 14 dias para todas as variáveis
+        rolling_cols = ['hiit_ln', 'hiit_raw'] + [f'm1_{z}' for z in mode1_zones] + [f'm2_{z}' for z in mode2_zones]
+        for col in rolling_cols:
+            df_corr[f'{col}_r14'] = df_corr[col].rolling(14, min_periods=7).mean()
+        
+        # Calcular correlações
+        corr_results = []
+        
+        # Correlações: HIIT LnRMSSD rolling vs Modos rolling
+        for mode in ['m1', 'm2']:
+            zones = mode1_zones if mode == 'm1' else mode2_zones
+            mode_name = "Mode 1 (Altini)" if mode == 'm1' else "Mode 2 (Plews)"
             
-            # Valor atual em ms
-            val_hoje = df_val.iloc[-1]['RMSSD']
-            m3.metric("Prescrição HOJE",
-                      '✅ HIIT' if df_val.iloc[-1]['intens'] == 'HIIT'
-                      else '🟠 Recuperação',
-                      help=f"RMSSD: {val_hoje:.1f} ms")
+            for zone in zones:
+                col_hiit = 'hiit_ln_r14'
+                col_zone = f'{mode}_{zone}_r14'
+                
+                valid_data = df_corr[[col_hiit, col_zone]].dropna()
+                if len(valid_data) > 10:
+                    corr, p_val = stats.pearsonr(valid_data[col_hiit], valid_data[col_zone])
+                    
+                    # Interpretação da correlação
+                    if abs(corr) >= 0.7:
+                        strength = "Forte"
+                    elif abs(corr) >= 0.4:
+                        strength = "Moderada"
+                    elif abs(corr) >= 0.2:
+                        strength = "Fraca"
+                    else:
+                        strength = "Desprezível"
+                    
+                    direction = "Positiva" if corr > 0 else "Negativa"
+                    
+                    corr_results.append({
+                        'Métrica HIIT': 'HIIT LnRMSSD (14d)',
+                        'Modo': mode_name,
+                        'Evento': zone.replace('_', ' '),
+                        'Correlação': f"{corr:.3f}",
+                        'Direção': direction,
+                        'Força': strength,
+                        'P-valor': f"{p_val:.4f}",
+                        'Significativo': "Sim" if p_val < 0.05 else "Não"
+                    })
+        
+        # Correlações: HIIT RMSSD bruto rolling vs Modos rolling  
+        for mode in ['m1', 'm2']:
+            zones = mode1_zones if mode == 'm1' else mode2_zones
+            mode_name = "Mode 1 (Altini)" if mode == 'm1' else "Mode 2 (Plews)"
+            
+            for zone in zones:
+                col_hiit = 'hiit_raw_r14'
+                col_zone = f'{mode}_{zone}_r14'
+                
+                valid_data = df_corr[[col_hiit, col_zone]].dropna()
+                if len(valid_data) > 10:
+                    corr, p_val = stats.pearsonr(valid_data[col_hiit], valid_data[col_zone])
+                    
+                    if abs(corr) >= 0.7:
+                        strength = "Forte"
+                    elif abs(corr) >= 0.4:
+                        strength = "Moderada"
+                    elif abs(corr) >= 0.2:
+                        strength = "Fraca"
+                    else:
+                        strength = "Desprezível"
+                    
+                    direction = "Positiva" if corr > 0 else "Negativa"
+                    
+                    corr_results.append({
+                        'Métrica HIIT': 'HIIT RMSSD Bruto (14d)',
+                        'Modo': mode_name,
+                        'Evento': zone.replace('_', ' '),
+                        'Correlação': f"{corr:.3f}",
+                        'Direção': direction,
+                        'Força': strength,
+                        'P-valor': f"{p_val:.4f}",
+                        'Significativo': "Sim" if p_val < 0.05 else "Não"
+                    })
+        
+        # Exibir resultados em tabela
+        if corr_results:
+            df_corr_display = pd.DataFrame(corr_results)
+            
+            # Filtrar apenas correlações Fortes ou Moderadas para destaque
+            df_signif = df_corr_display[df_corr_display['Força'].isin(['Forte', 'Moderada'])]
+            
+            if len(df_signif) > 0:
+                st.markdown("**Correlações Fortes e Moderadas detectadas:**")
+                st.dataframe(
+                    df_signif.style.apply(
+                        lambda x: ['background-color: rgba(39, 174, 96, 0.2)' if x['Força'] == 'Forte' 
+                                  else 'background-color: rgba(241, 196, 15, 0.2)' for _ in x],
+                        axis=1
+                    ),
+                    use_container_width=True,
+                    hide_index=True
+                )
+            
+            with st.expander("Ver todas as correlações calculadas"):
+                st.dataframe(df_corr_display, use_container_width=True, hide_index=True)
+            
+            # Explicação dos resultados
+            st.markdown("""
+            **Como interpretar:**
+            - **Correlação Positiva**: Quando a frequência de HIIT aumenta, o evento do Mode também tende a aumentar (aparecer mais)
+            - **Correlação Negativa**: Quando a frequência de HIIT aumenta, o evento do Mode tende a diminuir (aparecer menos)
+            - **Força Forte (≥0.7)**: Relação muito consistente, útil para previsão
+            - **Força Moderada (0.4-0.7)**: Relação consistente, padrão claro observado
+            - **P-valor < 0.05**: Correlação estatisticamente significativa (não é ao acaso)
+            """)
+            
+            # Análise comparativa LnRMSSD vs RMSSD Bruto
+            st.markdown("**Comparação: LnRMSSD vs RMSSD Bruto**")
+            
+            comp_data = []
+            for mode in ['Mode 1 (Altini)', 'Mode 2 (Plews)']:
+                ln_data = df_corr_display[(df_corr_display['Métrica HIIT'] == 'HIIT LnRMSSD (14d)') & 
+                                         (df_corr_display['Modo'] == mode)]
+                raw_data = df_corr_display[(df_corr_display['Métrica HIIT'] == 'HIIT RMSSD Bruto (14d)') & 
+                                          (df_corr_display['Modo'] == mode)]
+                
+                # Calcular média das correlações absolutas por modo
+                ln_mean = ln_data['Correlação'].astype(float).abs().mean()
+                raw_mean = raw_data['Correlação'].astype(float).abs().mean()
+                
+                melhor = "LnRMSSD" if ln_mean > raw_mean else "RMSSD Bruto"
+                
+                comp_data.append({
+                    'Modo': mode,
+                    'Média |Correlação| LnRMSSD': f"{ln_mean:.3f}",
+                    'Média |Correlação| RMSSD': f"{raw_mean:.3f}",
+                    'Melhor preditor': melhor
+                })
+            
+            st.table(pd.DataFrame(comp_data))
+            
+        else:
+            st.info("Dados insuficientes para calcular correlações (mínimo 10 observações válidas).")
+
     else:
         st.info("Mínimo 14 dias de HRV para HRV-Guided Training.")
 
