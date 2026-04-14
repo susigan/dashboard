@@ -605,9 +605,16 @@ def tab_recovery(dw):
                         return "background-color: rgba(241, 196, 15, 0.3)"
                     return ""
                 
+                # Aplicar apenas na coluna Força
+                def aplicar_cores(df):
+                    cols = [''] * len(df.columns)
+                    força_idx = df.columns.get_loc('Força')
+                    cols[força_idx] = 'background-color: rgba(241, 196, 15, 0.3)'  # default
+                    return cols
+                
                 st.dataframe(
-                    df_mode[['Evento', 'Correlação', 'Direção', 'Força', 'P-valor', 'Significativo']].style
-                    .applymap(color_forca, subset=['Força'])
+                    df_mode[['Evento', 'Correlação', 'Direção', 'Força', 'P-valor', 'Significativo']]
+                    .style.applymap(color_forca, subset=['Força'])
                     .format({'Correlação': '{:.3f}', 'P-valor': '{:.4f}'}),
                     use_container_width=True,
                     hide_index=True
