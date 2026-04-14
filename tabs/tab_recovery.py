@@ -16,7 +16,13 @@ sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))
 warnings.filterwarnings('ignore')
 
 
-def tab_recovery(dw):
+def tab_recovery(dw, da=None):
+    
+    st.header("🔋 Recovery Score & HRV Analysis")
+    
+    # Garantir que da existe (mesmo que vazio)
+    if da is None:
+        da = pd.DataFrame()
 
     st.header("🔋 Recovery Score & HRV Analysis")
 
