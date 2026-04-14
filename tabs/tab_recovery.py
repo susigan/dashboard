@@ -24,6 +24,84 @@ def tab_recovery(dw, da=None):
     if da is None:
         da = pd.DataFrame()
 
+    if len(dw) == 0 or 'hrv' not in dw.columns:
+        st.warning("Sem dados de HRV.")
+        return
+
+    # ════════════════════════════════════════════════════════════════════════
+    # INTEGRAR RPE DAS ATIVIDADES (padrão tab_correlacoes)
+    # ════════════════════════════════════════════════════════════════════════
+    
+    # Helper para remover outliers (igual ao da tab_correlacoes)
+    def _remove_outliers_iqr(series, factor=1.5):
+        s = pd.to_numeric(series, errors='coerce')
+        q1, q3 = s.quantile(0.25), s.quantile(0.75)
+        iqr = q3 - q1
+        mask = (s < q1 - factor*iqr) | (s > q3 + factor*iqr)
+        s[mask] = np.nan
+        return s
+
+    # Helper para classificar RPE
+    def classificar_rpe(val):
+        if pd.isna(val): return None
+        if val < 5: return 'Leve'
+        elif val < 7: return 'Moderado'
+        else: return 'Pesado'
+
+    # Encontrar coluna de RPE
+    rpe_col = next((c for c in ['icu_rpe', 'rpe', 'RPE'] if c in da.columns), None) if not da.empty else None
+    
+    if rpe_col:
+        # Processar datas
+        da_proc = da.copy()
+        da_proc['Data'] = pd.to_datetime(da_proc['Data']).dt.normalize()
+        dw['Data'] = pd.to_datetime(dw['Data']).dt.normalize()
+        
+        # Remover outliers do RPE
+        da_proc[rpe_col] = _remove_outliers_iqr(da_proc[rpe_col])
+        da_proc = da_proc.dropna(subset=[rpe_col])
+        
+        # Agrupar por dia (média dos treinos do dia)
+        rpe_diario = da_proc.groupby('Data')[rpe_col].agg([
+            ('icu_rpe', 'mean'),  # média do dia
+            ('icu_rpe_max', 'max'),
+            ('treinos_count', 'count')
+        ]).reset_index()
+        
+        # Classificar intensidade
+        rpe_diario['rpe_cat'] = rpe_diario['icu_rpe'].apply(classificar_rpe)
+        
+        # Merge com wellness
+        dw = dw.merge(rpe_diario, on='Data', how='left')
+        
+        # Preencher dias sem treino como descanso (Rest) ou deixar NaN conforme sua preferência
+        # Na tab_correlacoes você usa 'Rest' para dias sem atividade
+        # Aqui vamos deixar NaN para indicar "sem treino" mas criar flag de descanso
+        dw['treino_pesado'] = (dw['icu_rpe'] >= 7).astype(int)
+        dw['treino_moderado'] = ((dw['icu_rpe'] >= 5) & (dw['icu_rpe'] < 7)).astype(int)
+        dw['treino_leve'] = (dw['icu_rpe'] < 5).astype(int)
+        dw['descanso'] = dw['icu_rpe'].isna().astype(int)  # 1 = dia sem treino
+        
+        st.success(f"✅ Dados de carga integrados: {dw['icu_rpe'].notna().sum()} dias com RPE")
+    else:
+        # Criar colunas vazias para não quebrar o código posterior
+        dw['icu_rpe'] = np.nan
+        dw['icu_rpe_max'] = np.nan
+        dw['treinos_count'] = 0
+        dw['rpe_cat'] = 'Sem dados'
+        dw['treino_pesado'] = 0
+        dw['treino_moderado'] = 0
+        dw['treino_leve'] = 0
+        dw['descanso'] = 1  # Assume descanso se não tem dados
+        if not da.empty:
+            st.info("ℹ️ Atividades disponíveis mas sem coluna de RPE (icu_rpe/rpe)")
+
+    # Agora sim, calcular recovery com dw já contendo RPE
+    rec = calcular_recovery(dw)
+    if len(rec) == 0:
+        return
+
+
     st.header("🔋 Recovery Score & HRV Analysis")
 
     if len(dw) == 0 or 'hrv' not in dw.columns:
