@@ -635,95 +635,304 @@ def tab_recovery(dw):
         else:
             st.info("Dados insuficientes para calcular correlações.")
 
-        # ════════════════════════════════════════════════════════════════════════
-        # ANÁLISE 1.5: Tendência do Slope 7d (Detecção de Overreaching)
+                # ════════════════════════════════════════════════════════════════════════
+        # ANÁLISE 1.5: Lag Analysis - Treino Pesado (RPE≥7) → Fadiga Futura
         # ════════════════════════════════════════════════════════════════════════
         st.markdown("---")
-        st.subheader("📉 Análise: Slope 7d do LnRMSSD (Tendência de Overreaching)")
+        st.subheader("⏱️ Análise Temporal: Treino Pesado (ICU_RPE ≥7) → Fadiga Futura")
         
-        # Calcular estatísticas do slope
-        slope_atual = df_corr['slope_7'].iloc[-1] if not df_corr.empty else np.nan
-        slope_medio_14d = df_corr['slope_7'].rolling(14, min_periods=7).mean().iloc[-1] if len(df_corr) >= 7 else np.nan
-        slope_negativo_pct = (df_corr['slope_7'].dropna() < -0.01).mean() * 100
-        
-        col_s1, col_s2, col_s3 = st.columns(3)
-        
-        with col_s1:
-            st.metric("Slope Atual", 
-                     f"{slope_atual:.4f}" if pd.notna(slope_atual) else "—",
-                     help="Declive da regressão linear dos últimos 7 dias. Valores negativos indicam queda do HRV.")
-        
-        with col_s2:
-            st.metric("Slope Médio (14d)", 
-                     f"{slope_medio_14d:.4f}" if pd.notna(slope_medio_14d) else "—",
-                     help="Média do slope nos últimos 14 dias. Negativo persistente = overreaching crônico.")
-        
-        with col_s3:
-            st.metric("% Dias Slope Negativo", 
-                     f"{slope_negativo_pct:.0f}%",
-                     help="Percentual de dias com slope < -0.01 (queda significativa do HRV).")
-        
-        # Gráfico do slope ao longo do tempo com thresholds
-        fig_slope = go.Figure()
-        
-        fig_slope.add_trace(go.Scatter(
-            x=df_corr['Data'],
-            y=df_corr['slope_7'],
-            name='Slope 7d',
-            line=dict(color='#e74c3c', width=2),
-            fill='tozeroy',
-            fillcolor='rgba(231, 76, 60, 0.1)'
-        ))
-        
-        # Thresholds de interpretação
-        fig_slope.add_hline(y=-0.01, line_dash="dash", line_color="red", 
-                           annotation_text="Declínio significativo (-0.01)")
-        fig_slope.add_hline(y=0, line_dash="solid", line_color="gray", 
-                           annotation_text="Estável (0)")
-        fig_slope.add_hline(y=0.01, line_dash="dash", line_color="green", 
-                           annotation_text="Recuperação (+0.01)")
-        
-        fig_slope.update_layout(
-            title="Evolução do Slope 7d do LnRMSSD (Detecção de Tendência)",
-            xaxis_title="Data",
-            yaxis_title="Slope 7d",
-            paper_bgcolor='white',
-            plot_bgcolor='white',
-            height=350,
-            yaxis_range=[-0.05, 0.05] if df_corr['slope_7'].notna().any() else None
-        )
-        
-        st.plotly_chart(fig_slope, use_container_width=True, config={'displayModeBar': False})
-        
-        # Alerta de overreaching
-        if slope_medio_14d < -0.01:
-            st.error(f"""
-            ⚠️ **ALERTA DE OVERREACHING DETECTADO**
+        if 'icu_rpe' in df_corr.columns and df_corr['icu_rpe'].notna().any():
             
-            O slope médio de 14 dias está negativo ({slope_medio_14d:.4f}), indicando declínio consistente do HRV.
+            # Criar indicador de treino pesado (RPE >= 7)
+            df_corr['treino_pesado'] = (df_corr['icu_rpe'] >= 7).astype(int)
             
-            **Tempo até recuperação estimado:**
-            - Se **slope > -0.02**: Overreaching funcional (recuperação em 3-7 dias com descanso)
-            - Se **slope < -0.02**: NFOR (Non-Functional Overreaching) - pode levar 2-4 semanas para recuperação completa
+            # Definir lags para testar
+            lags_rpe = [1, 2, 3, 5, 7, 10, 14]
+            resultados_lag_rpe = []
             
-            **Ação recomendada:** Reduzir carga de treino em 40-50% por 3-5 dias.
-            """)
-        elif slope_negativo_pct > 50:
-            st.warning(f"""
-            ⚠️ **Atenção: Instabilidade Autonômica**
+            # Eventos de fadiga para monitorar
+            eventos_fadiga = [
+                ('m1', 'Accumulated_Fatigue', 'Mode 1'),
+                ('m1', 'Maladaptation', 'Mode 1'),
+                ('m2', 'NFOR', 'Mode 2'),
+                ('m2', 'Overreaching', 'Mode 2')
+            ]
             
-            {slope_negativo_pct:.0f}% dos últimos dias apresentaram queda do HRV.
+            for lag in lags_rpe:
+                for mode_prefix, evento, mode_nome in eventos_fadiga:
+                    col_evento = f'{mode_prefix}_{evento}'
+                    col_futuro = f'{evento}_future_rpe'
+                    
+                    # Shift no evento de fadiga (para o futuro)
+                    df_lag = df_corr[['Data', 'treino_pesado', col_evento]].copy()
+                    df_lag[col_futuro] = df_lag[col_evento].shift(-lag)
+                    
+                    # Calcular correlação entre treino pesado hoje e fadiga no futuro
+                    valid = df_lag[['treino_pesado', col_futuro]].dropna()
+                    
+                    if len(valid) > 5:  # Mínimo de observações
+                        # Se poucas variações (raramente tem fadiga), correlação é instável
+                        if valid[col_futuro].nunique() > 1:
+                            corr, p_val = stats.pearsonr(valid['treino_pesado'], valid[col_futuro])
+                            
+                            resultados_lag_rpe.append({
+                                'Lag (dias)': lag,
+                                'Modo': mode_nome,
+                                'Evento Futuro': evento.replace('_', ' '),
+                                'Correlação': corr,
+                                'P-valor': p_val,
+                                'N': len(valid),
+                                'Significativo': "Sim" if p_val < 0.05 else "Não",
+                                'Risco': 'Alto' if corr > 0.3 and p_val < 0.05 else 'Moderado' if corr > 0.1 else 'Baixo'
+                            })
             
-            Padrão sugere **overreaching agudo** ou período de acumulação de estresse.
-            Considere um dia de recuperação ativa.
-            """)
+            if resultados_lag_rpe:
+                df_lag_rpe = pd.DataFrame(resultados_lag_rpe)
+                
+                # Mostrar resultados por lag
+                for lag in lags_rpe:
+                    df_lag_day = df_lag_rpe[df_lag_rpe['Lag (dias)'] == lag]
+                    if not df_lag_day.empty:
+                        with st.expander(f"Após {lag} dias do treino pesado"):
+                            st.dataframe(
+                                df_lag_day[['Modo', 'Evento Futuro', 'Correlação', 'Risco', 'P-valor', 'Significativo']]
+                                .style.format({'Correlação': '{:.3f}', 'P-valor': '{:.4f}'})
+                                .apply(lambda x: ['background-color: rgba(231, 76, 60, 0.3)' if x['Risco'] == 'Alto' 
+                                                  else 'background-color: rgba(241, 196, 15, 0.3)' if x['Risco'] == 'Moderado' 
+                                                  else '' for _ in x], axis=1),
+                                use_container_width=True,
+                                hide_index=True
+                            )
+                
+                # Identificar o lag mais crítico
+                df_alto_risco = df_lag_rpe[(df_lag_rpe['Risco'] == 'Alto') & (df_lag_rpe['Significativo'] == 'Sim')]
+                
+                if not df_alto_risco.empty:
+                    # Pegar o de maior correlação
+                    maior_risco = df_alto_risco.loc[df_alto_risco['Correlação'].idxmax()]
+                    
+                    st.error(f"""
+                    🚨 **Padrão de Overreaching Detectado!**
+                    
+                    Treinos com **ICU_RPE ≥ 7** têm correlação de **{maior_risco['Correlação']:.3f}** com **{maior_risco['Evento Futuro']}** em **{maior_risco['Lag (dias)']} dias**.
+                    
+                    **Interpretação:**
+                    - Quando você treina pesado (RPE≥7), existe {maior_risco['Correlação']*100:.0f}% de chance de estar em estado de {maior_risco['Evento Futuro'].lower()} {maior_risco['Lag (dias)']} dias depois.
+                    - Este é um padrão de **acúmulo de fadiga não recuperável**.
+                    
+                    **Recomendações:**
+                    1. Após treinos RPE≥7, garantir **{maior_risco['Lag (dias)']+1} dias** de recuperação antes do próximo treino pesado
+                    2. Ou reduzir intensidade do próximo treino para RPE < 7 se ainda dentro do período de {maior_risco['Lag (dias)']} dias
+                    3. Considerar periodização: treino pesado → {maior_risco['Lag (dias)']} dias leves → próximo pesado
+                    """)
+                    
+                    # Gráfico de heatmap dos lags
+                    st.markdown("**Mapa de Calor - Correlação por Tempo**")
+                    
+                    # Pivot para heatmap
+                    df_pivot = df_lag_rpe.pivot_table(
+                        index=['Modo', 'Evento Futuro'], 
+                        columns='Lag (dias)', 
+                        values='Correlação',
+                        aggfunc='mean'
+                    ).fillna(0)
+                    
+                    fig_heat = go.Figure(data=go.Heatmap(
+                        z=df_pivot.values,
+                        x=df_pivot.columns,
+                        y=[f"{idx[0]} - {idx[1]}" for idx in df_pivot.index],
+                        colorscale='RdYlGn',
+                        zmid=0,
+                        zmin=-0.5,
+                        zmax=0.5,
+                        colorbar=dict(title='Correlação')
+                    ))
+                    
+                    fig_heat.update_layout(
+                        title="Correlação: Treino Pesado Hoje → Fadiga no Futuro",
+                        xaxis_title="Dias após treino",
+                        yaxis_title="Evento de Fadiga",
+                        height=300
+                    )
+                    
+                    st.plotly_chart(fig_heat, use_container_width=True, config={'displayModeBar': False})
+                    
+                else:
+                    st.success("""
+                    ✅ **Boa recuperação entre treinos pesados!**
+                    
+                    Não foi detectada correlação significativa entre treinos RPE≥7 e estados de fadiga futuros.
+                    Seu sistema está recuperando adequadamente entre sessões de alta carga.
+                    """)
+            else:
+                st.info("Dados insuficientes para análise temporal (mínimo 6 observações por período).")
         else:
-            st.success("""
-            ✅ **Tendência Estável ou Positiva**
-            
-            O slope 7d não indica overreaching significativo. Padrão de recuperação adequado.
-            """)
+            st.info("Coluna 'icu_rpe' não encontrada nos dados.")
 
+        # ════════════════════════════════════════════════════════════════════════
+        # ANÁLISE 1.7: Slope 7d Individualizado (Baseado no Histórico do Atleta)
+        # ════════════════════════════════════════════════════════════════════════
+        st.markdown("---")
+        st.subheader("📉 Slope 7d Individualizado (Baseado no seu Histórico)")
+        
+        # Calcular estatísticas do slope usando TODO o histórico disponível
+        slope_series = df_corr['slope_7'].dropna()
+        
+        if len(slope_series) > 20:  # Precisa de histórico suficiente para individualizar
+            slope_mean = slope_series.mean()
+            slope_std = slope_series.std()
+            slope_median = slope_series.median()
+            
+            # Calcular SWC (Smallest Worthwhile Change) = 0.5 * DP
+            swc = 0.5 * slope_std
+            
+            # Thresholds individualizados
+            thresh_recuperacao = slope_mean + swc  # Acima disso = recuperação real
+            thresh_estavel_sup = slope_mean + (0.5 * swc)  # Levemente positivo
+            thresh_estavel_inf = slope_mean - (0.5 * swc)  # Levemente negativo
+            thresh_declinio = slope_mean - swc  # Abaixo disso = declínio significativo
+            thresh_nfor = slope_mean - (2 * slope_std)  # Crítico (2 DP abaixo da média)
+            
+            # Percentis para contexto
+            p10 = np.percentile(slope_series, 10)  # 10% piores slopes da sua história
+            p90 = np.percentile(slope_series, 90)  # 10% melhores slopes da sua história
+            
+            # Métricas atuais
+            slope_atual = slope_series.iloc[-1]
+            slope_tendencia = "Recuperando" if slope_atual > thresh_recuperacao else \
+                             "Estável positivo" if slope_atual > thresh_estavel_sup else \
+                             "Estável" if slope_atual > thresh_estavel_inf else \
+                             "Declínio" if slope_atual > thresh_declinio else \
+                             "Fadiga severa" if slope_atual > thresh_nfor else "NFOR Crítico"
+            
+            # Display dos thresholds individualizados
+            col_th1, col_th2, col_th3 = st.columns(3)
+            with col_th1:
+                st.metric("Seu Slope Médio (histórico)", f"{slope_mean:.4f}")
+                st.metric("Seu SWC", f"±{swc:.4f}", help="Smallest Worthwhile Change - menor mudança significativa para você")
+            with col_th2:
+                st.metric("Slope Atual", f"{slope_atual:.4f}", delta=slope_tendencia)
+                st.metric("Percentil Atual", f"{stats.percentileofscore(slope_series, slope_atual):.0f}%", 
+                         help="Onde seu slope atual está comparado à sua história (0%=pior, 100%=melhor)")
+            with col_th3:
+                st.metric("Limite NFOR (seu)", f"{thresh_nfor:.4f}", 
+                         help=f"Baseado no seu histórico - apenas {stats.percentileofscore(slope_series, thresh_nfor):.1f}% dos seus dias estão abaixo disso")
+                st.metric("Melhor 10% (seu)", f"{p90:.4f}")
+            
+            # Gráfico com seus thresholds individualizados
+            fig_slope_ind = go.Figure()
+            
+            # Linha do slope
+            fig_slope_ind.add_trace(go.Scatter(
+                x=df_corr['Data'],
+                y=df_corr['slope_7'],
+                name='Seu Slope 7d',
+                line=dict(color='#2c3e50', width=2),
+                fill='tozeroy',
+                fillcolor='rgba(44, 62, 80, 0.1)'
+            ))
+            
+            # Bandas de referência individualizadas
+            fig_slope_ind.add_hrect(y0=thresh_recuperacao, y1=p90, 
+                                   fillcolor="rgba(39, 174, 96, 0.2)", 
+                                   line_width=0, 
+                                   annotation_text="Zona de Supercompensação (seu)",
+                                   annotation_position="top right")
+            
+            fig_slope_ind.add_hrect(y0=thresh_estavel_inf, y1=thresh_estavel_sup,
+                                   fillcolor="rgba(149, 165, 166, 0.2)",
+                                   line_width=0,
+                                   annotation_text="Zona Normal (seu)",
+                                   annotation_position="right")
+            
+            fig_slope_ind.add_hrect(y0=thresh_nfor, y1=thresh_declinio,
+                                   fillcolor="rgba(231, 76, 60, 0.2)",
+                                   line_width=0,
+                                   annotation_text="Zona de Fadiga (seu)",
+                                   annotation_position="bottom right")
+            
+            # Linha da sua média histórica
+            fig_slope_ind.add_hline(y=slope_mean, line_dash="solid", line_color="blue", 
+                                   annotation_text=f"Sua Média ({slope_mean:.3f})",
+                                   annotation_position="right")
+            
+            # Linha crítica NFOR individualizada
+            fig_slope_ind.add_hline(y=thresh_nfor, line_dash="dash", line_color="red", line_width=3,
+                                   annotation_text=f"Seu Limite NFOR ({thresh_nfor:.3f})",
+                                   annotation_position="bottom right")
+            
+            fig_slope_ind.update_layout(
+                title=f"Slope 7d Individualizado - Baseado em {len(slope_series)} dias do seu histórico",
+                xaxis_title="Data",
+                yaxis_title="Slope 7d do LnRMSSD",
+                paper_bgcolor='white',
+                plot_bgcolor='white',
+                height=450,
+                showlegend=True
+            )
+            
+            st.plotly_chart(fig_slope_ind, use_container_width=True, config={'displayModeBar': False})
+            
+            # Alerta contextualizado ao seu histórico
+            if slope_atual < thresh_nfor:
+                dias_criticos = (slope_series < thresh_nfor).sum()
+                st.error(f"""
+                🚨 **NFOR DETECTADO (Baseado no seu histórico)**
+                
+                Seu slope atual ({slope_atual:.4f}) está abaixo do seu limite crítico individual ({thresh_nfor:.4f}).
+                
+                Contexto: Nos seus dados históricos, apenas {dias_criticos} dias ({dias_criticos/len(slope_series)*100:.1f}%) tiveram slope tão baixo quanto hoje.
+                
+                **Isso representa fadiga severa FORA do seu padrão normal.**
+                Recomendação: Descanso ativo até o slope voltar acima de {thresh_declinio:.4f}.
+                """)
+            elif slope_atual < thresh_declinio:
+                st.warning(f"""
+                ⚠️ **Declínio Significativo (para você)**
+                
+                Seu slope está {abs(slope_atual - slope_mean)/slope_std:.1f} desvios-padrão abaixo da sua média histórica.
+                
+                Você está em recuperação comprometida. Reduza carga em 30-40%.
+                """)
+            elif slope_atual > thresh_recuperacao:
+                st.success(f"""
+                ✅ **Supercompensação!**
+                
+                Seu slope está {abs(slope_atual - slope_mean)/slope_std:.1f} desvios-padrão acima da sua média.
+                Momento ideal para treinos de alta intensidade.
+                """)
+                
+        else:
+            st.info(f"""
+            📊 **Dados históricos insuficientes para individualizar**
+            
+            Você tem apenas {len(slope_series)} dias com cálculo de slope (mínimo recomendado: 20 dias).
+            
+            Usando thresholds genéricos (-0.01, 0, +0.01) até acumular mais histórico.
+            
+            **Dica:** Continue registrando seus dados. Com ~60 dias de histórico, os thresholds serão calibrados automaticamente para o seu perfil individual.
+            """)
+            
+            # Fallback para o gráfico padrão (não individualizado)
+            fig_slope_padrao = go.Figure()
+            
+            fig_slope_padrao.add_trace(go.Scatter(
+                x=df_corr['Data'],
+                y=df_corr['slope_7'],
+                name='Slope 7d',
+                line=dict(color='#e74c3c', width=2)
+            ))
+            
+            fig_slope_padrao.add_hline(y=-0.01, line_dash="dash", line_color="red", annotation_text="Declínio (-0.01)")
+            fig_slope_padrao.add_hline(y=0, line_dash="solid", line_color="gray", annotation_text="Estável (0)")
+            fig_slope_padrao.add_hline(y=0.01, line_dash="dash", line_color="green", annotation_text="Recuperação (+0.01)")
+            
+            fig_slope_padrao.update_layout(
+                title="Slope 7d (Valores Padrão - aguardando histórico)",
+                height=350
+            )
+            
+            st.plotly_chart(fig_slope_padrao, use_container_width=True, config={'displayModeBar': False})
         # ════════════════════════════════════════════════════════════════════════
         # ANÁLISE 1.6: Correlação Temporal com Lag (HIIT prediz fadiga futura?)
         # ════════════════════════════════════════════════════════════════════════
