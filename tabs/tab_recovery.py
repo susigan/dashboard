@@ -636,6 +636,187 @@ def tab_recovery(dw):
             st.info("Dados insuficientes para calcular correlações.")
 
         # ════════════════════════════════════════════════════════════════════════
+        # ANÁLISE 1.5: Tendência do Slope 7d (Detecção de Overreaching)
+        # ════════════════════════════════════════════════════════════════════════
+        st.markdown("---")
+        st.subheader("📉 Análise: Slope 7d do LnRMSSD (Tendência de Overreaching)")
+        
+        # Calcular estatísticas do slope
+        slope_atual = df_corr['slope_7'].iloc[-1] if not df_corr.empty else np.nan
+        slope_medio_14d = df_corr['slope_7'].rolling(14, min_periods=7).mean().iloc[-1] if len(df_corr) >= 7 else np.nan
+        slope_negativo_pct = (df_corr['slope_7'].dropna() < -0.01).mean() * 100
+        
+        col_s1, col_s2, col_s3 = st.columns(3)
+        
+        with col_s1:
+            st.metric("Slope Atual", 
+                     f"{slope_atual:.4f}" if pd.notna(slope_atual) else "—",
+                     help="Declive da regressão linear dos últimos 7 dias. Valores negativos indicam queda do HRV.")
+        
+        with col_s2:
+            st.metric("Slope Médio (14d)", 
+                     f"{slope_medio_14d:.4f}" if pd.notna(slope_medio_14d) else "—",
+                     help="Média do slope nos últimos 14 dias. Negativo persistente = overreaching crônico.")
+        
+        with col_s3:
+            st.metric("% Dias Slope Negativo", 
+                     f"{slope_negativo_pct:.0f}%",
+                     help="Percentual de dias com slope < -0.01 (queda significativa do HRV).")
+        
+        # Gráfico do slope ao longo do tempo com thresholds
+        fig_slope = go.Figure()
+        
+        fig_slope.add_trace(go.Scatter(
+            x=df_corr['Data'],
+            y=df_corr['slope_7'],
+            name='Slope 7d',
+            line=dict(color='#e74c3c', width=2),
+            fill='tozeroy',
+            fillcolor='rgba(231, 76, 60, 0.1)'
+        ))
+        
+        # Thresholds de interpretação
+        fig_slope.add_hline(y=-0.01, line_dash="dash", line_color="red", 
+                           annotation_text="Declínio significativo (-0.01)")
+        fig_slope.add_hline(y=0, line_dash="solid", line_color="gray", 
+                           annotation_text="Estável (0)")
+        fig_slope.add_hline(y=0.01, line_dash="dash", line_color="green", 
+                           annotation_text="Recuperação (+0.01)")
+        
+        fig_slope.update_layout(
+            title="Evolução do Slope 7d do LnRMSSD (Detecção de Tendência)",
+            xaxis_title="Data",
+            yaxis_title="Slope 7d",
+            paper_bgcolor='white',
+            plot_bgcolor='white',
+            height=350,
+            yaxis_range=[-0.05, 0.05] if df_corr['slope_7'].notna().any() else None
+        )
+        
+        st.plotly_chart(fig_slope, use_container_width=True, config={'displayModeBar': False})
+        
+        # Alerta de overreaching
+        if slope_medio_14d < -0.01:
+            st.error(f"""
+            ⚠️ **ALERTA DE OVERREACHING DETECTADO**
+            
+            O slope médio de 14 dias está negativo ({slope_medio_14d:.4f}), indicando declínio consistente do HRV.
+            
+            **Tempo até recuperação estimado:**
+            - Se **slope > -0.02**: Overreaching funcional (recuperação em 3-7 dias com descanso)
+            - Se **slope < -0.02**: NFOR (Non-Functional Overreaching) - pode levar 2-4 semanas para recuperação completa
+            
+            **Ação recomendada:** Reduzir carga de treino em 40-50% por 3-5 dias.
+            """)
+        elif slope_negativo_pct > 50:
+            st.warning(f"""
+            ⚠️ **Atenção: Instabilidade Autonômica**
+            
+            {slope_negativo_pct:.0f}% dos últimos dias apresentaram queda do HRV.
+            
+            Padrão sugere **overreaching agudo** ou período de acumulação de estresse.
+            Considere um dia de recuperação ativa.
+            """)
+        else:
+            st.success("""
+            ✅ **Tendência Estável ou Positiva**
+            
+            O slope 7d não indica overreaching significativo. Padrão de recuperação adequado.
+            """)
+
+        # ════════════════════════════════════════════════════════════════════════
+        # ANÁLISE 1.6: Correlação Temporal com Lag (HIIT prediz fadiga futura?)
+        # ════════════════════════════════════════════════════════════════════════
+        st.markdown("---")
+        st.subheader("⏱️ Análise Temporal: HIIT hoje → Fadiga futura? (Lag Analysis)")
+        
+        st.markdown("""
+        Esta análise verifica se dias de **HIIT sugerido pelo HRV-Guided** predizem estados de fadiga (NFOR, Overreaching, Accumulated Fatigue) após X dias.
+        """)
+        
+        # Definir lags para testar
+        lags = [1, 3, 5, 7, 14]
+        resultados_lag = []
+        
+        for lag in lags:
+            # Criar versões deslocadas dos eventos de fadiga
+            for mode, zones, mode_name in [
+                ('m1', ['Accumulated_Fatigue', 'Maladaptation'], 'Mode 1 (Fadiga)'),
+                ('m2', ['NFOR', 'Overreaching'], 'Mode 2 (Fadiga Severa)')
+            ]:
+                for zone in zones:
+                    # Shift nos dados do evento (futuro) vs HIIT atual
+                    df_lag = df_corr[['Data', 'hiit_ln', f'{mode}_{zone}']].copy()
+                    df_lag[f'{zone}_future'] = df_lag[f'{mode}_{zone}'].shift(-lag)  # Evento no futuro
+                    
+                    # Calcular correlação
+                    valid = df_lag[['hiit_ln', f'{zone}_future']].dropna()
+                    if len(valid) > 10:
+                        corr, p_val = stats.pearsonr(valid['hiit_ln'], valid[f'{zone}_future'])
+                        
+                        resultados_lag.append({
+                            'Lag (dias)': lag,
+                            'Modo': mode_name,
+                            'Evento Futuro': zone.replace('_', ' '),
+                            'Correlação': corr,
+                            'P-valor': p_val,
+                            'Significativo': "Sim" if p_val < 0.05 else "Não",
+                            'Interpretação': "Positiva" if corr > 0 else "Negativa"
+                        })
+        
+        if resultados_lag:
+            df_lag_results = pd.DataFrame(resultados_lag)
+            
+            # Mostrar resultados em tabela
+            st.markdown("**Correlações por período de latência:**")
+            
+            for lag in lags:
+                with st.expander(f"Lag de {lag} dias"):
+                    df_lag_day = df_lag_results[df_lag_results['Lag (dias)'] == lag]
+                    if not df_lag_day.empty:
+                        st.dataframe(
+                            df_lag_day[['Modo', 'Evento Futuro', 'Correlação', 'Interpretação', 'P-valor', 'Significativo']]
+                            .style.format({'Correlação': '{:.3f}', 'P-valor': '{:.4f}'})
+                            .apply(lambda x: ['background-color: rgba(231, 76, 60, 0.3)' if x['Correlação'] > 0.3 and x['Significativo'] == 'Sim' else '' for _ in x], axis=1),
+                            use_container_width=True,
+                            hide_index=True
+                        )
+            
+            # Identificar o lag mais preditivo
+            df_signif = df_lag_results[df_lag_results['Significativo'] == 'Sim']
+            if not df_signif.empty:
+                maior_corr = df_signif.loc[df_signif['Correlação'].idxmax()]
+                
+                st.markdown("---")
+                st.markdown("**🔍 Insight Principal:**")
+                
+                if maior_corr['Correlação'] > 0.3:
+                    st.warning(f"""
+                    **Preditor encontrado!**
+                    
+                    Fazer **HIIT hoje** tem correlação de **{maior_corr['Correlação']:.3f}** com aparecer **{maior_corr['Evento Futuro']}** em **{maior_corr['Lag (dias)']} dias**.
+                    
+                    **Interpretação:** O HRV-Guided está sugerindo HIIT em dias que, {maior_corr['Lag (dias)']} dias depois, resultam em estado de fadiga ({maior_corr['Evento Futuro']}).
+                    
+                    **Possíveis causas:**
+                    1. O baseline de {dias_fam}d do HRV-Guided está muito curto para captar a tendência de {maior_corr['Lag (dias)']}d
+                    2. Você pode estar fazendo HIIT em dias que parecem "bons" no curto prazo, mas que na verdade estavam em início de acúmulo de fadiga
+                    3. O HRV leva {maior_corr['Lag (dias)']} dias para refletir o estresse do HIIT neste caso específico
+                    
+                    **Recomendação:** Ajuste o HRV-Guided para usar baseline de pelo menos {maior_corr['Lag (dias)']}d quando este padrão aparecer.
+                    """)
+                else:
+                    st.info("""
+                    **Nenhum preditor forte encontrado.**
+                    
+                    As correlações temporais são fracas, sugerindo que o HRV-Guided está bem calibrado:
+                    - HIIT sugerido não está sistematicamente predizendo fadiga futura
+                    - A resposta ao treino está dentro do esperado
+                    """)
+        else:
+            st.info("Dados insuficientes para análise temporal (mínimo 10 observações por lag).")
+
+        # ════════════════════════════════════════════════════════════════════════
         # ANÁLISE 2: Comparação LnRMSSD vs RMSSD Bruto (HRV-Guided)
         # ════════════════════════════════════════════════════════════════════════
         st.markdown("---")
@@ -746,41 +927,4 @@ def tab_recovery(dw):
             - Considerar outros marcadores (sensação subjetiva, sono, etc.)
             """)
         
-        # Gráfico de comparação temporal
-        st.markdown("**Evolução Temporal da Concordância (Rolling 14d)**")
         
-        df_comp['concorda'] = (df_comp['hiit_ln'] == df_comp['hiit_raw']).astype(int)
-        df_comp['concordancia_r14'] = df_comp['concorda'].rolling(14, min_periods=7).mean() * 100
-        
-        fig_comp = go.Figure()
-        
-        # Linha de concordância
-        fig_comp.add_trace(go.Scatter(
-            x=df_comp['Data'],
-            y=df_comp['concordancia_r14'],
-            name='Concordância % (14d)',
-            line=dict(color='#27ae60', width=2),
-            fill='tozeroy',
-            fillcolor='rgba(39, 174, 96, 0.1)'
-        ))
-        
-        # Linha de referência 100%
-        fig_comp.add_hline(y=100, line_dash="dash", line_color="gray", 
-                          annotation_text="Concordância Perfeita")
-        
-        # Linha de referência 50%
-        fig_comp.add_hline(y=50, line_dash="dot", line_color="red",
-                          annotation_text="Concordância Aleatória")
-        
-        fig_comp.update_layout(
-            title="Concordância entre LnRMSSD e RMSSD Bruto ao longo do tempo",
-            xaxis_title="Data",
-            yaxis_title="Concordância (%)",
-            yaxis_range=[0, 105],
-            paper_bgcolor='white',
-            plot_bgcolor='white',
-            height=400
-        )
-        
-        st.plotly_chart(fig_comp, use_container_width=True, 
-                       config={'displayModeBar': False})    
