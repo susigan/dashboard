@@ -614,7 +614,7 @@ def tab_recovery(dw):
                 
                 st.dataframe(
                     df_mode[['Evento', 'Correlação', 'Direção', 'Força', 'P-valor', 'Significativo']]
-                    .style.applymap(color_forca, subset=['Força'])
+                    .style.map(color_forca, subset=['Força'])
                     .format({'Correlação': '{:.3f}', 'P-valor': '{:.4f}'}),
                     use_container_width=True,
                     hide_index=True
