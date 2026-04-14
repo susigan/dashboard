@@ -455,248 +455,386 @@ def tab_recovery(dw):
                                 'scrollZoom': False},
                         key="rec_hg_chart")
 
-        # ── Métricas resumo ───────────────────────────────────────────────
-        df_val = df_hg[df_hg['bm'].notna()]
-        if len(df_val) > 0:
-            hiit_n  = (df_val['intens'] == 'HIIT').sum()
-            rec_n   = (df_val['intens'] == 'Recuperação').sum()
-            total_n = len(df_val)
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Dias HIIT",       f"{hiit_n} ({hiit_n/total_n*100:.0f}%)")
-            m2.metric("Dias Recuperação", f"{rec_n} ({rec_n/total_n*100:.0f}%)")
-            m3.metric("Prescrição HOJE",
-                      '✅ HIIT' if df_val.iloc[-1]['intens'] == 'HIIT'
-                      else '🟠 Recuperação')
-
-        # ════════════════════════════════════════════════════════════════════════
-        # ANÁLISE DE CORRELAÇÃO — HRV Guided vs Mode 1/Mode 2
-        # ════════════════════════════════════════════════════════════════════════
-        st.markdown("---")
-        st.subheader("📊 Análise de Correlação: HRV-Guided vs Recovery Modes")
-        
-        # Preparar dados para análise
-        # Juntar classificações do Mode 1 e Mode 2 no dataframe de análise
-        df_corr = df_analysis.copy()
-        
-        # Recalcular zonas Mode 1 e Mode 2 para todo o histórico
-        df_corr['baseline_7'] = df_corr['LnrMSSD'].rolling(7, min_periods=5).mean()
-        df_corr['baseline_60'] = df_corr['LnrMSSD'].rolling(60, min_periods=30).mean()
-        df_corr['std_7'] = df_corr['LnrMSSD'].rolling(7, min_periods=5).std()
-        df_corr['std_60'] = df_corr['LnrMSSD'].rolling(60, min_periods=30).std()
-        
-        # CV móvel de 7 dias
-        df_corr['cv_7'] = (df_corr['LnrMSSD'].rolling(7, min_periods=3).std() / 
-                          df_corr['LnrMSSD'].rolling(7, min_periods=3).mean()) * 100
-        
-        # Thresholds CV
-        cv_hist_full = df_corr['cv_7'].dropna()
-        if len(cv_hist_full) > 10:
-            cv_m = cv_hist_full.mean()
-            cv_s = cv_hist_full.std()
-            cv_l = max(0.1, cv_m - 0.5 * cv_s)
-            cv_h = cv_m + 0.5 * cv_s
+                # ── Métricas resumo ───────────────────────────────────────────────
+            df_val = df_hg[df_hg['bm'].notna()]
+            if len(df_val) > 0:
+                hiit_n  = (df_val['intens'] == 'HIIT').sum()
+                rec_n   = (df_val['intens'] == 'Recuperação').sum()
+                total_n = len(df_val)
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Dias HIIT",       f"{hiit_n} ({hiit_n/total_n*100:.0f}%)")
+                m2.metric("Dias Recuperação", f"{rec_n} ({rec_n/total_n*100:.0f}%)")
+                m3.metric("Prescrição HOJE",
+                          '✅ HIIT' if df_val.iloc[-1]['intens'] == 'HIIT'
+                          else '🟠 Recuperação')
+    
+            # ════════════════════════════════════════════════════════════════════════
+            # ANÁLISE 1: HIIT LnRMSSD vs Recovery Modes (Rolling 14d)
+            # ════════════════════════════════════════════════════════════════════════
+            st.markdown("---")
+            st.subheader("📊 Análise 1: HIIT HRV-Guided vs Recovery Modes (14d)")
+            
+            # Preparar dados
+            df_corr = df_analysis.copy()
+            
+            # Recalcular zonas Mode 1 e Mode 2 para todo o histórico
+            df_corr['baseline_7'] = df_corr['LnrMSSD'].rolling(7, min_periods=5).mean()
+            df_corr['baseline_60'] = df_corr['LnrMSSD'].rolling(60, min_periods=30).mean()
+            df_corr['std_7'] = df_corr['LnrMSSD'].rolling(7, min_periods=5).std()
+            df_corr['std_60'] = df_corr['LnrMSSD'].rolling(60, min_periods=30).std()
+            
+            # CV móvel de 7 dias
+            df_corr['cv_7'] = (df_corr['LnrMSSD'].rolling(7, min_periods=3).std() / 
+                              df_corr['LnrMSSD'].rolling(7, min_periods=3).mean()) * 100
+            
+            # Thresholds CV
+            cv_hist_full = df_corr['cv_7'].dropna()
+            if len(cv_hist_full) > 10:
+                cv_m = cv_hist_full.mean()
+                cv_s = cv_hist_full.std()
+                cv_l = max(0.1, cv_m - 0.5 * cv_s)
+                cv_h = cv_m + 0.5 * cv_s
+            else:
+                cv_l, cv_h = 0.5, 1.5
+            
+            # Slope 7d
+            df_corr['slope_7'] = df_corr['LnrMSSD'].rolling(7, min_periods=5).apply(slope_fn)
+            
+            # SWC para Mode 2
+            df_corr['SWC_60'] = 0.5 * (df_corr['std_60'] / df_corr['baseline_60'] * 100)
+            df_corr['lower_60'] = df_corr['baseline_60'] * (1 - df_corr['SWC_60'] / 100)
+            
+            # Classificação Mode 1 (Altini)
+            def altini_full(r):
+                if pd.isna(r['cv_7']) or pd.isna(r['baseline_7']):
+                    return 'Sem_dados'
+                if r['LnrMSSD'] < r['baseline_7'] and r['cv_7'] < cv_l:
+                    return 'Accumulated_Fatigue'
+                if r['LnrMSSD'] < r['baseline_7'] and r['cv_7'] > cv_h:
+                    return 'Maladaptation'
+                if r['LnrMSSD'] > r['baseline_7'] and r['cv_7'] < cv_l:
+                    return 'Good_Adaptation'
+                if r['LnrMSSD'] > r['baseline_7'] and r['cv_7'] > cv_h:
+                    return 'High_Variability'
+                return 'Normal'
+            
+            # Classificação Mode 2 (Plews)
+            def plews_full(r):
+                if pd.isna(r['cv_7']) or pd.isna(r['baseline_60']):
+                    return 'Sem_dados'
+                declinio = r['slope_7'] < -0.01 if pd.notna(r['slope_7']) else False
+                if r['cv_7'] < cv_l and declinio:
+                    return 'NFOR'
+                if r['LnrMSSD'] < r['lower_60']:
+                    return 'Overreaching'
+                if r['cv_7'] > cv_h:
+                    return 'High_Variability'
+                return 'Normal'
+            
+            df_corr['mode1_zone'] = df_corr.apply(altini_full, axis=1)
+            df_corr['mode2_zone'] = df_corr.apply(plews_full, axis=1)
+            
+            # Criar variável binária para HIIT do LnRMSSD (1 = HIIT, 0 = Recuperação)
+            df_corr['hiit_ln'] = (df_corr['intens'] == 'HIIT').astype(int)
+            
+            # Criar variáveis binárias para cada zona Mode 1 e Mode 2
+            mode1_zones = ['Accumulated_Fatigue', 'Maladaptation', 'Good_Adaptation', 'High_Variability', 'Normal']
+            mode2_zones = ['NFOR', 'Overreaching', 'High_Variability', 'Normal']
+            
+            for zone in mode1_zones:
+                df_corr[f'm1_{zone}'] = (df_corr['mode1_zone'] == zone).astype(int)
+            
+            for zone in mode2_zones:
+                df_corr[f'm2_{zone}'] = (df_corr['mode2_zone'] == zone).astype(int)
+            
+            # Calcular rolling de 14 dias para HIIT e para os eventos
+            rolling_cols = ['hiit_ln'] + [f'm1_{z}' for z in mode1_zones] + [f'm2_{z}' for z in mode2_zones]
+            for col in rolling_cols:
+                df_corr[f'{col}_r14'] = df_corr[col].rolling(14, min_periods=7).mean()
+            
+            # Calcular correlações: HIIT LnRMSSD rolling vs Modos rolling
+            corr_results = []
+            
+            for mode, zones in [('m1', mode1_zones), ('m2', mode2_zones)]:
+                mode_name = "Mode 1 (Altini)" if mode == 'm1' else "Mode 2 (Plews)"
+                
+                for zone in zones:
+                    col_hiit = 'hiit_ln_r14'
+                    col_zone = f'{mode}_{zone}_r14'
+                    
+                    valid_data = df_corr[[col_hiit, col_zone]].dropna()
+                    if len(valid_data) > 10:
+                        corr, p_val = stats.pearsonr(valid_data[col_hiit], valid_data[col_zone])
+                        
+                        # Interpretação
+                        if abs(corr) >= 0.7:
+                            strength = "Forte"
+                        elif abs(corr) >= 0.4:
+                            strength = "Moderada"
+                        elif abs(corr) >= 0.2:
+                            strength = "Fraca"
+                        else:
+                            strength = "Desprezível"
+                        
+                        direction = "Positiva" if corr > 0 else "Negativa"
+                        
+                        corr_results.append({
+                            'Modo': mode_name,
+                            'Evento': zone.replace('_', ' '),
+                            'Correlação': corr,
+                            'Direção': direction,
+                            'Força': strength,
+                            'P-valor': p_val,
+                            'Significativo': "Sim" if p_val < 0.05 else "Não",
+                            'N': len(valid_data)
+                        })
+            
+            if corr_results:
+                df_corr_display = pd.DataFrame(corr_results)
+                
+                # Separar por modo
+                for mode_name in ["Mode 1 (Altini)", "Mode 2 (Plews)"]:
+                    st.markdown(f"**{mode_name}**")
+                    df_mode = df_corr_display[df_corr_display['Modo'] == mode_name].copy()
+                    
+                    # Destacar fortes e moderadas
+                    def color_forca(val):
+                        if val == "Forte":
+                            return "background-color: rgba(231, 76, 60, 0.3); color: #c0392b; font-weight: bold"
+                        elif val == "Moderada":
+                            return "background-color: rgba(241, 196, 15, 0.3)"
+                        return ""
+                    
+                    st.dataframe(
+                        df_mode[['Evento', 'Correlação', 'Direção', 'Força', 'P-valor', 'Significativo']].style
+                        .applymap(color_forca, subset=['Força'])
+                        .format({'Correlação': '{:.3f}', 'P-valor': '{:.4f}'}),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                
+                with st.expander("ℹ️ Como interpretar estas correlações"):
+                    st.markdown("""
+                    Estas correlações mostram a relação entre **frequência de dias HIIT** (rolling 14d) e **frequência de eventos de recuperação** (rolling 14d).
+                    
+                    - **Positiva**: Mais dias HIIT ↔ Mais eventos deste tipo
+                    - **Negativa**: Mais dias HIIT ↔ Menos eventos deste tipo  
+                    - **Forte (≥0.7)**: Relação muito consistente
+                    - **Moderada (0.4-0.7)**: Relação clara e útil
+                    - **Significativo (p<0.05)**: A correlação não é ao acaso
+                    """)
+            else:
+                st.info("Dados insuficientes para calcular correlações.")
+    
+            # ════════════════════════════════════════════════════════════════════════
+            # ANÁLISE 2: Comparação LnRMSSD vs RMSSD Bruto (HRV-Guided)
+            # ════════════════════════════════════════════════════════════════════════
+            st.markdown("---")
+            st.subheader("📊 Análise 2: LnRMSSD vs RMSSD Bruto como HRV-Guided")
+            
+            # Preparar dados de RMSSD bruto
+            df_raw = df_hg_raw.copy()
+            df_raw['hiit_raw'] = (df_raw['intens_raw'] == 'HIIT').astype(int)
+            
+            # Juntar com dados LnRMSSD
+            df_comp = df_corr[['Data', 'hiit_ln', 'intens']].merge(
+                df_raw[['Data', 'hiit_raw', 'intens_raw', 'RMSSD', 'bm_raw', 'bs_raw']], 
+                on='Data', 
+                how='inner'
+            )
+            
+            # Métricas de concordância
+            total_dias = len(df_comp)
+            ambos_hiit = ((df_comp['hiit_ln'] == 1) & (df_comp['hiit_raw'] == 1)).sum()
+            ambos_rec = ((df_comp['hiit_ln'] == 0) & (df_comp['hiit_raw'] == 0)).sum()
+            ln_hiit_raw_rec = ((df_comp['hiit_ln'] == 1) & (df_comp['hiit_raw'] == 0)).sum()
+            ln_rec_raw_hiit = ((df_comp['hiit_ln'] == 0) & (df_comp['hiit_raw'] == 1)).sum()
+            
+            # Concordância geral (acurácia)
+            concordancia = (ambos_hiit + ambos_rec) / total_dias * 100 if total_dias > 0 else 0
+            
+            # Concordância específica em HIIT (sensibilidade do LnRMSSD vs RMSSD)
+            total_hiit_ln = df_comp['hiit_ln'].sum()
+            total_hiit_raw = df_comp['hiit_raw'].sum()
+            
+            # Cohen's Kappa para concordância ajustada ao acaso
+            try:
+                from sklearn.metrics import cohen_kappa_score
+                kappa = cohen_kappa_score(df_comp['hiit_ln'], df_comp['hiit_raw'])
+            except ImportError:
+                # Cálculo manual do Kappa se sklearn não estiver disponível
+                p_o = (ambos_hiit + ambos_rec) / total_dias  # Concordância observada
+                p_e = ((df_comp['hiit_ln'].sum() / total_dias) * (df_comp['hiit_raw'].sum() / total_dias)) + \
+                      ((1 - df_comp['hiit_ln'].sum() / total_dias) * (1 - df_comp['hiit_raw'].sum() / total_dias))
+                kappa = (p_o - p_e) / (1 - p_e) if (1 - p_e) != 0 else 0
+            
+            # Interpretação Kappa
+            if kappa >= 0.8:
+                kappa_interp = "Quase perfeita"
+            elif kappa >= 0.6:
+                kappa_interp = "Substancial"
+            elif kappa >= 0.4:
+                kappa_interp = "Moderada"
+            elif kappa >= 0.2:
+                kappa_interp = "Fraca"
+            else:
+                kappa_interp = "Mínima"
+            
+            # Display métricas
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Concordância Geral", f"{concordancia:.1f}%", 
+                     help="Percentual de dias em que ambos os métodos deram a mesma prescrição (HIIT ou Recuperação)")
+            c2.metric("Cohen's Kappa", f"{kappa:.3f}", 
+                     delta=kappa_interp,
+                     help="Concordância ajustada ao acaso. >0.6 é considerada boa.")
+            c3.metric("Dias HIIT LnRMSSD", f"{total_hiit_ln}", 
+                     help=f"Dias prescritos como HIIT pelo método LnRMSSD ({total_hiit_ln/total_dias*100:.0f}%)")
+            c4.metric("Dias HIIT RMSSD", f"{total_hiit_raw}", 
+                     help=f"Dias prescritos como HIIT pelo método RMSSD Bruto ({total_hiit_raw/total_dias*100:.0f}%)")
+            
+            # Tabela de contingência
+            st.markdown("**Tabela de Contingência**")
+            cont_table = pd.DataFrame({
+                'LnRMSSD \\ RMSSD Bruto': ['HIIT', 'Recuperação'],
+                'HIIT': [ambos_hiit, ln_rec_raw_hiit],
+                'Recuperação': [ln_hiit_raw_rec, ambos_rec]
+            })
+            st.table(cont_table.set_index('LnRMSSD \\ RMSSD Bruto'))
+            
+            # Análise de diferenças
+            st.markdown("**Análise das Divergências**")
+            col_d1, col_d2 = st.columns(2)
+            
+            with col_d1:
+                st.metric("LnRMSSD diz HIIT mas RMSSD diz Rec", 
+                         f"{ln_hiit_raw_rec} dias",
+                         delta=f"{ln_hiit_raw_rec/total_dias*100:.1f}%",
+                         delta_color="off")
+                st.caption("LnRMSSD é mais 'agressivo' - permite HIIT quando RMSSD sugere descanso")
+            
+            with col_d2:
+                st.metric("LnRMSSD diz Rec mas RMSSD diz HIIT", 
+                         f"{ln_rec_raw_hiit} dias",
+                         delta=f"{ln_rec_raw_hiit/total_dias*100:.1f}%",
+                         delta_color="off")
+                st.caption("RMSSD Bruto é mais 'agressivo' - permite HIIT quando LnRMSSD sugere descanso")
+            
+            # Recomendação
+            st.markdown("---")
+            st.markdown("**💡 Recomendação de Uso**")
+            
+            if kappa >= 0.6:
+                st.success(f"""
+                **Alta concordância ({kappa_interp})**: Ambos os métodos são equivalentes para este atleta.
+                - LnRMSSD é preferível por normalizar a distribuição e reduzir efeito de outliers
+                - RMSSD bruto pode ser mais intuitivo (ms reais)
+                """)
+            elif kappa >= 0.4:
+                st.warning(f"""
+                **Concordância moderada**: Os métodos diferem com frequência.
+                - **LnRMSSD**: Mais conservador, tende a sugerir mais dias de recuperação ({ln_hiit_raw_rec} dias a mais que RMSSD)
+                - **RMSSD Bruto**: Mais permissivo, pode subestimar necessidade de recuperação em alguns casos
+                - Recomendação: Usar LnRMSSD para decisões importantes de treino
+                """)
+            else:
+                st.error(f"""
+                **Baixa concordância**: Os métodos divergem significativamente!
+                - Isso pode indicar grande variabilidade nos dados de HRV ou presença de outliers
+                - Verificar qualidade dos dados de medição
+                - Considerar outros marcadores (sensação subjetiva, sono, etc.)
+                """)
+            
+            # Gráfico de comparação temporal
+            st.markdown("**Evolução Temporal da Concordância (Rolling 14d)**")
+            
+            df_comp['concorda'] = (df_comp['hiit_ln'] == df_comp['hiit_raw']).astype(int)
+            df_comp['concordancia_r14'] = df_comp['concorda'].rolling(14, min_periods=7).mean() * 100
+            
+            fig_comp = go.Figure()
+            
+            # Linha de concordância
+            fig_comp.add_trace(go.Scatter(
+                x=df_comp['Data'],
+                y=df_comp['concordancia_r14'],
+                name='Concordância % (14d)',
+                line=dict(color='#27ae60', width=2),
+                fill='tozeroy',
+                fillcolor='rgba(39, 174, 96, 0.1)'
+            ))
+            
+            # Linha de referência 100%
+            fig_comp.add_hline(y=100, line_dash="dash", line_color="gray", 
+                              annotation_text="Concordância Perfeita")
+            
+            # Linha de referência 50%
+            fig_comp.add_hline(y=50, line_dash="dot", line_color="red",
+                              annotation_text="Concordância Aleatória")
+            
+            fig_comp.update_layout(
+                title="Concordância entre LnRMSSD e RMSSD Bruto ao longo do tempo",
+                xaxis_title="Data",
+                yaxis_title="Concordância (%)",
+                yaxis_range=[0, 105],
+                paper_bgcolor='white',
+                plot_bgcolor='white',
+                height=400
+            )
+            
+            st.plotly_chart(fig_comp, use_container_width=True, 
+                           config={'displayModeBar': False})
+    
         else:
-            cv_l, cv_h = 0.5, 1.5
-        
-        # Slope 7d
-        df_corr['slope_7'] = df_corr['LnrMSSD'].rolling(7, min_periods=5).apply(slope_fn)
-        
-        # SWC para Mode 2
-        df_corr['SWC_60'] = 0.5 * (df_corr['std_60'] / df_corr['baseline_60'] * 100)
-        df_corr['lower_60'] = df_corr['baseline_60'] * (1 - df_corr['SWC_60'] / 100)
-        
-        # Classificação Mode 1 (Altini)
-        def altini_full(r):
-            if pd.isna(r['cv_7']) or pd.isna(r['baseline_7']):
-                return 'Sem_dados'
-            if r['LnrMSSD'] < r['baseline_7'] and r['cv_7'] < cv_l:
-                return 'Accumulated_Fatigue'
-            if r['LnrMSSD'] < r['baseline_7'] and r['cv_7'] > cv_h:
-                return 'Maladaptation'
-            if r['LnrMSSD'] > r['baseline_7'] and r['cv_7'] < cv_l:
-                return 'Good_Adaptation'
-            if r['LnrMSSD'] > r['baseline_7'] and r['cv_7'] > cv_h:
-                return 'High_Variability'
-            return 'Normal'
-        
-        # Classificação Mode 2 (Plews)
-        def plews_full(r):
-            if pd.isna(r['cv_7']) or pd.isna(r['baseline_60']):
-                return 'Sem_dados'
-            declinio = r['slope_7'] < -0.01 if pd.notna(r['slope_7']) else False
-            if r['cv_7'] < cv_l and declinio:
-                return 'NFOR'
-            if r['LnrMSSD'] < r['lower_60']:
-                return 'Overreaching'
-            if r['cv_7'] > cv_h:
-                return 'High_Variability'
-            return 'Normal'
-        
-        df_corr['mode1_zone'] = df_corr.apply(altini_full, axis=1)
-        df_corr['mode2_zone'] = df_corr.apply(plews_full, axis=1)
-        
-        # Criar variáveis binárias para HIIT (1) vs Recuperação (0)
-        df_corr['hiit_ln'] = (df_corr['intens'] == 'HIIT').astype(int)
-        
-        # Juntar com RMSSD bruto
-        df_corr = df_corr.merge(
-            df_hg_raw[['Data', 'intens_raw']], 
-            on='Data', 
-            how='left'
-        )
-        df_corr['hiit_raw'] = (df_corr['intens_raw'] == 'HIIT').astype(int)
-        
-        # Criar variáveis binárias para cada zona Mode 1 e Mode 2
-        mode1_zones = ['Accumulated_Fatigue', 'Maladaptation', 'Good_Adaptation', 'High_Variability', 'Normal']
-        mode2_zones = ['NFOR', 'Overreaching', 'High_Variability', 'Normal']
-        
-        for zone in mode1_zones:
-            df_corr[f'm1_{zone}'] = (df_corr['mode1_zone'] == zone).astype(int)
-        
-        for zone in mode2_zones:
-            df_corr[f'm2_{zone}'] = (df_corr['mode2_zone'] == zone).astype(int)
-        
-        # Calcular rolling de 14 dias para todas as variáveis
-        rolling_cols = ['hiit_ln', 'hiit_raw'] + [f'm1_{z}' for z in mode1_zones] + [f'm2_{z}' for z in mode2_zones]
-        for col in rolling_cols:
-            df_corr[f'{col}_r14'] = df_corr[col].rolling(14, min_periods=7).mean()
-        
-        # Calcular correlações
-        corr_results = []
-        
-        # Correlações: HIIT LnRMSSD rolling vs Modos rolling
-        for mode in ['m1', 'm2']:
-            zones = mode1_zones if mode == 'm1' else mode2_zones
-            mode_name = "Mode 1 (Altini)" if mode == 'm1' else "Mode 2 (Plews)"
-            
-            for zone in zones:
-                col_hiit = 'hiit_ln_r14'
-                col_zone = f'{mode}_{zone}_r14'
-                
-                valid_data = df_corr[[col_hiit, col_zone]].dropna()
-                if len(valid_data) > 10:
-                    corr, p_val = stats.pearsonr(valid_data[col_hiit], valid_data[col_zone])
-                    
-                    # Interpretação da correlação
-                    if abs(corr) >= 0.7:
-                        strength = "Forte"
-                    elif abs(corr) >= 0.4:
-                        strength = "Moderada"
-                    elif abs(corr) >= 0.2:
-                        strength = "Fraca"
-                    else:
-                        strength = "Desprezível"
-                    
-                    direction = "Positiva" if corr > 0 else "Negativa"
-                    
-                    corr_results.append({
-                        'Métrica HIIT': 'HIIT LnRMSSD (14d)',
-                        'Modo': mode_name,
-                        'Evento': zone.replace('_', ' '),
-                        'Correlação': f"{corr:.3f}",
-                        'Direção': direction,
-                        'Força': strength,
-                        'P-valor': f"{p_val:.4f}",
-                        'Significativo': "Sim" if p_val < 0.05 else "Não"
-                    })
-        
-        # Correlações: HIIT RMSSD bruto rolling vs Modos rolling  
-        for mode in ['m1', 'm2']:
-            zones = mode1_zones if mode == 'm1' else mode2_zones
-            mode_name = "Mode 1 (Altini)" if mode == 'm1' else "Mode 2 (Plews)"
-            
-            for zone in zones:
-                col_hiit = 'hiit_raw_r14'
-                col_zone = f'{mode}_{zone}_r14'
-                
-                valid_data = df_corr[[col_hiit, col_zone]].dropna()
-                if len(valid_data) > 10:
-                    corr, p_val = stats.pearsonr(valid_data[col_hiit], valid_data[col_zone])
-                    
-                    if abs(corr) >= 0.7:
-                        strength = "Forte"
-                    elif abs(corr) >= 0.4:
-                        strength = "Moderada"
-                    elif abs(corr) >= 0.2:
-                        strength = "Fraca"
-                    else:
-                        strength = "Desprezível"
-                    
-                    direction = "Positiva" if corr > 0 else "Negativa"
-                    
-                    corr_results.append({
-                        'Métrica HIIT': 'HIIT RMSSD Bruto (14d)',
-                        'Modo': mode_name,
-                        'Evento': zone.replace('_', ' '),
-                        'Correlação': f"{corr:.3f}",
-                        'Direção': direction,
-                        'Força': strength,
-                        'P-valor': f"{p_val:.4f}",
-                        'Significativo': "Sim" if p_val < 0.05 else "Não"
-                    })
-        
-        # Exibir resultados em tabela
-        if corr_results:
-            df_corr_display = pd.DataFrame(corr_results)
-            
-            # Filtrar apenas correlações Fortes ou Moderadas para destaque
-            df_signif = df_corr_display[df_corr_display['Força'].isin(['Forte', 'Moderada'])]
-            
-            if len(df_signif) > 0:
-                st.markdown("**Correlações Fortes e Moderadas detectadas:**")
-                st.dataframe(
-                    df_signif.style.apply(
-                        lambda x: ['background-color: rgba(39, 174, 96, 0.2)' if x['Força'] == 'Forte' 
-                                  else 'background-color: rgba(241, 196, 15, 0.2)' for _ in x],
-                        axis=1
-                    ),
-                    use_container_width=True,
-                    hide_index=True
-                )
-            
-            with st.expander("Ver todas as correlações calculadas"):
-                st.dataframe(df_corr_display, use_container_width=True, hide_index=True)
-            
-            # Explicação dos resultados
-            st.markdown("""
-            **Como interpretar:**
-            - **Correlação Positiva**: Quando a frequência de HIIT aumenta, o evento do Mode também tende a aumentar (aparecer mais)
-            - **Correlação Negativa**: Quando a frequência de HIIT aumenta, o evento do Mode tende a diminuir (aparecer menos)
-            - **Força Forte (≥0.7)**: Relação muito consistente, útil para previsão
-            - **Força Moderada (0.4-0.7)**: Relação consistente, padrão claro observado
-            - **P-valor < 0.05**: Correlação estatisticamente significativa (não é ao acaso)
-            """)
-            
-            # Análise comparativa LnRMSSD vs RMSSD Bruto
-            st.markdown("**Comparação: LnRMSSD vs RMSSD Bruto**")
-            
-            comp_data = []
-            for mode in ['Mode 1 (Altini)', 'Mode 2 (Plews)']:
-                ln_data = df_corr_display[(df_corr_display['Métrica HIIT'] == 'HIIT LnRMSSD (14d)') & 
-                                         (df_corr_display['Modo'] == mode)]
-                raw_data = df_corr_display[(df_corr_display['Métrica HIIT'] == 'HIIT RMSSD Bruto (14d)') & 
-                                          (df_corr_display['Modo'] == mode)]
-                
-                # Calcular média das correlações absolutas por modo
-                ln_mean = ln_data['Correlação'].astype(float).abs().mean()
-                raw_mean = raw_data['Correlação'].astype(float).abs().mean()
-                
-                melhor = "LnRMSSD" if ln_mean > raw_mean else "RMSSD Bruto"
-                
-                comp_data.append({
-                    'Modo': mode,
-                    'Média |Correlação| LnRMSSD': f"{ln_mean:.3f}",
-                    'Média |Correlação| RMSSD': f"{raw_mean:.3f}",
-                    'Melhor preditor': melhor
-                })
-            
-            st.table(pd.DataFrame(comp_data))
-            
-        else:
-            st.info("Dados insuficientes para calcular correlações (mínimo 10 observações válidas).")
+            st.info("Mínimo 14 dias de HRV para HRV-Guided Training.")
 
+    # ════════════════════════════════════════════════════════════════════════
+    # BPE — Z-Score Semanal
+    # ════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.subheader("📊 BPE — Z-Score Semanal (Método SWC)")
+
+    mets_bpe = [m for m in ['hrv','rhr','sleep_quality','fatiga','stress']
+                if m in dw.columns and dw[m].notna().any()]
+    n_semanas_disp = max(1, len(dw) // 7)
+    if n_semanas_disp < 4:
+        st.info(f"Dados insuficientes para BPE (min 4 semanas, disponível: {n_semanas_disp}).")
     else:
-        st.info("Mínimo 14 dias de HRV para HRV-Guided Training.")
+        _slider_max = min(52, n_semanas_disp)
+        _slider_val = min(16, _slider_max)
+        n_sem = (st.slider("Semanas (BPE)", 4, _slider_max, _slider_val, key="bpe_sem")
+                 if _slider_max > 4 else _slider_max)
+        dados_bpe = {}
+        for met in mets_bpe:
+            s = calcular_bpe(dw, met, 60)
+            if len(s) > 0:
+                dados_bpe[met] = s.tail(n_sem)
+        if dados_bpe:
+            semanas = list(dados_bpe[list(dados_bpe.keys())[0]]['ano_semana'])
+            nm  = len(dados_bpe)
+            mat = np.zeros((nm, len(semanas)))
+            nomes_bpe = {'hrv':'HRV','rhr':'RHR (inv)','sleep_quality':'Sono',
+                         'fatiga':'Energia','stress':'Relaxamento'}
+            for i, met in enumerate(dados_bpe.keys()):
+                z = dados_bpe[met]['zscore'].values
+                mat[i, :len(z)] = (-z if met == 'rhr' else z)[:len(semanas)]
+            import numpy as _npIM
+            _zIM = [[float(mat[r][c]) if not _npIM.isnan(mat[r][c]) else None
+                     for c in range(mat.shape[1])] for r in range(mat.shape[0])]
+            _yIM = [nomes_bpe.get(m, m) for m in dados_bpe.keys()]
+            _fIM = go.Figure(go.Heatmap(
+                z=_zIM, x=[str(s) for s in semanas], y=_yIM,
+                colorscale='RdYlGn', zmid=0, zmin=-2, zmax=2,
+                colorbar=dict(title='Z', tickfont=dict(color='#111'))))
+            _fIM.update_layout(
+                paper_bgcolor='white', plot_bgcolor='white',
+                font=dict(color='#111'), margin=dict(t=50, b=70, l=55, r=20),
+                height=max(280, len(_yIM)*35),
+                title=dict(text='BPE — Z-Score com SWC', font=dict(size=13, color='#111')),
+                xaxis=dict(tickangle=-45, tickfont=dict(size=9, color='#111')),
+                yaxis=dict(tickfont=dict(size=9, color='#111')))
+            st.plotly_chart(_fIM, use_container_width=True,
+                            config={'displayModeBar': False, 'responsive': True,
+                                    'scrollZoom': False},
+                            key="rec_bpe_chart")
 
     # ════════════════════════════════════════════════════════════════════════
     # BPE — Z-Score Semanal
