@@ -468,7 +468,7 @@ def tab_recovery(dw):
                       '✅ HIIT' if df_val.iloc[-1]['intens'] == 'HIIT'
                       else '🟠 Recuperação')
 
-        # ════════════════════════════════════════════════════════════════════════
+            # ════════════════════════════════════════════════════════════════════════
         # ANÁLISE 1: HIIT LnRMSSD vs Recovery Modes (Rolling 14d)
         # ════════════════════════════════════════════════════════════════════════
         st.markdown("---")
@@ -622,6 +622,8 @@ def tab_recovery(dw):
                 - **Forte (≥0.7)**: Relação muito consistente
                 - **Moderada (0.4-0.7)**: Relação clara e útil
                 - **Significativo (p<0.05)**: A correlação não é ao acaso
+                
+                **Exemplo prático**: Se "Accumulated Fatigue" tem correlação negativa forte com HIIT, significa que quando você faz mais HIIT, tende a ter menos fadiga acumulada (bom sinal!), ou vice-versa.
                 """)
         else:
             st.info("Dados insuficientes para calcular correlações.")
@@ -658,15 +660,8 @@ def tab_recovery(dw):
         total_hiit_raw = df_comp['hiit_raw'].sum()
         
         # Cohen's Kappa para concordância ajustada ao acaso
-        try:
-            from sklearn.metrics import cohen_kappa_score
-            kappa = cohen_kappa_score(df_comp['hiit_ln'], df_comp['hiit_raw'])
-        except ImportError:
-            # Cálculo manual do Kappa se sklearn não estiver disponível
-            p_o = (ambos_hiit + ambos_rec) / total_dias  # Concordância observada
-            p_e = ((df_comp['hiit_ln'].sum() / total_dias) * (df_comp['hiit_raw'].sum() / total_dias)) + \
-                  ((1 - df_comp['hiit_ln'].sum() / total_dias) * (1 - df_comp['hiit_raw'].sum() / total_dias))
-            kappa = (p_o - p_e) / (1 - p_e) if (1 - p_e) != 0 else 0
+        from sklearn.metrics import cohen_kappa_score
+        kappa = cohen_kappa_score(df_comp['hiit_ln'], df_comp['hiit_raw'])
         
         # Interpretação Kappa
         if kappa >= 0.8:
@@ -781,58 +776,4 @@ def tab_recovery(dw):
         )
         
         st.plotly_chart(fig_comp, use_container_width=True, 
-                       config={'displayModeBar': False})
-
-    else:
-        st.info("Mínimo 14 dias de HRV para HRV-Guided Training.")
-
-
-    # ════════════════════════════════════════════════════════════════════════
-    # BPE — Z-Score Semanal
-    # ════════════════════════════════════════════════════════════════════════
-    st.markdown("---")
-    st.subheader("📊 BPE — Z-Score Semanal (Método SWC)")
-
-    mets_bpe = [m for m in ['hrv','rhr','sleep_quality','fatiga','stress']
-                if m in dw.columns and dw[m].notna().any()]
-    n_semanas_disp = max(1, len(dw) // 7)
-    if n_semanas_disp < 4:
-        st.info(f"Dados insuficientes para BPE (min 4 semanas, disponível: {n_semanas_disp}).")
-    else:
-        _slider_max = min(52, n_semanas_disp)
-        _slider_val = min(16, _slider_max)
-        n_sem = (st.slider("Semanas (BPE)", 4, _slider_max, _slider_val, key="bpe_sem")
-                 if _slider_max > 4 else _slider_max)
-        dados_bpe = {}
-        for met in mets_bpe:
-            s = calcular_bpe(dw, met, 60)
-            if len(s) > 0:
-                dados_bpe[met] = s.tail(n_sem)
-        if dados_bpe:
-            semanas = list(dados_bpe[list(dados_bpe.keys())[0]]['ano_semana'])
-            nm  = len(dados_bpe)
-            mat = np.zeros((nm, len(semanas)))
-            nomes_bpe = {'hrv':'HRV','rhr':'RHR (inv)','sleep_quality':'Sono',
-                         'fatiga':'Energia','stress':'Relaxamento'}
-            for i, met in enumerate(dados_bpe.keys()):
-                z = dados_bpe[met]['zscore'].values
-                mat[i, :len(z)] = (-z if met == 'rhr' else z)[:len(semanas)]
-            import numpy as _npIM
-            _zIM = [[float(mat[r][c]) if not _npIM.isnan(mat[r][c]) else None
-                     for c in range(mat.shape[1])] for r in range(mat.shape[0])]
-            _yIM = [nomes_bpe.get(m, m) for m in dados_bpe.keys()]
-            _fIM = go.Figure(go.Heatmap(
-                z=_zIM, x=[str(s) for s in semanas], y=_yIM,
-                colorscale='RdYlGn', zmid=0, zmin=-2, zmax=2,
-                colorbar=dict(title='Z', tickfont=dict(color='#111'))))
-            _fIM.update_layout(
-                paper_bgcolor='white', plot_bgcolor='white',
-                font=dict(color='#111'), margin=dict(t=50, b=70, l=55, r=20),
-                height=max(280, len(_yIM)*35),
-                title=dict(text='BPE — Z-Score com SWC', font=dict(size=13, color='#111')),
-                xaxis=dict(tickangle=-45, tickfont=dict(size=9, color='#111')),
-                yaxis=dict(tickfont=dict(size=9, color='#111')))
-            st.plotly_chart(_fIM, use_container_width=True,
-                            config={'displayModeBar': False, 'responsive': True,
-                                    'scrollZoom': False},
-                            key="rec_bpe_chart")
+                       config={'displayModeBar': False})    
