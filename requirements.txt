@@ -9,3 +9,4 @@ google-auth>=2.22.0
 google-auth-oauthlib>=1.0.0
 scipy>=1.11.0
 plotly>=5.18.0
+scikit-learn>=1.0.0
