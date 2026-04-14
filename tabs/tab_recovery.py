@@ -769,170 +769,325 @@ def tab_recovery(dw):
         else:
             st.info("Coluna 'icu_rpe' não encontrada nos dados.")
 
-        # ════════════════════════════════════════════════════════════════════════
-        # ANÁLISE 1.7: Slope 7d Individualizado (Baseado no Histórico do Atleta)
+                # ════════════════════════════════════════════════════════════════════════
+        # ANÁLISE 1.7: Slope 7d Individualizado com Análise de Persistência
         # ════════════════════════════════════════════════════════════════════════
         st.markdown("---")
-        st.subheader("📉 Slope 7d Individualizado (Baseado no seu Histórico)")
+        st.subheader("📉 Slope 7d Individualizado + Persistência do Estado")
         
         # Calcular estatísticas do slope usando TODO o histórico disponível
         slope_series = df_corr['slope_7'].dropna()
         
-        if len(slope_series) > 20:  # Precisa de histórico suficiente para individualizar
+        if len(slope_series) > 20:
             slope_mean = slope_series.mean()
             slope_std = slope_series.std()
-            slope_median = slope_series.median()
-            
-            # Calcular SWC (Smallest Worthwhile Change) = 0.5 * DP
             swc = 0.5 * slope_std
             
             # Thresholds individualizados
-            thresh_recuperacao = slope_mean + swc  # Acima disso = recuperação real
-            thresh_estavel_sup = slope_mean + (0.5 * swc)  # Levemente positivo
-            thresh_estavel_inf = slope_mean - (0.5 * swc)  # Levemente negativo
-            thresh_declinio = slope_mean - swc  # Abaixo disso = declínio significativo
-            thresh_nfor = slope_mean - (2 * slope_std)  # Crítico (2 DP abaixo da média)
+            thresh_recuperacao = slope_mean + swc
+            thresh_estavel_sup = slope_mean + (0.5 * swc)
+            thresh_estavel_inf = slope_mean - (0.5 * swc)
+            thresh_declinio = slope_mean - swc
+            thresh_nfor = slope_mean - (2 * slope_std)
             
-            # Percentis para contexto
-            p10 = np.percentile(slope_series, 10)  # 10% piores slopes da sua história
-            p90 = np.percentile(slope_series, 90)  # 10% melhores slopes da sua história
+            # Classificar cada dia em uma zona
+            def classificar_zona_slope(val):
+                if pd.isna(val):
+                    return 'Sem dados'
+                elif val >= thresh_recuperacao:
+                    return 'Supercompensação'
+                elif val >= thresh_estavel_sup:
+                    return 'Recuperação'
+                elif val >= thresh_estavel_inf:
+                    return 'Estável'
+                elif val >= thresh_declinio:
+                    return 'Declínio Leve'
+                elif val >= thresh_nfor:
+                    return 'Fadiga'
+                else:
+                    return 'NFOR Crítico'
             
-            # Métricas atuais
-            slope_atual = slope_series.iloc[-1]
-            slope_tendencia = "Recuperando" if slope_atual > thresh_recuperacao else \
-                             "Estável positivo" if slope_atual > thresh_estavel_sup else \
-                             "Estável" if slope_atual > thresh_estavel_inf else \
-                             "Declínio" if slope_atual > thresh_declinio else \
-                             "Fadiga severa" if slope_atual > thresh_nfor else "NFOR Crítico"
+            df_corr['zona_slope'] = df_corr['slope_7'].apply(classificar_zona_slope)
             
-            # Display dos thresholds individualizados
-            col_th1, col_th2, col_th3 = st.columns(3)
-            with col_th1:
-                st.metric("Seu Slope Médio (histórico)", f"{slope_mean:.4f}")
-                st.metric("Seu SWC", f"±{swc:.4f}", help="Smallest Worthwhile Change - menor mudança significativa para você")
-            with col_th2:
-                st.metric("Slope Atual", f"{slope_atual:.4f}", delta=slope_tendencia)
-                st.metric("Percentil Atual", f"{stats.percentileofscore(slope_series, slope_atual):.0f}%", 
-                         help="Onde seu slope atual está comparado à sua história (0%=pior, 100%=melhor)")
-            with col_th3:
-                st.metric("Limite NFOR (seu)", f"{thresh_nfor:.4f}", 
-                         help=f"Baseado no seu histórico - apenas {stats.percentileofscore(slope_series, thresh_nfor):.1f}% dos seus dias estão abaixo disso")
-                st.metric("Melhor 10% (seu)", f"{p90:.4f}")
+            # Calcular dias consecutivos (streak) na zona atual
+            zona_atual = df_corr['zona_slope'].iloc[-1]
+            dias_na_zona = 0
             
-            # Gráfico com seus thresholds individualizados
+            # Contar quantos dias seguidos estamos na mesma zona (de trás pra frente)
+            for i in range(len(df_corr) - 1, -1, -1):
+                if df_corr['zona_slope'].iloc[i] == zona_atual:
+                    dias_na_zona += 1
+                else:
+                    break
+            
+            # Calcular histórico de streaks (para contextualizar)
+            todas_sequencias = []
+            seq_atual = 1
+            zona_anterior = df_corr['zona_slope'].iloc[0] if len(df_corr) > 0 else None
+            
+            for i in range(1, len(df_corr)):
+                if df_corr['zona_slope'].iloc[i] == zona_anterior:
+                    seq_atual += 1
+                else:
+                    if zona_anterior != 'Sem dados':
+                        todas_sequencias.append({'zona': zona_anterior, 'dias': seq_atual})
+                    seq_atual = 1
+                    zona_anterior = df_corr['zona_slope'].iloc[i]
+            
+            # Adicionar a última sequência
+            if zona_anterior and zona_anterior != 'Sem dados':
+                todas_sequencias.append({'zona': zona_anterior, 'dias': seq_atual})
+            
+            # Estatísticas de streaks por zona
+            df_seq = pd.DataFrame(todas_sequencias)
+            stats_seq = {}
+            if not df_seq.empty:
+                for zona in df_seq['zona'].unique():
+                    dados_zona = df_seq[df_seq['zona'] == zona]['dias']
+                    stats_seq[zona] = {
+                        'media': dados_zona.mean(),
+                        'max': dados_zona.max(),
+                        'atual': dias_na_zona if zona == zona_atual else 0
+                    }
+            
+            # Display métricas
+            col_p1, col_p2, col_p3, col_p4 = st.columns(4)
+            
+            with col_p1:
+                st.metric("Zona Atual", zona_atual)
+            with col_p2:
+                st.metric("Dias nesta Zona", f"{dias_na_zona} dias",
+                         delta=f"Seu recorde: {stats_seq.get(zona_atual, {}).get('max', 'N/A')} dias" if zona_atual in stats_seq else None)
+            with col_p3:
+                st.metric("Slope Atual", f"{df_corr['slope_7'].iloc[-1]:.4f}")
+            with col_p4:
+                media_historica = stats_seq.get(zona_atual, {}).get('media', 0)
+                if media_historica > 0:
+                    razao = dias_na_zona / media_historica
+                    st.metric("vs Sua Média", f"{razao:.1f}x",
+                             help=f"Você está nesta zona há {razao:.1f} vezes a sua média histórica ({media_historica:.1f} dias)")
+            
+            # Recomendação baseada em PERSISTÊNCIA (não apenas valor atual)
+            st.markdown("---")
+            st.markdown("**🎯 Recomendação Baseada na Persistência do Estado**")
+            
+            if zona_atual == 'NFOR Crítico':
+                if dias_na_zona >= 3:
+                    st.error(f"""
+                    🚨 **AÇÃO IMEDIATA NECESSÁRIA**
+                    
+                    Você está em NFOR há **{dias_na_zona} dias consecutivos**.
+                    
+                    **Histórico:** Seu recorde foi {stats_seq[zona_atual]['max']} dias nesta zona.
+                    **Risco:** Extremo - overtraining estabelecido.
+                    
+                    **Protocolo obrigatório:**
+                    - Descanso COMPLETO (sem treino) por pelo menos {dias_na_zona + 2} dias
+                    - Só retornar quando slope > {thresh_declinio:.4f} por 2 dias seguidos
+                    - Considerar consulta médica se sintomas físicos presentes
+                    """)
+                else:
+                    st.warning(f"""
+                    ⚠️ **NFOR Detectado ({dias_na_zona} dias)**
+                    
+                    Primeiros sinais de fadiga severa. 
+                    **Ação:** Reduzir carga em 50% imediatamente. Se persistir por mais 2 dias, descanso total.
+                    """)
+            
+            elif zona_atual == 'Fadiga':
+                if dias_na_zona >= 5:
+                    st.error(f"""
+                    🚨 **Fadiga Persistente ({dias_na_zona} dias)**
+                    
+                    Você excedeu sua média histórica de permanência nesta zona ({stats_seq[zona_atual]['media']:.1f} dias).
+                    
+                    **Risco:** Transição para NFOR em {7 - dias_na_zona} dias se mantiver carga atual.
+                    
+                    **Ação:** Descanso ativo (caminhada, yoga) por 3-5 dias até retornar à zona "Estável".
+                    """)
+                elif dias_na_zona >= 3:
+                    st.warning(f"""
+                    ⚠️ **Declínio Prolongado ({dias_na_zona} dias)**
+                    
+                    Carga de treino está superando capacidade de recuperação.
+                    **Ação:** Reduzir intensidade em 30% até normalização (1-2 dias).
+                    """)
+                else:
+                    st.info(f"""
+                    ℹ️ **Fadiga Aguda ({dias_na_zona} dia{'s' if dias_na_zona > 1 else ''})**
+                    
+                    Normal após treino intenso. Monitorar próximas 48h.
+                    """)
+            
+            elif zona_atual == 'Declínio Leve':
+                if dias_na_zona >= 7:
+                    st.warning(f"""
+                    ⚠️ **Declínio Crônico Leve ({dias_na_zona} dias)**
+                    
+                    Padrão de overreaching funcional. Não é crítico, mas performance está comprometida.
+                    **Ação:** 2-3 dias de recuperação ativa antes de novo ciclo de carga.
+                    """)
+                else:
+                    st.success(f"""
+                    ✅ **Estável ({dias_na_zona} dias)**
+                    
+                    Dentro da variação normal. Pode manter carga atual.
+                    """)
+            
+            elif zona_atual in ['Recuperação', 'Supercompensação']:
+                if dias_na_zona >= 2:
+                    st.success(f"""
+                    🚀 **Pronto para Carga! ({dias_na_zona} dias)**
+                    
+                    Período ótimo para treinos de alta intensidade ou competição.
+                    Aproveite esta janela - seucorpo está supercompensando.
+                    """)
+                else:
+                    st.info(f"""
+                    ℹ️ **Início de Recuperação**
+                    
+                    Aguarde mais 1 dia na zona para garantir estabilidade antes de carga alta.
+                    """)
+            
+            # Gráfico com legendas em PRETO e anotações de dias consecutivos
             fig_slope_ind = go.Figure()
             
             # Linha do slope
             fig_slope_ind.add_trace(go.Scatter(
                 x=df_corr['Data'],
                 y=df_corr['slope_7'],
-                name='Seu Slope 7d',
+                name='Slope 7d',
                 line=dict(color='#2c3e50', width=2),
                 fill='tozeroy',
-                fillcolor='rgba(44, 62, 80, 0.1)'
+                fillcolor='rgba(44, 62, 80, 0.1)',
+                hovertemplate='Data: %{x}<br>Slope: %{y:.4f}<extra></extra>'
             ))
             
+            # Adicionar anotações de streaks (sequências) visíveis
+            if len(todas_sequencias) > 0:
+                # Mostrar apenas as últimas 3 sequências para não poluir
+                for seq in todas_sequencias[-3:]:
+                    # Encontrar posição no tempo (aproximada)
+                    idx_fim = len(df_corr) - 1 - (0 if seq == todas_sequencias[-1] else sum([s['dias'] for s in todas_sequencias[todas_sequencias.index(seq)+1:]]))
+                    idx_inicio = max(0, idx_fim - seq['dias'] + 1)
+                    
+                    if idx_fim < len(df_corr) and idx_inicio < len(df_corr):
+                        data_meio = df_corr['Data'].iloc[(idx_inicio + idx_fim) // 2]
+                        valor_y = df_corr['slope_7'].iloc[idx_inicio:idx_fim+1].mean()
+                        
+                        cor_anot = 'red' if seq['zona'] in ['NFOR Crítico', 'Fadiga'] else \
+                                  'orange' if seq['zona'] == 'Declínio Leve' else \
+                                  'green' if seq['zona'] in ['Recuperação', 'Supercompensação'] else 'gray'
+                        
+                        fig_slope_ind.add_annotation(
+                            x=data_meio,
+                            y=valor_y,
+                            text=f"{seq['dias']}d",
+                            showarrow=False,
+                            font=dict(size=10, color=cor_anot, family="Arial Black"),
+                            bgcolor="rgba(255,255,255,0.8)",
+                            bordercolor=cor_anot,
+                            borderwidth=1,
+                            borderpad=2
+                        )
+            
             # Bandas de referência individualizadas
-            fig_slope_ind.add_hrect(y0=thresh_recuperacao, y1=p90, 
-                                   fillcolor="rgba(39, 174, 96, 0.2)", 
+            fig_slope_ind.add_hrect(y0=thresh_recuperacao, y1=slope_mean + (3*slope_std), 
+                                   fillcolor="rgba(39, 174, 96, 0.15)", 
                                    line_width=0, 
-                                   annotation_text="Zona de Supercompensação (seu)",
-                                   annotation_position="top right")
+                                   annotation_text="Supercompensação",
+                                   annotation_position="top right",
+                                   annotation_font=dict(color='black', size=11))
+            
+            fig_slope_ind.add_hrect(y0=thresh_estavel_sup, y1=thresh_recuperacao,
+                                   fillcolor="rgba(46, 204, 113, 0.15)",
+                                   line_width=0,
+                                   annotation_text="Recuperação",
+                                   annotation_position="right",
+                                   annotation_font=dict(color='black', size=11))
             
             fig_slope_ind.add_hrect(y0=thresh_estavel_inf, y1=thresh_estavel_sup,
-                                   fillcolor="rgba(149, 165, 166, 0.2)",
+                                   fillcolor="rgba(149, 165, 166, 0.15)",
                                    line_width=0,
-                                   annotation_text="Zona Normal (seu)",
-                                   annotation_position="right")
+                                   annotation_text="Estável",
+                                   annotation_position="right",
+                                   annotation_font=dict(color='black', size=11))
+            
+            fig_slope_ind.add_hrect(y0=thresh_declinio, y1=thresh_estavel_inf,
+                                   fillcolor="rgba(241, 196, 15, 0.15)",
+                                   line_width=0,
+                                   annotation_text="Declínio Leve",
+                                   annotation_position="right",
+                                   annotation_font=dict(color='black', size=11))
             
             fig_slope_ind.add_hrect(y0=thresh_nfor, y1=thresh_declinio,
-                                   fillcolor="rgba(231, 76, 60, 0.2)",
+                                   fillcolor="rgba(231, 76, 60, 0.15)",
                                    line_width=0,
-                                   annotation_text="Zona de Fadiga (seu)",
-                                   annotation_position="bottom right")
+                                   annotation_text="Fadiga",
+                                   annotation_position="right",
+                                   annotation_font=dict(color='black', size=11))
             
-            # Linha da sua média histórica
-            fig_slope_ind.add_hline(y=slope_mean, line_dash="solid", line_color="blue", 
+            fig_slope_ind.add_hrect(y0=slope_mean - (4*slope_std), y1=thresh_nfor,
+                                   fillcolor="rgba(192, 57, 43, 0.2)",
+                                   line_width=0,
+                                   annotation_text="NFOR",
+                                   annotation_position="bottom right",
+                                   annotation_font=dict(color='black', size=11))
+            
+            # Linhas de threshold com labels em preto
+            fig_slope_ind.add_hline(y=slope_mean, line_dash="solid", line_color="blue", line_width=2,
                                    annotation_text=f"Sua Média ({slope_mean:.3f})",
-                                   annotation_position="right")
+                                   annotation_position="right",
+                                   annotation_font=dict(color='black', size=10, family='Arial'))
             
-            # Linha crítica NFOR individualizada
             fig_slope_ind.add_hline(y=thresh_nfor, line_dash="dash", line_color="red", line_width=3,
-                                   annotation_text=f"Seu Limite NFOR ({thresh_nfor:.3f})",
-                                   annotation_position="bottom right")
+                                   annotation_text=f"Limite NFOR ({thresh_nfor:.3f})",
+                                   annotation_position="bottom right",
+                                   annotation_font=dict(color='black', size=10, family='Arial'))
             
+            # Layout com legendas e textos em PRETO
             fig_slope_ind.update_layout(
-                title=f"Slope 7d Individualizado - Baseado em {len(slope_series)} dias do seu histórico",
-                xaxis_title="Data",
-                yaxis_title="Slope 7d do LnRMSSD",
+                title=dict(
+                    text=f"Slope 7d Individualizado - Baseado em {len(slope_series)} dias",
+                    font=dict(color='black', size=14)
+                ),
+                xaxis=dict(
+                    title=dict(text="Data", font=dict(color='black')),
+                    tickfont=dict(color='black'),
+                    showgrid=True,
+                    gridcolor='rgba(128,128,128,0.2)'
+                ),
+                yaxis=dict(
+                    title=dict(text="Slope 7d do LnRMSSD", font=dict(color='black')),
+                    tickfont=dict(color='black'),
+                    showgrid=True,
+                    gridcolor='rgba(128,128,128,0.2)'
+                ),
                 paper_bgcolor='white',
                 plot_bgcolor='white',
-                height=450,
-                showlegend=True
+                height=500,
+                showlegend=True,
+                legend=dict(
+                    font=dict(color='black'),
+                    bgcolor='rgba(255,255,255,0.9)',
+                    bordercolor='black',
+                    borderwidth=1
+                ),
+                font=dict(color='black')  # Fonte geral preta
             )
             
             st.plotly_chart(fig_slope_ind, use_container_width=True, config={'displayModeBar': False})
             
-            # Alerta contextualizado ao seu histórico
-            if slope_atual < thresh_nfor:
-                dias_criticos = (slope_series < thresh_nfor).sum()
-                st.error(f"""
-                🚨 **NFOR DETECTADO (Baseado no seu histórico)**
-                
-                Seu slope atual ({slope_atual:.4f}) está abaixo do seu limite crítico individual ({thresh_nfor:.4f}).
-                
-                Contexto: Nos seus dados históricos, apenas {dias_criticos} dias ({dias_criticos/len(slope_series)*100:.1f}%) tiveram slope tão baixo quanto hoje.
-                
-                **Isso representa fadiga severa FORA do seu padrão normal.**
-                Recomendação: Descanso ativo até o slope voltar acima de {thresh_declinio:.4f}.
-                """)
-            elif slope_atual < thresh_declinio:
-                st.warning(f"""
-                ⚠️ **Declínio Significativo (para você)**
-                
-                Seu slope está {abs(slope_atual - slope_mean)/slope_std:.1f} desvios-padrão abaixo da sua média histórica.
-                
-                Você está em recuperação comprometida. Reduza carga em 30-40%.
-                """)
-            elif slope_atual > thresh_recuperacao:
-                st.success(f"""
-                ✅ **Supercompensação!**
-                
-                Seu slope está {abs(slope_atual - slope_mean)/slope_std:.1f} desvios-padrão acima da sua média.
-                Momento ideal para treinos de alta intensidade.
-                """)
+            # Tabela de histórico de sequências
+            with st.expander("📋 Ver Histórico de Sequências (Streaks)"):
+                df_hist_seq = pd.DataFrame(todas_sequencias[-10:])  # Últimas 10 sequências
+                df_hist_seq['Data Fim'] = [df_corr['Data'].iloc[-(sum([s['dias'] for s in todas_sequencias[i:]]) if i < len(todas_sequencias)-1 else 0) - 1].strftime('%d/%m/%Y') 
+                                          for i in range(len(todas_sequencias)-10, len(todas_sequencias))]
+                st.dataframe(df_hist_seq[['Data Fim', 'zona', 'dias']].rename(columns={'zona': 'Zona', 'dias': 'Duração (dias)'}),
+                            use_container_width=True, hide_index=True)
                 
         else:
-            st.info(f"""
-            📊 **Dados históricos insuficientes para individualizar**
-            
-            Você tem apenas {len(slope_series)} dias com cálculo de slope (mínimo recomendado: 20 dias).
-            
-            Usando thresholds genéricos (-0.01, 0, +0.01) até acumular mais histórico.
-            
-            **Dica:** Continue registrando seus dados. Com ~60 dias de histórico, os thresholds serão calibrados automaticamente para o seu perfil individual.
-            """)
-            
-            # Fallback para o gráfico padrão (não individualizado)
-            fig_slope_padrao = go.Figure()
-            
-            fig_slope_padrao.add_trace(go.Scatter(
-                x=df_corr['Data'],
-                y=df_corr['slope_7'],
-                name='Slope 7d',
-                line=dict(color='#e74c3c', width=2)
-            ))
-            
-            fig_slope_padrao.add_hline(y=-0.01, line_dash="dash", line_color="red", annotation_text="Declínio (-0.01)")
-            fig_slope_padrao.add_hline(y=0, line_dash="solid", line_color="gray", annotation_text="Estável (0)")
-            fig_slope_padrao.add_hline(y=0.01, line_dash="dash", line_color="green", annotation_text="Recuperação (+0.01)")
-            
-            fig_slope_padrao.update_layout(
-                title="Slope 7d (Valores Padrão - aguardando histórico)",
-                height=350
-            )
-            
-            st.plotly_chart(fig_slope_padrao, use_container_width=True, config={'displayModeBar': False})
+            st.info(f"Dados insuficientes ({len(slope_series)} dias, mínimo 20) para análise individualizada.")
         # ════════════════════════════════════════════════════════════════════════
         # ANÁLISE 1.6: Correlação Temporal com Lag (HIIT prediz fadiga futura?)
         # ════════════════════════════════════════════════════════════════════════
