@@ -98,7 +98,7 @@ def main():
     with tab4:  tab_eftp(da_filt, mods_sel, ac_full)
     with tab5:  tab_zones(da_filt, mods_sel)
     with tab6:  tab_correlacoes(ac_full, wc)
-    with tab7:  tab_recovery(dw)
+    with tab7:  tab_recovery(dw, da)
     with tab8:  tab_wellness(dw)
     with tab9:  tab_analises(ac_full, dw, dfs_annual, df_annual)
     with tab10: tab_aquecimento(dfs_annual, df_annual, di)
