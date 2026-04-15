@@ -14,11 +14,12 @@ sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))
 
 warnings.filterwarnings('ignore')
 
-def tab_corporal(dc, da_full):
+def tab_corporal(dc, da_full, wc=None):
     """
     Aba Composição Corporal & Nutrição.
-    dc      : DataFrame Consolidado_Comida (pré-processado, todo o histórico)
+    dc      : DataFrame Consolidado_Comida (pré-processado) — nutrição + Peso
     da_full : DataFrame atividades completo (para correlações)
+    wc      : DataFrame wellness (opcional) — fonte primária do BF% (coluna bf_pct = FAT do formulário)
     """
     st.header("🧬 Composição Corporal & Nutrição")
 
@@ -28,6 +29,24 @@ def tab_corporal(dc, da_full):
 
     dc = dc.copy()
     dc['Data'] = pd.to_datetime(dc['Data'])
+
+    # ── BF% — fonte primária: wc['bf_pct'] (FAT do formulário wellness) ──────
+    # Se wc disponível e tem bf_pct, substitui dc['BF'] pelos dados do formulário.
+    # Fallback: dc['BF'] original (Consolidado_Comida) — mantido se wc não tiver dados.
+    # 'Fat' em dc continua a ser gramas de gordura alimentar — não é tocado.
+    if wc is not None and len(wc) > 0 and 'bf_pct' in wc.columns:
+        _wc_bf = wc[['Data', 'bf_pct']].copy()
+        _wc_bf['Data'] = pd.to_datetime(_wc_bf['Data'])
+        _wc_bf = _wc_bf.dropna(subset=['bf_pct'])
+        _wc_bf = _wc_bf.rename(columns={'bf_pct': '_BF_wc'})
+        if len(_wc_bf) > 0:
+            # Merge por data — wellness como fonte principal
+            dc = dc.merge(_wc_bf, on='Data', how='left')
+            # Preenche BF: usa _BF_wc onde disponível, senão mantém dc['BF'] original
+            if 'BF' not in dc.columns:
+                dc['BF'] = np.nan
+            dc['BF'] = dc['_BF_wc'].combine_first(dc['BF'])
+            dc = dc.drop(columns=['_BF_wc'])
 
     # ── Limitar cada coluna até ao seu último registo válido ─────────────────
     _num_cols = ['Peso','BF','Calorias','Carb','Fat','Ptn','Net']
@@ -614,12 +633,3 @@ def tab_corporal(dc, da_full):
         if rows_q:
             st.markdown(f"**Quartis de {alvo_lbl} — base calórica**")
             st.dataframe(pd.DataFrame(rows_q), width="stretch", hide_index=True)
-
-
-# Configuração da página — DEVE ser a primeira chamada Streamlit
-st.set_page_config(
-    page_title="ATHELTICA",
-    page_icon="🏃",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
