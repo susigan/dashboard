@@ -172,39 +172,67 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                   f"{rec_score:.0f}/100" if rec_score else "—",
                   rec_trend if rec_score else None)
 
-    # ── Peso e BF (rolling 7d vs média 30d, ignorar dias sem dados) ──────
+    # ── Peso e BF (rolling 7d, só dias com dados reais) ────────────────
+    # Fonte primária: wc/dw (formulário wellness — colunas 'peso' e 'bf_pct')
+    # Fallback: dc (Consolidado_Comida — colunas 'Peso' e 'BF')
     peso_7d = peso_atual = peso_trend = bf_7d = bf_atual = bf_trend = None
-    if dc is not None and len(dc) > 0:
-        _dc = dc.copy()
-        _dc['Data'] = pd.to_datetime(_dc['Data'])
-        _dc = _dc.sort_values('Data')
-        hoje_dc = _dc['Data'].max()
 
-        _hoje_dc2  = pd.Timestamp.now().normalize()
-        _mes_ini_p  = _hoje_dc2.replace(day=1)
-        _mes_p_fim2 = _mes_ini_p - pd.Timedelta(days=1)
-        _mes_p_ini2 = _mes_p_fim2.replace(day=1)
-        for col, var_7, var_t in [('Peso','peso_7d','peso_trend'),
-                                   ('BF',  'bf_7d',  'bf_trend')]:
-            if col not in _dc.columns: continue
-            serie = _dc[['Data',col]].dropna(subset=[col]).copy()
-            if len(serie) < 2: continue
-            v_atual = float(serie[col].iloc[-1])
-            # rolling 7d: só dias COM dados reais (não dias calendário vazios)
-            ult7 = serie[serie['Data'] >= _hoje_dc2 - pd.Timedelta(days=14)][col]
-            v7   = float(ult7.tail(7).mean()) if len(ult7) >= 1 else v_atual
-            # trend vs mês anterior
-            v_mp = serie[(serie['Data'] >= _mes_p_ini2) & (serie['Data'] <= _mes_p_fim2)][col]
-            v_mp_mean = float(v_mp.mean()) if len(v_mp) >= 1 else None
-            if v_mp_mean and v_mp_mean > 0:
-                pct = (v7 - v_mp_mean) / v_mp_mean * 100
-                if   pct >  0.5: trend = f"↗ +{pct:.1f}% vs mês ant."
-                elif pct < -0.5: trend = f"↘ {pct:.1f}% vs mês ant."
-                else:             trend = "→ estável vs mês ant."
-            else:
-                trend = None
-            if col == 'Peso': peso_7d = v7; peso_atual = v_atual; peso_trend = trend
-            else:             bf_7d   = v7; bf_atual   = v_atual; bf_trend   = trend
+    _hoje_p   = pd.Timestamp.now().normalize()
+    _mes_ini_p  = _hoje_p.replace(day=1)
+    _mes_p_fim2 = _mes_ini_p - pd.Timedelta(days=1)
+    _mes_p_ini2 = _mes_p_fim2.replace(day=1)
+
+    # Tenta primeiro wc (wellness form: 'peso' e 'bf_pct')
+    # Se não tiver, usa dc (food diary: 'Peso' e 'BF')
+    _sources = []
+    if wc_full is not None and len(wc_full) > 0:
+        _wc2 = wc_full.copy()
+        _wc2['Data'] = pd.to_datetime(_wc2['Data'])
+        # Mapa: (col_no_df, var_peso, var_bf)
+        _peso_col = 'peso'   if 'peso'   in _wc2.columns else None
+        _bf_col   = 'bf_pct' if 'bf_pct' in _wc2.columns else None
+        if _peso_col or _bf_col:
+            _sources.append((_wc2, _peso_col, _bf_col, 'wellness'))
+    if dc is not None and len(dc) > 0:
+        _dc2 = dc.copy()
+        _dc2['Data'] = pd.to_datetime(_dc2['Data'])
+        _sources.append((_dc2, 'Peso', 'BF', 'food'))
+
+    for _src_df, _pcol, _bcol, _src_name in _sources:
+        # Peso
+        if _pcol and _pcol in _src_df.columns and peso_7d is None:
+            _s = _src_df[['Data', _pcol]].dropna(subset=[_pcol]).copy()
+            _s = _s[pd.to_numeric(_s[_pcol], errors='coerce').between(30, 200)]
+            if len(_s) >= 2:
+                _v_atual = float(_s[_pcol].iloc[-1])
+                _ult7    = _s[_s['Data'] >= _hoje_p - pd.Timedelta(days=14)][_pcol]
+                _v7      = float(_ult7.tail(7).mean()) if len(_ult7) >= 1 else _v_atual
+                _mp      = _s[(_s['Data'] >= _mes_p_ini2) & (_s['Data'] <= _mes_p_fim2)][_pcol]
+                _vmp     = float(_mp.mean()) if len(_mp) >= 1 else None
+                if _vmp and _vmp > 0:
+                    _pct = (_v7 - _vmp) / _vmp * 100
+                    peso_trend = (f"↗ +{_pct:.1f}% vs mês ant." if _pct > 0.5
+                                  else f"↘ {_pct:.1f}% vs mês ant." if _pct < -0.5
+                                  else "→ estável vs mês ant.")
+                peso_7d = _v7; peso_atual = _v_atual
+        # BF %
+        if _bcol and _bcol in _src_df.columns and bf_7d is None:
+            _s = _src_df[['Data', _bcol]].dropna(subset=[_bcol]).copy()
+            _s = _s[pd.to_numeric(_s[_bcol], errors='coerce').between(3, 50)]
+            if len(_s) >= 2:
+                _v_atual = float(_s[_bcol].iloc[-1])
+                _ult7    = _s[_s['Data'] >= _hoje_p - pd.Timedelta(days=14)][_bcol]
+                _v7      = float(_ult7.tail(7).mean()) if len(_ult7) >= 1 else _v_atual
+                _mp      = _s[(_s['Data'] >= _mes_p_ini2) & (_s['Data'] <= _mes_p_fim2)][_bcol]
+                _vmp     = float(_mp.mean()) if len(_mp) >= 1 else None
+                if _vmp and _vmp > 0:
+                    _pct = (_v7 - _vmp) / _vmp * 100
+                    bf_trend = (f"↗ +{_pct:.1f}% vs mês ant." if _pct > 0.5
+                                else f"↘ {_pct:.1f}% vs mês ant." if _pct < -0.5
+                                else "→ estável vs mês ant.")
+                bf_7d = _v7; bf_atual = _v_atual
+        if peso_7d is not None and bf_7d is not None:
+            break  # ambos encontrados, não precisa de fallback
 
     with vg_r3:
         st.metric("⚖️ Peso",
