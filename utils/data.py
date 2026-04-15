@@ -118,10 +118,16 @@ def preproc_wellness(df):
     # [2] Zeros inválidos → NaN
     df = remove_zeros(df, ['hrv', 'rhr', 'sleep_hours'])
     # [3] Preencher faltantes com lookback (sem data leakage)
+    # HRV/wellness subjective: imputa com mediana 7d anteriores
+    # Peso/bf_pct: NÃO imputa (não faz sentido estimar peso de dias sem medição)
     for c in [c for c in ['hrv', 'rhr', 'sleep_quality', 'fatiga',
                            'stress', 'humor', 'soreness']
               if c in df.columns]:
         df = _preencher_faltantes_lookback(df, c)
+    # bf_pct (% gordura corporal do formulário wellness): zscore + zeros→NaN, sem imputation
+    if 'bf_pct' in df.columns:
+        df['bf_pct'] = remove_zscore(df['bf_pct'], 3.0)
+        df.loc[df['bf_pct'] == 0, 'bf_pct'] = np.nan
     return df.reset_index(drop=True)
 
 def preproc_ativ(df):
@@ -252,6 +258,8 @@ def carregar_corporal():
         df = df.dropna(subset=['Data']).sort_values('Data')
         # Remover datas futuras — dados só até hoje
         df = df[df['Data'] <= pd.Timestamp.now().normalize()]
+        # 'BF' = % gordura corporal | 'Fat' = gramas de gordura alimentar
+        # Fonte: Consolidado_Comida (diário alimentar + registo de composição corporal)
         for col in ['Peso','BF','Calorias','Carb','Fat','Ptn',
                     'Carb_perc','Fat_perc','Ptn_perc','Net']:
             if col in df.columns: df[col] = df[col].apply(br_float)
