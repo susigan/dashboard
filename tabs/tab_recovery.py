@@ -96,18 +96,8 @@ def tab_recovery(dw, da=None):
         if not da.empty:
             st.info("ℹ️ Atividades disponíveis mas sem coluna de RPE (icu_rpe/rpe)")
 
-    # Agora sim, calcular recovery com dw já contendo RPE
-    rec = calcular_recovery(dw)
-    if len(rec) == 0:
-        return
-
-
-    st.header("🔋 Recovery Score & HRV Analysis")
-
-    if len(dw) == 0 or 'hrv' not in dw.columns:
-        st.warning("Sem dados de HRV.")
-        return
-
+    # Calcular recovery com dw já contendo RPE integrado
+    # (dw já foi limpo por preproc_wellness: zscore, zeros→NaN, lookback fill)
     rec = calcular_recovery(dw)
     if len(rec) == 0:
         return
@@ -1374,5 +1364,3 @@ def tab_recovery(dw, da=None):
             - Verificar qualidade dos dados de medição
             - Considerar outros marcadores (sensação subjetiva, sono, etc.)
             """)
-        
-        
