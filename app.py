@@ -24,7 +24,7 @@ from tabs.tab_visao_geral  import tab_visao_geral
 from tabs.tab_pmc          import tab_pmc
 from tabs.tab_volume       import tab_volume
 from tabs.tab_eftp         import tab_eftp
-from tabs.tab_zones        import tab_zones
+from tabs.tab_hr_rpe       import tab_hr_rpe
 from tabs.tab_correlacoes  import tab_correlacoes
 from tabs.tab_recovery     import tab_recovery
 from tabs.tab_wellness     import tab_wellness
@@ -96,13 +96,13 @@ def main():
     with tab2:  tab_pmc(da_filt)
     with tab3:  tab_volume(da_filt, dw)
     with tab4:  tab_eftp(da_filt, mods_sel, ac_full)
-    with tab5:  tab_zones(da_filt, mods_sel)
+    with tab5:  tab_hr_rpe(da_filt, mods_sel)
     with tab6:  tab_correlacoes(ac_full, wc)
     with tab7:  tab_recovery(dw, da)
     with tab8:  tab_wellness(dw)
     with tab9:  tab_analises(ac_full, dw, dfs_annual, df_annual)
     with tab10: tab_aquecimento(dfs_annual, df_annual, di)
-    with tab11: tab_corporal(dc, ac_full)
+    with tab11: tab_corporal(dc, ac_full, wc=wc)
     with tab12: tab_padrao(ac_full, wc)
     with tab13: tab_ctl_kj(ac_full)
     with tab14: tab_cp_model()
