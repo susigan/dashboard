@@ -65,8 +65,13 @@ MAPA_WELLNESS = {
     'fatiga':       ['Cansaço/Vontade de Treinar', 'Fatiga', 'Fadiga'],
     'humor':        ['Humor', 'humor', 'Mood'],
     'soreness':     ['Cansaço Muscular Geral', 'Muscle Soreness', 'Soreness'],
+    # Composição corporal — vêm do formulário de wellness (coluna "Peso" e "FAT")
     'peso':         ['Peso', 'Weight'],
-    'fat':          ['FAT', 'Fat', 'Gordura'],
+    'bf_pct':       ['FAT', 'BF%', 'Body Fat', 'Gordura'],  # % gordura corporal
+    # Colunas adicionais do formulário
+    'doente':       ['Doente', 'Sick', 'Ill'],
+    'performance':  ['Performance'],
+    'hf_power':     ['HF Power', 'HF_Power', 'hf_power'],
 }
 
 MAPA_TRAINING = {
