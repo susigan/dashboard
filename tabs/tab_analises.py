@@ -16,21 +16,35 @@ warnings.filterwarnings('ignore')
 
 def calcular_polinomios_carga(df_act_full):
     """
-    Polynomial fit CTL/ATL Overall e por modalidade — igual ao original.
-    Usa session_rpe para construir série CTL/ATL.
+    Polynomial fit CTL/ATL Overall e por modalidade.
+    Usa a MESMA métrica de carga que o PMC:
+      1ª escolha: icu_training_load (Intervals.icu)
+      Fallback:   session_rpe = (moving_time_min) × RPE
+    Assim os valores de CTL/ATL são comparáveis entre as duas tabs.
     """
     df = filtrar_principais(df_act_full).copy()
     df['Data'] = pd.to_datetime(df['Data'])
-    if 'moving_time' not in df.columns or 'rpe' not in df.columns:
+
+    # Mesma lógica que tab_pmc
+    if 'icu_training_load' in df.columns and df['icu_training_load'].notna().sum() > 10:
+        df['_load'] = pd.to_numeric(df['icu_training_load'], errors='coerce').fillna(0)
+        _fonte = 'icu_training_load'
+    elif 'moving_time' in df.columns and 'rpe' in df.columns and df['rpe'].notna().sum() > 10:
+        _rpe = pd.to_numeric(df['rpe'], errors='coerce')
+        df['_load'] = (pd.to_numeric(df['moving_time'], errors='coerce') / 60) * _rpe.fillna(_rpe.median())
+        _fonte = 'session_rpe'
+    else:
         return None
-    df['rpe_fill'] = df['rpe'].fillna(df['rpe'].median())
-    df['load_val'] = (df['moving_time'] / 60) * df['rpe_fill']
-    ld = df.groupby('Data')['load_val'].sum().reset_index().sort_values('Data')
+
+    df['_load'] = df['_load'].fillna(0)
+    ld = df.groupby('Data')['_load'].sum().reset_index().sort_values('Data')
     idx = pd.date_range(ld['Data'].min(), datetime.now().date())
-    ld = ld.set_index('Data').reindex(idx, fill_value=0).reset_index(); ld.columns = ['Data', 'load_val']
+    ld = ld.set_index('Data').reindex(idx, fill_value=0).reset_index()
+    ld.columns = ['Data', 'load_val']
     ld['CTL'] = ld['load_val'].ewm(span=42, adjust=False).mean()
     ld['ATL'] = ld['load_val'].ewm(span=7, adjust=False).mean()
     ld['dias_num'] = (ld['Data'] - ld['Data'].min()).dt.days.values
+    ld['_fonte'] = _fonte  # passa para o gráfico poder mostrar na caption
 
     resultados = {'overall': {'CTL': {}, 'ATL': {}}}
     for metrica in ['CTL', 'ATL']:
@@ -49,7 +63,7 @@ def calcular_polinomios_carga(df_act_full):
         df_tipo = df[df['type'] == tipo].copy()
         if len(df_tipo) < 5:
             continue
-        ld_t = df_tipo.groupby('Data')['load_val'].sum().reset_index().sort_values('Data')
+        ld_t = df_tipo.groupby('Data')['_load'].sum().reset_index().sort_values('Data')
         idx_t = pd.date_range(ld_t['Data'].min(), ld['Data'].max())
         ld_t = ld_t.set_index('Data').reindex(idx_t, fill_value=0).reset_index(); ld_t.columns = ['Data', 'load_val']
         ld_t['CTL'] = ld_t['load_val'].ewm(span=42, adjust=False).mean()
@@ -207,7 +221,9 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
             return fp
 
         # Overall
-        st.markdown("**Overall CTL vs ATL**")
+        _fonte_lbl = poli['_ld'].get('_fonte', poli['_ld']['_fonte'].iloc[0] if '_fonte' in poli['_ld'].columns else 'session_rpe')
+        st.markdown(f"**Overall CTL vs ATL** — fonte: `{_fonte_lbl}`")
+        st.caption("Mesma métrica de carga do PMC — valores comparáveis.")
         st.plotly_chart(
             _poly_fig(poli['overall'], _ld, 'CTL/ATL Overall — Polynomial Fit'),
             use_container_width=True, config=_MC_ANA, key="ana_poly_overall")
