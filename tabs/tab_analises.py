@@ -228,6 +228,23 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
             _poly_fig(poli['overall'], _ld, 'CTL/ATL Overall — Polynomial Fit'),
             use_container_width=True, config=_MC_ANA, key="ana_poly_overall")
 
+        # ── Download Overall ──────────────────────────────────────────────────
+        _dl_ov = _ld[['Data', 'CTL', 'ATL']].copy()
+        _dl_ov['Data'] = _dl_ov['Data'].astype(str)
+        for _m_ov in ['CTL', 'ATL']:
+            for _gk_ov, _gd_ov in poli['overall'].get(_m_ov, {}).items():
+                _col_ov = f'{_m_ov}_poly_G{_gk_ov[-1]}'
+                _yp_ov  = _gd_ov['poly'](_gd_ov['x'])
+                _dl_ov[_col_ov] = np.nan
+                _dl_ov.iloc[:len(_yp_ov), _dl_ov.columns.get_loc(_col_ov)] = _yp_ov
+        st.download_button(
+            label="📥 Download Overall CTL/ATL + Polynomial (.csv)",
+            data=_dl_ov.round(3).to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
+            file_name="atheltica_poly_overall.csv",
+            mime="text/csv",
+            key="poly_dl_overall",
+        )
+
         # Per modality — 2-column grid
         tipos_poli = {k.replace('tipo_', ''): k for k in poli if k.startswith('tipo_')}
         if tipos_poli:
@@ -257,6 +274,23 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
                                       f'{mod} — CTL/ATL Polynomial Fit'),
                             use_container_width=True,
                             config=_MC_ANA, key=f"ana_poly_{mod}")
+                        # Download per modality
+                        _dl_mod = _ld_mod[['Data', 'CTL', 'ATL']].copy()
+                        _dl_mod['Data'] = _dl_mod['Data'].astype(str)
+                        for _m2 in ['CTL', 'ATL']:
+                            for _gk2, _gd2 in res_mod.get(_m2, {}).items():
+                                _col2 = f'{_m2}_poly_{_gk2[-1]}'
+                                _yp2 = _gd2['poly'](_gd2['x'])
+                                _dl_mod[_col2] = np.nan
+                                _dl_mod.iloc[:len(_yp2), _dl_mod.columns.get_loc(_col2)] = _yp2
+                        st.download_button(
+                            label=f"📥 {mod} (.csv)",
+                            data=_dl_mod.round(3).to_csv(
+                                index=False, sep=';', decimal=',').encode('utf-8'),
+                            file_name=f"atheltica_poly_{mod.lower()}.csv",
+                            mime="text/csv",
+                            key=f"poly_dl_{mod}",
+                        )
     st.markdown("---")
 
     # ── Secção 4: BPE Heatmap ───────────────────────────────────────────────
