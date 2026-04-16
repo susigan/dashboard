@@ -20,14 +20,15 @@ MC = {'displayModeBar': False, 'responsive': True, 'scrollZoom': False}
 # Escala original do formulário: 1=mau → 5=óptimo
 # EXCEPÇÃO: stress — aqui 1=relaxado(bom) → 5=muito stressado(mau)
 # → invertemos stress para que 5 = sempre "melhor" em todos
+# sleep_quality=Sono | fatiga=Vontade Treinar | humor=Humor | soreness=Cansaço Muscular(inv) | stress=Stress(inv)
 _SUBJ_METS = ['sleep_quality', 'fatiga', 'humor', 'soreness', 'stress']
-_SUBJ_INVERT = {'stress'}   # estas métricas são invertidas (5-x+1)
+_SUBJ_INVERT = {'soreness', 'stress'}  # invertidas: 5-x+1 → 5=sempre melhor
 _SUBJ_LABELS = {
-    'sleep_quality': 'Sono',
-    'fatiga':        'Energia',
+    'sleep_quality': 'Sono Qualidade',
+    'fatiga':        'Vontade Treinar',
     'humor':         'Humor',
-    'soreness':      'Sem Dor',   # soreness invertida = sem dor
-    'stress':        'Relaxamento',
+    'soreness':      'Cansaço Muscular',  # invertido no gráfico
+    'stress':        'Stress',            # invertido no gráfico
 }
 _SUBJ_COLORS = {
     'sleep_quality': '#9b59b6',
@@ -101,8 +102,9 @@ def tab_wellness(dw):
     if subj_avail:
         st.subheader("📊 Métricas Subjectivas — escala 1 (mau) → 5 (bom)")
         st.caption(
-            "Stress e Cansaço Muscular estão invertidos — 5 = melhor. "
-            "Linha colorida = raw diário | tracejada preta = rolling médio."
+            "Stress e Cansaço Muscular estão invertidos (5−x+1) para que 5 = melhor em todas. "
+            "Ex: stress=1 no form → aparece como 5 (sem stress). "
+            "Linha colorida = raw diário | tracejada = rolling médio."
         )
 
         sel_subj = st.multiselect(
