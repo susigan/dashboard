@@ -170,27 +170,77 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
     if poli is None:
         st.warning("Sem dados suficientes para polynomial analysis.")
     else:
+        _ld = poli['_ld']
+        _MC_ANA = {'displayModeBar': False, 'responsive': True, 'scrollZoom': False}
+        _POLY_COLORS = {'CTL': CORES['azul'], 'ATL': CORES['vermelho']}
+        _POLY_DASH   = {2: 'dash', 3: 'dot'}
+
+        def _poly_fig(res_met, ld_df, title):
+            dates = pd.to_datetime(ld_df['Data']).tolist()
+            fp = go.Figure()
+            for met, cor in _POLY_COLORS.items():
+                y_raw = ld_df[met].tolist() if met in ld_df.columns else []
+                if y_raw:
+                    fp.add_trace(go.Scatter(
+                        x=dates, y=y_raw, mode='lines', name=met,
+                        line=dict(color=cor, width=2), opacity=0.45,
+                        hovertemplate=f'{met}: %{{y:.1f}}<extra></extra>'))
+                for grau_k, gd in res_met.get(met, {}).items():
+                    grau_n = int(grau_k[-1])
+                    r2 = gd['r2']; xarr = gd['x']; poly = gd['poly']
+                    fp.add_trace(go.Scatter(
+                        x=dates[:len(xarr)], y=poly(xarr).tolist(),
+                        mode='lines',
+                        name=f'{met} G{grau_n} R²={r2:.3f}',
+                        line=dict(color=cor, width=2.5,
+                                  dash=_POLY_DASH.get(grau_n, 'solid')),
+                        hovertemplate=f'{met} poly: %{{y:.1f}}<extra></extra>'))
+            fp.update_layout(
+                paper_bgcolor='white', plot_bgcolor='white',
+                font=dict(color='#111', size=11), height=380,
+                margin=dict(t=55, b=80, l=55, r=20), hovermode='x unified',
+                title=dict(text=title, font=dict(size=13, color='#111')),
+                legend=dict(orientation='h', y=-0.28, font=dict(color='#111', size=10)),
+                xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')),
+                yaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111'),
+                           title='CTL / ATL'))
+            return fp
+
         # Overall
         st.markdown("**Overall CTL vs ATL**")
-        _fig_gen1 = go.Figure()
-        _fig_gen1.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), height=340,
-            legend=dict(orientation='h', y=-0.25, font=dict(color='#111')), hovermode='closest',
-            xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')), yaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')))
-        st.plotly_chart(_fig_gen1, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, key="analises_ctl_overall")
-        # TODO: chart content (converted from matplotlib)
+        st.plotly_chart(
+            _poly_fig(poli['overall'], _ld, 'CTL/ATL Overall — Polynomial Fit'),
+            use_container_width=True, config=_MC_ANA, key="ana_poly_overall")
 
-        # Por modalidade — separado e combinado
+        # Per modality — 2-column grid
         tipos_poli = {k.replace('tipo_', ''): k for k in poli if k.startswith('tipo_')}
         if tipos_poli:
             st.markdown("**Por Modalidade**")
-            n_t = len(tipos_poli); ncols = 2; nrows = (n_t + 1) // 2
-            _fig_gen2 = go.Figure()
-            _fig_gen2.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), height=340,
-                legend=dict(orientation='h', y=-0.25, font=dict(color='#111')), hovermode='closest',
-                xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')), yaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')))
-            st.plotly_chart(_fig_gen2, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, key="analises_ctl_modalidade")
-            # TODO: chart content (converted from matplotlib)
-
+            _mods_ord = [m for m in ['Bike', 'Row', 'Ski', 'Run'] if m in tipos_poli]
+            for _mi in range(0, len(_mods_ord), 2):
+                _cols = st.columns(2)
+                for _ci, mod in enumerate(_mods_ord[_mi:_mi+2]):
+                    res_mod = poli[tipos_poli[mod]]
+                    # Get x range from first available metric
+                    _xarr = None
+                    for _m in ['CTL', 'ATL']:
+                        for _gd in res_mod.get(_m, {}).values():
+                            _xarr = _gd['x']; break
+                        if _xarr is not None: break
+                    if _xarr is None: continue
+                    # Build ld_mod with raw CTL/ATL values from stored 'y'
+                    _ld_mod = _ld[['Data']].iloc[:len(_xarr)].copy().reset_index(drop=True)
+                    for _m in ['CTL', 'ATL']:
+                        _best = (res_mod.get(_m, {}).get('grau2') or
+                                 res_mod.get(_m, {}).get('grau3'))
+                        _ld_mod[_m] = pd.Series(_best['y'][:len(_xarr)] if _best else
+                                                  np.zeros(len(_xarr)))
+                    with _cols[_ci]:
+                        st.plotly_chart(
+                            _poly_fig(res_mod, _ld_mod,
+                                      f'{mod} — CTL/ATL Polynomial Fit'),
+                            use_container_width=True,
+                            config=_MC_ANA, key=f"ana_poly_{mod}")
     st.markdown("---")
 
     # ── Secção 4: BPE Heatmap ───────────────────────────────────────────────
