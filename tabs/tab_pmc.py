@@ -205,6 +205,24 @@ O ATL usa sempre span=7 (fixo). O FTLM usa γ=`{best_g:.3f}`
 tornando-o mais sensível ao teu padrão específico de treino.
         """)
 
+    st.markdown("---")
+
+    # ── Download CTL/ATL/TSB/FTLM como CSV ───────────────────────────────────
+    st.subheader("⬇️ Download Dados PMC")
+    _dl_cols = [c for c in ['Data', 'load_val', 'CTL', 'ATL', 'TSB', 'FTLM']
+                if c in ld.columns]
+    _dl_df = ld[_dl_cols].copy()
+    _dl_df['Data'] = _dl_df['Data'].astype(str)
+    _dl_df = _dl_df.round(2)
+    st.download_button(
+        label="📥 Download CTL/ATL/TSB/FTLM (.csv)",
+        data=_dl_df.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
+        file_name="atheltica_pmc_ctl_atl_tsb_ftlm.csv",
+        mime="text/csv",
+        key="pmc_dl_csv",
+    )
+    st.caption(f"Exporta {len(_dl_df)} dias | separador: `;` | decimal: `,` | UTF-8")
+
 
 # ════════════════════════════════════════════════════════════════════════════════
 # TAB 3 — VOLUME & CARGA
