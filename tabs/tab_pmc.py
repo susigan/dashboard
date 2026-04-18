@@ -14,7 +14,7 @@ sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))
 
 warnings.filterwarnings('ignore')
 
-def tab_pmc(da):
+def tab_pmc(da, wc=None):
     """
     PMC — icu_training_load para CTL/ATL/FTLM.
     Barras de Load = TRIMP (session_rpe).
@@ -59,17 +59,48 @@ def tab_pmc(da):
     ld['ATL']  = ld['load_val'].ewm(span=7,  adjust=False).mean()
     ld['TSB']  = ld['CTL'] - ld['ATL']
 
-    best_g, best_r = 0.30, -1.0
-    for g in np.arange(0.25, 0.36, 0.01):
-        ema = ld['load_val'].ewm(alpha=g, adjust=False).mean()
-        if ema.std() > 0:
-            r = abs(np.corrcoef(ld['load_val'].values, ema.values)[0, 1])
-            if r > best_r: best_r, best_g = r, g
-    ld['FTLM'] = ld['load_val'].ewm(alpha=best_g, adjust=False).mean()
+    # ── FTLM fraccionário — Della Mattia (2025) Dual-Gamma ──────────────────
+    # Usa calcular_series_carga para fitting de γ_perf (icu_pm_cp) e γ_rec (HRV)
+    # O bloco CTL/ATL/TSB acima é mantido para compatibilidade e velocidade.
+    # O FTLM fraccionário é computado separadamente e adicionado a ld.
+    with st.spinner("A calcular FTLM fraccionário (γ dual)..."):
+        _ld_frac, _info = calcular_series_carga(da_full, df_wellness=wc, ate_hoje=True)
+
+    if len(_ld_frac) > 0 and 'FTLM' in _ld_frac.columns:
+        # Align fractional ld with our ld (may have different date range)
+        _frac_idx = _ld_frac.set_index('Data')
+        for _col in ['FTLM', 'CTLg_perf', 'CTLg_rec', 'HRV_trend']:
+            if _col in _frac_idx.columns:
+                ld[_col] = ld['Data'].map(_frac_idx[_col])
+        best_g = _info.get('gamma_best', 0.35)
+    else:
+        # Fallback: classic EWM
+        best_g, best_r = 0.30, -1.0
+        for g in np.arange(0.25, 0.36, 0.01):
+            ema = ld['load_val'].ewm(alpha=g, adjust=False).mean()
+            if ema.std() > 0:
+                r = abs(np.corrcoef(ld['load_val'].values, ema.values)[0, 1])
+                if r > best_r: best_r, best_g = r, g
+        ld['FTLM'] = ld['load_val'].ewm(alpha=best_g, adjust=False).mean()
+        _info = {'gamma_perf': best_g, 'gamma_rec': best_g, 'fonte': 'fallback',
+                 'r2_perf': 0.0, 'r2_rec': 0.0, 'gamma_source': 'classic'}
+
     u = ld.iloc[-1]
 
-    st.caption(f"CTL/ATL/FTLM: **{_metrica_ctl}** | "
-               f"Barras Load: **TRIMP (session_rpe)** | Histórico: {len(ld)} dias")
+    # Caption with dual-gamma info
+    _gp   = _info.get('gamma_perf', best_g)
+    _gr   = _info.get('gamma_rec',  best_g)
+    _r2p  = _info.get('r2_perf',  0.0)
+    _r2r  = _info.get('r2_rec',   0.0)
+    _gsrc = _info.get('gamma_source', 'classic')
+    _n_mmp= _info.get('n_mmp', 0)
+    st.caption(
+        f"FTLM fraccionário | Fonte carga: **{_metrica_ctl}** | "
+        f"γ_perf={_gp:.3f} (R²={_r2p:.2f}, icu_pm_cp) | "
+        f"γ_rec={_gr:.3f} (R²={_r2r:.2f}, HRV trend) | "
+        f"γ activo: **{_gsrc}** | MMP PR points: {_n_mmp} | "
+        f"Histórico: {len(ld)} dias"
+    )
 
     # ── Controlos ──
     col1, col2, col3 = st.columns(3)
@@ -104,12 +135,30 @@ def tab_pmc(da):
 
     if show_ftlm:
         _ctl_max  = max(ld_plot['CTL'].max(), ld_plot['ATL'].max(), 1)
-        _ftlm_max = max(ld_plot['FTLM'].max(), 1)
-        _ftlm_n   = ld_plot['FTLM'] / _ftlm_max * _ctl_max * 0.85
-        _fig_pmc.add_trace(go.Scatter(x=_dates, y=_ftlm_n.tolist(),
-            name=f'FTLM (γ={best_g:.2f}, norm)',
-            line=dict(color=CORES['laranja'], width=2, dash='dash'), opacity=0.85,
-            hovertemplate='FTLM: %{y:.1f}<extra></extra>'), row=1, col=1)
+        # FTLM fraccionário — γ activo (melhor R²)
+        if 'FTLM' in ld_plot.columns and ld_plot['FTLM'].notna().any():
+            _ftlm_max = max(ld_plot['FTLM'].max(), 1)
+            _ftlm_n   = ld_plot['FTLM'] / _ftlm_max * _ctl_max * 0.85
+            _fig_pmc.add_trace(go.Scatter(x=_dates, y=_ftlm_n.tolist(),
+                name=f'CTLγ ({_gsrc}, γ={best_g:.3f})',
+                line=dict(color=CORES['laranja'], width=2.5, dash='dash'), opacity=0.85,
+                hovertemplate='CTLγ: %{y:.1f}<extra></extra>'), row=1, col=1)
+        # CTLg_perf (γ_performance, normalised)
+        if 'CTLg_perf' in ld_plot.columns and ld_plot['CTLg_perf'].notna().any():
+            _gp_max = max(ld_plot['CTLg_perf'].max(), 1)
+            _gp_n   = ld_plot['CTLg_perf'] / _gp_max * _ctl_max * 0.75
+            _fig_pmc.add_trace(go.Scatter(x=_dates, y=_gp_n.tolist(),
+                name=f'CTLγ perf (γ={_gp:.3f}, R²={_r2p:.2f})',
+                line=dict(color='#2980b9', width=1.5, dash='dot'), opacity=0.7,
+                hovertemplate='CTLγ_perf: %{y:.1f}<extra></extra>'), row=1, col=1)
+        # CTLg_rec (γ_recovery, normalised)
+        if 'CTLg_rec' in ld_plot.columns and ld_plot['CTLg_rec'].notna().any():
+            _gr_max = max(ld_plot['CTLg_rec'].max(), 1)
+            _gr_n   = ld_plot['CTLg_rec'] / _gr_max * _ctl_max * 0.75
+            _fig_pmc.add_trace(go.Scatter(x=_dates, y=_gr_n.tolist(),
+                name=f'CTLγ rec (γ={_gr:.3f}, R²={_r2r:.2f})',
+                line=dict(color='#8e44ad', width=1.5, dash='dot'), opacity=0.7,
+                hovertemplate='CTLγ_rec: %{y:.1f}<extra></extra>'), row=1, col=1)
 
     _u_ctl = float(u['CTL']); _u_atl = float(u['ATL']); _u_tsb = float(u['TSB'])
     _fig_pmc.add_annotation(
@@ -204,24 +253,6 @@ O ATL usa sempre span=7 (fixo). O FTLM usa γ=`{best_g:.3f}`
 (equivalente a span≈{int(round(2/best_g - 1))}), **optimizado para os teus dados**,
 tornando-o mais sensível ao teu padrão específico de treino.
         """)
-
-    st.markdown("---")
-
-    # ── Download CTL/ATL/TSB/FTLM como CSV ───────────────────────────────────
-    st.subheader("⬇️ Download Dados PMC")
-    _dl_cols = [c for c in ['Data', 'load_val', 'CTL', 'ATL', 'TSB', 'FTLM']
-                if c in ld.columns]
-    _dl_df = ld[_dl_cols].copy()
-    _dl_df['Data'] = _dl_df['Data'].astype(str)
-    _dl_df = _dl_df.round(2)
-    st.download_button(
-        label="📥 Download CTL/ATL/TSB/FTLM (.csv)",
-        data=_dl_df.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
-        file_name="atheltica_pmc_ctl_atl_tsb_ftlm.csv",
-        mime="text/csv",
-        key="pmc_dl_csv",
-    )
-    st.caption(f"Exporta {len(_dl_df)} dias | separador: `;` | decimal: `,` | UTF-8")
 
 
 # ════════════════════════════════════════════════════════════════════════════════
