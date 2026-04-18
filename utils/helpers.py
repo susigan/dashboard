@@ -492,6 +492,21 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
         # CTLγ fraccionário para esta modalidade
         ld[f'CTLg_{mod}'] = ftlm_fractional(_ld_mod, gamma_m, max_lag=MAX_LAG)
 
+        # Collect MMP PR values for display in table
+        # Each entry: {'data': date_str, 'watts': float, 'duracao': 'MMP5'/'MMP20'}
+        _mmp_pr_list = []
+        for _mc2 in ['mmp1_pr_w','mmp3_pr_w','mmp5_pr_w','mmp12_pr_w','mmp20_pr_w','mmp60_pr_w']:
+            if _mc2 not in df_mod.columns:
+                continue
+            _df_pr = df_mod[df_mod[_mc2].notna()][['Data', _mc2]].copy()
+            for _, _row_pr in _df_pr.iterrows():
+                _mmp_pr_list.append({
+                    'duracao': _mc2.replace('_pr_w', '').upper(),
+                    'data':    str(_row_pr['Data'])[:10],
+                    'watts':   round(float(_row_pr[_mc2]), 0),
+                })
+        _mmp_pr_list.sort(key=lambda x: x['data'], reverse=True)
+
         mod_info[mod] = {
             'gamma_perf': round(gamma_m,     3),
             'r2_perf':    round(r2_m,        3),
@@ -499,7 +514,8 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
             'r2_mmp':     round(r2_mmp_m,    3),
             'n_cp':       n_cp_m,
             'n_mmp':      n_mmp_m,
-            'mmp_col':    _mmp_col,   # MMP5 or MMP20 depending on sport
+            'mmp_col':    _mmp_col,
+            'mmp_pr_list': _mmp_pr_list,
             'n_sessions': len(df_mod),
         }
 
