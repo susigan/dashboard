@@ -65,13 +65,8 @@ MAPA_WELLNESS = {
     'fatiga':       ['Cansaço/Vontade de Treinar', 'Fatiga', 'Fadiga'],
     'humor':        ['Humor', 'humor', 'Mood'],
     'soreness':     ['Cansaço Muscular Geral', 'Muscle Soreness', 'Soreness'],
-    # Composição corporal — vêm do formulário de wellness (coluna "Peso" e "FAT")
     'peso':         ['Peso', 'Weight'],
-    'bf_pct':       ['FAT', 'BF%', 'Body Fat', 'Gordura'],  # % gordura corporal
-    # Colunas adicionais do formulário
-    'doente':       ['Doente', 'Sick', 'Ill'],
-    'performance':  ['Performance'],
-    'hf_power':     ['HF Power', 'HF_Power', 'hf_power'],
+    'fat':          ['FAT', 'Fat', 'Gordura'],
 }
 
 MAPA_TRAINING = {
@@ -119,6 +114,31 @@ MAPA_TRAINING = {
     'z1_sec': ['Z1sec'],
     'z2_sec': ['Z2sec'],
     'z3_sec': ['Z3sec'],
+    # ── eW (estimated W') e eFTP por actividade ──────────────────────────
+    # Adicionados manualmente — indicar os nomes exactos das colunas da sheet
+    # quando disponíveis. Processados como texto via parse_mmp() em data.py.
+    'icu_pm_w_prime':   ['icu_pm_w_prime', 'eW', 'W_prime', 'w_prime'],
+    # ── MMP (Mean Maximal Power) por actividade ──────────────────────────
+    # Formato: "Yes - 318w"  ou  "No (PR: 364w)"
+    # "Yes" = PR na sessão actual  |  "No (PR: Xw)" = PR histórico (season best)
+    # Parseados por parse_mmp() em helpers.py — devolvem (is_pr: bool, watts: float)
+    # As colunas mmp_*_w contêm apenas os watts; mmp_*_is_pr contém o flag boolean
+    'mmp1_raw':  ['MMP1'],
+    'mmp3_raw':  ['MMP3'],
+    'mmp5_raw':  ['MMP5'],
+    'mmp12_raw': ['MMP12'],
+    'mmp20_raw': ['MMP20'],
+    'mmp60_raw': ['MMP60'],
+}
+
+# ── Durações MMP em segundos (para referência e fitting de γ) ────────────────
+MMP_DURACOES = {
+    'mmp1':  60,      # 1 min
+    'mmp3':  180,     # 3 min
+    'mmp5':  300,     # 5 min
+    'mmp12': 720,     # 12 min
+    'mmp20': 1200,    # 20 min
+    'mmp60': 3600,    # 60 min
 }
 
 # Cores por modalidade — global, disponível em todas as tabs
