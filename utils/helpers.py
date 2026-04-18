@@ -461,6 +461,7 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
         # Adiciona ao ld para visualização
         ld[f'load_{mod}'] = _ld_mod
         ld[f'CTL_{mod}']  = pd.Series(_ld_mod).ewm(span=42, adjust=False).mean().values
+        ld[f'ATL_{mod}']  = pd.Series(_ld_mod).ewm(span=7,  adjust=False).mean().values
 
         # γ via icu_pm_cp desta modalidade
         gamma_m, r2_m, n_cp_m = 0.35, 0.0, 0
@@ -471,19 +472,19 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
             gamma_m, r2_m, n_cp_m = fit_gamma_performance(
                 _ld_mod, _cp_mod, lag=0, max_lag=MAX_LAG)
 
-        # γ via MMP20 PR desta modalidade — Della Mattia Part II §1
-        # Paper usa MMP20 (potência máxima em ~20 min) como proxy de performance
-        # Apenas sessões is_pr=True: data exacta conhecida, esforço máximo confirmado
-        # Outros MMPs (MMP5, MMP60) têm fisiologia diferente — não comparável
+        # γ via MMP PR desta modalidade — Della Mattia Part II §1
+        # Bike/Run: MMP20 (potência em ~20 min — paper §1, Imbach 2021)
+        # Ski/Row:  MMP5  (esforços máximos curtos mais frequentes/realistas nestes desportos)
+        # Apenas sessões is_pr=True: data exacta, esforço máximo confirmado
         gamma_mmp_m, r2_mmp_m, n_mmp_m = 0.35, 0.0, 0
-        _mmp20_col = 'mmp20_pr_w'
-        if _mmp20_col in df_mod.columns and df_mod[_mmp20_col].notna().any():
-            _mmp20_s = (df_mod[df_mod[_mmp20_col].notna()]
-                        .groupby('Data')[_mmp20_col].mean()
-                        .reindex(_date_idx))
-            if _mmp20_s.notna().sum() >= 5:
+        _mmp_col = 'mmp5_pr_w' if mod in ('Ski', 'Row') else 'mmp20_pr_w'
+        if _mmp_col in df_mod.columns and df_mod[_mmp_col].notna().any():
+            _mmp_s = (df_mod[df_mod[_mmp_col].notna()]
+                      .groupby('Data')[_mmp_col].mean()
+                      .reindex(_date_idx))
+            if _mmp_s.notna().sum() >= 5:
                 _gm, _rm, _nm = fit_gamma_performance(
-                    _ld_mod, _mmp20_s.values, lag=0, max_lag=MAX_LAG)
+                    _ld_mod, _mmp_s.values, lag=0, max_lag=MAX_LAG)
                 if _rm > r2_m:
                     gamma_m, r2_m = _gm, _rm
                 gamma_mmp_m, r2_mmp_m, n_mmp_m = _gm, _rm, _nm
@@ -498,6 +499,7 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
             'r2_mmp':     round(r2_mmp_m,    3),
             'n_cp':       n_cp_m,
             'n_mmp':      n_mmp_m,
+            'mmp_col':    _mmp_col,   # MMP5 or MMP20 depending on sport
             'n_sessions': len(df_mod),
         }
 
