@@ -220,45 +220,236 @@ def tab_pmc(da, wc=None):
     st.dataframe(resumo, width="stretch", hide_index=True)
 
     # ── FTLM — explicação + resultado atual ──
-    st.subheader("🔁 FTLM — Fast Training Load Monitor")
-    ftlm_v = u['FTLM']
-    ctl_v  = u['CTL']
-    pct    = (ftlm_v / ctl_v * 100) if ctl_v > 0 else 0
-    if   pct > 110: ftlm_i = "⚠️ Carga muito acima do crónico — risco de overreaching"
-    elif pct > 100: ftlm_i = "🔴 Carga acima do CTL — fase de acumulação/sobrecarga"
-    elif pct >  90: ftlm_i = "🟡 Ligeiramente abaixo do CTL — manutenção/tapering leve"
-    elif pct >  75: ftlm_i = "🟢 Tapering activo — carga a baixar, forma a subir"
-    else:            ftlm_i = "⬇️ Destreino — carga muito abaixo do nível crónico"
+    st.markdown("---")
 
-    with st.expander("📖 O que é o FTLM e como interpretar", expanded=True):
+    # ════════════════════════════════════════════════════════════════════════
+    # GRÁFICO 2 — CTLγ por modalidade (FTLM fraccionário)
+    # ════════════════════════════════════════════════════════════════════════
+    st.subheader("📊 CTLγ por Modalidade — FTLM Fraccionário")
+    st.caption(
+        "Cada modalidade tem o seu próprio γ ajustado independentemente. "
+        "A carga de Bike não prediz adaptações de Row — "
+        "os sistemas energéticos e padrões de recuperação são diferentes."
+    )
+
+    _CORES_MOD_PMC = {
+        'Bike': CORES['vermelho'], 'Row': CORES['azul'],
+        'Ski':  CORES['roxo'],    'Run': CORES['verde'],
+    }
+    _mods_with_data = [m for m in ['Bike','Row','Ski','Run']
+                       if f'CTLg_{m}' in ld_plot.columns
+                       and ld_plot[f'CTLg_{m}'].notna().any()
+                       and ld_plot[f'CTLg_{m}'].max() > 0]
+
+    if _mods_with_data:
+        fig_mod = go.Figure()
+        for _mod in _mods_with_data:
+            _col   = f'CTLg_{_mod}'
+            _gi    = _info.get('mods', {}).get(_mod, {})
+            _gv    = _gi.get('gamma_perf', 0.35)
+            _rv    = _gi.get('r2_perf', 0.0)
+            _ns    = _gi.get('n_sessions', 0)
+            _nm    = _gi.get('n_mmp', 0)
+            _src   = 'MMP' if _nm >= 5 else 'CP'
+            fig_mod.add_trace(go.Scatter(
+                x=_dates,
+                y=ld_plot[_col].tolist(),
+                mode='lines',
+                name=f'{_mod} γ={_gv:.3f} R²={_rv:.2f} [{_src}]',
+                line=dict(color=_CORES_MOD_PMC.get(_mod,'#888'), width=2.5),
+                hovertemplate=f'<b>{_mod}</b> CTLγ: %{{y:.1f}}<extra></extra>',
+            ))
+        fig_mod.update_layout(
+            paper_bgcolor='white', plot_bgcolor='white',
+            font=dict(color='#111', size=11),
+            height=380,
+            margin=dict(t=55, b=80, l=55, r=20),
+            hovermode='x unified',
+            legend=dict(orientation='h', y=-0.28, font=dict(color='#111', size=10)),
+            title=dict(text='CTLγ por Modalidade (kernel Riemann-Liouville)',
+                       font=dict(size=13, color='#111')),
+            xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')),
+            yaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111'),
+                       title='CTLγ (normalização interna por modalidade)'),
+        )
+        st.plotly_chart(fig_mod, use_container_width=True,
+                        config={'displayModeBar': False, 'responsive': True},
+                        key="pmc_ctlg_mod")
+    else:
+        st.info("CTLγ por modalidade não disponível — sem dados suficientes.")
+
+    st.markdown("---")
+
+    # ════════════════════════════════════════════════════════════════════════
+    # FTLM — Resultado actual + explicação científica completa
+    # ════════════════════════════════════════════════════════════════════════
+    st.subheader("🔁 FTLM — Fractional Training Load Memory")
+
+    _ftlm_v  = float(u.get('FTLM', 0) or 0)
+    _ctl_v   = float(u['CTL'])
+    _pct     = (_ftlm_v / _ctl_v * 100) if _ctl_v > 0 else 0
+    _mods_gi = _info.get('mods', {})
+    _best_m  = _info.get('best_mod', '—')
+
+    if   _pct > 110: _ftlm_i = "⚠️ Carga muito acima do crónico — risco de overreaching"
+    elif _pct > 100: _ftlm_i = "🔴 Carga acima do CTL — fase de acumulação/sobrecarga"
+    elif _pct >  90: _ftlm_i = "🟡 Carga estável — manutenção/tapering leve"
+    elif _pct >  75: _ftlm_i = "🟢 Tapering activo — carga baixa, forma a subir"
+    else:             _ftlm_i = "⬇️ Destreino — carga muito abaixo do crónico"
+
+    # ── Tabela resumo por modalidade ──────────────────────────────────────
+    _rows_mod = []
+    for _mod in ['Bike','Row','Ski','Run']:
+        _gi = _mods_gi.get(_mod, {})
+        if _gi.get('n_sessions', 0) == 0:
+            continue
+        _gv   = _gi.get('gamma_perf', 0.35)
+        _rv   = _gi.get('r2_perf',   0.0)
+        _nm   = _gi.get('n_mmp',     0)
+        _nc   = _gi.get('n_cp',      0)
+        _ns   = _gi.get('n_sessions', 0)
+        _mem  = ('Muito longa (>6m)' if _gv < 0.20
+                 else 'Longa (3-6m)'  if _gv < 0.35
+                 else 'Moderada (6-12s)' if _gv < 0.60
+                 else 'Curta (<6s)')
+        _src  = f'MMP ({_nm} PR)' if _nm >= 5 else f'CP ({_nc} sess)'
+        _rows_mod.append({
+            'Modalidade': _mod, 'γ': f'{_gv:.3f}', 'R²': f'{_rv:.2f}',
+            'Memória': _mem, 'Fonte γ': _src, 'Sessões': _ns,
+        })
+    if _rows_mod:
+        st.dataframe(pd.DataFrame(_rows_mod),
+                     use_container_width=True, hide_index=True)
+
+    with st.expander("📖 Como funciona o FTLM Fraccionário — Guia de Interpretação", expanded=True):
         st.markdown(f"""
-**FTLM (Fast Training Load Monitor)** é uma média exponencial da carga diária com
-um factor gamma (γ) **optimizado automaticamente** por correlação com os teus dados.
+## O problema do CTL clássico
 
-| Parâmetro | Valor actual |
+O PMC usa uma média exponencial (EWM) com τ=42 dias fixo para todos os atletas e todas as modalidades:
+
+```
+CTL(t) = e^(-1/42) · CTL(t-1) + (1 - e^(-1/42)) · Load(t)
+```
+
+Isto cria dois problemas fundamentais:
+1. **Saturação**: `lim_{{t→∞}} ∫ e^(-τ/42) dτ = 42` — o CTL não cresce indefinidamente, fica limitado
+2. **Amnésia exponencial**: um treino de 3 semanas atrás tem menos de 50% do peso de hoje, independentemente do atleta
+
+---
+
+## O kernel fraccionário (Riemann-Liouville)
+
+O FTLM substitui o kernel exponencial por um kernel em lei de potência:
+
+```
+CTLγ(t) = (1/Γ(γ)) · Σ Load(t-k) · k^(γ-1)
+                       k=1..t
+```
+
+O decaimento agora é **hiperbólico**, não exponencial. Consequência directa:
+
+```
+∫ τ^(γ-1) dτ = t^γ/γ   →   cresce sem limite
+```
+
+Treinos de 6 meses atrás continuam a influenciar CTLγ hoje — matematicamente, a base aeróbica construída ao longo de anos acumula sem saturar.
+
+---
+
+## O parâmetro γ — memória fisiológica
+
+| γ | Memória | Significado fisiológico |
+|---|---|---|
+| γ ≈ 0.10–0.20 | Muito longa (meses) | Adaptações lentas: capilarização, mitocôndrias, economia de movimento |
+| γ ≈ 0.25–0.40 | Longa (semanas-meses) | Base aeróbica crónica — ideal para desportos de resistência |
+| γ ≈ 0.40–0.60 | Moderada | Equilíbrio carga recente/histórica |
+| γ ≈ 0.70–0.90 | Curta (dias) | Reactivo — similar ao ATL; alta sensibilidade à carga recente |
+| γ → 1.0 | Exponencial | Comporta-se como CTL clássico |
+
+*Imbach et al. (2021): γ≈0.35 aumentou a precisão de predição de potência em corrida em 18% vs modelo de Banister.*
+
+---
+
+## Como os γ foram calculados para cada modalidade
+
+Para cada modalidade (**{', '.join([m for m in ['Bike','Row','Ski','Run'] if _mods_gi.get(m,{}).get('n_sessions',0)>0])}**),
+o fitting é feito **independentemente** — a carga de ciclismo não prediz adaptações de remo.
+
+**Passo 1 — Série de carga modal:**
+Usa apenas as sessões dessa modalidade para construir `Load_mod(t)`.
+
+**Passo 2 — Proxy de performance modal:**
+- Primário: `icu_pm_cp` das sessões dessa modalidade (CP estimado pelo Intervals.icu)
+- Complementar: `MMP_pr_w` — potências máximas confirmadas nessa modalidade (`is_pr=True`), datas exactas conhecidas
+
+**Passo 3 — Grid search (Part II §1):**
+```python
+for γ in [0.10, 0.11, ..., 0.90]:
+    CTLγ_mod = ftlm_fractional(Load_mod, γ)
+    r² = pearsonr(CTLγ_mod, icu_pm_cp_mod)²
+γ_mod = argmax(r²)
+```
+
+**Resultado por modalidade:**
+{chr(10).join([f'- **{r["Modalidade"]}**: γ={r["γ"]} (R²={r["R²"]}, {r["Fonte γ"]}, {r["Memória"]})' for r in _rows_mod]) if _rows_mod else '- Dados insuficientes'}
+
+---
+
+## CTLγ_perf vs CTLγ_recovery
+
+**CTLγ_perf (γ={_gp:.3f}, R²={_r2p:.2f})** — modelado sobre **{_best_m}** (maior R²):
+- Responde à questão: *"Quanto fitness acumulado prediz a minha performance actual?"*
+- Γ mais baixo → o teu historial de treino de anos influencia mais do que a forma recente
+- Útil para planear blocos de base, tapering e peaks
+
+**CTLγ_rec (γ={_gr:.3f}, R²={_r2r:.2f})** — fitado sobre **LnRMSSD trend (HRV janela 7d)**:
+- Responde à questão: *"Quanto do meu CTL fraccionário prediz a recuperação autonómica?"*
+- Usa LnRMSSD (não RMSSD bruto) — distribuição normal, sensibilidade linear
+- Tendência local via regressão 7d: `HRV(τ) = a(t)·τ + b(t)` → usa intercept `b(t)`
+- Lag=1 dia: `CTLγ(t-1)` prediz `HRV_trend(t)` — o estado de ontem determina a recuperação de hoje
+
+**Quando diferem:**
+- CTLγ_perf alto + CTLγ_rec baixo → bom fitness, má recuperação autonómica → risco de overreaching silencioso
+- CTLγ_perf baixo + CTLγ_rec alto → boa recuperação mas fitness a decair → indicação para retomar carga
+
+---
+
+## Resultado actual
+
+| Métrica | Valor |
 |---|---|
-| Gamma (γ) | `{best_g:.3f}` |
-| FTLM actual | `{ftlm_v:.1f}` |
-| CTL actual | `{ctl_v:.1f}` |
-| FTLM / CTL | `{pct:.0f}%` |
-| Interpretação | {ftlm_i} |
+| FTLM actual (CTLγ activo) | `{_ftlm_v:.1f}` |
+| CTL clássico | `{_ctl_v:.1f}` |
+| FTLM / CTL | `{_pct:.0f}%` |
+| γ activo | `{best_g:.3f}` ({_gsrc}) |
+| Interpretação | {_ftlm_i} |
 
-**Como interpretar:**
-- **FTLM > CTL (>100%)** — Carga recente **acima** da capacidade crónica. Bloco de carga intenso. Monitorar recuperação.
-- **FTLM ≈ CTL (90–110%)** — Carga estável. Manutenção do nível actual.
-- **FTLM < CTL (<90%)** — Carga recente **abaixo** do crónico. Tapering intencional ou destreino.
+**FTLM > CTL (>100%):** Carga recente acima da capacidade crónica. Bloco de acumulação activo — monitorar HRV e recuperação.
 
-**Diferença para o ATL:**
-O ATL usa sempre span=7 (fixo). O FTLM usa γ=`{best_g:.3f}`
-(equivalente a span≈{int(round(2/best_g - 1))}), **optimizado para os teus dados**,
-tornando-o mais sensível ao teu padrão específico de treino.
+**FTLM ≈ CTL (90–110%):** Carga estável. Manutenção. O fraccionário confirma que o historial e a carga actual estão alinhados.
+
+**FTLM < CTL (<90%):** Carga abaixo do crónico. Tapering intencional (forma a subir) ou destreino involuntário. O fraccionário detecta isto mais cedo que o ATL porque tem memória mais longa.
+
+**Diferença crítica para o ATL:** O ATL esquece completamente treinos de >21 dias (peso exponencial ≈0). O FTLM com γ={best_g:.3f} ainda atribui peso a treinos de {MAX_LAG} dias atrás — mais realista para atletas com anos de base aeróbica.
         """)
 
-
-# ════════════════════════════════════════════════════════════════════════════════
-# TAB 3 — VOLUME & CARGA
-# ════════════════════════════════════════════════════════════════════════════════
-
+    # ── Download ──────────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.subheader("⬇️ Download Dados PMC")
+    _dl_cols = [c for c in ['Data','load_val','CTL','ATL','TSB','FTLM',
+                             'CTLg_perf','CTLg_rec'] + [f'CTLg_{m}' for m in ['Bike','Row','Ski','Run']]
+                if c in ld.columns]
+    _dl_df = ld[_dl_cols].copy()
+    _dl_df['Data'] = _dl_df['Data'].astype(str)
+    _dl_df = _dl_df.round(3)
+    st.download_button(
+        label="📥 Download CTL/ATL/TSB/FTLM/CTLγ por modalidade (.csv)",
+        data=_dl_df.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
+        file_name="atheltica_pmc_ftlm_completo.csv",
+        mime="text/csv",
+        key="pmc_dl_csv",
+    )
+    st.caption(f"Exporta {len(_dl_df)} dias | CTL, ATL, TSB clássicos + CTLγ_perf, CTLγ_rec, CTLγ_Bike/Row/Ski/Run")
 
 
 # ════════════════════════════════════════════════════════════════════════════
