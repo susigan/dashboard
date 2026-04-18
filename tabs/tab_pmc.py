@@ -69,7 +69,11 @@ def tab_pmc(da, wc=None):
     if len(_ld_frac) > 0 and 'FTLM' in _ld_frac.columns:
         # Align fractional ld with our ld (may have different date range)
         _frac_idx = _ld_frac.set_index('Data')
-        for _col in ['FTLM', 'CTLg_perf', 'CTLg_rec', 'HRV_trend']:
+        # Copy all fractional columns (FTLM, CTLg_perf, CTLg_rec, CTLg_Bike, etc.)
+        _frac_cols = ['FTLM', 'CTLg_perf', 'CTLg_rec', 'HRV_trend',
+                      'CTLg_Bike', 'CTLg_Row', 'CTLg_Ski', 'CTLg_Run',
+                      'CTL_Bike', 'CTL_Row', 'CTL_Ski', 'CTL_Run']
+        for _col in _frac_cols:
             if _col in _frac_idx.columns:
                 ld[_col] = ld['Data'].map(_frac_idx[_col])
         best_g = _info.get('gamma_best', 0.35)
@@ -321,6 +325,7 @@ def tab_pmc(da, wc=None):
         st.dataframe(pd.DataFrame(_rows_mod),
                      use_container_width=True, hide_index=True)
 
+    _max_lag_display = min(365, len(ld))  # max history used by kernel
     with st.expander("📖 Como funciona o FTLM Fraccionário — Guia de Interpretação", expanded=True):
         st.markdown(f"""
 ## O problema do CTL clássico
@@ -430,7 +435,7 @@ for γ in [0.10, 0.11, ..., 0.90]:
 
 **FTLM < CTL (<90%):** Carga abaixo do crónico. Tapering intencional (forma a subir) ou destreino involuntário. O fraccionário detecta isto mais cedo que o ATL porque tem memória mais longa.
 
-**Diferença crítica para o ATL:** O ATL esquece completamente treinos de >21 dias (peso exponencial ≈0). O FTLM com γ={best_g:.3f} ainda atribui peso a treinos de {MAX_LAG} dias atrás — mais realista para atletas com anos de base aeróbica.
+**Diferença crítica para o ATL:** O ATL esquece completamente treinos de >21 dias (peso exponencial ≈0). O FTLM com γ={best_g:.3f} ainda atribui peso a treinos de {_max_lag_display} dias atrás — mais realista para atletas com anos de base aeróbica.
         """)
 
     # ── Download ──────────────────────────────────────────────────────────────
