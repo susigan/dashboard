@@ -74,10 +74,8 @@ def tab_pmc(da, wc=None):
     st.header("📈 PMC — Performance Management Chart")
     if len(da) == 0: st.warning("Sem dados de atividades."); return
 
-    da_full = st.session_state.get('da_full', da)
-    _mods = st.session_state.get('mods_sel', None)
-    if _mods and 'type' in da_full.columns:
-        da_full = da_full[da_full['type'].isin(_mods + ['WeightTraining'])]
+    # da = ac_full (full unfiltered history from app.py)
+    da_full = da
     df = filtrar_principais(da_full).copy()
     df['Data'] = pd.to_datetime(df['Data'])
 
@@ -137,7 +135,8 @@ def tab_pmc(da, wc=None):
                 if r > best_r: best_r, best_g = r, g
         ld['FTLM'] = ld['load_val'].ewm(alpha=best_g, adjust=False).mean()
         _info = {'gamma_perf': best_g, 'gamma_rec': best_g, 'fonte': 'fallback',
-                 'r2_perf': 0.0, 'r2_rec': 0.0, 'gamma_source': 'classic'}
+                 'r2_perf': 0.0, 'r2_rec': 0.0, 'gamma_source': 'classic',
+                 'mods': {}, 'best_mod': 'N/A'}
 
     u = ld.iloc[-1]
 
@@ -291,6 +290,14 @@ def tab_pmc(da, wc=None):
         'Bike': CORES['vermelho'], 'Row': CORES['azul'],
         'Ski':  CORES['roxo'],    'Run': CORES['verde'],
     }
+    # Also check _ld_frac directly in case merge missed cols
+    if len(_ld_frac) > 0:
+        for _mc in ['CTLg_Bike','CTLg_Row','CTLg_Ski','CTLg_Run',
+                    'CTL_Bike','CTL_Row','CTL_Ski','CTL_Run']:
+            if _mc in _ld_frac.columns and _mc not in ld_plot.columns:
+                _fi = _ld_frac.set_index('Data')
+                ld_plot[_mc] = ld_plot['Data'].map(_fi[_mc]) if 'Data' in ld_plot.columns else None
+
     _mods_with_data = [m for m in ['Bike','Row','Ski','Run']
                        if f'CTLg_{m}' in ld_plot.columns
                        and ld_plot[f'CTLg_{m}'].notna().any()
