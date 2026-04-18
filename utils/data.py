@@ -53,11 +53,33 @@ def carregar_atividades(days_back):
         if cd:
             df['Data'] = df[cd].apply(lambda x: parse_date(str(x)[:10]))
             df = df.dropna(subset=['Data']).sort_values('Data')
-        TEXTO = ['type', 'name', 'date', 'start_date_local']
+        # MMP columns are text "Yes - 318w" / "No (PR: 364w)" — must NOT use br_float
+        TEXTO = ['type', 'name', 'date', 'start_date_local',
+                 'mmp1_raw', 'mmp3_raw', 'mmp5_raw',
+                 'mmp12_raw', 'mmp20_raw', 'mmp60_raw']
         for var, lst in MAPA_TRAINING.items():
             col = detectar_col(df, lst)
             if col: df[var] = df[col] if var in TEXTO else df[col].apply(br_float)
         if 'type' in df.columns: df['type'] = df['type'].apply(norm_tipo)
+
+        # ── Parse MMP columns ─────────────────────────────────────────────────
+        # Each mmp*_raw column contains text: "Yes - 318w" or "No (PR: 364w)"
+        # We extract:
+        #   mmp{d}_w      = watts value (float) — from EITHER Yes or No rows
+        #   mmp{d}_is_pr  = True if this session SET the PR, False if it's a stale season best
+        #   mmp{d}_pr_w   = watts ONLY on sessions where is_pr=True (NaN otherwise)
+        #                   → use this for FTLM fitting (known date + confirmed max effort)
+        for _mmp_key in ['mmp1_raw','mmp3_raw','mmp5_raw','mmp12_raw','mmp20_raw','mmp60_raw']:
+            _dur = _mmp_key.replace('_raw', '')  # e.g. 'mmp20'
+            if _mmp_key not in df.columns:
+                continue
+            _parsed = df[_mmp_key].apply(parse_mmp)
+            df[f'{_dur}_is_pr'] = _parsed.apply(lambda x: x[0])   # True/False/None
+            df[f'{_dur}_w']     = _parsed.apply(lambda x: x[1])   # watts float/None
+            # mmp_pr_w: watts only where THIS session is the PR → exact date known
+            df[f'{_dur}_pr_w']  = df.apply(
+                lambda r: r[f'{_dur}_w'] if r[f'{_dur}_is_pr'] is True else float('nan'),
+                axis=1)
         dm = datetime.now() - timedelta(days=days_back)
         return df[df['Data'] >= dm].reset_index(drop=True)
     except Exception as e:
@@ -118,16 +140,10 @@ def preproc_wellness(df):
     # [2] Zeros inválidos → NaN
     df = remove_zeros(df, ['hrv', 'rhr', 'sleep_hours'])
     # [3] Preencher faltantes com lookback (sem data leakage)
-    # HRV/wellness subjective: imputa com mediana 7d anteriores
-    # Peso/bf_pct: NÃO imputa (não faz sentido estimar peso de dias sem medição)
     for c in [c for c in ['hrv', 'rhr', 'sleep_quality', 'fatiga',
                            'stress', 'humor', 'soreness']
               if c in df.columns]:
         df = _preencher_faltantes_lookback(df, c)
-    # bf_pct (% gordura corporal do formulário wellness): zscore + zeros→NaN, sem imputation
-    if 'bf_pct' in df.columns:
-        df['bf_pct'] = remove_zscore(df['bf_pct'], 3.0)
-        df.loc[df['bf_pct'] == 0, 'bf_pct'] = np.nan
     return df.reset_index(drop=True)
 
 def preproc_ativ(df):
@@ -258,8 +274,6 @@ def carregar_corporal():
         df = df.dropna(subset=['Data']).sort_values('Data')
         # Remover datas futuras — dados só até hoje
         df = df[df['Data'] <= pd.Timestamp.now().normalize()]
-        # 'BF' = % gordura corporal | 'Fat' = gramas de gordura alimentar
-        # Fonte: Consolidado_Comida (diário alimentar + registo de composição corporal)
         for col in ['Peso','BF','Calorias','Carb','Fat','Ptn',
                     'Carb_perc','Fat_perc','Ptn_perc','Net']:
             if col in df.columns: df[col] = df[col].apply(br_float)
