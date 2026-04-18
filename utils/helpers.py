@@ -471,23 +471,19 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
             gamma_m, r2_m, n_cp_m = fit_gamma_performance(
                 _ld_mod, _cp_mod, lag=0, max_lag=MAX_LAG)
 
-        # γ via MMP PR desta modalidade (sessões com is_pr=True — data exacta)
+        # γ via MMP20 PR desta modalidade — Della Mattia Part II §1
+        # Paper usa MMP20 (potência máxima em ~20 min) como proxy de performance
+        # Apenas sessões is_pr=True: data exacta conhecida, esforço máximo confirmado
+        # Outros MMPs (MMP5, MMP60) têm fisiologia diferente — não comparável
         gamma_mmp_m, r2_mmp_m, n_mmp_m = 0.35, 0.0, 0
-        _mmp_cols_mod = [c for c in ['mmp5_pr_w','mmp12_pr_w','mmp20_pr_w','mmp60_pr_w']
-                         if c in df_mod.columns and df_mod[c].notna().any()]
-        if _mmp_cols_mod:
-            # Z-score por duração (dentro da mesma modalidade)
-            _mmp_combined = pd.Series(np.nan, index=_date_idx)
-            for _mc in _mmp_cols_mod:
-                _s = (df_mod[df_mod[_mc].notna()]
-                      .groupby('Data')[_mc].mean()
-                      .reindex(_date_idx))
-                _mu, _sd = _s.mean(), _s.std()
-                if _sd > 0:
-                    _mmp_combined = _mmp_combined.combine_first((_s - _mu) / _sd)
-            if _mmp_combined.notna().sum() >= 5:
+        _mmp20_col = 'mmp20_pr_w'
+        if _mmp20_col in df_mod.columns and df_mod[_mmp20_col].notna().any():
+            _mmp20_s = (df_mod[df_mod[_mmp20_col].notna()]
+                        .groupby('Data')[_mmp20_col].mean()
+                        .reindex(_date_idx))
+            if _mmp20_s.notna().sum() >= 5:
                 _gm, _rm, _nm = fit_gamma_performance(
-                    _ld_mod, _mmp_combined.values, lag=0, max_lag=MAX_LAG)
+                    _ld_mod, _mmp20_s.values, lag=0, max_lag=MAX_LAG)
                 if _rm > r2_m:
                     gamma_m, r2_m = _gm, _rm
                 gamma_mmp_m, r2_mmp_m, n_mmp_m = _gm, _rm, _nm
