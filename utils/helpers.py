@@ -28,6 +28,45 @@ def br_float(v):
     try: return float(str(v).replace(',', '.').strip())
     except: return None
 
+
+def parse_mmp(v):
+    """
+    Parse MMP column from Intervals.icu activities export.
+
+    Formats:
+        "Yes - 318w"    -> (is_pr=True,  watts=318.0)  PR set in this activity
+        "No (PR: 364w)" -> (is_pr=False, watts=364.0)  season best, different session
+        NaN/empty       -> (is_pr=None,  watts=None)
+
+    is_pr=True  : this activity SET the season best for this duration
+    is_pr=False : season best EXISTS but was set on another activity (stale MMP)
+    is_pr=None  : no data (no power meter, or sport without power)
+    """
+    if v is None:
+        return None, None
+    if isinstance(v, float) and _math.isnan(v):
+        return None, None
+    s = str(v).strip()
+    if not s or s.lower() in ('nan', 'none', '', '-'):
+        return None, None
+    w_match = _re.search(r'(\d+(?:\.\d+)?)\s*[wW]', s)
+    watts   = float(w_match.group(1)) if w_match else None
+    is_pr   = s.lower().startswith('yes')
+    return is_pr, watts
+
+
+def mmp_watts(v):
+    """Convenience: return only watts. None if no data."""
+    _, w = parse_mmp(v)
+    return w
+
+
+def mmp_is_pr(v):
+    """Convenience: return only is_pr flag. None if no data."""
+    pr, _ = parse_mmp(v)
+    return pr
+
+
 def parse_date(v):
     """Parser robusto de datas em vários formatos."""
     if pd.isna(v): return None
