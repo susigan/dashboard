@@ -529,6 +529,32 @@ for γ in [0.10, 0.11, ..., 0.90]:
 **Diferença crítica para o ATL:** O ATL esquece completamente treinos de >21 dias (peso exponencial ≈0). O FTLM com γ={best_g:.3f} ainda atribui peso a treinos de {_max_lag_display} dias atrás — mais realista para atletas com anos de base aeróbica.
         """)
 
+    # ── Resultado global combinado ───────────────────────────────────────────
+    st.markdown("---")
+    st.subheader("\U0001f310 Resultado Global — Todas as Modalidades Combinadas")
+    _mods_gi2 = _info.get('mods', {})
+    _tot_sess = sum(_mods_gi2.get(m, {}).get('n_sessions', 0) for m in ['Bike','Row','Ski','Run'])
+    if _tot_sess > 0:
+        _gamma_w = sum(_mods_gi2.get(m,{}).get('gamma_perf',0.35) * _mods_gi2.get(m,{}).get('n_sessions',0)
+                       for m in ['Bike','Row','Ski','Run']) / _tot_sess
+        _r2_w    = sum(_mods_gi2.get(m,{}).get('r2_perf',0.0) * _mods_gi2.get(m,{}).get('n_sessions',0)
+                       for m in ['Bike','Row','Ski','Run']) / _tot_sess
+    else:
+        _gamma_w, _r2_w = best_g, 0.0
+    _icon_g, _lbl_g, _mtxt_g, _r2txt_g = _interp_gamma(_gamma_w, _r2_w, 'multi-sport')
+    _best_m2 = _info.get('best_mod', 'N/A')
+    _gc1, _gc2, _gc3 = st.columns(3)
+    _gc1.metric("gamma ponderado (multi-sport)", f"{_gamma_w:.3f}",
+                help="Media de gamma por modalidade ponderada pelo num de sessoes")
+    _gc2.metric("R2 medio ponderado", f"{_r2_w:.2f}")
+    _gc3.metric("Modalidade dominante", _best_m2,
+                help="Modalidade cujo gamma tem R2 mais alto")
+    st.info("\n\n".join([
+        f"{_icon_g} Memoria global: {_lbl_g}",
+        _mtxt_g, _r2txt_g,
+        f"FTLM actual: {_ftlm_v:.1f} | CTL: {_ctl_v:.1f} | FTLM/CTL: {_pct:.0f}% | {_ftlm_i}",
+    ]))
+
     # ── Download ──────────────────────────────────────────────────────────────
     st.markdown("---")
     st.subheader("⬇️ Download Dados PMC")
