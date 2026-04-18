@@ -229,6 +229,56 @@ def tab_pmc(da, wc=None):
     # ════════════════════════════════════════════════════════════════════════
     # GRÁFICO 2 — CTLγ por modalidade (FTLM fraccionário)
     # ════════════════════════════════════════════════════════════════════════
+
+def _interp_gamma(gv, rv, mod):
+    """Interpreta γ e R² para uma modalidade específica."""
+    # Memory depth label
+    if gv < 0.20:
+        mem_lbl  = "Muito longa (meses)"
+        mem_icon = "🧬"
+        mem_text = (f"γ={gv:.3f} indica que adaptações de **{mod}** acumulam "
+                    f"ao longo de meses. Treinos de {int(min(365, 1/gv*30))}+ dias "
+                    f"atrás ainda influenciam o CTLγ hoje. Típico de desportos com "
+                    f"alta dependência de base aeróbica crónica (capilarização, "
+                    f"mitocôndrias, economia de movimento).")
+    elif gv < 0.35:
+        mem_lbl  = "Longa (semanas-meses)"
+        mem_icon = "🏔️"
+        mem_text = (f"γ={gv:.3f} — intervalo óptimo para resistência de longa duração "
+                    f"(Imbach et al. 2021: γ≈0.35 melhorou predição em 18%). "
+                    f"O historial de semanas contribui mais do que a forma recente. "
+                    f"Ideal para modelar base aeróbica de {mod}.")
+    elif gv < 0.55:
+        mem_lbl  = "Moderada (dias-semanas)"
+        mem_icon = "⚖️"
+        mem_text = (f"γ={gv:.3f} — equilíbrio entre carga recente e historial. "
+                    f"Adaptações de {mod} respondem em escala de dias a semanas. "
+                    f"Modelo similar ao CTL clássico mas sem saturação exponencial.")
+    elif gv < 0.75:
+        mem_lbl  = "Curta (dias)"
+        mem_icon = "⚡"
+        mem_text = (f"γ={gv:.3f} — comportamento reactivo, próximo do ATL. "
+                    f"As adaptações de {mod} são dominadas pela carga recente. "
+                    f"Pode indicar poucos dados ou alta variabilidade inter-sessão.")
+    else:
+        mem_lbl  = "Muito curta (EWM-like)"
+        mem_icon = "🔄"
+        mem_text = (f"γ={gv:.3f} ≈ 1.0 — comporta-se como CTL clássico. "
+                    f"O fitting não encontrou vantagem no kernel fraccionário "
+                    f"para esta modalidade. Verificar qualidade dos dados de {mod}.")
+
+    # R² quality
+    if rv >= 0.70:
+        r2_text = f"R²={rv:.2f} — ajuste forte. O CTLγ prediz bem a performance de {mod}."
+    elif rv >= 0.45:
+        r2_text = f"R²={rv:.2f} — ajuste moderado. Dados de performance limitados ou variabilidade alta."
+    elif rv > 0.0:
+        r2_text = f"R²={rv:.2f} — ajuste fraco. Poucos pontos de MMP20/CP para calibração fiável."
+    else:
+        r2_text = f"R²=0 — sem dados suficientes. γ={gv:.3f} é o default (não calibrado)."
+
+    return mem_icon, mem_lbl, mem_text, r2_text
+
     st.subheader("📊 CTLγ por Modalidade — FTLM Fraccionário")
     st.caption(
         "Cada modalidade tem o seu próprio γ ajustado independentemente. "
@@ -246,39 +296,80 @@ def tab_pmc(da, wc=None):
                        and ld_plot[f'CTLg_{m}'].max() > 0]
 
     if _mods_with_data:
-        fig_mod = go.Figure()
-        for _mod in _mods_with_data:
-            _col   = f'CTLg_{_mod}'
-            _gi    = _info.get('mods', {}).get(_mod, {})
-            _gv    = _gi.get('gamma_perf', 0.35)
-            _rv    = _gi.get('r2_perf', 0.0)
-            _ns    = _gi.get('n_sessions', 0)
-            _nm    = _gi.get('n_mmp', 0)
-            _src   = 'MMP' if _nm >= 5 else 'CP'
+        # Subplots: 1 coluna por modalidade, cada uma com CTL (clássico) + CTLγ
+        _n_mods = len(_mods_with_data)
+        fig_mod = make_subplots(
+            rows=1, cols=_n_mods,
+            subplot_titles=_mods_with_data,
+            shared_yaxes=False,
+        )
+        for _ci, _mod in enumerate(_mods_with_data, 1):
+            _gi   = _info.get('mods', {}).get(_mod, {})
+            _gv   = _gi.get('gamma_perf', 0.35)
+            _rv   = _gi.get('r2_perf', 0.0)
+            _nm   = _gi.get('n_mmp', 0)
+            _src  = 'MMP20' if _nm >= 5 else 'CP'
+            _cor  = _CORES_MOD_PMC.get(_mod, '#888')
+
+            # CTL clássico desta modalidade
+            _ctl_col = f'CTL_{_mod}'
+            if _ctl_col in ld_plot.columns and ld_plot[_ctl_col].notna().any():
+                fig_mod.add_trace(go.Scatter(
+                    x=_dates, y=ld_plot[_ctl_col].tolist(),
+                    mode='lines', name=f'{_mod} CTL',
+                    line=dict(color=_cor, width=2, dash='dot'),
+                    opacity=0.55, legendgroup=_mod,
+                    showlegend=(_ci == 1),
+                    hovertemplate=f'<b>{_mod} CTL</b>: %{{y:.1f}}<extra></extra>',
+                ), row=1, col=_ci)
+
+            # CTLγ fraccionário desta modalidade
+            _ctlg_col = f'CTLg_{_mod}'
             fig_mod.add_trace(go.Scatter(
-                x=_dates,
-                y=ld_plot[_col].tolist(),
-                mode='lines',
-                name=f'{_mod} γ={_gv:.3f} R²={_rv:.2f} [{_src}]',
-                line=dict(color=_CORES_MOD_PMC.get(_mod,'#888'), width=2.5),
-                hovertemplate=f'<b>{_mod}</b> CTLγ: %{{y:.1f}}<extra></extra>',
-            ))
+                x=_dates, y=ld_plot[_ctlg_col].tolist(),
+                mode='lines', name=f'{_mod} CTLγ γ={_gv:.3f} [{_src}]',
+                line=dict(color=_cor, width=2.5),
+                legendgroup=_mod,
+                showlegend=True,
+                hovertemplate=f'<b>{_mod} CTLγ</b>: %{{y:.1f}}<extra></extra>',
+            ), row=1, col=_ci)
+
         fig_mod.update_layout(
             paper_bgcolor='white', plot_bgcolor='white',
-            font=dict(color='#111', size=11),
-            height=380,
-            margin=dict(t=55, b=80, l=55, r=20),
+            font=dict(color='#111', size=10),
+            height=340,
+            margin=dict(t=60, b=80, l=45, r=20),
             hovermode='x unified',
-            legend=dict(orientation='h', y=-0.28, font=dict(color='#111', size=10)),
-            title=dict(text='CTLγ por Modalidade (kernel Riemann-Liouville)',
+            legend=dict(orientation='h', y=-0.30, font=dict(color='#111', size=9)),
+            title=dict(text='CTL (pontilhado) + CTLγ (sólido) por Modalidade',
                        font=dict(size=13, color='#111')),
-            xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')),
-            yaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111'),
-                       title='CTLγ (normalização interna por modalidade)'),
         )
+        fig_mod.update_xaxes(showgrid=True, gridcolor='#eee',
+                              tickangle=-45, tickfont=dict(color='#111', size=9))
+        fig_mod.update_yaxes(showgrid=True, gridcolor='#eee',
+                              tickfont=dict(color='#111', size=9))
         st.plotly_chart(fig_mod, use_container_width=True,
                         config={'displayModeBar': False, 'responsive': True},
                         key="pmc_ctlg_mod")
+
+        # ── Interpretação γ por modalidade ──────────────────────────────────
+        st.markdown("**🔍 Interpretação de γ por Modalidade**")
+        _cols_mod = st.columns(len(_mods_with_data))
+        for _ci2, _mod in enumerate(_mods_with_data):
+            _gi2  = _info.get('mods', {}).get(_mod, {})
+            _gv2  = _gi2.get('gamma_perf', 0.35)
+            _rv2  = _gi2.get('r2_perf', 0.0)
+            _nm2  = _gi2.get('n_mmp', 0)
+            _nc2  = _gi2.get('n_cp', 0)
+            _ns2  = _gi2.get('n_sessions', 0)
+            _src2 = f'MMP20 ({_nm2} PR)' if _nm2 >= 5 else f'CP ({_nc2} sess)'
+            _icon, _lbl, _mtxt, _r2txt = _interp_gamma(_gv2, _rv2, _mod)
+            with _cols_mod[_ci2]:
+                st.markdown(f"**{_icon} {_mod}**")
+                st.metric("γ", f"{_gv2:.3f}", help=_lbl)
+                st.metric("R²", f"{_rv2:.2f}", help=_src2)
+                st.caption(_mtxt)
+                st.caption(_r2txt)
     else:
         st.info("CTLγ por modalidade não disponível — sem dados suficientes.")
 
