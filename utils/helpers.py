@@ -366,7 +366,7 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
 
     FITTING DUAL DE γ POR MODALIDADE (Della Mattia Part II §1-3):
         Para cada modalidade (Bike, Row, Ski, Run):
-            γ_perf_mod → max R²(CTLγ_mod ↔ icu_pm_cp_mod)    lag=0
+            γ_perf_mod → max R²(CTLγ_mod ↔ ActivityCP_mod)  lag=0
             γ_mmp_mod  → max R²(CTLγ_mod ↔ MMP_PR_mod)       lag=0  (só sessões is_pr=True)
         γ_recovery (global) → max R²(CTLγ_overall(t-1) ↔ LnRMSSD_trend(t))  lag=1
             HRV trend via regressão janela 7d sobre LnRMSSD (não RMSSD bruto)
@@ -427,6 +427,13 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
             gamma_rec, r2_rec, hrv_trend_arr = fit_gamma_recovery(
                 load_overall, _hrv_ln, hrv_window=7, lag=1, max_lag=MAX_LAG)
 
+    # ── Detect performance proxy column available (for info dict) ───────────
+    _perf_col_global = next(
+        (_pc for _pc in ['icu_pm_cp', 'icu_eftp']  # icu_ftp excluído: demasiado estável
+         if _pc in df.columns and df[_pc].notna().sum() >= 10),
+        None
+    )
+
     # ── γ_perf POR MODALIDADE (Della Mattia Part II §1 + §3) ─────────────────
     # Cada modalidade tem a sua carga, CP e MMP — escalas de potência diferentes
     # Bike MMP20 ≠ Row MMP20 — misturar seria erro sistemático
@@ -463,10 +470,23 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
         ld[f'CTL_{mod}']  = pd.Series(_ld_mod).ewm(span=42, adjust=False).mean().values
         ld[f'ATL_{mod}']  = pd.Series(_ld_mod).ewm(span=7,  adjust=False).mean().values
 
-        # γ via icu_pm_cp desta modalidade
+        # γ via performance proxy desta modalidade — Della Mattia Part II §1
+        # icu_pm_cp = ActivityCP: CP estimado da CURVA DE POTÊNCIA desta actividade
+        #   → varia diariamente com o esforço da sessão, ideal para série temporal
+        # icu_eftp  = eFTP estimado pelo modelo do Intervals.icu para esta actividade
+        #   → mais suave, também por actividade
+        # icu_ftp   = FTP setting (definido manualmente, demasiado estável para fitting)
+        #   → NÃO usar: varia pouco, não dá sinal para R²
+        # Ambos icu_pm_cp e icu_eftp são estimativas PER-ACTIVIDADE, não testes de CP
+        # São válidos para fitting pois formam séries temporais: cp(t1), cp(t2), ...
         gamma_m, r2_m, n_cp_m = 0.35, 0.0, 0
-        if 'icu_pm_cp' in df_mod.columns and df_mod['icu_pm_cp'].notna().sum() >= 5:
-            _cp_mod = (df_mod.groupby('Data')['icu_pm_cp']
+        _perf_col = None
+        for _pc in ['icu_pm_cp', 'icu_eftp']:   # icu_ftp excluído: demasiado estável
+            if _pc in df_mod.columns and df_mod[_pc].notna().sum() >= 5:
+                _perf_col = _pc
+                break
+        if _perf_col:
+            _cp_mod = (df_mod.groupby('Data')[_perf_col]
                        .mean()
                        .reindex(_date_idx, fill_value=np.nan).values)
             gamma_m, r2_m, n_cp_m = fit_gamma_performance(
@@ -490,7 +510,16 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
                 gamma_mmp_m, r2_mmp_m, n_mmp_m = _gm, _rm, _nm
 
         # CTLγ fraccionário para esta modalidade
-        ld[f'CTLg_{mod}'] = ftlm_fractional(_ld_mod, gamma_m, max_lag=MAX_LAG)
+        _ctlg_raw = ftlm_fractional(_ld_mod, gamma_m, max_lag=MAX_LAG)
+        # Normalise to same scale as CTL for interpretable comparison:
+        # Divide by the median ratio between CTLγ and CTL_mod where both > 0
+        _ctl_mod_vals = ld[f'CTL_{mod}'].values
+        _valid_norm = (_ctlg_raw > 0) & (_ctl_mod_vals > 0)
+        if _valid_norm.sum() >= 10:
+            _norm_factor = np.median(_ctlg_raw[_valid_norm] / _ctl_mod_vals[_valid_norm])
+            if _norm_factor > 0:
+                _ctlg_raw = _ctlg_raw / _norm_factor
+        ld[f'CTLg_{mod}'] = _ctlg_raw
 
         # Collect MMP season bests for display in table
         # Use mmp*_w (all sessions) to find the TRUE maximum per duration.
@@ -522,6 +551,7 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
             'gamma_mmp':  round(gamma_mmp_m, 3),
             'r2_mmp':     round(r2_mmp_m,    3),
             'n_cp':       n_cp_m,
+            'perf_col':   _perf_col or 'none',  # coluna usada para fitting
             'n_mmp':      n_mmp_m,
             'mmp_col':    _mmp_col,
             'mmp_pr_list': _mmp_pr_list,
@@ -534,8 +564,18 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
     gamma_perf  = mod_info[best_mod]['gamma_perf']
     r2_perf     = mod_info[best_mod]['r2_perf']
 
-    ld['CTLg_perf'] = ftlm_fractional(load_overall, gamma_perf, max_lag=MAX_LAG)
-    ld['CTLg_rec']  = ftlm_fractional(load_overall, gamma_rec,  max_lag=MAX_LAG)
+    # Normalise overall CTLγ to same scale as CTL
+    def _norm_ctlg(ctlg_arr, ctl_arr):
+        valid = (ctlg_arr > 0) & (ctl_arr > 0)
+        if valid.sum() >= 10:
+            factor = np.median(ctlg_arr[valid] / ctl_arr[valid])
+            if factor > 0:
+                return ctlg_arr / factor
+        return ctlg_arr
+
+    _ctl_arr = ld['CTL'].values
+    ld['CTLg_perf'] = _norm_ctlg(ftlm_fractional(load_overall, gamma_perf, max_lag=MAX_LAG), _ctl_arr)
+    ld['CTLg_rec']  = _norm_ctlg(ftlm_fractional(load_overall, gamma_rec,  max_lag=MAX_LAG), _ctl_arr)
 
     # FTLM activo = melhor R²
     best_gamma  = gamma_perf if r2_perf >= r2_rec else gamma_rec
@@ -547,6 +587,7 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
 
     info = {
         'fonte':        fonte,
+        'perf_col':     _perf_col_global or 'none',
         'gamma_perf':   round(gamma_perf, 3),
         'gamma_rec':    round(gamma_rec,  3),
         'gamma_best':   round(best_gamma, 3),
