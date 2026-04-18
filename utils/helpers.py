@@ -492,20 +492,29 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
         # CTLγ fraccionário para esta modalidade
         ld[f'CTLg_{mod}'] = ftlm_fractional(_ld_mod, gamma_m, max_lag=MAX_LAG)
 
-        # Collect MMP PR values for display in table
-        # Each entry: {'data': date_str, 'watts': float, 'duracao': 'MMP5'/'MMP20'}
+        # Collect MMP season bests for display in table
+        # Use mmp*_w (all sessions) to find the TRUE maximum per duration.
+        # mmp*_pr_w (is_pr=True) has too many entries — Intervals marks Yes
+        # whenever ANY effort in that session exceeds the prior PR, not just
+        # the session-wide maximum. So we take the max watts per duration
+        # from mmp*_w across the whole season, with the date it occurred.
         _mmp_pr_list = []
-        for _mc2 in ['mmp1_pr_w','mmp3_pr_w','mmp5_pr_w','mmp12_pr_w','mmp20_pr_w','mmp60_pr_w']:
+        for _mc2 in ['mmp1_w','mmp3_w','mmp5_w','mmp12_w','mmp20_w','mmp60_w']:
             if _mc2 not in df_mod.columns:
                 continue
-            _df_pr = df_mod[df_mod[_mc2].notna()][['Data', _mc2]].copy()
-            for _, _row_pr in _df_pr.iterrows():
-                _mmp_pr_list.append({
-                    'duracao': _mc2.replace('_pr_w', '').upper(),
-                    'data':    str(_row_pr['Data'])[:10],
-                    'watts':   round(float(_row_pr[_mc2]), 0),
-                })
-        _mmp_pr_list.sort(key=lambda x: x['data'], reverse=True)
+            _df_w = df_mod[df_mod[_mc2].notna()][['Data', _mc2]].copy()
+            if len(_df_w) == 0:
+                continue
+            # Find the single session with the highest watts for this duration
+            _best_idx = _df_w[_mc2].idxmax()
+            _best_row = _df_w.loc[_best_idx]
+            _dur_label = _mc2.replace('_w', '').upper()  # 'MMP20', etc.
+            _mmp_pr_list.append({
+                'duracao': _dur_label,
+                'data':    str(_best_row['Data'])[:10],
+                'watts':   round(float(_best_row[_mc2]), 0),
+            })
+        _mmp_pr_list.sort(key=lambda x: x['duracao'])
 
         mod_info[mod] = {
             'gamma_perf': round(gamma_m,     3),
