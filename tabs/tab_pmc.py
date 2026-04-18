@@ -461,18 +461,13 @@ def tab_pmc(da, wc=None):
                 else 'Curta')
         _icon_t, _, _, _ = _interp_gamma(_gv, _rv, _mod)
 
-        # Build MMP PR display — group by duration, show watts + date
-        _mmp_list = _gi.get('mmp_pr_list', [])
-        _mmp_by_dur = {}
-        for _mp in _mmp_list:
-            _d = _mp['duracao']
-            _mmp_by_dur.setdefault(_d, []).append(
-                f"{int(_mp['watts'])}W ({_mp['data']})")
-        _mmp_parts = []
-        for _d in ['MMP1','MMP3','MMP5','MMP12','MMP20','MMP60']:
-            if _d in _mmp_by_dur:
-                _entries = ', '.join(_mmp_by_dur[_d][:3])
-                _mmp_parts.append(f"{_d}: {_entries}")
+        # Build MMP display — season maximum per duration (1 entry each)
+        # helpers now stores only 1 row per duration: the session with the highest watts
+        _mmp_list  = _gi.get('mmp_pr_list', [])
+        _mmp_parts = [
+            f"{_mp['duracao']}: {int(_mp['watts'])}W ({_mp['data']})"
+            for _mp in _mmp_list
+        ]
         _mmp_str = ' | '.join(_mmp_parts) if _mmp_parts else '—'
 
         _rows_mod.append({
