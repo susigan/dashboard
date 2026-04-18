@@ -3,6 +3,18 @@ from utils.helpers import *
 import sys, os as _os
 sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
+# ── parse_mmp inline (also in helpers.py — duplicated here for import safety) ─
+def _parse_mmp_inline(v):
+    """Parse "Yes - 318w" / "No (PR: 364w)" → (is_pr, watts)."""
+    import re as _re, math as _m
+    if v is None: return None, None
+    if isinstance(v, float) and _m.isnan(v): return None, None
+    s = str(v).strip()
+    if not s or s.lower() in ('nan','none','','-'): return None, None
+    m = _re.search(r'(\d+(?:\.\d+)?)\s*[wW]', s)
+    return s.lower().startswith('yes'), (float(m.group(1)) if m else None)
+
+
 
 # ── Autenticação ──────────────────────────────────────────────────────────────
 
@@ -73,7 +85,7 @@ def carregar_atividades(days_back):
             _dur = _mmp_key.replace('_raw', '')  # e.g. 'mmp20'
             if _mmp_key not in df.columns:
                 continue
-            _parsed = df[_mmp_key].apply(parse_mmp)
+            _parsed = df[_mmp_key].apply(_parse_mmp_inline)
             df[f'{_dur}_is_pr'] = _parsed.apply(lambda x: x[0])   # True/False/None
             df[f'{_dur}_w']     = _parsed.apply(lambda x: x[1])   # watts float/None
             # mmp_pr_w: watts only where THIS session is the PR → exact date known
