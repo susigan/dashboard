@@ -14,6 +14,56 @@ sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))
 
 warnings.filterwarnings('ignore')
 
+def _interp_gamma(gv, rv, mod):
+    """Interpreta γ e R² para uma modalidade específica."""
+    # Memory depth label
+    if gv < 0.20:
+        mem_lbl  = "Muito longa (meses)"
+        mem_icon = "🧬"
+        mem_text = (f"γ={gv:.3f} indica que adaptações de **{mod}** acumulam "
+                    f"ao longo de meses. Treinos de {int(min(365, 1/gv*30))}+ dias "
+                    f"atrás ainda influenciam o CTLγ hoje. Típico de desportos com "
+                    f"alta dependência de base aeróbica crónica (capilarização, "
+                    f"mitocôndrias, economia de movimento).")
+    elif gv < 0.35:
+        mem_lbl  = "Longa (semanas-meses)"
+        mem_icon = "🏔️"
+        mem_text = (f"γ={gv:.3f} — intervalo óptimo para resistência de longa duração "
+                    f"(Imbach et al. 2021: γ≈0.35 melhorou predição em 18%). "
+                    f"O historial de semanas contribui mais do que a forma recente. "
+                    f"Ideal para modelar base aeróbica de {mod}.")
+    elif gv < 0.55:
+        mem_lbl  = "Moderada (dias-semanas)"
+        mem_icon = "⚖️"
+        mem_text = (f"γ={gv:.3f} — equilíbrio entre carga recente e historial. "
+                    f"Adaptações de {mod} respondem em escala de dias a semanas. "
+                    f"Modelo similar ao CTL clássico mas sem saturação exponencial.")
+    elif gv < 0.75:
+        mem_lbl  = "Curta (dias)"
+        mem_icon = "⚡"
+        mem_text = (f"γ={gv:.3f} — comportamento reactivo, próximo do ATL. "
+                    f"As adaptações de {mod} são dominadas pela carga recente. "
+                    f"Pode indicar poucos dados ou alta variabilidade inter-sessão.")
+    else:
+        mem_lbl  = "Muito curta (EWM-like)"
+        mem_icon = "🔄"
+        mem_text = (f"γ={gv:.3f} ≈ 1.0 — comporta-se como CTL clássico. "
+                    f"O fitting não encontrou vantagem no kernel fraccionário "
+                    f"para esta modalidade. Verificar qualidade dos dados de {mod}.")
+
+    # R² quality
+    if rv >= 0.70:
+        r2_text = f"R²={rv:.2f} — ajuste forte. O CTLγ prediz bem a performance de {mod}."
+    elif rv >= 0.45:
+        r2_text = f"R²={rv:.2f} — ajuste moderado. Dados de performance limitados ou variabilidade alta."
+    elif rv > 0.0:
+        r2_text = f"R²={rv:.2f} — ajuste fraco. Poucos pontos de MMP20/CP para calibração fiável."
+    else:
+        r2_text = f"R²=0 — sem dados suficientes. γ={gv:.3f} é o default (não calibrado)."
+
+    return mem_icon, mem_lbl, mem_text, r2_text
+
+
 def tab_pmc(da, wc=None):
     """
     PMC — icu_training_load para CTL/ATL/FTLM.
@@ -230,55 +280,6 @@ def tab_pmc(da, wc=None):
     # GRÁFICO 2 — CTLγ por modalidade (FTLM fraccionário)
     # ════════════════════════════════════════════════════════════════════════
 
-def _interp_gamma(gv, rv, mod):
-    """Interpreta γ e R² para uma modalidade específica."""
-    # Memory depth label
-    if gv < 0.20:
-        mem_lbl  = "Muito longa (meses)"
-        mem_icon = "🧬"
-        mem_text = (f"γ={gv:.3f} indica que adaptações de **{mod}** acumulam "
-                    f"ao longo de meses. Treinos de {int(min(365, 1/gv*30))}+ dias "
-                    f"atrás ainda influenciam o CTLγ hoje. Típico de desportos com "
-                    f"alta dependência de base aeróbica crónica (capilarização, "
-                    f"mitocôndrias, economia de movimento).")
-    elif gv < 0.35:
-        mem_lbl  = "Longa (semanas-meses)"
-        mem_icon = "🏔️"
-        mem_text = (f"γ={gv:.3f} — intervalo óptimo para resistência de longa duração "
-                    f"(Imbach et al. 2021: γ≈0.35 melhorou predição em 18%). "
-                    f"O historial de semanas contribui mais do que a forma recente. "
-                    f"Ideal para modelar base aeróbica de {mod}.")
-    elif gv < 0.55:
-        mem_lbl  = "Moderada (dias-semanas)"
-        mem_icon = "⚖️"
-        mem_text = (f"γ={gv:.3f} — equilíbrio entre carga recente e historial. "
-                    f"Adaptações de {mod} respondem em escala de dias a semanas. "
-                    f"Modelo similar ao CTL clássico mas sem saturação exponencial.")
-    elif gv < 0.75:
-        mem_lbl  = "Curta (dias)"
-        mem_icon = "⚡"
-        mem_text = (f"γ={gv:.3f} — comportamento reactivo, próximo do ATL. "
-                    f"As adaptações de {mod} são dominadas pela carga recente. "
-                    f"Pode indicar poucos dados ou alta variabilidade inter-sessão.")
-    else:
-        mem_lbl  = "Muito curta (EWM-like)"
-        mem_icon = "🔄"
-        mem_text = (f"γ={gv:.3f} ≈ 1.0 — comporta-se como CTL clássico. "
-                    f"O fitting não encontrou vantagem no kernel fraccionário "
-                    f"para esta modalidade. Verificar qualidade dos dados de {mod}.")
-
-    # R² quality
-    if rv >= 0.70:
-        r2_text = f"R²={rv:.2f} — ajuste forte. O CTLγ prediz bem a performance de {mod}."
-    elif rv >= 0.45:
-        r2_text = f"R²={rv:.2f} — ajuste moderado. Dados de performance limitados ou variabilidade alta."
-    elif rv > 0.0:
-        r2_text = f"R²={rv:.2f} — ajuste fraco. Poucos pontos de MMP20/CP para calibração fiável."
-    else:
-        r2_text = f"R²=0 — sem dados suficientes. γ={gv:.3f} é o default (não calibrado)."
-
-    return mem_icon, mem_lbl, mem_text, r2_text
-
     st.subheader("📊 CTLγ por Modalidade — FTLM Fraccionário")
     st.caption(
         "Cada modalidade tem o seu próprio γ ajustado independentemente. "
@@ -362,7 +363,8 @@ def _interp_gamma(gv, rv, mod):
             _nm2  = _gi2.get('n_mmp', 0)
             _nc2  = _gi2.get('n_cp', 0)
             _ns2  = _gi2.get('n_sessions', 0)
-            _src2 = f'MMP20 ({_nm2} PR)' if _nm2 >= 5 else f'CP ({_nc2} sess)'
+            _mmp_col_used = _gi2.get('mmp_col', 'mmp20_pr_w').replace('_pr_w','').upper()
+            _src2 = f'{_mmp_col_used} ({_nm2} PR)' if _nm2 >= 5 else f'CP ({_nc2} sess)'
             _icon, _lbl, _mtxt, _r2txt = _interp_gamma(_gv2, _rv2, _mod)
             with _cols_mod[_ci2]:
                 st.markdown(f"**{_icon} {_mod}**")
@@ -417,118 +419,93 @@ def _interp_gamma(gv, rv, mod):
                      use_container_width=True, hide_index=True)
 
     _max_lag_display = min(365, len(ld))  # max history used by kernel
-    with st.expander("📖 Como funciona o FTLM Fraccionário — Guia de Interpretação", expanded=True):
-        st.markdown(f"""
-## O problema do CTL clássico
-
-O PMC usa uma média exponencial (EWM) com τ=42 dias fixo para todos os atletas e todas as modalidades:
-
-```
-CTL(t) = e^(-1/42) · CTL(t-1) + (1 - e^(-1/42)) · Load(t)
-```
-
-Isto cria dois problemas fundamentais:
-1. **Saturação**: `lim_{{t→∞}} ∫ e^(-τ/42) dτ = 42` — o CTL não cresce indefinidamente, fica limitado
-2. **Amnésia exponencial**: um treino de 3 semanas atrás tem menos de 50% do peso de hoje, independentemente do atleta
-
----
-
-## O kernel fraccionário (Riemann-Liouville)
-
-O FTLM substitui o kernel exponencial por um kernel em lei de potência:
-
-```
-CTLγ(t) = (1/Γ(γ)) · Σ Load(t-k) · k^(γ-1)
-                       k=1..t
-```
-
-O decaimento agora é **hiperbólico**, não exponencial. Consequência directa:
-
-```
-∫ τ^(γ-1) dτ = t^γ/γ   →   cresce sem limite
-```
-
-Treinos de 6 meses atrás continuam a influenciar CTLγ hoje — matematicamente, a base aeróbica construída ao longo de anos acumula sem saturar.
-
----
-
-## O parâmetro γ — memória fisiológica
-
-| γ | Memória | Significado fisiológico |
-|---|---|---|
-| γ ≈ 0.10–0.20 | Muito longa (meses) | Adaptações lentas: capilarização, mitocôndrias, economia de movimento |
-| γ ≈ 0.25–0.40 | Longa (semanas-meses) | Base aeróbica crónica — ideal para desportos de resistência |
-| γ ≈ 0.40–0.60 | Moderada | Equilíbrio carga recente/histórica |
-| γ ≈ 0.70–0.90 | Curta (dias) | Reactivo — similar ao ATL; alta sensibilidade à carga recente |
-| γ → 1.0 | Exponencial | Comporta-se como CTL clássico |
-
-*Imbach et al. (2021): γ≈0.35 aumentou a precisão de predição de potência em corrida em 18% vs modelo de Banister.*
-
----
-
-## Como os γ foram calculados para cada modalidade
-
-Para cada modalidade (**{', '.join([m for m in ['Bike','Row','Ski','Run'] if _mods_gi.get(m,{}).get('n_sessions',0)>0])}**),
-o fitting é feito **independentemente** — a carga de ciclismo não prediz adaptações de remo.
-
-**Passo 1 — Série de carga modal:**
-Usa apenas as sessões dessa modalidade para construir `Load_mod(t)`.
-
-**Passo 2 — Proxy de performance modal:**
-- Primário: `icu_pm_cp` das sessões dessa modalidade (CP estimado pelo Intervals.icu)
-- Complementar: `MMP_pr_w` — potências máximas confirmadas nessa modalidade (`is_pr=True`), datas exactas conhecidas
-
-**Passo 3 — Grid search (Part II §1):**
-```python
-for γ in [0.10, 0.11, ..., 0.90]:
-    CTLγ_mod = ftlm_fractional(Load_mod, γ)
-    r² = pearsonr(CTLγ_mod, icu_pm_cp_mod)²
-γ_mod = argmax(r²)
-```
-
-**Resultado por modalidade:**
-{chr(10).join([f'- **{r["Modalidade"]}**: γ={r["γ"]} (R²={r["R²"]}, {r["Fonte γ"]}, {r["Memória"]})' for r in _rows_mod]) if _rows_mod else '- Dados insuficientes'}
-
----
-
-## CTLγ_perf vs CTLγ_recovery
-
-**CTLγ_perf (γ={_gp:.3f}, R²={_r2p:.2f})** — modelado sobre **{_best_m}** (maior R²):
-- Responde à questão: *"Quanto fitness acumulado prediz a minha performance actual?"*
-- Γ mais baixo → o teu historial de treino de anos influencia mais do que a forma recente
-- Útil para planear blocos de base, tapering e peaks
-
-**CTLγ_rec (γ={_gr:.3f}, R²={_r2r:.2f})** — fitado sobre **LnRMSSD trend (HRV janela 7d)**:
-- Responde à questão: *"Quanto do meu CTL fraccionário prediz a recuperação autonómica?"*
-- Usa LnRMSSD (não RMSSD bruto) — distribuição normal, sensibilidade linear
-- Tendência local via regressão 7d: `HRV(τ) = a(t)·τ + b(t)` → usa intercept `b(t)`
-- Lag=1 dia: `CTLγ(t-1)` prediz `HRV_trend(t)` — o estado de ontem determina a recuperação de hoje
-
-**Quando diferem:**
-- CTLγ_perf alto + CTLγ_rec baixo → bom fitness, má recuperação autonómica → risco de overreaching silencioso
-- CTLγ_perf baixo + CTLγ_rec alto → boa recuperação mas fitness a decair → indicação para retomar carga
-
----
-
-## Resultado actual
-
-| Métrica | Valor |
-|---|---|
-| FTLM actual (CTLγ activo) | `{_ftlm_v:.1f}` |
-| CTL clássico | `{_ctl_v:.1f}` |
-| FTLM / CTL | `{_pct:.0f}%` |
-| γ activo | `{best_g:.3f}` ({_gsrc}) |
-| Interpretação | {_ftlm_i} |
-
-**FTLM > CTL (>100%):** Carga recente acima da capacidade crónica. Bloco de acumulação activo — monitorar HRV e recuperação.
-
-**FTLM ≈ CTL (90–110%):** Carga estável. Manutenção. O fraccionário confirma que o historial e a carga actual estão alinhados.
-
-**FTLM < CTL (<90%):** Carga abaixo do crónico. Tapering intencional (forma a subir) ou destreino involuntário. O fraccionário detecta isto mais cedo que o ATL porque tem memória mais longa.
-
-**Diferença crítica para o ATL:** O ATL esquece completamente treinos de >21 dias (peso exponencial ≈0). O FTLM com γ={best_g:.3f} ainda atribui peso a treinos de {_max_lag_display} dias atrás — mais realista para atletas com anos de base aeróbica.
-        """)
-
+    with st.expander("📖 Como funciona o FTLM Fraccionário — Guia de Interpretação", expanded=False):
+        st.markdown("## O problema do CTL clássico")
+        st.markdown(
+            "O PMC usa EWM com τ=42 dias fixo:"
+            " `CTL(t) = e^(-1/42)·CTL(t-1) + (1-e^(-1/42))·Load(t)`  \n"
+            "**Problema 1 — Saturação:** o CTL não cresce sem limite (converge para τ=42).  \n"
+            "**Problema 2 — Amnésia exponencial:** treino de 3 semanas atrás pesa <50% do de hoje, "
+            "independentemente do atleta ou do desporto."
+        )
+        st.markdown("---")
+        st.markdown("## O kernel fraccionário (Riemann-Liouville)")
+        st.code(
+            "CTLγ(t) = (1/Γ(γ)) · Σ Load(t-k) · k^(γ-1)\n"
+            "         k=1..t\n"
+            "\n"
+            "∫ τ^(γ-1) dτ = t^γ/γ  →  cresce sem limite (sem saturação)",
+            language="text"
+        )
+        st.markdown(
+            "O decaimento é **hiperbólico** (lei de potência), não exponencial.  \n"
+            "Treinos de 6+ meses atrás continuam a influenciar CTLγ — "
+            "reflecte a base aeróbica construída ao longo de anos."
+        )
+        st.markdown("---")
+        st.markdown("## O parâmetro γ — tabela de interpretação")
+        st.markdown(
+            "| γ | Memória | Significado fisiológico |\n"
+            "|---|---|---|\n"
+            "| 0.10–0.20 | Muito longa (meses) | Capilarização, mitocôndrias, economia de movimento |\n"
+            "| 0.25–0.40 | Longa (semanas-meses) | Base aeróbica crónica — óptimo para resistência |\n"
+            "| 0.40–0.60 | Moderada | Equilíbrio carga recente/histórica |\n"
+            "| 0.70–0.90 | Curta (dias) | Reactivo, similar ao ATL |\n"
+            "| → 1.0 | Exponencial | Comporta-se como CTL clássico |"
+        )
+        st.caption("Imbach et al. (2021): γ≈0.35 melhorou predição de potência em 18% vs Banister.")
+        st.markdown("---")
+        st.markdown("## Como o fitting é feito por modalidade")
+        st.markdown(
+            "Para cada modalidade (Bike, Row, Ski, Run) independentemente:  \n"
+            "**Passo 1 — Carga modal:** só sessões dessa modalidade constroem `Load_mod(t)`.  \n"
+            "**Passo 2 — Proxy de performance:** `icu_pm_cp` (cada sessão) "
+            "+ MMP PR confirmados (`is_pr=True`, data exacta).  \n"
+            "**Passo 3 — Grid search γ ∈ [0.10, 0.90]:** maximiza R²(CTLγ_mod ↔ performance_mod)."
+        )
+        if _rows_mod:
+            _mod_lines = "\n".join(
+                f"- **{r['Modalidade']}**: γ={r['γ']} (R²={r['R²']}, {r['Fonte γ']}, {r['Memória']})"
+                for r in _rows_mod
+            )
+            st.markdown("**Resultado actual por modalidade:**")
+            st.markdown(_mod_lines)
+        st.markdown("---")
+        st.markdown("## CTLγ_perf vs CTLγ_recovery")
+        st.markdown(
+            f"**CTLγ_perf (γ={_gp:.3f}, R²={_r2p:.2f})** — modelado sobre **{_best_m}** (maior R²):  \n"
+            "- *Quanto fitness acumulado prediz a performance actual?*  \n"
+            "- γ baixo → historial de anos pesa mais do que forma recente  \n"
+            "- Útil para planear blocos de base, tapering e peaks"
+        )
+        st.markdown(
+            f"**CTLγ_rec (γ={_gr:.3f}, R²={_r2r:.2f})** — fitado sobre LnRMSSD trend (HRV janela 7d):  \n"
+            "- *Quanto CTLγ(t-1) prediz a recuperação autonómica de hoje?*  \n"
+            "- Usa LnRMSSD (não RMSSD bruto) — distribuição normal, sensibilidade linear  \n"
+            "- Lag=1 dia: ontem prediz hoje"
+        )
+        st.markdown(
+            "**Quando divergem:**  \n"
+            "- CTLγ_perf ↑ + CTLγ_rec ↓ → fitness alto, recuperação autonómica fraca "
+            "→ risco de overreaching silencioso  \n"
+            "- CTLγ_perf ↓ + CTLγ_rec ↑ → boa recuperação, fitness a decair "
+            "→ indicação para retomar carga"
+        )
+        st.markdown("---")
+        st.markdown("## Resultado actual")
+        st.markdown(
+            f"| Métrica | Valor |\n"
+            f"|---|---|\n"
+            f"| FTLM actual (CTLγ activo) | {_ftlm_v:.1f} |\n"
+            f"| CTL clássico | {_ctl_v:.1f} |\n"
+            f"| FTLM / CTL | {_pct:.0f}% |\n"
+            f"| γ activo | {best_g:.3f} ({_gsrc}) |\n"
+            f"| Interpretação | {_ftlm_i} |"
+        )
+        st.markdown(
+            f"**Diferença crítica para o ATL:** O ATL esquece treinos de >21 dias. "
+            f"O FTLM com γ={best_g:.3f} atribui peso a treinos de até {_max_lag_display} dias atrás."
+        )
     # ── Resultado global combinado ───────────────────────────────────────────
     st.markdown("---")
     st.subheader("\U0001f310 Resultado Global — Todas as Modalidades Combinadas")
