@@ -354,25 +354,28 @@ def fit_gamma_recovery(load_arr, hrv_arr, gamma_range=(0.10, 0.90),
 
 def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
     """
-    Calcula série diária de CTL/ATL/TSB + FTLM fraccionário (Della Mattia 2025).
+    Calcula CTL/ATL/TSB clássico (EWM) + FTLM fraccionário Della Mattia (2025).
 
-    Fonte de carga (prioridade):
-        1. icu_training_load (Intervals.icu — escala ~20-200/dia)
+    FONTE DE CARGA (prioridade):
+        1. icu_training_load  (Intervals.icu, escala ~20-200/dia)
         2. session_rpe = (moving_time_min × RPE)   — fallback
 
-    FTLM fraccionário:
-        CTLγ(t) = (1/Γ(γ)) · Σ Load(t-k) · k^(γ-1)
-        Kernel k^(γ-1) em vez de e^(-τ/τc) — memória longa, sem saturação.
+    FTLM FRACCIONÁRIO — kernel Riemann-Liouville:
+        CTLγ(t) = (1/Γ(γ)) · Σ_{k=1}^{t} Load(t-k) · k^(γ-1)
+        Memória em lei de potência — treinos antigos persistem (sem saturação).
 
-    Fitting dual de γ (Della Mattia Part II §3):
-        γ_perf     → correlação CTLγ ↔ icu_pm_cp (proxy performance, lag=0)
-        γ_recovery → correlação CTLγ(t-1) ↔ HRV_trend(t) (método HRV, lag=1)
-        γ_classic  → fallback: EWM alpha optimizado por auto-correlação com carga
+    FITTING DUAL DE γ POR MODALIDADE (Della Mattia Part II §1-3):
+        Para cada modalidade (Bike, Row, Ski, Run):
+            γ_perf_mod → max R²(CTLγ_mod ↔ icu_pm_cp_mod)    lag=0
+            γ_mmp_mod  → max R²(CTLγ_mod ↔ MMP_PR_mod)       lag=0  (só sessões is_pr=True)
+        γ_recovery (global) → max R²(CTLγ_overall(t-1) ↔ LnRMSSD_trend(t))  lag=1
+            HRV trend via regressão janela 7d sobre LnRMSSD (não RMSSD bruto)
 
-    Retorna:
-        ld  : DataFrame com colunas Data, load_val, CTL, ATL, TSB,
-                FTLM_perf, FTLM_rec, FTLM (melhor dos dois)
-        info: dict com γ_perf, γ_rec, r2_perf, r2_rec, fonte, n_mmp
+    RETORNA:
+        ld   : DataFrame — Data, load_val, CTL, ATL, TSB,
+                           CTLg_perf, CTLg_rec, FTLM,
+                           CTLg_{mod}  para cada modalidade (load fraccionário modal)
+        info : dict — gammas, R², fontes, n_pontos por modalidade
     """
     df = filtrar_principais(df_act).copy()
     df['Data'] = pd.to_datetime(df['Data'])
@@ -387,103 +390,151 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
         df['_load'] = df['_load'].fillna(0)
         fonte = 'session_rpe'
     else:
-        return pd.DataFrame(), {'fonte': 'none', 'gamma': 0.30}
+        return pd.DataFrame(), {'fonte': 'none'}
 
-    # ── Série diária ──────────────────────────────────────────────────────────
+    # ── Série diária OVERALL ──────────────────────────────────────────────────
     ld = df.groupby('Data')['_load'].sum().reset_index().sort_values('Data')
     _idx = pd.date_range(ld['Data'].min(),
                           datetime.now().date() if ate_hoje else ld['Data'].max())
     ld = ld.set_index('Data').reindex(_idx, fill_value=0).reset_index()
     ld.columns = ['Data', 'load_val']
 
-    # ── CTL / ATL / TSB clássicos (EWM) ──────────────────────────────────────
+    # ── CTL / ATL / TSB clássicos ──────────────────────────────────────────────
     ld['CTL'] = ld['load_val'].ewm(span=42, adjust=False).mean()
     ld['ATL'] = ld['load_val'].ewm(span=7,  adjust=False).mean()
     ld['TSB'] = ld['CTL'] - ld['ATL']
 
-    load_arr = ld['load_val'].values
-    MAX_LAG  = min(365, len(load_arr))   # max history for kernel (performance)
+    load_overall = ld['load_val'].values
+    MAX_LAG = min(365, len(load_overall))
+    _date_idx = pd.DatetimeIndex(ld['Data'])
 
-    # ── γ_performance via icu_pm_cp ───────────────────────────────────────────
-    # Align icu_pm_cp daily series with ld
-    gamma_perf, r2_perf, n_cp = 0.35, 0.0, 0
-    gamma_mmp,  r2_mmp,  n_mmp = 0.35, 0.0, 0
-
-    if 'icu_pm_cp' in df.columns and df['icu_pm_cp'].notna().sum() >= 10:
-        cp_daily = (df.groupby('Data')['icu_pm_cp']
-                    .mean()
-                    .reindex(pd.DatetimeIndex(ld['Data']), fill_value=np.nan))
-        gamma_perf, r2_perf, n_cp = fit_gamma_performance(
-            load_arr, cp_daily.values, lag=0, max_lag=MAX_LAG)
-
-    # γ_mmp via confirmed PR efforts (is_pr=True only — exact dates)
-    mmp_cols = [c for c in ['mmp5_pr_w','mmp12_pr_w','mmp20_pr_w','mmp60_pr_w']
-                if c in df.columns]
-    if mmp_cols:
-        # Combine all MMP PR points into one normalised series (z-score per duration)
-        mmp_combined = pd.Series(np.nan, index=pd.DatetimeIndex(ld['Data']))
-        for mc in mmp_cols:
-            _s = (df[df[mc].notna()]
-                  .groupby('Data')[mc].mean()
-                  .reindex(pd.DatetimeIndex(ld['Data'])))
-            # z-score so different durations are comparable
-            _mu, _sd = _s.mean(), _s.std()
-            if _sd > 0:
-                _s_z = (_s - _mu) / _sd
-                mmp_combined = mmp_combined.combine_first(_s_z)
-        if mmp_combined.notna().sum() >= 5:
-            gm, rm, nm = fit_gamma_performance(
-                load_arr, mmp_combined.values, lag=0, max_lag=MAX_LAG)
-            # Use MMP gamma if R² is better than CP-based gamma
-            if rm > r2_perf:
-                gamma_perf, r2_perf = gm, rm
-            gamma_mmp, r2_mmp, n_mmp = gm, rm, nm
-
-    # ── γ_recovery via HRV trend (Part II §2) ────────────────────────────────
-    gamma_rec, r2_rec, hrv_trend_arr = 0.35, 0.0, None
-    hrv_series = None
+    # ── γ_recovery via LnRMSSD trend (GLOBAL — HRV é modalidade-agnóstico) ──
+    # Part II §2: HRV trend via regressão janela 7d sobre LnRMSSD
+    # LnRMSSD (não RMSSD bruto): distribuição normal, compatível com tab_recovery
+    gamma_rec, r2_rec = 0.35, 0.0
+    hrv_trend_arr = None
 
     if df_wellness is not None and len(df_wellness) > 0 and 'hrv' in df_wellness.columns:
-        wc = df_wellness.copy()
-        wc['Data'] = pd.to_datetime(wc['Data'])
-        hrv_daily = (wc.groupby('Data')['hrv']
-                     .mean()
-                     .reindex(pd.DatetimeIndex(ld['Data']), fill_value=np.nan))
-        hrv_arr_aligned = hrv_daily.values
-        n_hrv = int(pd.notna(hrv_arr_aligned).sum())
-        if n_hrv >= 21:
+        _wc = df_wellness.copy()
+        _wc['Data'] = pd.to_datetime(_wc['Data'])
+        _hrv_raw = (_wc.groupby('Data')['hrv']
+                    .mean()
+                    .reindex(_date_idx, fill_value=np.nan).values)
+        # LnRMSSD: log do RMSSD bruto — distribuição normal, sensibilidade linear
+        # Exclui zeros/negativos antes de log
+        _hrv_ln = np.where(_hrv_raw > 0, np.log(_hrv_raw), np.nan)
+        if int(np.isfinite(_hrv_ln).sum()) >= 21:
             gamma_rec, r2_rec, hrv_trend_arr = fit_gamma_recovery(
-                load_arr, hrv_arr_aligned,
-                hrv_window=7, lag=1, max_lag=MAX_LAG)
-            hrv_series = hrv_arr_aligned
+                load_overall, _hrv_ln, hrv_window=7, lag=1, max_lag=MAX_LAG)
 
-    # ── Compute fractional CTLγ with both gammas ──────────────────────────────
-    ld['CTLg_perf'] = ftlm_fractional(load_arr, gamma_perf, max_lag=MAX_LAG)
-    ld['CTLg_rec']  = ftlm_fractional(load_arr, gamma_rec,  max_lag=MAX_LAG)
+    # ── γ_perf POR MODALIDADE (Della Mattia Part II §1 + §3) ─────────────────
+    # Cada modalidade tem a sua carga, CP e MMP — escalas de potência diferentes
+    # Bike MMP20 ≠ Row MMP20 — misturar seria erro sistemático
+    # γ reflecte a memória fisiológica específica de cada desporto:
+    #   Ski: alta sazonalidade → γ baixo (memória muito longa)
+    #   Row: sessões longas, poucas/semana → γ médio
+    #   Bike: treino frequente, intensidade variável → depende dos dados
+    #   Run: adaptações neuromusculares + aeróbicas → depende dos dados
 
-    # FTLM = best gamma (higher R²), fallback to gamma_perf
-    best_gamma = gamma_perf if r2_perf >= r2_rec else gamma_rec
-    best_source = 'perf' if r2_perf >= r2_rec else 'recovery'
-    ld['FTLM'] = ld['CTLg_perf'] if best_source == 'perf' else ld['CTLg_rec']
+    MODS = ['Bike', 'Row', 'Ski', 'Run']
+    mod_info = {}      # γ, R², n por modalidade
+    mod_loads = {}     # série diária de carga por modalidade
 
-    # Also store HRV trend for tab_pmc plotting
+    if 'type' not in df.columns:
+        df['type'] = 'Bike'
+
+    for mod in MODS:
+        df_mod = df[df['type'] == mod].copy()
+        if len(df_mod) < 5:
+            mod_info[mod] = {'gamma_perf': 0.35, 'r2_perf': 0.0,
+                             'gamma_mmp': 0.35, 'r2_mmp': 0.0,
+                             'n_cp': 0, 'n_mmp': 0, 'n_sessions': 0}
+            mod_loads[mod] = np.zeros(len(ld))
+            continue
+
+        # Carga diária desta modalidade (alinhada com ld)
+        _ld_mod = (df_mod.groupby('Data')['_load']
+                   .sum()
+                   .reindex(_date_idx, fill_value=0).values)
+        mod_loads[mod] = _ld_mod
+
+        # Adiciona ao ld para visualização
+        ld[f'load_{mod}'] = _ld_mod
+        ld[f'CTL_{mod}']  = pd.Series(_ld_mod).ewm(span=42, adjust=False).mean().values
+
+        # γ via icu_pm_cp desta modalidade
+        gamma_m, r2_m, n_cp_m = 0.35, 0.0, 0
+        if 'icu_pm_cp' in df_mod.columns and df_mod['icu_pm_cp'].notna().sum() >= 5:
+            _cp_mod = (df_mod.groupby('Data')['icu_pm_cp']
+                       .mean()
+                       .reindex(_date_idx, fill_value=np.nan).values)
+            gamma_m, r2_m, n_cp_m = fit_gamma_performance(
+                _ld_mod, _cp_mod, lag=0, max_lag=MAX_LAG)
+
+        # γ via MMP PR desta modalidade (sessões com is_pr=True — data exacta)
+        gamma_mmp_m, r2_mmp_m, n_mmp_m = 0.35, 0.0, 0
+        _mmp_cols_mod = [c for c in ['mmp5_pr_w','mmp12_pr_w','mmp20_pr_w','mmp60_pr_w']
+                         if c in df_mod.columns and df_mod[c].notna().any()]
+        if _mmp_cols_mod:
+            # Z-score por duração (dentro da mesma modalidade)
+            _mmp_combined = pd.Series(np.nan, index=_date_idx)
+            for _mc in _mmp_cols_mod:
+                _s = (df_mod[df_mod[_mc].notna()]
+                      .groupby('Data')[_mc].mean()
+                      .reindex(_date_idx))
+                _mu, _sd = _s.mean(), _s.std()
+                if _sd > 0:
+                    _mmp_combined = _mmp_combined.combine_first((_s - _mu) / _sd)
+            if _mmp_combined.notna().sum() >= 5:
+                _gm, _rm, _nm = fit_gamma_performance(
+                    _ld_mod, _mmp_combined.values, lag=0, max_lag=MAX_LAG)
+                if _rm > r2_m:
+                    gamma_m, r2_m = _gm, _rm
+                gamma_mmp_m, r2_mmp_m, n_mmp_m = _gm, _rm, _nm
+
+        # CTLγ fraccionário para esta modalidade
+        ld[f'CTLg_{mod}'] = ftlm_fractional(_ld_mod, gamma_m, max_lag=MAX_LAG)
+
+        mod_info[mod] = {
+            'gamma_perf': round(gamma_m,     3),
+            'r2_perf':    round(r2_m,        3),
+            'gamma_mmp':  round(gamma_mmp_m, 3),
+            'r2_mmp':     round(r2_mmp_m,    3),
+            'n_cp':       n_cp_m,
+            'n_mmp':      n_mmp_m,
+            'n_sessions': len(df_mod),
+        }
+
+    # ── CTLγ overall (γ_perf = média ponderada por R² das modalidades) ────────
+    # Usa o γ da modalidade com mais sessões como γ_perf global
+    best_mod = max(MODS, key=lambda m: (mod_info[m]['r2_perf'], mod_info[m]['n_sessions']))
+    gamma_perf  = mod_info[best_mod]['gamma_perf']
+    r2_perf     = mod_info[best_mod]['r2_perf']
+
+    ld['CTLg_perf'] = ftlm_fractional(load_overall, gamma_perf, max_lag=MAX_LAG)
+    ld['CTLg_rec']  = ftlm_fractional(load_overall, gamma_rec,  max_lag=MAX_LAG)
+
+    # FTLM activo = melhor R²
+    best_gamma  = gamma_perf if r2_perf >= r2_rec else gamma_rec
+    best_source = 'perf'     if r2_perf >= r2_rec else 'recovery'
+    ld['FTLM']  = ld['CTLg_perf'] if best_source == 'perf' else ld['CTLg_rec']
+
     if hrv_trend_arr is not None:
         ld['HRV_trend'] = hrv_trend_arr
 
     info = {
-        'fonte':       fonte,
-        'gamma_perf':  round(gamma_perf, 3),
-        'gamma_rec':   round(gamma_rec,  3),
-        'gamma_mmp':   round(gamma_mmp,  3),
-        'gamma_best':  round(best_gamma, 3),
-        'gamma_source':best_source,
-        'r2_perf':     round(r2_perf,  3),
-        'r2_rec':      round(r2_rec,   3),
-        'r2_mmp':      round(r2_mmp,   3),
-        'n_cp':        n_cp,
-        'n_mmp':       n_mmp,
+        'fonte':        fonte,
+        'gamma_perf':   round(gamma_perf, 3),
+        'gamma_rec':    round(gamma_rec,  3),
+        'gamma_best':   round(best_gamma, 3),
+        'gamma_source': best_source,
+        'r2_perf':      round(r2_perf, 3),
+        'r2_rec':       round(r2_rec,  3),
+        'best_mod':     best_mod,
+        'mods':         mod_info,
     }
     return ld, info
+
 
 def calcular_bpe(dw, metrica='hrv', baseline_dias=60):
     """
