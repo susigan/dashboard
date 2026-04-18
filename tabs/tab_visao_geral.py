@@ -1309,7 +1309,10 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
 
     # ── Atividades Recentes ──
     st.subheader("📋 Atividades Recentes")
-    df_tab = filtrar_principais(da).sort_values('Data', ascending=False).head(10)
+    _df_fp = filtrar_principais(da)
+    df_tab = (_df_fp.sort_values('Data', ascending=False).head(10)
+              if 'Data' in _df_fp.columns and len(_df_fp) > 0
+              else _df_fp.head(10))
     if len(df_tab) > 0:
         cs = [c for c in ['Data', 'type', 'name', 'moving_time',
                            'rpe', 'power_avg', 'icu_eftp'] if c in df_tab.columns]
