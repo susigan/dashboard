@@ -28,45 +28,6 @@ def br_float(v):
     try: return float(str(v).replace(',', '.').strip())
     except: return None
 
-
-def parse_mmp(v):
-    """
-    Parse MMP column from Intervals.icu activities export.
-
-    Formats:
-        "Yes - 318w"    -> (is_pr=True,  watts=318.0)  PR set in this activity
-        "No (PR: 364w)" -> (is_pr=False, watts=364.0)  season best, different session
-        NaN/empty       -> (is_pr=None,  watts=None)
-
-    is_pr=True  : this activity SET the season best for this duration
-    is_pr=False : season best EXISTS but was set on another activity (stale MMP)
-    is_pr=None  : no data (no power meter, or sport without power)
-    """
-    if v is None:
-        return None, None
-    if isinstance(v, float) and _math.isnan(v):
-        return None, None
-    s = str(v).strip()
-    if not s or s.lower() in ('nan', 'none', '', '-'):
-        return None, None
-    w_match = _re.search(r'(\d+(?:\.\d+)?)\s*[wW]', s)
-    watts   = float(w_match.group(1)) if w_match else None
-    is_pr   = s.lower().startswith('yes')
-    return is_pr, watts
-
-
-def mmp_watts(v):
-    """Convenience: return only watts. None if no data."""
-    _, w = parse_mmp(v)
-    return w
-
-
-def mmp_is_pr(v):
-    """Convenience: return only is_pr flag. None if no data."""
-    pr, _ = parse_mmp(v)
-    return pr
-
-
 def parse_date(v):
     """Parser robusto de datas em vários formatos."""
     if pd.isna(v): return None
@@ -202,48 +163,327 @@ def classificar_rpe(v):
 
 # ── CTL/ATL/FTLM ─────────────────────────────────────────────────────────────
 
-def calcular_series_carga(df_act, ate_hoje=True):
+# ════════════════════════════════════════════════════════════════════════════════
+# FRACTIONAL TRAINING LOAD MEMORY (FTLM)
+# Della Mattia (2025) — Parts I & II + FMT 2019
+#
+# Classical PMC uses exponential kernel: K(τ) = e^(−τ/τc)  → saturates quickly
+# Fractional FTLM uses power-law kernel: K(τ) = τ^(γ−1)   → long memory, no saturation
+#
+# CTLγ(t) = (1/Γ(γ)) · Σ  Load(t−k) · k^(γ−1)
+#                          k=1..t
+#
+# γ ∈ (0,1): controls memory depth
+#   γ → 1.0 : exponential decay, short memory (≈ classical PMC)
+#   γ → 0.3 : power-law decay, long memory (optimal for endurance base)
+#   γ → 0.1 : very long memory (months of training persist)
+#
+# Two γ values are fitted independently (Dual-Gamma, Part II §3):
+#   γ_perf    → performance proxy (icu_pm_cp or MMP PR efforts)
+#   γ_recovery → HRV trend via moving-window regression (Part II §2)
+# ════════════════════════════════════════════════════════════════════════════════
+
+def _ftlm_kernel_weights(n, gamma_val):
     """
-    Calcula série diária de CTL/ATL/TSB/FTLM a partir das atividades.
+    Compute Riemann-Liouville fractional kernel weights for n steps back.
+    w(k) = k^(gamma-1) / Γ(gamma)   for k = 1..n
 
-    Métrica: session_rpe = (moving_time_min) × RPE
-    Esta é a escala usada no código original Python/SQLite (CTL ~350-450).
+    Vectorised with NumPy — O(n) instead of the naive O(n²) loop in the paper.
+    """
+    from scipy.special import gamma as _gamma_fn
+    k = np.arange(1, n + 1, dtype=np.float64)
+    w = np.power(k, gamma_val - 1.0)
+    return w / _gamma_fn(gamma_val)
 
-    Retorna DataFrame com colunas: Data, load_val, CTL, ATL, TSB, FTLM
-    e o gamma óptimo do FTLM.
+
+def ftlm_fractional(load_arr, gamma_val, max_lag=None):
+    """
+    Discrete Riemann-Liouville fractional integral of training load.
+
+    CTLγ(t) = Σ_{k=1}^{t} Load(t-k) · k^(γ-1) / Γ(γ)
+
+    Parameters
+    ----------
+    load_arr  : array-like, daily load values (chronological order)
+    gamma_val : float in (0, 1) — memory depth parameter
+    max_lag   : int or None — max days to look back (None = full history)
+                For speed with long series, 365 is a good practical limit.
+
+    Returns
+    -------
+    np.ndarray of same length as load_arr
+    """
+    load = np.array(load_arr, dtype=np.float64)
+    n    = len(load)
+    ctl  = np.zeros(n)
+
+    for t in range(n):
+        lag   = t if max_lag is None else min(t, max_lag)
+        if lag == 0:
+            continue
+        # Load values at t-k for k=1..lag (reversed so oldest is last)
+        past  = load[t-lag:t][::-1]           # past[0] = t-1, past[1] = t-2, …
+        k     = np.arange(1, lag + 1, dtype=np.float64)
+        from scipy.special import gamma as _gamma_fn
+        w     = np.power(k, gamma_val - 1.0) / _gamma_fn(gamma_val)
+        ctl[t]= float(np.dot(past, w))
+
+    return ctl
+
+
+def _hrv_trend(hrv_arr, window=7):
+    """
+    Extract local HRV trend via moving-window linear regression (Part II §2).
+    For each day t, fits HRV(τ) = a(t)·τ + b(t) over [t-window+1, t].
+    Returns b(t) — the intercept — as the smoothed HRV trend value.
+    NaN for the first (window-1) days.
+    """
+    from scipy.stats import linregress as _lr
+    hrv  = np.array(hrv_arr, dtype=np.float64)
+    n    = len(hrv)
+    trend= np.full(n, np.nan)
+    x    = np.arange(window, dtype=np.float64)
+    for t in range(window - 1, n):
+        y = hrv[t - window + 1:t + 1]
+        if np.isnan(y).any():
+            # Use only valid points if enough remain
+            mask = ~np.isnan(y)
+            if mask.sum() < 4:
+                continue
+            _, b, *_ = _lr(x[mask], y[mask])
+        else:
+            _, b, *_ = _lr(x, y)
+        trend[t] = b
+    return trend
+
+
+def fit_gamma_performance(load_arr, perf_arr, gamma_range=(0.10, 0.90),
+                          step=0.01, lag=0, max_lag=365):
+    """
+    Fit γ_performance: find γ that maximises R² between CTLγ and a
+    performance proxy (icu_pm_cp or mmp_pr_w values).
+
+    Based on Part II §1: Power_test = β₀ + β₁ · CTLγ
+
+    Parameters
+    ----------
+    load_arr  : array, daily training load (full history)
+    perf_arr  : array, daily performance proxy (NaN on non-test days)
+    lag       : int, days to lag CTLγ before correlating (default 0)
+    max_lag   : int, max history for kernel (365 = ~1 year)
+
+    Returns
+    -------
+    best_gamma : float
+    best_r2    : float
+    n_points   : int — number of non-NaN pairs used
+    """
+    from scipy.stats import pearsonr as _pr
+    load  = np.array(load_arr,  dtype=np.float64)
+    perf  = np.array(perf_arr,  dtype=np.float64)
+    gammas= np.arange(gamma_range[0], gamma_range[1] + step/2, step)
+
+    best_gamma, best_r2 = 0.35, -np.inf
+    perf_valid = ~np.isnan(perf)
+
+    for g in gammas:
+        ctl_g = ftlm_fractional(load, g, max_lag=max_lag)
+        if lag > 0:
+            ctl_g = np.roll(ctl_g, lag)
+            ctl_g[:lag] = np.nan
+        valid = perf_valid & ~np.isnan(ctl_g) & (ctl_g > 0)
+        if valid.sum() < 5:
+            continue
+        try:
+            r, _ = _pr(ctl_g[valid], perf[valid])
+            r2   = r ** 2
+            if r2 > best_r2:
+                best_r2, best_gamma = r2, float(g)
+        except Exception:
+            continue
+
+    n_pts = int(perf_valid.sum())
+    return best_gamma, best_r2, n_pts
+
+
+def fit_gamma_recovery(load_arr, hrv_arr, gamma_range=(0.10, 0.90),
+                       step=0.01, hrv_window=7, lag=1, max_lag=365):
+    """
+    Fit γ_recovery: find γ that maximises R² between CTLγ(t-1) and
+    HRV_trend(t), using moving-window regression to extract local HRV
+    trend (Part II §2).
+
+    The lag=1 is physiologically motivated: yesterday's load state
+    predicts today's autonomic recovery.
+
+    Returns
+    -------
+    best_gamma : float
+    best_r2    : float
+    hrv_trend  : np.ndarray — smoothed HRV trend series (for plotting)
+    """
+    from scipy.stats import pearsonr as _pr
+    load  = np.array(load_arr, dtype=np.float64)
+    hrv   = np.array(hrv_arr,  dtype=np.float64)
+    trend = _hrv_trend(hrv, window=hrv_window)
+    gammas= np.arange(gamma_range[0], gamma_range[1] + step/2, step)
+
+    best_gamma, best_r2 = 0.35, -np.inf
+
+    for g in gammas:
+        ctl_g = ftlm_fractional(load, g, max_lag=max_lag)
+        # Apply lag: CTLγ(t-lag) vs HRV_trend(t)
+        if lag > 0:
+            ctl_lagged = np.roll(ctl_g, lag)
+            ctl_lagged[:lag] = np.nan
+        else:
+            ctl_lagged = ctl_g
+        valid = (~np.isnan(ctl_lagged)) & (~np.isnan(trend)) & (ctl_lagged > 0)
+        if valid.sum() < 14:
+            continue
+        try:
+            r, _ = _pr(ctl_lagged[valid], trend[valid])
+            r2   = r ** 2
+            if r2 > best_r2:
+                best_r2, best_gamma = r2, float(g)
+        except Exception:
+            continue
+
+    return best_gamma, best_r2, trend
+
+
+def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
+    """
+    Calcula série diária de CTL/ATL/TSB + FTLM fraccionário (Della Mattia 2025).
+
+    Fonte de carga (prioridade):
+        1. icu_training_load (Intervals.icu — escala ~20-200/dia)
+        2. session_rpe = (moving_time_min × RPE)   — fallback
+
+    FTLM fraccionário:
+        CTLγ(t) = (1/Γ(γ)) · Σ Load(t-k) · k^(γ-1)
+        Kernel k^(γ-1) em vez de e^(-τ/τc) — memória longa, sem saturação.
+
+    Fitting dual de γ (Della Mattia Part II §3):
+        γ_perf     → correlação CTLγ ↔ icu_pm_cp (proxy performance, lag=0)
+        γ_recovery → correlação CTLγ(t-1) ↔ HRV_trend(t) (método HRV, lag=1)
+        γ_classic  → fallback: EWM alpha optimizado por auto-correlação com carga
+
+    Retorna:
+        ld  : DataFrame com colunas Data, load_val, CTL, ATL, TSB,
+                FTLM_perf, FTLM_rec, FTLM (melhor dos dois)
+        info: dict com γ_perf, γ_rec, r2_perf, r2_rec, fonte, n_mmp
     """
     df = filtrar_principais(df_act).copy()
     df['Data'] = pd.to_datetime(df['Data'])
-    if 'moving_time' not in df.columns or 'rpe' not in df.columns:
-        return pd.DataFrame(), 0.30
-    df['rpe_fill'] = pd.to_numeric(df['rpe'], errors='coerce')
-    df['rpe_fill'] = df['rpe_fill'].fillna(df['rpe_fill'].median())
-    df['load_val'] = (pd.to_numeric(df['moving_time'], errors='coerce') / 60) * df['rpe_fill']
-    df['load_val'] = df['load_val'].fillna(0)
 
-    ld = df.groupby('Data')['load_val'].sum().reset_index().sort_values('Data')
-    if ate_hoje:
-        idx = pd.date_range(ld['Data'].min(), datetime.now().date())
+    # ── Fonte de carga ────────────────────────────────────────────────────────
+    if 'icu_training_load' in df.columns and df['icu_training_load'].notna().sum() > 10:
+        df['_load'] = pd.to_numeric(df['icu_training_load'], errors='coerce').fillna(0)
+        fonte = 'icu_training_load'
+    elif 'moving_time' in df.columns and 'rpe' in df.columns:
+        _rpe = pd.to_numeric(df['rpe'], errors='coerce')
+        df['_load'] = (pd.to_numeric(df['moving_time'], errors='coerce') / 60) * _rpe.fillna(_rpe.median())
+        df['_load'] = df['_load'].fillna(0)
+        fonte = 'session_rpe'
     else:
-        idx = pd.date_range(ld['Data'].min(), ld['Data'].max())
-    ld = ld.set_index('Data').reindex(idx, fill_value=0).reset_index()
+        return pd.DataFrame(), {'fonte': 'none', 'gamma': 0.30}
+
+    # ── Série diária ──────────────────────────────────────────────────────────
+    ld = df.groupby('Data')['_load'].sum().reset_index().sort_values('Data')
+    _idx = pd.date_range(ld['Data'].min(),
+                          datetime.now().date() if ate_hoje else ld['Data'].max())
+    ld = ld.set_index('Data').reindex(_idx, fill_value=0).reset_index()
     ld.columns = ['Data', 'load_val']
 
-    # CTL (42d EMA) / ATL (7d EMA) — igual ao Intervals.icu / original SQLite
+    # ── CTL / ATL / TSB clássicos (EWM) ──────────────────────────────────────
     ld['CTL'] = ld['load_val'].ewm(span=42, adjust=False).mean()
     ld['ATL'] = ld['load_val'].ewm(span=7,  adjust=False).mean()
     ld['TSB'] = ld['CTL'] - ld['ATL']
 
-    # FTLM — gamma optimizado por correlação com a carga
-    best_g, best_r = 0.30, -1.0
-    for g in np.arange(0.25, 0.36, 0.01):
-        ema = ld['load_val'].ewm(alpha=g, adjust=False).mean()
-        if ema.std() > 0:
-            r = abs(np.corrcoef(ld['load_val'].values, ema.values)[0, 1])
-            if r > best_r: best_r, best_g = r, g
-    ld['FTLM'] = ld['load_val'].ewm(alpha=best_g, adjust=False).mean()
+    load_arr = ld['load_val'].values
+    MAX_LAG  = min(365, len(load_arr))   # max history for kernel (performance)
 
-    return ld, best_g
+    # ── γ_performance via icu_pm_cp ───────────────────────────────────────────
+    # Align icu_pm_cp daily series with ld
+    gamma_perf, r2_perf, n_cp = 0.35, 0.0, 0
+    gamma_mmp,  r2_mmp,  n_mmp = 0.35, 0.0, 0
+
+    if 'icu_pm_cp' in df.columns and df['icu_pm_cp'].notna().sum() >= 10:
+        cp_daily = (df.groupby('Data')['icu_pm_cp']
+                    .mean()
+                    .reindex(pd.DatetimeIndex(ld['Data']), fill_value=np.nan))
+        gamma_perf, r2_perf, n_cp = fit_gamma_performance(
+            load_arr, cp_daily.values, lag=0, max_lag=MAX_LAG)
+
+    # γ_mmp via confirmed PR efforts (is_pr=True only — exact dates)
+    mmp_cols = [c for c in ['mmp5_pr_w','mmp12_pr_w','mmp20_pr_w','mmp60_pr_w']
+                if c in df.columns]
+    if mmp_cols:
+        # Combine all MMP PR points into one normalised series (z-score per duration)
+        mmp_combined = pd.Series(np.nan, index=pd.DatetimeIndex(ld['Data']))
+        for mc in mmp_cols:
+            _s = (df[df[mc].notna()]
+                  .groupby('Data')[mc].mean()
+                  .reindex(pd.DatetimeIndex(ld['Data'])))
+            # z-score so different durations are comparable
+            _mu, _sd = _s.mean(), _s.std()
+            if _sd > 0:
+                _s_z = (_s - _mu) / _sd
+                mmp_combined = mmp_combined.combine_first(_s_z)
+        if mmp_combined.notna().sum() >= 5:
+            gm, rm, nm = fit_gamma_performance(
+                load_arr, mmp_combined.values, lag=0, max_lag=MAX_LAG)
+            # Use MMP gamma if R² is better than CP-based gamma
+            if rm > r2_perf:
+                gamma_perf, r2_perf = gm, rm
+            gamma_mmp, r2_mmp, n_mmp = gm, rm, nm
+
+    # ── γ_recovery via HRV trend (Part II §2) ────────────────────────────────
+    gamma_rec, r2_rec, hrv_trend_arr = 0.35, 0.0, None
+    hrv_series = None
+
+    if df_wellness is not None and len(df_wellness) > 0 and 'hrv' in df_wellness.columns:
+        wc = df_wellness.copy()
+        wc['Data'] = pd.to_datetime(wc['Data'])
+        hrv_daily = (wc.groupby('Data')['hrv']
+                     .mean()
+                     .reindex(pd.DatetimeIndex(ld['Data']), fill_value=np.nan))
+        hrv_arr_aligned = hrv_daily.values
+        n_hrv = int(pd.notna(hrv_arr_aligned).sum())
+        if n_hrv >= 21:
+            gamma_rec, r2_rec, hrv_trend_arr = fit_gamma_recovery(
+                load_arr, hrv_arr_aligned,
+                hrv_window=7, lag=1, max_lag=MAX_LAG)
+            hrv_series = hrv_arr_aligned
+
+    # ── Compute fractional CTLγ with both gammas ──────────────────────────────
+    ld['CTLg_perf'] = ftlm_fractional(load_arr, gamma_perf, max_lag=MAX_LAG)
+    ld['CTLg_rec']  = ftlm_fractional(load_arr, gamma_rec,  max_lag=MAX_LAG)
+
+    # FTLM = best gamma (higher R²), fallback to gamma_perf
+    best_gamma = gamma_perf if r2_perf >= r2_rec else gamma_rec
+    best_source = 'perf' if r2_perf >= r2_rec else 'recovery'
+    ld['FTLM'] = ld['CTLg_perf'] if best_source == 'perf' else ld['CTLg_rec']
+
+    # Also store HRV trend for tab_pmc plotting
+    if hrv_trend_arr is not None:
+        ld['HRV_trend'] = hrv_trend_arr
+
+    info = {
+        'fonte':       fonte,
+        'gamma_perf':  round(gamma_perf, 3),
+        'gamma_rec':   round(gamma_rec,  3),
+        'gamma_mmp':   round(gamma_mmp,  3),
+        'gamma_best':  round(best_gamma, 3),
+        'gamma_source':best_source,
+        'r2_perf':     round(r2_perf,  3),
+        'r2_rec':      round(r2_rec,   3),
+        'r2_mmp':      round(r2_mmp,   3),
+        'n_cp':        n_cp,
+        'n_mmp':       n_mmp,
+    }
+    return ld, info
 
 def calcular_bpe(dw, metrica='hrv', baseline_dias=60):
     """
