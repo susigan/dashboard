@@ -450,22 +450,35 @@ def tab_pmc(da, wc=None):
     # ── Tabela resumo por modalidade ──────────────────────────────────────
     _rows_mod = []
     for _mod in ['Bike','Row','Ski','Run']:
-        _gi = _mods_gi.get(_mod, {})
+        _gi  = _mods_gi.get(_mod, {})
         if _gi.get('n_sessions', 0) == 0:
             continue
-        _gv   = _gi.get('gamma_perf', 0.35)
-        _rv   = _gi.get('r2_perf',   0.0)
-        _nm   = _gi.get('n_mmp',     0)
-        _nc   = _gi.get('n_cp',      0)
-        _ns   = _gi.get('n_sessions', 0)
-        _mem  = ('Muito longa (>6m)' if _gv < 0.20
-                 else 'Longa (3-6m)'  if _gv < 0.35
-                 else 'Moderada (6-12s)' if _gv < 0.60
-                 else 'Curta (<6s)')
-        _src  = f'MMP ({_nm} PR)' if _nm >= 5 else f'CP ({_nc} sess)'
+        _gv  = _gi.get('gamma_perf', 0.35)
+        _rv  = _gi.get('r2_perf',   0.0)
+        _mem = ('Muito longa (>6m)' if _gv < 0.20
+                else 'Longa (3-6m)'  if _gv < 0.35
+                else 'Moderada'       if _gv < 0.60
+                else 'Curta')
+        _icon_t, _, _, _ = _interp_gamma(_gv, _rv, _mod)
+
+        # Build MMP PR display — group by duration, show watts + date
+        _mmp_list = _gi.get('mmp_pr_list', [])
+        _mmp_by_dur = {}
+        for _mp in _mmp_list:
+            _d = _mp['duracao']
+            _mmp_by_dur.setdefault(_d, []).append(
+                f"{int(_mp['watts'])}W ({_mp['data']})")
+        _mmp_parts = []
+        for _d in ['MMP1','MMP3','MMP5','MMP12','MMP20','MMP60']:
+            if _d in _mmp_by_dur:
+                _entries = ', '.join(_mmp_by_dur[_d][:3])
+                _mmp_parts.append(f"{_d}: {_entries}")
+        _mmp_str = ' | '.join(_mmp_parts) if _mmp_parts else '—'
+
         _rows_mod.append({
-            'Modalidade': _mod, 'γ': f'{_gv:.3f}', 'R²': f'{_rv:.2f}',
-            'Memória': _mem, 'Fonte γ': _src, 'Sessões': _ns,
+            'Modalidade':     f'{_icon_t} {_mod}',
+            'Memória γ':      _mem,
+            'MMP PRs usados': _mmp_str,
         })
     if _rows_mod:
         st.dataframe(pd.DataFrame(_rows_mod),
@@ -518,7 +531,7 @@ def tab_pmc(da, wc=None):
         )
         if _rows_mod:
             _mod_lines = "\n".join(
-                f"- **{r['Modalidade']}**: γ={r['γ']} (R²={r['R²']}, {r['Fonte γ']}, {r['Memória']})"
+                f"- **{r['Modalidade']}** — {r['Memória γ']} | {r['MMP PRs usados']}"
                 for r in _rows_mod
             )
             st.markdown("**Resultado actual por modalidade:**")
