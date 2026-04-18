@@ -148,12 +148,12 @@ def tab_pmc(da, wc=None):
     _r2r  = _info.get('r2_rec',   0.0)
     _gsrc = _info.get('gamma_source', 'classic')
     _n_mmp= _info.get('n_mmp', 0)
+    _perf_col_lbl = _info.get('perf_col', 'icu_eftp')
     st.caption(
-        f"FTLM fraccionário | Fonte carga: **{_metrica_ctl}** | "
-        f"γ_perf={_gp:.3f} (R²={_r2p:.2f}, icu_pm_cp) | "
-        f"γ_rec={_gr:.3f} (R²={_r2r:.2f}, HRV trend) | "
-        f"γ activo: **{_gsrc}** | MMP PR points: {_n_mmp} | "
-        f"Histórico: {len(ld)} dias"
+        f"FTLM fraccionário | Carga: **{_metrica_ctl}** | Perf proxy: **{_perf_col_lbl}** | "
+        f"γ_perf={_gp:.3f} (R²={_r2p:.2f}) | "
+        f"γ_rec={_gr:.3f} (R²={_r2r:.2f}, LnRMSSD trend) | "
+        f"γ activo: **{_gsrc}** | Histórico: {len(ld)} dias"
     )
 
     # ── Controlos ──
@@ -417,7 +417,13 @@ def tab_pmc(da, wc=None):
             _nc2  = _gi2.get('n_cp', 0)
             _ns2  = _gi2.get('n_sessions', 0)
             _mmp_col_used = _gi2.get('mmp_col', 'mmp20_pr_w').replace('_pr_w','').upper()
-            _src2 = f'{_mmp_col_used} ({_nm2} PR)' if _nm2 >= 5 else f'CP ({_nc2} sess)'
+            _perf_col_m   = _gi2.get('perf_col', 'icu_pm_cp')
+            if _nm2 >= 5:
+                _src2 = f'{_mmp_col_used} ({_nm2} PR)'
+            elif _nc2 >= 5:
+                _src2 = f'{_perf_col_m} ({_nc2} sessões)'
+            else:
+                _src2 = 'sem dados suficientes (γ=default 0.35)'
             _icon, _lbl, _mtxt, _r2txt = _interp_gamma(_gv2, _rv2, _mod)
             with _cols_mod[_ci2]:
                 st.markdown(f"**{_icon} {_mod}**")
