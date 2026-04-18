@@ -120,7 +120,8 @@ def tab_pmc(da, wc=None):
         # Copy all fractional columns (FTLM, CTLg_perf, CTLg_rec, CTLg_Bike, etc.)
         _frac_cols = ['FTLM', 'CTLg_perf', 'CTLg_rec', 'HRV_trend',
                       'CTLg_Bike', 'CTLg_Row', 'CTLg_Ski', 'CTLg_Run',
-                      'CTL_Bike', 'CTL_Row', 'CTL_Ski', 'CTL_Run']
+                      'CTL_Bike',  'CTL_Row',  'CTL_Ski',  'CTL_Run',
+                      'ATL_Bike',  'ATL_Row',  'ATL_Ski',  'ATL_Run']
         for _col in _frac_cols:
             if _col in _frac_idx.columns:
                 ld[_col] = ld['Data'].map(_frac_idx[_col])
@@ -293,7 +294,8 @@ def tab_pmc(da, wc=None):
     # Also check _ld_frac directly in case merge missed cols
     if len(_ld_frac) > 0:
         for _mc in ['CTLg_Bike','CTLg_Row','CTLg_Ski','CTLg_Run',
-                    'CTL_Bike','CTL_Row','CTL_Ski','CTL_Run']:
+                    'CTL_Bike','CTL_Row','CTL_Ski','CTL_Run',
+                    'ATL_Bike','ATL_Row','ATL_Ski','ATL_Run']:
             if _mc in _ld_frac.columns and _mc not in ld_plot.columns:
                 _fi = _ld_frac.set_index('Data')
                 ld_plot[_mc] = ld_plot['Data'].map(_fi[_mc]) if 'Data' in ld_plot.columns else None
@@ -304,58 +306,102 @@ def tab_pmc(da, wc=None):
                        and ld_plot[f'CTLg_{m}'].max() > 0]
 
     if _mods_with_data:
-        # Subplots: 1 coluna por modalidade, cada uma com CTL (clássico) + CTLγ
+        # ── Subplots: 1 coluna por modalidade ────────────────────────────────────
+        # Eixo Y esquerdo (y1): CTLγ fraccionário (escala própria por modalidade)
+        # Eixo Y direito (y2): CTL + ATL clássicos (pontilhado) — escala menor
+        # Assim o CTLγ domina visualmente e CTL/ATL servem de referência contextual
         _n_mods = len(_mods_with_data)
-        fig_mod = make_subplots(
+
+        # make_subplots with secondary_y per column
+        from plotly.subplots import make_subplots as _msp
+        fig_mod = _msp(
             rows=1, cols=_n_mods,
             subplot_titles=_mods_with_data,
             shared_yaxes=False,
+            specs=[[{'secondary_y': True}] * _n_mods],
         )
+
         for _ci, _mod in enumerate(_mods_with_data, 1):
             _gi   = _info.get('mods', {}).get(_mod, {})
             _gv   = _gi.get('gamma_perf', 0.35)
             _rv   = _gi.get('r2_perf', 0.0)
             _nm   = _gi.get('n_mmp', 0)
-            _src  = 'MMP20' if _nm >= 5 else 'CP'
+            _src  = ('MMP5' if _gi.get('mmp_col','') == 'mmp5_pr_w'
+                     else 'MMP20' if _nm >= 5 else 'CP')
             _cor  = _CORES_MOD_PMC.get(_mod, '#888')
 
-            # CTL clássico desta modalidade
+            # ── Y1 (left): CTLγ fraccionário — linha sólida, escala própria ────
+            _ctlg_col = f'CTLg_{_mod}'
+            if _ctlg_col in ld_plot.columns and ld_plot[_ctlg_col].notna().any():
+                fig_mod.add_trace(go.Scatter(
+                    x=_dates,
+                    y=ld_plot[_ctlg_col].tolist(),
+                    mode='lines',
+                    name=f'{_mod} CTLγ γ={_gv:.3f} R²={_rv:.2f} [{_src}]',
+                    line=dict(color=_cor, width=2.5),
+                    legendgroup=f'ctlg_{_mod}',
+                    showlegend=True,
+                    hovertemplate=f'<b>{_mod} CTLγ</b>: %{{y:.1f}}<extra></extra>',
+                ), row=1, col=_ci, secondary_y=False)
+
+            # ── Y2 (right): CTL + ATL clássicos — pontilhado/tracejado, opaco ─
             _ctl_col = f'CTL_{_mod}'
+            _atl_col = f'ATL_{_mod}'
+
             if _ctl_col in ld_plot.columns and ld_plot[_ctl_col].notna().any():
                 fig_mod.add_trace(go.Scatter(
-                    x=_dates, y=ld_plot[_ctl_col].tolist(),
-                    mode='lines', name=f'{_mod} CTL',
-                    line=dict(color=_cor, width=2, dash='dot'),
-                    opacity=0.55, legendgroup=_mod,
-                    showlegend=(_ci == 1),
+                    x=_dates,
+                    y=ld_plot[_ctl_col].tolist(),
+                    mode='lines',
+                    name=f'{_mod} CTL (42d)',
+                    line=dict(color=_cor, width=1.5, dash='dot'),
+                    opacity=0.50,
+                    legendgroup=f'ctl_{_mod}',
+                    showlegend=True,
                     hovertemplate=f'<b>{_mod} CTL</b>: %{{y:.1f}}<extra></extra>',
-                ), row=1, col=_ci)
+                ), row=1, col=_ci, secondary_y=True)
 
-            # CTLγ fraccionário desta modalidade
-            _ctlg_col = f'CTLg_{_mod}'
-            fig_mod.add_trace(go.Scatter(
-                x=_dates, y=ld_plot[_ctlg_col].tolist(),
-                mode='lines', name=f'{_mod} CTLγ γ={_gv:.3f} [{_src}]',
-                line=dict(color=_cor, width=2.5),
-                legendgroup=_mod,
-                showlegend=True,
-                hovertemplate=f'<b>{_mod} CTLγ</b>: %{{y:.1f}}<extra></extra>',
-            ), row=1, col=_ci)
+            if _atl_col in ld_plot.columns and ld_plot[_atl_col].notna().any():
+                fig_mod.add_trace(go.Scatter(
+                    x=_dates,
+                    y=ld_plot[_atl_col].tolist(),
+                    mode='lines',
+                    name=f'{_mod} ATL (7d)',
+                    line=dict(color=_cor, width=1.5, dash='dash'),
+                    opacity=0.35,
+                    legendgroup=f'atl_{_mod}',
+                    showlegend=True,
+                    hovertemplate=f'<b>{_mod} ATL</b>: %{{y:.1f}}<extra></extra>',
+                ), row=1, col=_ci, secondary_y=True)
+
+            # Y-axis labels
+            fig_mod.update_yaxes(
+                title_text='CTLγ', title_font=dict(size=8, color=_cor),
+                showgrid=True, gridcolor='#eee',
+                tickfont=dict(color='#111', size=8),
+                row=1, col=_ci, secondary_y=False)
+            fig_mod.update_yaxes(
+                title_text='CTL/ATL', title_font=dict(size=8, color='#888'),
+                showgrid=False,
+                tickfont=dict(color='#888', size=8),
+                row=1, col=_ci, secondary_y=True)
 
         fig_mod.update_layout(
             paper_bgcolor='white', plot_bgcolor='white',
             font=dict(color='#111', size=10),
-            height=340,
-            margin=dict(t=60, b=80, l=45, r=20),
+            height=400,
+            margin=dict(t=65, b=90, l=50, r=50),
             hovermode='x unified',
-            legend=dict(orientation='h', y=-0.30, font=dict(color='#111', size=9)),
-            title=dict(text='CTL (pontilhado) + CTLγ (sólido) por Modalidade',
-                       font=dict(size=13, color='#111')),
+            barmode='overlay',
+            legend=dict(orientation='h', y=-0.32,
+                        font=dict(color='#111', size=9),
+                        bgcolor='rgba(255,255,255,0.9)'),
+            title=dict(
+                text='CTLγ (Y esq, sólido) | CTL/ATL clássicos (Y dir, pontilhado/tracejado)',
+                font=dict(size=12, color='#111')),
         )
         fig_mod.update_xaxes(showgrid=True, gridcolor='#eee',
                               tickangle=-45, tickfont=dict(color='#111', size=9))
-        fig_mod.update_yaxes(showgrid=True, gridcolor='#eee',
-                              tickfont=dict(color='#111', size=9))
         st.plotly_chart(fig_mod, use_container_width=True,
                         config={'displayModeBar': False, 'responsive': True},
                         key="pmc_ctlg_mod")
