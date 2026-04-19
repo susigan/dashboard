@@ -1,5 +1,5 @@
 from utils.config import *
-from utils.phase_detector import detect_all_phases, phase_summary, PHASE_LABELS, _hex_rgba
+from utils.phase_detector import detect_all_phases, phase_summary, PHASE_LABELS
 from utils.helpers import *
 from utils.data import *
 import streamlit as st
@@ -571,9 +571,15 @@ def tab_pmc(da, wc=None):
 
         # ── Download phases CSV ───────────────────────────────────────────────
         _dl_phase_frames = []
+        _dl_phase_cols = ['Data','phase','phase_smooth','phase_label',
+                          'CTLg','dCTLg_14d','HRV_rel','WEED_z',
+                          'CTLg_z','dCTLg_z','dias_na_fase']
         for _pm, _pdf in _phase_results.items():
-            _pdfx = _pdf[['Data','phase','phase_label','CTLg','dCTLg_14d',
-                           'HRV_rel','WEED_z','CTLg_z','dCTLg_z']].copy()
+            # Skip metadata keys (non-DataFrame values)
+            if not isinstance(_pdf, pd.DataFrame):
+                continue
+            _avail = [c for c in _dl_phase_cols if c in _pdf.columns]
+            _pdfx  = _pdf[_avail].copy()
             _pdfx.insert(1, 'Modalidade', _pm)
             _dl_phase_frames.append(_pdfx)
         if _dl_phase_frames:
