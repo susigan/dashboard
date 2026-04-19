@@ -811,12 +811,69 @@ def tab_pmc(da, wc=None):
     # ── Phase background on PMC (added after phase detection, placeholder for now)
     # Actual shapes added via _add_phase_bg() called after phase results available
     _pmc_fig_ref = _fig_pmc   # keep reference so phase bg can be added later
-    # Phase background bands on PMC chart (safe — wrapped in try)
+    # Phase background bands on PMC chart
+    # row_heights=[0.70, 0.30], spacing=0.04 → row1 paper: y0≈0.34, y1=1.0
+    _ROW1_Y0 = 0.34   # bottom of CTL/ATL row in paper coords
+    _ROW1_Y1 = 1.00   # top
     try:
         if _phase_results and 'overall' in _phase_results:
-            _add_phase_bg(_fig_pmc, _phase_results['overall'], ld_plot['Data'].tolist())
+            _ph_ov = _phase_results['overall']
+            if _ph_ov is not None and len(_ph_ov) > 0:
+                _ph_s2 = _ph_ov[['Data','phase_smooth','phase_color','phase_label']].copy()
+                _ph_s2['_ds'] = _ph_s2['Data'].astype(str).str[:10]
+                _ph_map2 = _ph_s2.set_index('_ds')
+                _dates_pd2 = pd.to_datetime(ld_plot['Data'])
+                _last_d2 = _dates_pd2.max()
+                _prev2, _bst2, _bcol2 = None, None, '#95a5a6'
+                _bands2 = []
+                for _dt2 in _dates_pd2:
+                    _ds2 = str(_dt2)[:10]
+                    if _ds2 in _ph_map2.index:
+                        _row2 = _ph_map2.loc[_ds2]
+                        _cph2 = _row2['phase_smooth'] if hasattr(_row2,'iloc') is False else _row2['phase_smooth'].iloc[0]
+                        _ccol2 = _row2['phase_color'] if hasattr(_row2,'iloc') is False else _row2['phase_color'].iloc[0]
+                    else:
+                        _cph2, _ccol2 = 'TRANSITION', '#95a5a6'
+                    if _cph2 != _prev2:
+                        if _bst2 is not None:
+                            _bands2.append((_bst2, _dt2, _bcol2, _prev2))
+                        _bst2, _prev2, _bcol2 = _dt2, _cph2, _ccol2
+                if _bst2 is not None:
+                    _bands2.append((_bst2, _last_d2, _bcol2, _prev2))
+                _cur_ph2 = _bands2[-1][3] if _bands2 else 'TRANSITION'
+                for _b0, _b1, _bc, _bph in _bands2:
+                    _hx2 = _bc.lstrip('#')
+                    _rr2,_gg2,_bb2 = int(_hx2[0:2],16),int(_hx2[2:4],16),int(_hx2[4:6],16)
+                    _al2 = 0.18 if _bph == _cur_ph2 else 0.09
+                    _fig_pmc.add_shape(type='rect',
+                        x0=_b0, x1=_b1,
+                        y0=_ROW1_Y0, y1=_ROW1_Y1,
+                        xref='x', yref='paper',
+                        fillcolor=f'rgba({_rr2},{_gg2},{_bb2},{_al2})',
+                        line_width=0, layer='below')
+    except Exception as _pbe:
+        pass   # phase backgrounds optional
+    # Add current phase annotation to PMC chart
+    try:
+        if _phase_results and 'overall' in _phase_results:
+            _ph_last = _phase_results['overall'].iloc[-1]
+            _pl_col  = _ph_last['phase_color']
+            _pl_lbl  = _ph_last['phase_label']
+            _hxl = _pl_col.lstrip('#')
+            _rl,_gl,_bl = int(_hxl[0:2],16),int(_hxl[2:4],16),int(_hxl[4:6],16)
+            _fig_pmc.add_annotation(
+                x=1.0, y=1.04,
+                xref='paper', yref='paper',
+                text=f'Fase actual: <b>{_pl_lbl}</b>',
+                showarrow=False,
+                font=dict(size=10, color=f'rgb({_rl},{_gl},{_bl})'),
+                bgcolor=f'rgba({_rl},{_gl},{_bl},0.12)',
+                bordercolor=f'rgb({_rl},{_gl},{_bl})',
+                borderwidth=1, borderpad=3,
+                xanchor='right', yanchor='bottom')
     except Exception:
         pass
+
     st.plotly_chart(_fig_pmc, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, key="pmc_main_chart")
 
     # ── RESUMO PMC ──
@@ -1094,12 +1151,48 @@ def tab_pmc(da, wc=None):
     # ── Phase background on PMC (added after phase detection, placeholder for now)
     # Actual shapes added via _add_phase_bg() called after phase results available
     _pmc_fig_ref = _fig_pmc   # keep reference so phase bg can be added later
-    # Phase background bands on PMC chart (safe — wrapped in try)
+    # Phase background bands on PMC chart
+    # row_heights=[0.70, 0.30], spacing=0.04 → row1 paper: y0≈0.34, y1=1.0
+    _ROW1_Y0 = 0.34   # bottom of CTL/ATL row in paper coords
+    _ROW1_Y1 = 1.00   # top
     try:
         if _phase_results and 'overall' in _phase_results:
-            _add_phase_bg(_fig_pmc, _phase_results['overall'], ld_plot['Data'].tolist())
-    except Exception:
-        pass
+            _ph_ov = _phase_results['overall']
+            if _ph_ov is not None and len(_ph_ov) > 0:
+                _ph_s2 = _ph_ov[['Data','phase_smooth','phase_color','phase_label']].copy()
+                _ph_s2['_ds'] = _ph_s2['Data'].astype(str).str[:10]
+                _ph_map2 = _ph_s2.set_index('_ds')
+                _dates_pd2 = pd.to_datetime(ld_plot['Data'])
+                _last_d2 = _dates_pd2.max()
+                _prev2, _bst2, _bcol2 = None, None, '#95a5a6'
+                _bands2 = []
+                for _dt2 in _dates_pd2:
+                    _ds2 = str(_dt2)[:10]
+                    if _ds2 in _ph_map2.index:
+                        _row2 = _ph_map2.loc[_ds2]
+                        _cph2 = _row2['phase_smooth'] if hasattr(_row2,'iloc') is False else _row2['phase_smooth'].iloc[0]
+                        _ccol2 = _row2['phase_color'] if hasattr(_row2,'iloc') is False else _row2['phase_color'].iloc[0]
+                    else:
+                        _cph2, _ccol2 = 'TRANSITION', '#95a5a6'
+                    if _cph2 != _prev2:
+                        if _bst2 is not None:
+                            _bands2.append((_bst2, _dt2, _bcol2, _prev2))
+                        _bst2, _prev2, _bcol2 = _dt2, _cph2, _ccol2
+                if _bst2 is not None:
+                    _bands2.append((_bst2, _last_d2, _bcol2, _prev2))
+                _cur_ph2 = _bands2[-1][3] if _bands2 else 'TRANSITION'
+                for _b0, _b1, _bc, _bph in _bands2:
+                    _hx2 = _bc.lstrip('#')
+                    _rr2,_gg2,_bb2 = int(_hx2[0:2],16),int(_hx2[2:4],16),int(_hx2[4:6],16)
+                    _al2 = 0.18 if _bph == _cur_ph2 else 0.09
+                    _fig_pmc.add_shape(type='rect',
+                        x0=_b0, x1=_b1,
+                        y0=_ROW1_Y0, y1=_ROW1_Y1,
+                        xref='x', yref='paper',
+                        fillcolor=f'rgba({_rr2},{_gg2},{_bb2},{_al2})',
+                        line_width=0, layer='below')
+    except Exception as _pbe:
+        pass   # phase backgrounds optional
     st.plotly_chart(_fig_pmc, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, key="pmc_main_chart")
 
     # ── RESUMO PMC ──
