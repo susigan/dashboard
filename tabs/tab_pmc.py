@@ -605,8 +605,12 @@ def tab_pmc(da, wc=None):
     # ── Download ──────────────────────────────────────────────────────────────
     st.markdown("---")
     st.subheader("⬇️ Download Dados PMC")
-    _dl_cols = [c for c in ['Data','load_val','CTL','ATL','TSB','FTLM',
-                             'CTLg_perf','CTLg_rec'] + [f'CTLg_{m}' for m in ['Bike','Row','Ski','Run']]
+    _dl_cols = [c for c in
+                ['Data','load_val','CTL','ATL','TSB','FTLM',
+                 'CTLg_perf','CTLg_rec','HRV_trend','WEED_z','wp_prime',
+                 'FMT_kappa','FMT_kappa_4d'] +
+                [f'CTLg_{m}' for m in ['Bike','Row','Ski','Run']] +
+                [f'FMT_kappa_{m}' for m in ['Bike','Row','Ski','Run']]
                 if c in ld.columns]
     _dl_df = ld[_dl_cols].copy()
     _dl_df['Data'] = _dl_df['Data'].astype(str)
@@ -618,7 +622,7 @@ def tab_pmc(da, wc=None):
         mime="text/csv",
         key="pmc_dl_csv",
     )
-    st.caption(f"Exporta {len(_dl_df)} dias | CTL, ATL, TSB clássicos + CTLγ_perf, CTLγ_rec, CTLγ_Bike/Row/Ski/Run")
+    st.caption(f"Exporta {len(_dl_df)} dias | CTL, ATL, TSB + CTLγ por modalidade + FMT κ (overall, 4d, por modalidade) + WEED_z, HRV_trend, W'")
 
 
 # ════════════════════════════════════════════════════════════════════════════
