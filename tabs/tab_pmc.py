@@ -314,6 +314,31 @@ def tab_pmc(da, wc=None):
     st.plotly_chart(_fig_pmc, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, key="pmc_main_chart")
 
     # ── RESUMO PMC ──
+    # ── Fase actual card (below PMC chart) ──────────────────────────────────
+    try:
+        if _phase_results and 'overall' in _phase_results:
+            _ph_now   = _phase_results['overall'].iloc[-1]
+            _ph_lbl   = _ph_now['phase_label']
+            _ph_col   = _ph_now['phase_color']
+            _ph_desc  = _ph_now['phase_desc']
+            _ph_dias  = int(_ph_now['dias_na_fase']) + 1
+            _ph_dctl  = float(_ph_now['dCTLg_14d']) if 'dCTLg_14d' in _ph_now and pd.notna(_ph_now['dCTLg_14d']) else 0.0
+            _ph_hrv   = float(_ph_now['HRV_z'])    if 'HRV_z'    in _ph_now and pd.notna(_ph_now['HRV_z'])    else None
+            _hx_ph = _ph_col.lstrip('#')
+            _rp,_gp,_bp = int(_hx_ph[0:2],16),int(_hx_ph[2:4],16),int(_hx_ph[4:6],16)
+            _hrv_txt = f" | HRV {_ph_hrv:+.2f}σ" if _ph_hrv is not None else ""
+            st.markdown(
+                f"<div style='background:rgba({_rp},{_gp},{_bp},0.10);"
+                f"border-left:4px solid {_ph_col};"
+                f"padding:8px 14px;border-radius:5px;margin-bottom:8px'>"
+                f"<b>Fase actual:</b> {_ph_lbl} — {_ph_desc}<br>"
+                f"<small>📅 {_ph_dias}d nesta fase | "
+                f"ΔCTLγ {'↑' if _ph_dctl>0 else '↓'}{abs(_ph_dctl):.4f}/d"
+                f"{_hrv_txt}</small></div>",
+                unsafe_allow_html=True)
+    except Exception:
+        pass
+
     st.subheader("📊 Resumo PMC")
     tsb_v = u['TSB']
     if   tsb_v >  25: tsb_i = "🟢 Forma — pronto para competir/esforço máximo"
@@ -590,6 +615,7 @@ def tab_pmc(da, wc=None):
     st.plotly_chart(_fig_pmc, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, key="pmc_main_chart")
 
     # ── RESUMO PMC ──
+
     st.subheader("📊 Resumo PMC")
     tsb_v = u['TSB']
     if   tsb_v >  25: tsb_i = "🟢 Forma — pronto para competir/esforço máximo"
