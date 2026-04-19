@@ -441,7 +441,7 @@ def fit_gamma_recovery(load_arr, hrv_arr, gamma_range=(0.10, 0.90),
             except Exception:
                 continue
 
-    return best_gamma, best_r2, trend_b, best_lag
+    return best_gamma, best_r2, trend_combined, best_lag
 
 
 def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
@@ -517,23 +517,29 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
         _hrv_ln  = np.where(_hrv_raw > 0, np.log(_hrv_raw), np.nan)
 
         # ── WEED proxy — z-score relative to rolling 28d baseline ─────────
-        # WEED components: stress (inverted), soreness (inverted), fatiga
-        # Scale 1-5 is fine; z-score extracts deviation from personal baseline
-        # which is more informative than absolute value for any athlete
-        # Invert stress/soreness: high value = more stress/soreness = worse
+        # Scale 1-5: 1=WORST, 5=BEST for ALL metrics in this wellness form.
+        # This means:
+        #   fatiga=5  → máxima vontade de treinar  (GOOD)
+        #   stress=5  → sem stress                  (GOOD) — user confirmed
+        #   soreness=5 → sem cansaço muscular       (GOOD) — user confirmed
+        # NO inversion needed — 5 is always better across all three.
+        #
+        # z-score vs 28d rolling baseline:
+        #   deviation = (today - personal_baseline) / personal_variability
+        #   + positive z → above baseline → good signal
+        #   - negative z → below baseline → bad signal
+        # This is scale-invariant — a 1-5 scale gives same z-scores as 1-10.
         _weed_parts = []
-        for _wc_col, _invert in [('stress', True), ('soreness', True), ('fatiga', False)]:
+        for _wc_col in ['stress', 'soreness', 'fatiga']:
             if _wc_col in _wc.columns:
                 _s = (_wc.groupby('Data')[_wc_col]
                       .mean()
                       .reindex(_date_idx, fill_value=np.nan))
                 _s = pd.to_numeric(_s, errors='coerce')
-                if _invert:
-                    _s = 6.0 - _s   # invert: high=bad → high=good for z-score
                 # Rolling z-score relative to 28d personal baseline
-                _roll_mu  = _s.rolling(28, min_periods=7).mean()
-                _roll_sd  = _s.rolling(28, min_periods=7).std()
-                _s_z      = (_s - _roll_mu) / _roll_sd.replace(0, np.nan)
+                _roll_mu = _s.rolling(28, min_periods=7).mean()
+                _roll_sd = _s.rolling(28, min_periods=7).std()
+                _s_z     = (_s - _roll_mu) / _roll_sd.replace(0, np.nan)
                 _weed_parts.append(_s_z.values)
 
         # ── Sleep quality — rolling z-score ───────────────────────────────
@@ -672,14 +678,17 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
             _df_w = df_mod[df_mod[_mc2].notna()][['Data', _mc2]].copy()
             if len(_df_w) == 0:
                 continue
-            # Find the single session with the highest watts for this duration
-            _best_idx = _df_w[_mc2].idxmax()
-            _best_row = _df_w.loc[_best_idx]
-            _dur_label = _mc2.replace('_w', '').upper()  # 'MMP20', etc.
+            # Use MOST RECENT session for each MMP duration.
+            # Not the highest watts — the current fitness state is what matters,
+            # not the historical peak which may be months out of date.
+            # Sort by date descending, take the first (most recent) row.
+            _df_w = _df_w.sort_values('Data', ascending=False)
+            _recent_row = _df_w.iloc[0]
+            _dur_label = _mc2.replace('_w', '').upper()
             _mmp_pr_list.append({
                 'duracao': _dur_label,
-                'data':    str(_best_row['Data'])[:10],
-                'watts':   round(float(_best_row[_mc2]), 0),
+                'data':    str(_recent_row['Data'])[:10],
+                'watts':   round(float(_recent_row[_mc2]), 0),
             })
         _mmp_pr_list.sort(key=lambda x: x['duracao'])
 
