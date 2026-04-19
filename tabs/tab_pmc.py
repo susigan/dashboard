@@ -1,5 +1,5 @@
 from utils.config import *
-from utils.phase_detector import detect_all_phases, phase_summary, PHASE_LABELS
+from utils.phase_detector import detect_all_phases, phase_summary, PHASE_LABELS, _hex_rgba
 from utils.helpers import *
 from utils.data import *
 import streamlit as st
@@ -450,6 +450,9 @@ def tab_pmc(da, wc=None):
 
     if _phase_results:
         # ── Global + per-modality cards ───────────────────────────────────────
+        # Weighted global phase card (CTLγ-weighted modal consensus)
+        _gw_phase = _phase_results.get('_global_phase_today', None)
+        _gw_weights = _phase_results.get('_modal_weights', {})
         _phase_mods = ['overall'] + [m for m in ['Bike','Row','Ski','Run']
                                       if m in _phase_results]
         _phase_cols = st.columns(len(_phase_mods))
@@ -489,13 +492,13 @@ def tab_pmc(da, wc=None):
                 _prev_phase = None
                 _band_start = None
                 for _ti, (_row_date, _row_phase, _row_color) in enumerate(
-                        zip(_dates_p, _pov180['phase'].tolist(),
+                        zip(_dates_p, _pov180['phase_smooth'].tolist(),
                             _pov180['phase_color'].tolist())):
                     if _row_phase != _prev_phase:
                         if _band_start is not None:
                             _fig_ph.add_vrect(
                                 x0=_band_start, x1=_row_date,
-                                fillcolor=_prev_color + '33',
+                                fillcolor=_hex_rgba(_prev_color, 0.15),
                                 layer='below', line_width=0)
                         _band_start  = _row_date
                         _prev_phase  = _row_phase
@@ -504,7 +507,7 @@ def tab_pmc(da, wc=None):
                 if _band_start is not None:
                     _fig_ph.add_vrect(
                         x0=_band_start, x1=_dates_p[-1],
-                        fillcolor=_prev_color + '33',
+                        fillcolor=_hex_rgba(_prev_color, 0.15),
                         layer='below', line_width=0)
 
                 # CTLγ overall on top
