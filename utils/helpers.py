@@ -692,24 +692,49 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
             })
         _mmp_pr_list.sort(key=lambda x: x['duracao'])
 
+        # Current CTLg value for this modality (used for dominance ranking)
+        _ctlg_current = float(_ctlg_raw[-1]) if len(_ctlg_raw) > 0 else 0.0
+
         mod_info[mod] = {
-            'gamma_perf': round(gamma_m,     3),
-            'r2_perf':    round(r2_m,        3),
-            'gamma_mmp':  round(gamma_mmp_m, 3),
-            'r2_mmp':     round(r2_mmp_m,    3),
-            'n_cp':       n_cp_m,
-            'perf_col':   _perf_col or 'none',  # coluna usada para fitting
-            'n_mmp':      n_mmp_m,
-            'mmp_col':    _mmp_col,
-            'mmp_pr_list': _mmp_pr_list,
-            'n_sessions': len(df_mod),
+            'gamma_perf':   round(gamma_m,     3),
+            'r2_perf':      round(r2_m,        3),
+            'gamma_mmp':    round(gamma_mmp_m, 3),
+            'r2_mmp':       round(r2_mmp_m,    3),
+            'n_cp':         n_cp_m,
+            'perf_col':     _perf_col or 'none',
+            'n_mmp':        n_mmp_m,
+            'mmp_col':      _mmp_col,
+            'mmp_pr_list':  _mmp_pr_list,
+            'n_sessions':   len(df_mod),
+            'ctlg_current': round(_ctlg_current, 3),  # for dominance display
         }
 
-    # ── CTLγ overall (γ_perf = média ponderada por R² das modalidades) ────────
-    # Usa o γ da modalidade com mais sessões como γ_perf global
-    best_mod = max(MODS, key=lambda m: (mod_info[m]['r2_perf'], mod_info[m]['n_sessions']))
-    gamma_perf  = mod_info[best_mod]['gamma_perf']
-    r2_perf     = mod_info[best_mod]['r2_perf']
+    # ── CTLγ overall — select dominant modality for γ_perf ──────────────────
+    # "Dominant" = highest absolute CTLg value = where the athlete actually trains most
+    # NOT highest R² — R² inflates with fewer data points (overfitting risk)
+    # Logic:
+    #   1. Use current CTLg absolute value as primary signal (what is your fitness NOW)
+    #   2. Require minimum 10 sessions to be eligible as dominant
+    #   3. R² as tiebreaker only, weighted by log(n) to penalise small samples
+    _ctlg_vals = {m: float(ld[f'CTLg_{m}'].dropna().iloc[-1])
+                  if f'CTLg_{m}' in ld.columns and ld[f'CTLg_{m}'].notna().any()
+                  else 0.0
+                  for m in MODS}
+    # Eligible: at least 10 sessions in history
+    _eligible = [m for m in MODS if mod_info[m]['n_sessions'] >= 10]
+    if not _eligible:
+        _eligible = MODS  # fallback: all mods
+
+    # Score = CTLg_current (absolute fitness level) with R²×log(n) as tiebreaker
+    def _dom_score(m):
+        ns  = max(mod_info[m]['n_sessions'], 1)
+        r2  = mod_info[m]['r2_perf']
+        ctlg = _ctlg_vals.get(m, 0.0)
+        return (ctlg, r2 * np.log(ns))  # primary=fitness, secondary=fit quality
+
+    best_mod   = max(_eligible, key=_dom_score)
+    gamma_perf = mod_info[best_mod]['gamma_perf']
+    r2_perf    = mod_info[best_mod]['r2_perf']
 
     # Normalise overall CTLγ to same scale as CTL
     def _norm_ctlg(ctlg_arr, ctl_arr):
