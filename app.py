@@ -45,6 +45,7 @@ def main():
 
     with st.spinner("A carregar dados..."):
         wr                    = carregar_wellness(days_back)
+        wr_full               = carregar_wellness(9999)        # full history for PMC HRV/WEED
         ar_max                = carregar_atividades(9999)
         ar                    = carregar_atividades(days_back) if days_back < 9999 else ar_max
         dfs_annual, df_annual = carregar_annual()
@@ -55,6 +56,7 @@ def main():
         st.stop()
 
     wc       = preproc_wellness(wr)
+    wc_full  = preproc_wellness(wr_full)   # full wellness history for PMC
     ac_full  = preproc_ativ(ar_max)
     ac       = preproc_ativ(ar)
 
@@ -93,7 +95,7 @@ def main():
     ])
 
     with tab1:  tab_visao_geral(dw, da_filt, di, df_, da_full=ac_full, wc_full=wc, dc=dc)
-    with tab2:  tab_pmc(ac_full, wc=wc)
+    with tab2:  tab_pmc(ac_full, wc=wc_full)  # full wellness for HRV/WEED history
     with tab3:  tab_volume(da_filt, dw)
     with tab4:  tab_eftp(da_filt, mods_sel, ac_full)
     with tab5:  tab_zones(da_filt, mods_sel)
