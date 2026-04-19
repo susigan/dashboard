@@ -149,10 +149,11 @@ def tab_pmc(da, wc=None):
     _gsrc = _info.get('gamma_source', 'classic')
     _n_mmp= _info.get('n_mmp', 0)
     _perf_col_lbl = _info.get('perf_col', 'icu_eftp')
+    _best_lag_lbl = _info.get('best_lag_rec', 1)
     st.caption(
-        f"FTLM fraccionário | Carga: **{_metrica_ctl}** | Perf proxy: **{_perf_col_lbl}** | "
-        f"γ_perf={_gp:.3f} (R²={_r2p:.2f}) | "
-        f"γ_rec={_gr:.3f} (R²={_r2r:.2f}, LnRMSSD trend) | "
+        f"FTLM fraccionário | Carga: **{_metrica_ctl}** | Perf proxy: **{_perf_col_lbl}** (smooth 3d) | "
+        f"γ_perf={_gp:.3f} (R²={_r2p:.2f}, test set) | "
+        f"γ_rec={_gr:.3f} (R²={_r2r:.2f}, lag={_best_lag_lbl}d, LnRMSSD intercept+slope) | "
         f"γ activo: **{_gsrc}** | Histórico: {len(ld)} dias"
     )
 
@@ -476,8 +477,10 @@ def tab_pmc(da, wc=None):
         ]
         _mmp_str = ' | '.join(_mmp_parts) if _mmp_parts else '—'
 
+        _ctlg_cur = _gi.get('ctlg_current', 0.0)
         _rows_mod.append({
             'Modalidade':     f'{_icon_t} {_mod}',
+            'CTLγ actual':    f'{_ctlg_cur:.1f}',
             'Memória γ':      _mem,
             'MMP PRs usados': _mmp_str,
         })
