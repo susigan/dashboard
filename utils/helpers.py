@@ -444,6 +444,46 @@ def fit_gamma_recovery(load_arr, hrv_arr, gamma_range=(0.10, 0.90),
     return best_gamma, best_r2, trend_combined, best_lag
 
 
+def _compute_kappa(series_list, window=28):
+    """
+    FMT scalar curvature: κ(t) = trace(cov(Δx)) over rolling window.
+
+    series_list : list of 1D arrays, all same length, representing the
+                  dimensions of the state vector x(t).
+    window      : rolling window for covariance (default 28 days).
+
+    Each dimension is z-scored independently before computing Δx.
+    F(t) = cov(Δx[t-window:t]) — d×d covariance matrix.
+    κ(t) = trace(F(t)) — sum of variances of the Δx dimensions.
+
+    Returns array of length n with κ(t) values (NaN for first `window` days).
+    """
+    n   = len(series_list[0])
+    d   = len(series_list)
+    mat = np.full((n, d), np.nan)
+    for j, s in enumerate(series_list):
+        arr = np.array(s, dtype=np.float64)
+        mu, sd = np.nanmean(arr), np.nanstd(arr)
+        mat[:, j] = (arr - mu) / sd if sd > 1e-9 else (arr - mu)
+
+    # First differences: Δx(t) = x(t) - x(t-1)
+    delta = np.full_like(mat, np.nan)
+    delta[1:] = mat[1:] - mat[:-1]
+
+    kappa = np.full(n, np.nan)
+    for t in range(window, n):
+        wd = delta[t - window:t]
+        valid = np.all(np.isfinite(wd), axis=1)
+        if valid.sum() < max(10, d + 2):
+            continue
+        try:
+            F = np.cov(wd[valid].T)
+            kappa[t] = float(np.trace(F))
+        except Exception:
+            pass
+    return kappa
+
+
 def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
     """
     Calcula CTL/ATL/TSB clássico (EWM) + FTLM fraccionário Della Mattia (2025).
@@ -564,12 +604,28 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
         if _sleep_z is not None:
             _composite_parts.append(('sleep', _sleep_z, 0.15))
 
-        # Use LnRMSSD as primary for γ fitting (most validated per literature)
-        # Other signals stored for future FMT tensor implementation
+        # Use LnRMSSD as primary for γ fitting
         if int(np.isfinite(_hrv_ln).sum()) >= 21:
             gamma_rec, r2_rec, hrv_trend_arr, _best_lag = fit_gamma_recovery(
                 load_overall, _hrv_ln, hrv_window=7, max_lag=MAX_LAG)
+
+        # Store WEED and sleep z-scores in ld for FMT
+        if _weed_parts:
+            ld['WEED_z'] = np.nanmean(np.array(_weed_parts), axis=0)
+        if _sleep_z is not None:
+            ld['sleep_z'] = _sleep_z
             # best_lag stored for reporting — response not fixed at 1d
+
+    # ── W' daily series (icu_pm_w_prime per session) ─────────────────────────
+    # icu_pm_w_prime = estimated W' capacity for that activity (Morton 3P model)
+    # Rolling mean smooths day-to-day noise; stored for FMT 4th dimension
+    if 'icu_pm_w_prime' in df.columns and df['icu_pm_w_prime'].notna().sum() >= 10:
+        _wp_daily = (df.groupby('Data')['icu_pm_w_prime']
+                     .mean()
+                     .reindex(_date_idx, fill_value=np.nan))
+        # Rolling mean 7d to smooth (W' estimate is noisy per-session)
+        _wp_smooth = _wp_daily.rolling(7, min_periods=3).mean().values
+        ld['wp_prime'] = _wp_smooth
 
     # ── Detect performance proxy column available (for info dict) ───────────
     _perf_col_global = next(
@@ -753,6 +809,38 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
     best_gamma  = gamma_perf if r2_perf >= r2_rec else gamma_rec
     best_source = 'perf'     if r2_perf >= r2_rec else 'recovery'
     ld['FTLM']  = ld['CTLg_perf'] if best_source == 'perf' else ld['CTLg_rec']
+
+    # ── FMT Tensor κ (Della Mattia 2019) ─────────────────────────────────────
+    # x(t) = [CTLγ_norm, HRV_trend, WEED_z]  — optional 4th: wp_prime
+    # F(t) = cov(Δx) over 28-day rolling window
+    # κ(t) = trace(F(t)) — scalar curvature of athlete state
+    # κ rising  → chaos/fatigue accumulating
+    # κ falling → adaptation/recovery stabilising
+    _fmt_w = 28
+
+    # Overall 3×3 (or 2×2 if HRV/WEED missing)
+    _dims_overall = [ld['CTLg_perf'].values]
+    if 'HRV_trend' in ld.columns and ld['HRV_trend'].notna().sum() >= 20:
+        _dims_overall.append(ld['HRV_trend'].values)
+    if 'WEED_z' in ld.columns and ld['WEED_z'].notna().sum() >= 20:
+        _dims_overall.append(ld['WEED_z'].values)
+    ld['FMT_kappa'] = _compute_kappa(_dims_overall, _fmt_w) if len(_dims_overall) >= 2 else np.nan
+
+    # Overall 4×4 if W' available
+    if 'wp_prime' in ld.columns and ld['wp_prime'].notna().sum() >= 20:
+        ld['FMT_kappa_4d'] = _compute_kappa(_dims_overall + [ld['wp_prime'].values], _fmt_w)
+
+    # Per-modality 3×3: [CTLγ_mod, HRV_trend, WEED_z]
+    for _mod in ['Bike', 'Row', 'Ski', 'Run']:
+        _ctlg_col = f'CTLg_{_mod}'
+        if _ctlg_col not in ld.columns or ld[_ctlg_col].notna().sum() < 20:
+            continue
+        _dims_mod = [ld[_ctlg_col].values]
+        if 'HRV_trend' in ld.columns and ld['HRV_trend'].notna().sum() >= 20:
+            _dims_mod.append(ld['HRV_trend'].values)
+        if 'WEED_z' in ld.columns and ld['WEED_z'].notna().sum() >= 20:
+            _dims_mod.append(ld['WEED_z'].values)
+        ld[f'FMT_kappa_{_mod}'] = _compute_kappa(_dims_mod, _fmt_w) if len(_dims_mod) >= 2 else np.nan
 
     if hrv_trend_arr is not None:
         ld['HRV_trend'] = hrv_trend_arr
