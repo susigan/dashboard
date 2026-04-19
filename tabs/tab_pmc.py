@@ -262,54 +262,6 @@ def tab_pmc(da, wc=None):
         _phase_results = {}
         st.caption(f"⚠️ Detector de fases indisponível: {_pe}")
 
-    if _phase_results:
-        # ── Global + per-modality cards ───────────────────────────────────────
-        # Weighted global phase card (CTLγ-weighted modal consensus)
-        _gw_phase = _phase_results.get('_global_phase_today', None)
-        _gw_weights = _phase_results.get('_modal_weights', {})
-        _phase_mods = ['overall'] + [m for m in ['Bike','Row','Ski','Run']
-                                      if m in _phase_results]
-        _phase_cols = st.columns(len(_phase_mods))
-
-        for _pi, _pm in enumerate(_phase_mods):
-            _pdf  = _phase_results[_pm]
-            _psum = phase_summary(_pdf, last_n=30)
-            _pmod_label = '🌐 CTLγ Combined' if _pm == 'overall' else _pm
-
-            with _phase_cols[_pi]:
-                st.markdown(
-                    f"<div style='background:{_psum['current_color']}22;"
-                    f"border-left:4px solid {_psum['current_color']};"
-                    f"padding:10px;border-radius:6px;margin-bottom:6px'>"
-                    f"<b>{_pmod_label}</b><br>"
-                    f"<span style='font-size:1.3em'>{_psum['current_label']}</span><br>"
-                    f"<small>{_psum['current_desc']}</small><br><br>"
-                    f"<small>📅 {_psum['streak_days']}d nesta fase"
-                    f"{'  ✅ estável' if _psum['stable'] else '  🔄 recente'}</small><br>"
-                    f"<small>CTLγ {_psum['current_ctlg']:.1f} | "
-                    f"ΔCTL {'↑' if _psum['current_dctlg']>0 else '↓'}"
-                    f"{abs(_psum['current_dctlg']):.4f}/d</small>"
-                    f"</div>",
-                    unsafe_allow_html=True
-                )
-
-        # ── Weighted global phase card ────────────────────────────────────────
-        if _gw_phase and _gw_weights:
-            _gw_info  = PHASE_LABELS.get(_gw_phase, PHASE_LABELS['TRANSITION'])
-            _gw_label = _gw_info['label']
-            _gw_color = _gw_info['color']
-            _gw_desc  = _gw_info['desc']
-            _weights_str = ' | '.join(
-                f"{m}: {int(w*100)}%" for m, w in sorted(
-                    _gw_weights.items(), key=lambda x: -x[1]))
-            st.info(
-                f"**🏋️ Fase Global Ponderada (por CTLγ): {_gw_label}**  \n"
-                f"{_gw_desc}  \n"
-                f"Pesos: {_weights_str}  \n"
-                f"*Diferente do 'CTLγ Combined' quando a modalidade dominante "
-                f"está em fase distinta do total combinado.*"
-            )
-
     # ── RESUMO PMC ──
     # ── Fase actual card (below PMC chart) ──────────────────────────────────
     try:
@@ -422,6 +374,181 @@ def tab_pmc(da, wc=None):
     st.plotly_chart(_fig_pmc, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, key="pmc_main_chart")
 
     # ── RESUMO PMC ──
+
+    if _phase_results:
+        # ── Global + per-modality cards ───────────────────────────────────────
+        # Weighted global phase card (CTLγ-weighted modal consensus)
+        _gw_phase = _phase_results.get('_global_phase_today', None)
+        _gw_weights = _phase_results.get('_modal_weights', {})
+        _phase_mods = ['overall'] + [m for m in ['Bike','Row','Ski','Run']
+                                      if m in _phase_results]
+        _phase_cols = st.columns(len(_phase_mods))
+
+        for _pi, _pm in enumerate(_phase_mods):
+            _pdf  = _phase_results[_pm]
+            _psum = phase_summary(_pdf, last_n=30)
+            _pmod_label = '🌐 CTLγ Combined' if _pm == 'overall' else _pm
+
+            with _phase_cols[_pi]:
+                st.markdown(
+                    f"<div style='background:{_psum['current_color']}22;"
+                    f"border-left:4px solid {_psum['current_color']};"
+                    f"padding:10px;border-radius:6px;margin-bottom:6px'>"
+                    f"<b>{_pmod_label}</b><br>"
+                    f"<span style='font-size:1.3em'>{_psum['current_label']}</span><br>"
+                    f"<small>{_psum['current_desc']}</small><br><br>"
+                    f"<small>📅 {_psum['streak_days']}d nesta fase"
+                    f"{'  ✅ estável' if _psum['stable'] else '  🔄 recente'}</small><br>"
+                    f"<small>CTLγ {_psum['current_ctlg']:.1f} | "
+                    f"ΔCTL {'↑' if _psum['current_dctlg']>0 else '↓'}"
+                    f"{abs(_psum['current_dctlg']):.4f}/d</small>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+
+        # ── Weighted global phase card ────────────────────────────────────────
+        if _gw_phase and _gw_weights:
+            _gw_info  = PHASE_LABELS.get(_gw_phase, PHASE_LABELS['TRANSITION'])
+            _gw_label = _gw_info['label']
+            _gw_color = _gw_info['color']
+            _gw_desc  = _gw_info['desc']
+            _weights_str = ' | '.join(
+                f"{m}: {int(w*100)}%" for m, w in sorted(
+                    _gw_weights.items(), key=lambda x: -x[1]))
+            st.info(
+                f"**🏋️ Fase Global Ponderada (por CTLγ): {_gw_label}**  \n"
+                f"{_gw_desc}  \n"
+                f"Pesos: {_weights_str}  \n"
+                f"*Diferente do 'CTLγ Combined' quando a modalidade dominante "
+                f"está em fase distinta do total combinado.*"
+            )
+
+
+    # ── Phase timeline + download ──────────────────────────────────────────
+    st.markdown("---")
+    st.subheader("🔄 Fase de Treino Actual")
+    with st.expander("📊 Timeline de Fases (últimos 180d)", expanded=False):
+        _pov = _phase_results.get('overall') if _phase_results else None
+        if _pov is not None:
+            _pov180    = _pov.tail(180).copy()
+            _dates_p   = _pov180['Data'].tolist()
+            _fig_ph    = go.Figure()
+            _prev_phase  = None
+            _band_start  = None
+            _prev_color  = '#95a5a6'
+            for _ti, (_row_date, _row_phase, _row_color) in enumerate(
+                    zip(_dates_p, _pov180['phase_smooth'].tolist(),
+                        _pov180['phase_color'].tolist())):
+                if _row_phase != _prev_phase:
+                    if _band_start is not None:
+                        _hx = _prev_color.lstrip('#')
+                        _r, _g, _b = int(_hx[0:2],16), int(_hx[2:4],16), int(_hx[4:6],16)
+                        _fig_ph.add_shape(type='rect',
+                            x0=_band_start, x1=_row_date,
+                            y0=0, y1=1, xref='x', yref='paper',
+                            fillcolor=f'rgba({_r},{_g},{_b},0.15)',
+                            line_width=0, layer='below')
+                    _band_start = _row_date
+                    _prev_phase = _row_phase
+                    _prev_color = _row_color
+            if _band_start is not None:
+                _hx = _prev_color.lstrip('#')
+                _r, _g, _b = int(_hx[0:2],16), int(_hx[2:4],16), int(_hx[4:6],16)
+                _fig_ph.add_shape(type='rect',
+                    x0=_band_start, x1=_dates_p[-1],
+                    y0=0, y1=1, xref='x', yref='paper',
+                    fillcolor=f'rgba({_r},{_g},{_b},0.15)',
+                    line_width=0, layer='below')
+            _fig_ph.add_trace(go.Scatter(
+                x=_dates_p, y=_pov180['CTLg'].tolist(),
+                name='CTLγ global',
+                line=dict(color=CORES['azul'], width=2),
+                hovertemplate='CTLγ: %{y:.1f}<extra></extra>'))
+            if _pov180['HRV_z'].notna().any():
+                _hrv_sc = _pov180['HRV_z'] * (_pov180['CTLg'].max() / 4)
+                _fig_ph.add_trace(go.Scatter(
+                    x=_dates_p, y=_hrv_sc.tolist(),
+                    name='HRV trend (escala)',
+                    line=dict(color=CORES['verde'], width=1.5, dash='dot'),
+                    opacity=0.7,
+                    hovertemplate='HRV_z: %{customdata:.2f}<extra></extra>',
+                    customdata=_pov180['HRV_z'].tolist()))
+            # Modal divergence markers
+            _mod_colors_ph = {'Bike': CORES['vermelho'], 'Row': CORES['azul'],
+                              'Ski': CORES['roxo'], 'Run': CORES['verde']}
+            _overall_ph_map = dict(zip(
+                [str(d)[:10] for d in _pov180['Data'].tolist()],
+                _pov180['phase_smooth'].tolist()))
+            for _mod_t in ['Bike','Row','Ski','Run']:
+                if _mod_t not in _phase_results: continue
+                _pdf_mod180 = _phase_results[_mod_t][
+                    _phase_results[_mod_t]['Data'].astype(str).str[:10].isin(
+                        [str(d)[:10] for d in _dates_p])].tail(180)
+                if len(_pdf_mod180) == 0: continue
+                _diff_rows = _pdf_mod180[_pdf_mod180.apply(
+                    lambda r: r['phase_smooth'] != _overall_ph_map.get(str(r['Data'])[:10],''),
+                    axis=1)]
+                if len(_diff_rows) == 0: continue
+                _fig_ph.add_trace(go.Scatter(
+                    x=_diff_rows['Data'].tolist(), y=[0]*len(_diff_rows),
+                    mode='markers',
+                    marker=dict(symbol='triangle-up', size=8,
+                                color=_mod_colors_ph.get(_mod_t,'#888'),
+                                line=dict(width=1, color='white')),
+                    name=f'{_mod_t} ≠ overall',
+                    text=_diff_rows['phase_smooth'].tolist(),
+                    hovertemplate=f'<b>{_mod_t}</b>: %{{text}}<extra></extra>',
+                    showlegend=True))
+            _fig_ph.update_layout(
+                paper_bgcolor='white', plot_bgcolor='white',
+                height=300,
+                margin=dict(t=40, b=70, l=55, r=20),
+                hovermode='x unified',
+                legend=dict(orientation='h', y=-0.30,
+                            font=dict(color='#111', size=9),
+                            bgcolor='rgba(255,255,255,0.9)'),
+                font=dict(color='#111', size=10),
+                title=dict(text='Timeline de Fases — CTLγ + HRV',
+                           font=dict(size=12, color='#111')))
+            _fig_ph.update_xaxes(showgrid=True, gridcolor='#ddd',
+                                  tickfont=dict(size=9, color='#111'),
+                                  linecolor='#333', tickcolor='#333', tickangle=-45)
+            _fig_ph.update_yaxes(showgrid=True, gridcolor='#ddd',
+                                  tickfont=dict(size=9, color='#111'),
+                                  linecolor='#333', tickcolor='#333',
+                                  title_text='CTLγ', title_font=dict(color='#111'))
+            st.plotly_chart(_fig_ph, use_container_width=True,
+                            config={'displayModeBar': False}, key="pmc_phase_timeline")
+            _cols_leg = st.columns(3)
+            for _li, (_pk, _pv) in enumerate(PHASE_LABELS.items()):
+                _cols_leg[_li % 3].markdown(
+                    f"<span style='color:{_pv['color']};font-weight:bold'>"
+                    f"{_pv['label']}</span> — {_pv['desc']}",
+                    unsafe_allow_html=True)
+    # Download phases CSV
+    _dl_phase_frames = []
+    _dl_phase_cols = ['Data','phase','phase_smooth','phase_label',
+                      'CTLg','dCTLg_14d','HRV_rel','WEED_z',
+                      'CTLg_z','dCTLg_z','dias_na_fase']
+    for _pm, _pdf in _phase_results.items():
+        if not isinstance(_pdf, pd.DataFrame): continue
+        _avail = [c for c in _dl_phase_cols if c in _pdf.columns]
+        _pdfx  = _pdf[_avail].copy()
+        _pdfx.insert(1, 'Modalidade', _pm)
+        _dl_phase_frames.append(_pdfx)
+    if _dl_phase_frames:
+        _dl_phase_df = pd.concat(_dl_phase_frames, ignore_index=True)
+        _dl_phase_df['Data'] = _dl_phase_df['Data'].astype(str)
+        _dl_phase_df = _dl_phase_df.round(4)
+        st.download_button(
+            label="📥 Download Fases (.csv)",
+            data=_dl_phase_df.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
+            file_name="atheltica_fases_treino.csv",
+            mime="text/csv", key="pmc_dl_phases")
+        _exportable = [k for k,v in _phase_results.items() if isinstance(v, pd.DataFrame)]
+        st.caption(f"Exporta fases para: {', '.join(_exportable)} | "
+                   f"Thresholds: percentil rolante 60d | ΔCTLγ slope 14d")
+
 
     st.subheader("📊 Resumo PMC")
     tsb_v = u['TSB']
@@ -604,11 +731,3 @@ def tab_pmc(da, wc=None):
                 st.caption(_r2txt)
     else:
         st.info("CTLγ por modalidade não disponível — sem dados suficientes.")
-    # ════════════════════════════════════════════════════════════════════════
-    # FASE DE TREINO — detector por modalidade + global
-    # ════════════════════════════════════════════════════════════════════════
-    st.markdown("---")
-    st.subheader("🔄 Fase de Treino Actual")
-
-
-    st.subheader("🔄 Fase de Treino Actual")
