@@ -22,13 +22,14 @@ MC = {'displayModeBar': False, 'responsive': True, 'scrollZoom': False}
 # → invertemos stress para que 5 = sempre "melhor" em todos
 # sleep_quality=Sono | fatiga=Vontade Treinar | humor=Humor | soreness=Cansaço Muscular(inv) | stress=Stress(inv)
 _SUBJ_METS = ['sleep_quality', 'fatiga', 'humor', 'soreness', 'stress']
-_SUBJ_INVERT = {'soreness', 'stress'}  # invertidas: 5-x+1 → 5=sempre melhor
+_SUBJ_INVERT = set()  # NO inversion: form scale 1=worst 5=best for ALL metrics
+# fatiga=5→máxima vontade, stress=5→sem stress, soreness=5→sem cansaço
 _SUBJ_LABELS = {
     'sleep_quality': 'Sono Qualidade',
     'fatiga':        'Vontade Treinar',
     'humor':         'Humor',
-    'soreness':      'Cansaço Muscular',  # invertido no gráfico
-    'stress':        'Stress',            # invertido no gráfico
+    'soreness':      'Cansaço Muscular',  # 1=muito cansado, 5=sem cansaço (sem inversão)
+    'stress':        'Stress',            # 1=muito stressado, 5=sem stress (sem inversão)
 }
 _SUBJ_COLORS = {
     'sleep_quality': '#9b59b6',
