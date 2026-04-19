@@ -75,109 +75,37 @@ def tab_pmc(da, wc=None):
     st.header("📈 PMC — Performance Management Chart")
     if len(da) == 0: st.warning("Sem dados de atividades."); return
 
-    # da = ac_full (full unfiltered history from app.py)
-    da_full = da
-    df = filtrar_principais(da_full).copy()
-    df['Data'] = pd.to_datetime(df['Data'])
+    def _add_phase_bg(fig, phase_df, plot_dates):
+        """Add phase colour bands (add_shape rgba) to a plotly figure."""
+        if phase_df is None or len(phase_df) == 0:
+            return
+        _ph_s  = phase_df[['Data','phase_smooth','phase_color']].copy()
+        _ph_s['_ds'] = _ph_s['Data'].astype(str).str[:10]
+        _ph_map = _ph_s.set_index('_ds')
+        _prev_ph, _band_st, _prev_col = None, None, '#95a5a6'
+        for _dt in pd.to_datetime(plot_dates):
+            _ds = str(_dt)[:10]
+            _cur_ph  = _ph_map.loc[_ds,'phase_smooth'] if _ds in _ph_map.index else 'TRANSITION'
+            _cur_col = _ph_map.loc[_ds,'phase_color']  if _ds in _ph_map.index else '#95a5a6'
+            if _cur_ph != _prev_ph:
+                if _band_st is not None:
+                    _hx = _prev_col.lstrip('#')
+                    _r2,_g2,_b2 = int(_hx[0:2],16),int(_hx[2:4],16),int(_hx[4:6],16)
+                    fig.add_shape(type='rect', x0=_band_st, x1=_dt,
+                        y0=0, y1=1, xref='x', yref='paper',
+                        fillcolor=f'rgba({_r2},{_g2},{_b2},0.10)',
+                        line_width=0, layer='below')
+                _band_st, _prev_ph, _prev_col = _dt, _cur_ph, _cur_col
+        if _band_st is not None:
+            _hx = _prev_col.lstrip('#')
+            _r2,_g2,_b2 = int(_hx[0:2],16),int(_hx[2:4],16),int(_hx[4:6],16)
+            fig.add_shape(type='rect',
+                x0=_band_st, x1=pd.to_datetime(plot_dates).max(),
+                y0=0, y1=1, xref='x', yref='paper',
+                fillcolor=f'rgba({_r2},{_g2},{_b2},0.10)',
+                line_width=0, layer='below')
 
-    # ── CTL/ATL: icu_training_load primeiro, session_rpe fallback ──
-    if 'icu_training_load' in df.columns and df['icu_training_load'].notna().sum() > 10:
-        df['icu_tl'] = pd.to_numeric(df['icu_training_load'], errors='coerce').fillna(0)
-        _metrica_ctl = "icu_training_load (Intervals.icu)"
-    elif 'moving_time' in df.columns and 'rpe' in df.columns and df['rpe'].notna().sum() > 10:
-        _rpe = pd.to_numeric(df['rpe'], errors='coerce')
-        df['icu_tl'] = (pd.to_numeric(df['moving_time'], errors='coerce') / 60) * _rpe.fillna(_rpe.median())
-        _metrica_ctl = "session_rpe (fallback)"
-    else:
-        st.warning("Sem icu_training_load nem RPE para calcular CTL/ATL."); return
 
-    # ── Load bars: TRIMP = session_rpe ──
-    _rpe2 = pd.to_numeric(df['rpe'], errors='coerce') if 'rpe' in df.columns else pd.Series(dtype=float)
-    _mt   = pd.to_numeric(df['moving_time'], errors='coerce') if 'moving_time' in df.columns else pd.Series(dtype=float)
-    if _rpe2.notna().sum() > 5:
-        df['trimp_val'] = (_mt / 60) * _rpe2.fillna(_rpe2.median())
-    else:
-        df['trimp_val'] = df['icu_tl']
-
-    # ── Série diária CTL/ATL ──
-    ld = df.groupby('Data')['icu_tl'].sum().reset_index().sort_values('Data')
-    idx_full = pd.date_range(ld['Data'].min(), datetime.now().date())
-    ld = ld.set_index('Data').reindex(idx_full, fill_value=0).reset_index()
-    ld.columns = ['Data', 'load_val']
-    ld['CTL']  = ld['load_val'].ewm(span=42, adjust=False).mean()
-    ld['ATL']  = ld['load_val'].ewm(span=7,  adjust=False).mean()
-    ld['TSB']  = ld['CTL'] - ld['ATL']
-
-    # ── FTLM fraccionário — Della Mattia (2025) Dual-Gamma ──────────────────
-    # Usa calcular_series_carga para fitting de γ_perf (icu_pm_cp) e γ_rec (HRV)
-    # O bloco CTL/ATL/TSB acima é mantido para compatibilidade e velocidade.
-    # O FTLM fraccionário é computado separadamente e adicionado a ld.
-    @st.cache_data(show_spinner="A calcular FTLM fraccionário (γ dual)...", ttl=3600)
-    def _cached_csc(_da_hash, _wc_hash, da, wc_arg):
-        # _da_hash and _wc_hash are used only as cache keys (not computed again)
-        return calcular_series_carga(da, df_wellness=wc_arg, ate_hoje=True)
-
-    # Cache key: tuple of (last date, n_rows) — recomputes only when data changes
-    _da_key  = (str(da_full['Data'].max()) if 'Data' in da_full.columns else '',
-                len(da_full))
-    _wc_key  = (str(wc['Data'].max())      if wc is not None and 'Data' in wc.columns else '',
-                len(wc) if wc is not None else 0)
-    _ld_frac, _info = _cached_csc(_da_key, _wc_key, da_full, wc)
-
-    if len(_ld_frac) > 0 and 'FTLM' in _ld_frac.columns:
-        # Align fractional ld with our ld (may have different date range)
-        _frac_idx = _ld_frac.set_index('Data')
-        # Copy all fractional columns (FTLM, CTLg_perf, CTLg_rec, CTLg_Bike, etc.)
-        _frac_cols = ['FTLM', 'CTLg_perf', 'CTLg_rec', 'HRV_trend',
-                      'CTLg_Bike', 'CTLg_Row', 'CTLg_Ski', 'CTLg_Run',
-                      'CTL_Bike',  'CTL_Row',  'CTL_Ski',  'CTL_Run',
-                      'ATL_Bike',  'ATL_Row',  'ATL_Ski',  'ATL_Run']
-        for _col in _frac_cols:
-            if _col in _frac_idx.columns:
-                ld[_col] = ld['Data'].map(_frac_idx[_col])
-        best_g = _info.get('gamma_best', 0.35)
-    else:
-        # Fallback: classic EWM
-        best_g, best_r = 0.30, -1.0
-        for g in np.arange(0.25, 0.36, 0.01):
-            ema = ld['load_val'].ewm(alpha=g, adjust=False).mean()
-            if ema.std() > 0:
-                r = abs(np.corrcoef(ld['load_val'].values, ema.values)[0, 1])
-                if r > best_r: best_r, best_g = r, g
-        ld['FTLM'] = ld['load_val'].ewm(alpha=best_g, adjust=False).mean()
-        _info = {'gamma_perf': best_g, 'gamma_rec': best_g, 'fonte': 'fallback',
-                 'r2_perf': 0.0, 'r2_rec': 0.0, 'gamma_source': 'classic',
-                 'mods': {}, 'best_mod': 'N/A'}
-
-    u = ld.iloc[-1]
-
-    # Caption with dual-gamma info
-    _gp   = _info.get('gamma_perf', best_g)
-    _gr   = _info.get('gamma_rec',  best_g)
-    _r2p  = _info.get('r2_perf',  0.0)
-    _r2r  = _info.get('r2_rec',   0.0)
-    _gsrc = _info.get('gamma_source', 'classic')
-    _n_mmp= _info.get('n_mmp', 0)
-    _perf_col_lbl = _info.get('perf_col', 'icu_eftp')
-    _best_lag_lbl = _info.get('best_lag_rec', 1)
-    st.caption(
-        f"FTLM fraccionário | Carga: **{_metrica_ctl}** | Perf proxy: **{_perf_col_lbl}** (smooth 3d) | "
-        f"γ_perf={_gp:.3f} (R²={_r2p:.2f}, test set) | "
-        f"γ_rec={_gr:.3f} (R²={_r2r:.2f}, lag={_best_lag_lbl}d, LnRMSSD intercept+slope) | "
-        f"γ activo: **{_gsrc}** | Histórico: {len(ld)} dias"
-    )
-
-    # ── Controlos ──
-    col1, col2, col3 = st.columns(3)
-    dias_opts = {"30 dias": 30, "60 dias": 60, "90 dias": 90,
-                 "180 dias": 180, "1 ano": 365, "Todo histórico": len(ld)}
-    dias_exib = dias_opts[col1.selectbox("Período exibido", list(dias_opts.keys()), index=2)]
-    ld_plot   = ld.tail(dias_exib).copy()
-    smooth    = col2.checkbox("Suavizar CTL/ATL (3d)", value=False)
-    show_ftlm = col3.checkbox("Mostrar FTLM", value=True)
-    if smooth:
-        ld_plot['CTL'] = ld_plot['CTL'].rolling(3, min_periods=1).mean()
-        ld_plot['ATL'] = ld_plot['ATL'].rolling(3, min_periods=1).mean()
 
     # ── GRÁFICO 1: PMC + Load (TRIMP) ──
     _fig_pmc = make_subplots(rows=2, cols=1, shared_xaxes=True,
@@ -260,7 +188,16 @@ def tab_pmc(da, wc=None):
     _fig_pmc.update_yaxes(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111'))
     _fig_pmc.update_yaxes(title_text='CTL/ATL/TSB', row=1, col=1)
     _fig_pmc.update_yaxes(title_text='Load (TRIMP)', row=2, col=1)
-    st.plotly_chart(_fig_pmc, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
+    # ── Phase background on PMC (added after phase detection, placeholder for now)
+    # Actual shapes added via _add_phase_bg() called after phase results available
+    _pmc_fig_ref = _fig_pmc   # keep reference so phase bg can be added later
+    # Phase background bands on PMC chart (safe — wrapped in try)
+    try:
+        if _phase_results and 'overall' in _phase_results:
+            _add_phase_bg(_fig_pmc, _phase_results['overall'], ld_plot['Data'].tolist())
+    except Exception:
+        pass
+    st.plotly_chart(_fig_pmc, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, key="pmc_main_chart")
 
     # ── RESUMO PMC ──
     st.subheader("📊 Resumo PMC")
@@ -450,6 +387,111 @@ def tab_pmc(da, wc=None):
     st.markdown("---")
     st.subheader("🔄 Fase de Treino Actual")
 
+
+    # da = ac_full (full unfiltered history from app.py)
+    da_full = da
+    df = filtrar_principais(da_full).copy()
+    df['Data'] = pd.to_datetime(df['Data'])
+
+    # ── CTL/ATL: icu_training_load primeiro, session_rpe fallback ──
+    if 'icu_training_load' in df.columns and df['icu_training_load'].notna().sum() > 10:
+        df['icu_tl'] = pd.to_numeric(df['icu_training_load'], errors='coerce').fillna(0)
+        _metrica_ctl = "icu_training_load (Intervals.icu)"
+    elif 'moving_time' in df.columns and 'rpe' in df.columns and df['rpe'].notna().sum() > 10:
+        _rpe = pd.to_numeric(df['rpe'], errors='coerce')
+        df['icu_tl'] = (pd.to_numeric(df['moving_time'], errors='coerce') / 60) * _rpe.fillna(_rpe.median())
+        _metrica_ctl = "session_rpe (fallback)"
+    else:
+        st.warning("Sem icu_training_load nem RPE para calcular CTL/ATL."); return
+
+    # ── Load bars: TRIMP = session_rpe ──
+    _rpe2 = pd.to_numeric(df['rpe'], errors='coerce') if 'rpe' in df.columns else pd.Series(dtype=float)
+    _mt   = pd.to_numeric(df['moving_time'], errors='coerce') if 'moving_time' in df.columns else pd.Series(dtype=float)
+    if _rpe2.notna().sum() > 5:
+        df['trimp_val'] = (_mt / 60) * _rpe2.fillna(_rpe2.median())
+    else:
+        df['trimp_val'] = df['icu_tl']
+
+    # ── Série diária CTL/ATL ──
+    ld = df.groupby('Data')['icu_tl'].sum().reset_index().sort_values('Data')
+    idx_full = pd.date_range(ld['Data'].min(), datetime.now().date())
+    ld = ld.set_index('Data').reindex(idx_full, fill_value=0).reset_index()
+    ld.columns = ['Data', 'load_val']
+    ld['CTL']  = ld['load_val'].ewm(span=42, adjust=False).mean()
+    ld['ATL']  = ld['load_val'].ewm(span=7,  adjust=False).mean()
+    ld['TSB']  = ld['CTL'] - ld['ATL']
+
+    # ── FTLM fraccionário — Della Mattia (2025) Dual-Gamma ──────────────────
+    # Usa calcular_series_carga para fitting de γ_perf (icu_pm_cp) e γ_rec (HRV)
+    # O bloco CTL/ATL/TSB acima é mantido para compatibilidade e velocidade.
+    # O FTLM fraccionário é computado separadamente e adicionado a ld.
+    @st.cache_data(show_spinner="A calcular FTLM fraccionário (γ dual)...", ttl=3600)
+    def _cached_csc(_da_hash, _wc_hash, da, wc_arg):
+        # _da_hash and _wc_hash are used only as cache keys (not computed again)
+        return calcular_series_carga(da, df_wellness=wc_arg, ate_hoje=True)
+
+    # Cache key: tuple of (last date, n_rows) — recomputes only when data changes
+    _da_key  = (str(da_full['Data'].max()) if 'Data' in da_full.columns else '',
+                len(da_full))
+    _wc_key  = (str(wc['Data'].max())      if wc is not None and 'Data' in wc.columns else '',
+                len(wc) if wc is not None else 0)
+    _ld_frac, _info = _cached_csc(_da_key, _wc_key, da_full, wc)
+
+    if len(_ld_frac) > 0 and 'FTLM' in _ld_frac.columns:
+        # Align fractional ld with our ld (may have different date range)
+        _frac_idx = _ld_frac.set_index('Data')
+        # Copy all fractional columns (FTLM, CTLg_perf, CTLg_rec, CTLg_Bike, etc.)
+        _frac_cols = ['FTLM', 'CTLg_perf', 'CTLg_rec', 'HRV_trend',
+                      'CTLg_Bike', 'CTLg_Row', 'CTLg_Ski', 'CTLg_Run',
+                      'CTL_Bike',  'CTL_Row',  'CTL_Ski',  'CTL_Run',
+                      'ATL_Bike',  'ATL_Row',  'ATL_Ski',  'ATL_Run']
+        for _col in _frac_cols:
+            if _col in _frac_idx.columns:
+                ld[_col] = ld['Data'].map(_frac_idx[_col])
+        best_g = _info.get('gamma_best', 0.35)
+    else:
+        # Fallback: classic EWM
+        best_g, best_r = 0.30, -1.0
+        for g in np.arange(0.25, 0.36, 0.01):
+            ema = ld['load_val'].ewm(alpha=g, adjust=False).mean()
+            if ema.std() > 0:
+                r = abs(np.corrcoef(ld['load_val'].values, ema.values)[0, 1])
+                if r > best_r: best_r, best_g = r, g
+        ld['FTLM'] = ld['load_val'].ewm(alpha=best_g, adjust=False).mean()
+        _info = {'gamma_perf': best_g, 'gamma_rec': best_g, 'fonte': 'fallback',
+                 'r2_perf': 0.0, 'r2_rec': 0.0, 'gamma_source': 'classic',
+                 'mods': {}, 'best_mod': 'N/A'}
+
+    u = ld.iloc[-1]
+
+    # Caption with dual-gamma info
+    _gp   = _info.get('gamma_perf', best_g)
+    _gr   = _info.get('gamma_rec',  best_g)
+    _r2p  = _info.get('r2_perf',  0.0)
+    _r2r  = _info.get('r2_rec',   0.0)
+    _gsrc = _info.get('gamma_source', 'classic')
+    _n_mmp= _info.get('n_mmp', 0)
+    _perf_col_lbl = _info.get('perf_col', 'icu_eftp')
+    _best_lag_lbl = _info.get('best_lag_rec', 1)
+    st.caption(
+        f"FTLM fraccionário | Carga: **{_metrica_ctl}** | Perf proxy: **{_perf_col_lbl}** (smooth 3d) | "
+        f"γ_perf={_gp:.3f} (R²={_r2p:.2f}, test set) | "
+        f"γ_rec={_gr:.3f} (R²={_r2r:.2f}, lag={_best_lag_lbl}d, LnRMSSD intercept+slope) | "
+        f"γ activo: **{_gsrc}** | Histórico: {len(ld)} dias"
+    )
+
+    # ── Controlos ──
+    col1, col2, col3 = st.columns(3)
+    dias_opts = {"30 dias": 30, "60 dias": 60, "90 dias": 90,
+                 "180 dias": 180, "1 ano": 365, "Todo histórico": len(ld)}
+    dias_exib = dias_opts[col1.selectbox("Período exibido", list(dias_opts.keys()), index=2)]
+    ld_plot   = ld.tail(dias_exib).copy()
+    smooth    = col2.checkbox("Suavizar CTL/ATL (3d)", value=False)
+    show_ftlm = col3.checkbox("Mostrar FTLM", value=True)
+    if smooth:
+        ld_plot['CTL'] = ld_plot['CTL'].rolling(3, min_periods=1).mean()
+        ld_plot['ATL'] = ld_plot['ATL'].rolling(3, min_periods=1).mean()
+
     @st.cache_data(show_spinner="A detectar fases de treino...", ttl=3600)
     def _cached_phases(_ld_hash, ld_arg):
         return detect_all_phases(ld_arg)
@@ -509,6 +551,62 @@ def tab_pmc(da, wc=None):
                 f"*Diferente do 'CTLγ Combined' quando a modalidade dominante "
                 f"está em fase distinta do total combinado.*"
             )
+
+        # ── PMC com fundo de fases ───────────────────────────────────────────
+        _show_phase_bg = st.checkbox(
+            "📊 Mostrar fundo de fases no gráfico PMC", value=True, key="pmc_phase_bg_toggle")
+
+        if _show_phase_bg:
+            _pov_bg = _phase_results.get('overall')
+            if _pov_bg is not None:
+                # Rebuild PMC figure with phase background shapes
+                _fig_pmc_ph = _pmc_fig_ref
+
+                # Add phase background bands to row=1 (CTL/ATL area)
+                _pov_plot = _pov_bg[_pov_bg['Data'].astype(str).isin(
+                    [str(d)[:10] for d in ld_plot['Data'].tolist()])].copy()
+
+                if len(_pov_plot) > 0:
+                    _prev_ph  = None
+                    _bnd_st   = None
+                    _bnd_col  = '#95a5a6'
+                    for _, _pr in _pov_plot.iterrows():
+                        _ph  = _pr['phase_smooth']
+                        _col = _pr['phase_color']
+                        _dt  = str(_pr['Data'])[:10]
+                        if _ph != _prev_ph:
+                            if _bnd_st is not None:
+                                _hx = _bnd_col.lstrip('#')
+                                _rr,_gg,_bb = int(_hx[0:2],16),int(_hx[2:4],16),int(_hx[4:6],16)
+                                _fig_pmc_ph.add_shape(
+                                    type='rect', x0=_bnd_st, x1=_dt,
+                                    y0=0, y1=1, xref='x', yref='paper',
+                                    fillcolor=f'rgba({_rr},{_gg},{_bb},0.12)',
+                                    line_width=0, layer='below')
+                            _bnd_st  = _dt
+                            _prev_ph = _ph
+                            _bnd_col = _col
+                    # Close last band
+                    if _bnd_st is not None:
+                        _hx = _bnd_col.lstrip('#')
+                        _rr,_gg,_bb = int(_hx[0:2],16),int(_hx[2:4],16),int(_hx[4:6],16)
+                        _fig_pmc_ph.add_shape(
+                            type='rect', x0=_bnd_st,
+                            x1=str(_pov_plot.iloc[-1]['Data'])[:10],
+                            y0=0, y1=1, xref='x', yref='paper',
+                            fillcolor=f'rgba({_rr},{_gg},{_bb},0.12)',
+                            line_width=0, layer='below')
+
+                    # Phase legend below chart
+                    _leg_cols = st.columns(3)
+                    for _li, (_pk, _pv) in enumerate(PHASE_LABELS.items()):
+                        _leg_cols[_li % 3].markdown(
+                            f"<span style='background:{_pv['color']}22;"
+                            f"border-left:3px solid {_pv['color']};"
+                            f"padding:2px 6px;border-radius:3px;"
+                            f"font-size:0.85em'>{_pv['label']}</span>",
+                            unsafe_allow_html=True)
+                    st.caption("Fundo do PMC colorido pela fase detectada (CTLγ Combined, smoothed 3d)")
 
         # ── Phase timeline chart — last 180d ──────────────────────────────────
         with st.expander("📊 Timeline de Fases (últimos 180d)", expanded=False):
@@ -576,18 +674,28 @@ def tab_pmc(da, wc=None):
 
                 _fig_ph.update_layout(
                     paper_bgcolor='white', plot_bgcolor='white',
-                    height=280,
-                    margin=dict(t=30, b=60, l=50, r=20),
+                    height=300,
+                    margin=dict(t=40, b=70, l=55, r=20),
                     hovermode='x unified',
-                    legend=dict(orientation='h', y=-0.25,
-                                font=dict(color='#111', size=9)),
+                    legend=dict(orientation='h', y=-0.30,
+                                font=dict(color='#111', size=9),
+                                bgcolor='rgba(255,255,255,0.9)'),
                     font=dict(color='#111', size=10),
                     title=dict(text='Timeline de Fases — CTLγ + HRV',
-                               font=dict(size=12)))
-                _fig_ph.update_xaxes(showgrid=True, gridcolor='#eee',
-                                     tickfont=dict(size=9))
-                _fig_ph.update_yaxes(showgrid=True, gridcolor='#eee',
-                                     tickfont=dict(size=9))
+                               font=dict(size=12, color='#111')))
+                _fig_ph.update_xaxes(
+                    showgrid=True, gridcolor='#ddd',
+                    tickfont=dict(size=9, color='#111'),
+                    title_font=dict(color='#111', size=10),
+                    linecolor='#333', linewidth=1,
+                    tickcolor='#333', tickangle=-45)
+                _fig_ph.update_yaxes(
+                    showgrid=True, gridcolor='#ddd',
+                    tickfont=dict(size=9, color='#111'),
+                    title_font=dict(color='#111', size=10),
+                    linecolor='#333', linewidth=1,
+                    tickcolor='#333',
+                    title_text='CTLγ')
                 # Modal phase markers: show dot when modal ≠ overall phase
                 _mod_colors = {'Bike': CORES['vermelho'], 'Row': CORES['azul'],
                                'Ski': CORES['roxo'], 'Run': CORES['verde']}
@@ -859,3 +967,283 @@ def tab_pmc(da, wc=None):
 # ════════════════════════════════════════════════════════════════════════════
 # MÓDULO: tabs/tab_volume.py
 # ════════════════════════════════════════════════════════════════════════════
+
+    # ── GRÁFICO 1: PMC + Load (TRIMP) ──
+    _fig_pmc = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                             row_heights=[0.70, 0.30], vertical_spacing=0.04)
+    _dates = ld_plot['Data'].tolist()
+
+    _fig_pmc.add_trace(go.Scatter(x=_dates, y=ld_plot['CTL'].tolist(),
+        name='CTL (Fitness)', line=dict(color=CORES['azul'], width=2.5),
+        hovertemplate='CTL: %{y:.1f}<extra></extra>'), row=1, col=1)
+    _fig_pmc.add_trace(go.Scatter(x=_dates, y=ld_plot['ATL'].tolist(),
+        name='ATL (Fadiga)', line=dict(color=CORES['vermelho'], width=2.5),
+        hovertemplate='ATL: %{y:.1f}<extra></extra>'), row=1, col=1)
+
+    _fig_pmc.add_trace(go.Scatter(x=_dates, y=ld_plot['TSB'].tolist(),
+        fill='tozeroy', fillcolor='rgba(39,174,96,0.15)',
+        line=dict(color='rgba(39,174,96,0.5)', width=1),
+        name='TSB (Forma/Fadiga)',
+        hovertemplate='TSB: %{y:.1f}<extra></extra>'), row=1, col=1)
+    _fig_pmc.add_hline(y=0, line_dash='dash', line_color='#999', line_width=1, row=1, col=1)
+
+    if show_ftlm:
+        _ctl_max  = max(ld_plot['CTL'].max(), ld_plot['ATL'].max(), 1)
+        # FTLM fraccionário — γ activo (melhor R²)
+        if 'FTLM' in ld_plot.columns and ld_plot['FTLM'].notna().any():
+            _ftlm_max = max(ld_plot['FTLM'].max(), 1)
+            _ftlm_n   = ld_plot['FTLM'] / _ftlm_max * _ctl_max * 0.85
+            _fig_pmc.add_trace(go.Scatter(x=_dates, y=_ftlm_n.tolist(),
+                name=f'CTLγ ({_gsrc}, γ={best_g:.3f})',
+                line=dict(color=CORES['laranja'], width=2.5, dash='dash'), opacity=0.85,
+                hovertemplate='CTLγ: %{y:.1f}<extra></extra>'), row=1, col=1)
+        # CTLg_perf (γ_performance, normalised)
+        if 'CTLg_perf' in ld_plot.columns and ld_plot['CTLg_perf'].notna().any():
+            _gp_max = max(ld_plot['CTLg_perf'].max(), 1)
+            _gp_n   = ld_plot['CTLg_perf'] / _gp_max * _ctl_max * 0.75
+            _fig_pmc.add_trace(go.Scatter(x=_dates, y=_gp_n.tolist(),
+                name=f'CTLγ perf (γ={_gp:.3f}, R²={_r2p:.2f})',
+                line=dict(color='#2980b9', width=1.5, dash='dot'), opacity=0.7,
+                hovertemplate='CTLγ_perf: %{y:.1f}<extra></extra>'), row=1, col=1)
+        # CTLg_rec (γ_recovery, normalised)
+        if 'CTLg_rec' in ld_plot.columns and ld_plot['CTLg_rec'].notna().any():
+            _gr_max = max(ld_plot['CTLg_rec'].max(), 1)
+            _gr_n   = ld_plot['CTLg_rec'] / _gr_max * _ctl_max * 0.75
+            _fig_pmc.add_trace(go.Scatter(x=_dates, y=_gr_n.tolist(),
+                name=f'CTLγ rec (γ={_gr:.3f}, R²={_r2r:.2f})',
+                line=dict(color='#8e44ad', width=1.5, dash='dot'), opacity=0.7,
+                hovertemplate='CTLγ_rec: %{y:.1f}<extra></extra>'), row=1, col=1)
+
+    _u_ctl = float(u['CTL']); _u_atl = float(u['ATL']); _u_tsb = float(u['TSB'])
+    _fig_pmc.add_annotation(
+        x=_dates[-1], y=_u_ctl, xref='x', yref='y',
+        text=f"CTL {_u_ctl:.1f} | ATL {_u_atl:.1f} | TSB {_u_tsb:+.1f}",
+        showarrow=False, bgcolor='rgba(255,235,200,0.9)',
+        bordercolor='#aaa', borderwidth=1,
+        font=dict(size=10, color='#111'), xanchor='right', yanchor='top')
+
+    trimp_d = df.groupby(['Data', 'type'])['trimp_val'].sum().reset_index()
+    trimp_d['Data'] = pd.to_datetime(trimp_d['Data'])
+    tipos_ord = [t for t in ['Bike','Row','Ski','Run','WeightTraining']
+                 if t in trimp_d['type'].unique()]
+    tipos_ord += [t for t in trimp_d['type'].unique() if t not in tipos_ord]
+    for tipo in tipos_ord:
+        _dt = trimp_d[trimp_d['type']==tipo][['Data','trimp_val']]
+        _merged = ld_plot[['Data']].merge(_dt, on='Data', how='left').fillna(0)
+        _fig_pmc.add_trace(go.Bar(
+            x=_dates, y=_merged['trimp_val'].tolist(),
+            name=tipo, marker_color=get_cor(tipo),
+            marker_line_width=0, opacity=0.85,
+            hovertemplate=tipo+': %{y:.0f}<extra></extra>'), row=2, col=1)
+
+    _fig_pmc.update_layout(
+        paper_bgcolor='white', plot_bgcolor='white',
+        font=dict(color='#111', size=11), height=460,
+        barmode='stack', hovermode='closest',
+        legend=dict(orientation='h', y=-0.15, font=dict(color='#111', size=10),
+                    bgcolor='rgba(255,255,255,0.9)', bordercolor='#ddd', borderwidth=1),
+        margin=dict(t=50, b=60, l=55, r=40),
+        title=dict(text='PMC — CTL / ATL / TSB' + (' / FTLM' if show_ftlm else ''),
+                   font=dict(size=14, color='#111')))
+    _fig_pmc.update_xaxes(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111'))
+    _fig_pmc.update_yaxes(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111'))
+    _fig_pmc.update_yaxes(title_text='CTL/ATL/TSB', row=1, col=1)
+    _fig_pmc.update_yaxes(title_text='Load (TRIMP)', row=2, col=1)
+    # ── Phase background on PMC (added after phase detection, placeholder for now)
+    # Actual shapes added via _add_phase_bg() called after phase results available
+    _pmc_fig_ref = _fig_pmc   # keep reference so phase bg can be added later
+    # Phase background bands on PMC chart (safe — wrapped in try)
+    try:
+        if _phase_results and 'overall' in _phase_results:
+            _add_phase_bg(_fig_pmc, _phase_results['overall'], ld_plot['Data'].tolist())
+    except Exception:
+        pass
+    st.plotly_chart(_fig_pmc, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, key="pmc_main_chart")
+
+    # ── RESUMO PMC ──
+    st.subheader("📊 Resumo PMC")
+    tsb_v = u['TSB']
+    if   tsb_v >  25: tsb_i = "🟢 Forma — pronto para competir/esforço máximo"
+    elif tsb_v >   5: tsb_i = "🟡 Fresco — bom equilíbrio treino/recuperação"
+    elif tsb_v > -10: tsb_i = "🟠 Neutro — zona de manutenção"
+    elif tsb_v > -25: tsb_i = "🔴 Fatigado — carga elevada, monitorar recuperação"
+    else:              tsb_i = "⛔ Sobrecarregado — reduzir carga imediatamente"
+    resumo = pd.DataFrame([
+        {'Métrica': 'CTL (Fitness atual)',  'Valor': f"{u['CTL']:.1f}",
+         'Interpretação': 'Capacidade aeróbica crónica (42d). Maior = melhor condição.'},
+        {'Métrica': 'ATL (Fadiga atual)',   'Valor': f"{u['ATL']:.1f}",
+         'Interpretação': 'Fadiga aguda (7d). Maior = mais fatigado recentemente.'},
+        {'Métrica': 'TSB (Forma atual)',    'Valor': f"{u['TSB']:+.1f}",
+         'Interpretação': tsb_i},
+        {'Métrica': 'CTL max histórico',    'Valor': f"{ld['CTL'].max():.1f}",
+         'Interpretação': 'Pico de fitness no período carregado.'},
+        {'Métrica': 'ATL max histórico',    'Valor': f"{ld['ATL'].max():.1f}",
+         'Interpretação': 'Pico de fadiga no período carregado.'},
+    ])
+    st.dataframe(resumo, width="stretch", hide_index=True)
+
+    # ── FTLM — explicação + resultado atual ──
+    st.markdown("---")
+
+    # ════════════════════════════════════════════════════════════════════════
+    # GRÁFICO 2 — CTLγ por modalidade (FTLM fraccionário)
+    # ════════════════════════════════════════════════════════════════════════
+
+    st.subheader("📊 CTLγ por Modalidade — FTLM Fraccionário")
+    st.caption(
+        "Cada modalidade tem o seu próprio γ ajustado independentemente. "
+        "A carga de Bike não prediz adaptações de Row — "
+        "os sistemas energéticos e padrões de recuperação são diferentes."
+    )
+
+    _CORES_MOD_PMC = {
+        'Bike': CORES['vermelho'], 'Row': CORES['azul'],
+        'Ski':  CORES['roxo'],    'Run': CORES['verde'],
+    }
+    # Also check _ld_frac directly in case merge missed cols
+    if len(_ld_frac) > 0:
+        for _mc in ['CTLg_Bike','CTLg_Row','CTLg_Ski','CTLg_Run',
+                    'CTL_Bike','CTL_Row','CTL_Ski','CTL_Run',
+                    'ATL_Bike','ATL_Row','ATL_Ski','ATL_Run']:
+            if _mc in _ld_frac.columns and _mc not in ld_plot.columns:
+                _fi = _ld_frac.set_index('Data')
+                ld_plot[_mc] = ld_plot['Data'].map(_fi[_mc]) if 'Data' in ld_plot.columns else None
+
+    _mods_with_data = [m for m in ['Bike','Row','Ski','Run']
+                       if f'CTLg_{m}' in ld_plot.columns
+                       and ld_plot[f'CTLg_{m}'].notna().any()
+                       and ld_plot[f'CTLg_{m}'].max() > 0]
+
+    if _mods_with_data:
+        # ── Subplots: 1 coluna por modalidade ────────────────────────────────────
+        # Eixo Y esquerdo (y1): CTLγ fraccionário (escala própria por modalidade)
+        # Eixo Y direito (y2): CTL + ATL clássicos (pontilhado) — escala menor
+        # Assim o CTLγ domina visualmente e CTL/ATL servem de referência contextual
+        _n_mods = len(_mods_with_data)
+
+        # make_subplots with secondary_y per column
+        from plotly.subplots import make_subplots as _msp
+        fig_mod = _msp(
+            rows=1, cols=_n_mods,
+            subplot_titles=_mods_with_data,
+            shared_yaxes=False,
+            specs=[[{'secondary_y': True}] * _n_mods],
+        )
+
+        for _ci, _mod in enumerate(_mods_with_data, 1):
+            _gi   = _info.get('mods', {}).get(_mod, {})
+            _gv   = _gi.get('gamma_perf', 0.35)
+            _rv   = _gi.get('r2_perf', 0.0)
+            _nm   = _gi.get('n_mmp', 0)
+            _src  = ('MMP5' if _gi.get('mmp_col','') == 'mmp5_pr_w'
+                     else 'MMP20' if _nm >= 5 else 'CP')
+            _cor  = _CORES_MOD_PMC.get(_mod, '#888')
+
+            # ── Y1 (left): CTLγ fraccionário — linha sólida, escala própria ────
+            _ctlg_col = f'CTLg_{_mod}'
+            if _ctlg_col in ld_plot.columns and ld_plot[_ctlg_col].notna().any():
+                fig_mod.add_trace(go.Scatter(
+                    x=_dates,
+                    y=ld_plot[_ctlg_col].tolist(),
+                    mode='lines',
+                    name=f'{_mod} CTLγ γ={_gv:.3f} R²={_rv:.2f} [{_src}]',
+                    line=dict(color=_cor, width=2.5),
+                    legendgroup=f'ctlg_{_mod}',
+                    showlegend=True,
+                    hovertemplate=f'<b>{_mod} CTLγ</b>: %{{y:.1f}}<extra></extra>',
+                ), row=1, col=_ci, secondary_y=False)
+
+            # ── Y2 (right): CTL + ATL clássicos — pontilhado/tracejado, opaco ─
+            _ctl_col = f'CTL_{_mod}'
+            _atl_col = f'ATL_{_mod}'
+
+            if _ctl_col in ld_plot.columns and ld_plot[_ctl_col].notna().any():
+                fig_mod.add_trace(go.Scatter(
+                    x=_dates,
+                    y=ld_plot[_ctl_col].tolist(),
+                    mode='lines',
+                    name=f'{_mod} CTL (42d)',
+                    line=dict(color=_cor, width=1.5, dash='dot'),
+                    opacity=0.50,
+                    legendgroup=f'ctl_{_mod}',
+                    showlegend=True,
+                    hovertemplate=f'<b>{_mod} CTL</b>: %{{y:.1f}}<extra></extra>',
+                ), row=1, col=_ci, secondary_y=True)
+
+            if _atl_col in ld_plot.columns and ld_plot[_atl_col].notna().any():
+                fig_mod.add_trace(go.Scatter(
+                    x=_dates,
+                    y=ld_plot[_atl_col].tolist(),
+                    mode='lines',
+                    name=f'{_mod} ATL (7d)',
+                    line=dict(color=_cor, width=1.5, dash='dash'),
+                    opacity=0.35,
+                    legendgroup=f'atl_{_mod}',
+                    showlegend=True,
+                    hovertemplate=f'<b>{_mod} ATL</b>: %{{y:.1f}}<extra></extra>',
+                ), row=1, col=_ci, secondary_y=True)
+
+            # Y-axis labels
+            fig_mod.update_yaxes(
+                title_text='CTLγ', title_font=dict(size=8, color=_cor),
+                showgrid=True, gridcolor='#eee',
+                tickfont=dict(color='#111', size=8),
+                row=1, col=_ci, secondary_y=False)
+            fig_mod.update_yaxes(
+                title_text='CTL/ATL', title_font=dict(size=8, color='#888'),
+                showgrid=False,
+                tickfont=dict(color='#888', size=8),
+                row=1, col=_ci, secondary_y=True)
+
+        fig_mod.update_layout(
+            paper_bgcolor='white', plot_bgcolor='white',
+            font=dict(color='#111', size=10),
+            height=400,
+            margin=dict(t=65, b=90, l=50, r=50),
+            hovermode='x unified',
+            barmode='overlay',
+            legend=dict(orientation='h', y=-0.32,
+                        font=dict(color='#111', size=9),
+                        bgcolor='rgba(255,255,255,0.9)'),
+            title=dict(
+                text='CTLγ (Y esq, sólido) | CTL/ATL clássicos (Y dir, pontilhado/tracejado)',
+                font=dict(size=12, color='#111')),
+        )
+        fig_mod.update_xaxes(showgrid=True, gridcolor='#eee',
+                              tickangle=-45, tickfont=dict(color='#111', size=9))
+        st.plotly_chart(fig_mod, use_container_width=True,
+                        config={'displayModeBar': False, 'responsive': True},
+                        key="pmc_ctlg_mod")
+
+        # ── Interpretação γ por modalidade ──────────────────────────────────
+        st.markdown("**🔍 Interpretação de γ por Modalidade**")
+        _cols_mod = st.columns(len(_mods_with_data))
+        for _ci2, _mod in enumerate(_mods_with_data):
+            _gi2  = _info.get('mods', {}).get(_mod, {})
+            _gv2  = _gi2.get('gamma_perf', 0.35)
+            _rv2  = _gi2.get('r2_perf', 0.0)
+            _nm2  = _gi2.get('n_mmp', 0)
+            _nc2  = _gi2.get('n_cp', 0)
+            _ns2  = _gi2.get('n_sessions', 0)
+            _mmp_col_used = _gi2.get('mmp_col', 'mmp20_pr_w').replace('_pr_w','').upper()
+            _perf_col_m   = _gi2.get('perf_col', 'icu_pm_cp')
+            if _nm2 >= 5:
+                _src2 = f'{_mmp_col_used} ({_nm2} PR)'
+            elif _nc2 >= 5:
+                _src2 = f'{_perf_col_m} ({_nc2} sessões)'
+            else:
+                _src2 = 'sem dados suficientes (γ=default 0.35)'
+            _icon, _lbl, _mtxt, _r2txt = _interp_gamma(_gv2, _rv2, _mod)
+            with _cols_mod[_ci2]:
+                st.markdown(f"**{_icon} {_mod}**")
+                st.metric("γ", f"{_gv2:.3f}", help=_lbl)
+                st.metric("R²", f"{_rv2:.2f}", help=_src2)
+                st.caption(_mtxt)
+                st.caption(_r2txt)
+    else:
+        st.info("CTLγ por modalidade não disponível — sem dados suficientes.")
+    # ════════════════════════════════════════════════════════════════════════
+    # FASE DE TREINO — detector por modalidade + global
+    # ════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.subheader("🔄 Fase de Treino Actual")
