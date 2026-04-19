@@ -112,8 +112,17 @@ def tab_pmc(da, wc=None):
     # Usa calcular_series_carga para fitting de γ_perf (icu_pm_cp) e γ_rec (HRV)
     # O bloco CTL/ATL/TSB acima é mantido para compatibilidade e velocidade.
     # O FTLM fraccionário é computado separadamente e adicionado a ld.
-    with st.spinner("A calcular FTLM fraccionário (γ dual)..."):
-        _ld_frac, _info = calcular_series_carga(da_full, df_wellness=wc, ate_hoje=True)
+    @st.cache_data(show_spinner="A calcular FTLM fraccionário (γ dual)...", ttl=3600)
+    def _cached_csc(_da_hash, _wc_hash, da, wc_arg):
+        # _da_hash and _wc_hash are used only as cache keys (not computed again)
+        return calcular_series_carga(da, df_wellness=wc_arg, ate_hoje=True)
+
+    # Cache key: tuple of (last date, n_rows) — recomputes only when data changes
+    _da_key  = (str(da_full['Data'].max()) if 'Data' in da_full.columns else '',
+                len(da_full))
+    _wc_key  = (str(wc['Data'].max())      if wc is not None and 'Data' in wc.columns else '',
+                len(wc) if wc is not None else 0)
+    _ld_frac, _info = _cached_csc(_da_key, _wc_key, da_full, wc)
 
     if len(_ld_frac) > 0 and 'FTLM' in _ld_frac.columns:
         # Align fractional ld with our ld (may have different date range)
@@ -441,12 +450,17 @@ def tab_pmc(da, wc=None):
     st.markdown("---")
     st.subheader("🔄 Fase de Treino Actual")
 
-    with st.spinner("A detectar fases de treino..."):
-        try:
-            _phase_results = detect_all_phases(_ld_frac) if len(_ld_frac) > 30 else {}
-        except Exception as _pe:
-            _phase_results = {}
-            st.caption(f"⚠️ Detector de fases indisponível: {_pe}")
+    @st.cache_data(show_spinner="A detectar fases de treino...", ttl=3600)
+    def _cached_phases(_ld_hash, ld_arg):
+        return detect_all_phases(ld_arg)
+
+    try:
+        _ld_hash2 = (str(_ld_frac['Data'].max()) if len(_ld_frac) > 0 else '',
+                     len(_ld_frac))
+        _phase_results = _cached_phases(_ld_hash2, _ld_frac) if len(_ld_frac) > 30 else {}
+    except Exception as _pe:
+        _phase_results = {}
+        st.caption(f"⚠️ Detector de fases indisponível: {_pe}")
 
     if _phase_results:
         # ── Global + per-modality cards ───────────────────────────────────────
