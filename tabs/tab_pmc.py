@@ -488,27 +488,40 @@ def tab_pmc(da, wc=None):
 
                 _fig_ph = go.Figure()
 
-                # Add phase background bands
-                _prev_phase = None
-                _band_start = None
+                # Add phase background bands using add_shape (rgba string, no validator issue)
+                _prev_phase  = None
+                _band_start  = None
+                _prev_color  = '#95a5a6'
                 for _ti, (_row_date, _row_phase, _row_color) in enumerate(
                         zip(_dates_p, _pov180['phase_smooth'].tolist(),
                             _pov180['phase_color'].tolist())):
                     if _row_phase != _prev_phase:
                         if _band_start is not None:
-                            _fig_ph.add_vrect(
+                            _h = _prev_color.lstrip('#')
+                            _r, _g, _b = int(_h[0:2],16), int(_h[2:4],16), int(_h[4:6],16)
+                            _fig_ph.add_shape(
+                                type='rect',
                                 x0=_band_start, x1=_row_date,
-                                fillcolor=_hex_rgba(_prev_color, 0.15),
-                                layer='below', line_width=0)
-                        _band_start  = _row_date
-                        _prev_phase  = _row_phase
-                        _prev_color  = _row_color
+                                y0=0, y1=1,
+                                xref='x', yref='paper',
+                                fillcolor=f'rgba({_r},{_g},{_b},0.15)',
+                                line_width=0,
+                                layer='below')
+                        _band_start = _row_date
+                        _prev_phase = _row_phase
+                        _prev_color = _row_color
                 # Close last band
                 if _band_start is not None:
-                    _fig_ph.add_vrect(
+                    _h = _prev_color.lstrip('#')
+                    _r, _g, _b = int(_h[0:2],16), int(_h[2:4],16), int(_h[4:6],16)
+                    _fig_ph.add_shape(
+                        type='rect',
                         x0=_band_start, x1=_dates_p[-1],
-                        fillcolor=_hex_rgba(_prev_color, 0.15),
-                        layer='below', line_width=0)
+                        y0=0, y1=1,
+                        xref='x', yref='paper',
+                        fillcolor=f'rgba({_r},{_g},{_b},0.15)',
+                        line_width=0,
+                        layer='below')
 
                 # CTLγ overall on top
                 _fig_ph.add_trace(go.Scatter(
