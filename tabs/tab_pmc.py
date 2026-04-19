@@ -474,7 +474,7 @@ def tab_pmc(da, wc=None):
         for _pi, _pm in enumerate(_phase_mods):
             _pdf  = _phase_results[_pm]
             _psum = phase_summary(_pdf, last_n=30)
-            _pmod_label = '🌐 Global' if _pm == 'overall' else _pm
+            _pmod_label = '🌐 CTLγ Combined' if _pm == 'overall' else _pm
 
             with _phase_cols[_pi]:
                 st.markdown(
@@ -492,6 +492,23 @@ def tab_pmc(da, wc=None):
                     f"</div>",
                     unsafe_allow_html=True
                 )
+
+        # ── Weighted global phase card ────────────────────────────────────────
+        if _gw_phase and _gw_weights:
+            _gw_info  = PHASE_LABELS.get(_gw_phase, PHASE_LABELS['TRANSITION'])
+            _gw_label = _gw_info['label']
+            _gw_color = _gw_info['color']
+            _gw_desc  = _gw_info['desc']
+            _weights_str = ' | '.join(
+                f"{m}: {int(w*100)}%" for m, w in sorted(
+                    _gw_weights.items(), key=lambda x: -x[1]))
+            st.info(
+                f"**🏋️ Fase Global Ponderada (por CTLγ): {_gw_label}**  \n"
+                f"{_gw_desc}  \n"
+                f"Pesos: {_weights_str}  \n"
+                f"*Diferente do 'CTLγ Combined' quando a modalidade dominante "
+                f"está em fase distinta do total combinado.*"
+            )
 
         # ── Phase timeline chart — last 180d ──────────────────────────────────
         with st.expander("📊 Timeline de Fases (últimos 180d)", expanded=False):
@@ -571,6 +588,42 @@ def tab_pmc(da, wc=None):
                                      tickfont=dict(size=9))
                 _fig_ph.update_yaxes(showgrid=True, gridcolor='#eee',
                                      tickfont=dict(size=9))
+                # Modal phase markers: show dot when modal ≠ overall phase
+                _mod_colors = {'Bike': CORES['vermelho'], 'Row': CORES['azul'],
+                               'Ski': CORES['roxo'], 'Run': CORES['verde']}
+                for _mod_t in ['Bike','Row','Ski','Run']:
+                    if _mod_t not in _phase_results:
+                        continue
+                    _pdf_mod = _phase_results[_mod_t]
+                    # Align to last 180d
+                    _pdf_mod180 = _pdf_mod[_pdf_mod['Data'].astype(str).isin(
+                        [str(d)[:10] for d in _dates_p])].tail(180)
+                    if len(_pdf_mod180) == 0:
+                        continue
+                    # Only show where modal phase ≠ overall phase
+                    _overall_phases = dict(zip(
+                        [str(d)[:10] for d in _pov180['Data'].tolist()],
+                        _pov180['phase_smooth'].tolist()))
+                    _diff_rows = _pdf_mod180[
+                        _pdf_mod180.apply(
+                            lambda r: r['phase_smooth'] != _overall_phases.get(str(r['Data'])[:10], ''),
+                            axis=1)]
+                    if len(_diff_rows) == 0:
+                        continue
+                    _fig_ph.add_trace(go.Scatter(
+                        x=_diff_rows['Data'].tolist(),
+                        y=[0] * len(_diff_rows),  # bottom of chart
+                        mode='markers',
+                        marker=dict(
+                            symbol='triangle-up',
+                            size=8,
+                            color=_mod_colors.get(_mod_t, '#888'),
+                            line=dict(width=1, color='white')),
+                        name=f'{_mod_t} ≠ overall',
+                        text=_diff_rows['phase_smooth'].tolist(),
+                        hovertemplate=f'<b>{_mod_t}</b>: %{{text}}<extra></extra>',
+                        showlegend=True))
+
                 st.plotly_chart(_fig_ph, use_container_width=True,
                                 config={'displayModeBar': False},
                                 key="pmc_phase_timeline")
