@@ -76,34 +76,73 @@ def tab_pmc(da, wc=None):
     if len(da) == 0: st.warning("Sem dados de atividades."); return
 
     def _add_phase_bg(fig, phase_df, plot_dates):
-        """Add phase colour bands (add_shape rgba) to a plotly figure."""
+        """
+        Add phase colour bands to a Plotly figure.
+        - Historical bands: opacity 0.08 (very subtle)
+        - Current phase band: opacity 0.18 (slightly more visible)
+        - Current phase annotation in top-right corner
+        """
         if phase_df is None or len(phase_df) == 0:
             return
-        _ph_s  = phase_df[['Data','phase_smooth','phase_color']].copy()
+        _ph_s  = phase_df[['Data','phase_smooth','phase_color','phase_label']].copy()
         _ph_s['_ds'] = _ph_s['Data'].astype(str).str[:10]
         _ph_map = _ph_s.set_index('_ds')
+        _dates_pd = pd.to_datetime(plot_dates)
+        _last_date = _dates_pd.max()
+
         _prev_ph, _band_st, _prev_col = None, None, '#95a5a6'
-        for _dt in pd.to_datetime(plot_dates):
+        _prev_label = ''
+        _bands = []  # collect all bands first
+
+        for _dt in _dates_pd:
             _ds = str(_dt)[:10]
-            _cur_ph  = _ph_map.loc[_ds,'phase_smooth'] if _ds in _ph_map.index else 'TRANSITION'
-            _cur_col = _ph_map.loc[_ds,'phase_color']  if _ds in _ph_map.index else '#95a5a6'
+            if _ds in _ph_map.index:
+                _row = _ph_map.loc[_ds]
+                _cur_ph    = _row['phase_smooth'] if isinstance(_row, pd.Series) else _row['phase_smooth'].iloc[0]
+                _cur_col   = _row['phase_color']  if isinstance(_row, pd.Series) else _row['phase_color'].iloc[0]
+                _cur_label = _row['phase_label']  if isinstance(_row, pd.Series) else _row['phase_label'].iloc[0]
+            else:
+                _cur_ph, _cur_col, _cur_label = 'TRANSITION', '#95a5a6', '⬜ Transition'
+
             if _cur_ph != _prev_ph:
                 if _band_st is not None:
-                    _hx = _prev_col.lstrip('#')
-                    _r2,_g2,_b2 = int(_hx[0:2],16),int(_hx[2:4],16),int(_hx[4:6],16)
-                    fig.add_shape(type='rect', x0=_band_st, x1=_dt,
-                        y0=0, y1=1, xref='x', yref='paper',
-                        fillcolor=f'rgba({_r2},{_g2},{_b2},0.10)',
-                        line_width=0, layer='below')
-                _band_st, _prev_ph, _prev_col = _dt, _cur_ph, _cur_col
+                    _bands.append((_band_st, _dt, _prev_col, _prev_ph, _prev_label))
+                _band_st, _prev_ph, _prev_col, _prev_label = _dt, _cur_ph, _cur_col, _cur_label
+
+        # Close last band
         if _band_st is not None:
-            _hx = _prev_col.lstrip('#')
-            _r2,_g2,_b2 = int(_hx[0:2],16),int(_hx[2:4],16),int(_hx[4:6],16)
-            fig.add_shape(type='rect',
-                x0=_band_st, x1=pd.to_datetime(plot_dates).max(),
+            _bands.append((_band_st, _last_date, _prev_col, _prev_ph, _prev_label))
+
+        # Get current (last) phase
+        _current_ph  = _bands[-1][3] if _bands else 'TRANSITION'
+        _current_col = _bands[-1][2] if _bands else '#95a5a6'
+        _current_lbl = _bands[-1][4] if _bands else '⬜ Transition'
+
+        # Draw bands
+        for _b0, _b1, _bcol, _bph, _blbl in _bands:
+            _hx = _bcol.lstrip('#')
+            _r2,_g2,_b2c = int(_hx[0:2],16),int(_hx[2:4],16),int(_hx[4:6],16)
+            # Current phase slightly more opaque
+            _alpha = 0.18 if _bph == _current_ph else 0.08
+            fig.add_shape(type='rect', x0=_b0, x1=_b1,
                 y0=0, y1=1, xref='x', yref='paper',
-                fillcolor=f'rgba({_r2},{_g2},{_b2},0.10)',
+                fillcolor=f'rgba({_r2},{_g2},{_b2c},{_alpha})',
                 line_width=0, layer='below')
+
+        # Annotation: current phase label in top-right
+        _hx2 = _current_col.lstrip('#')
+        _r3,_g3,_b3 = int(_hx2[0:2],16),int(_hx2[2:4],16),int(_hx2[4:6],16)
+        fig.add_annotation(
+            x=1.0, y=1.02,
+            xref='paper', yref='paper',
+            text=f'Fase actual: <b>{_current_lbl}</b>',
+            showarrow=False,
+            font=dict(size=11, color=f'rgb({_r3},{_g3},{_b3})'),
+            bgcolor=f'rgba({_r3},{_g3},{_b3},0.12)',
+            bordercolor=f'rgb({_r3},{_g3},{_b3})',
+            borderwidth=1, borderpad=4,
+            xanchor='right', yanchor='bottom'
+        )
 
 
 
