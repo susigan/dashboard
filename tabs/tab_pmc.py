@@ -1,4 +1,5 @@
 from utils.config import *
+from utils.phase_detector import detect_all_phases, phase_summary, PHASE_LABELS
 from utils.helpers import *
 from utils.data import *
 import streamlit as st
@@ -434,6 +435,147 @@ def tab_pmc(da, wc=None):
                 st.caption(_r2txt)
     else:
         st.info("CTLγ por modalidade não disponível — sem dados suficientes.")
+    # ════════════════════════════════════════════════════════════════════════
+    # FASE DE TREINO — detector por modalidade + global
+    # ════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.subheader("🔄 Fase de Treino Actual")
+
+    with st.spinner("A detectar fases de treino..."):
+        try:
+            _phase_results = detect_all_phases(_ld_frac) if len(_ld_frac) > 30 else {}
+        except Exception as _pe:
+            _phase_results = {}
+            st.caption(f"⚠️ Detector de fases indisponível: {_pe}")
+
+    if _phase_results:
+        # ── Global + per-modality cards ───────────────────────────────────────
+        _phase_mods = ['overall'] + [m for m in ['Bike','Row','Ski','Run']
+                                      if m in _phase_results]
+        _phase_cols = st.columns(len(_phase_mods))
+
+        for _pi, _pm in enumerate(_phase_mods):
+            _pdf  = _phase_results[_pm]
+            _psum = phase_summary(_pdf, last_n=30)
+            _pmod_label = '🌐 Global' if _pm == 'overall' else _pm
+
+            with _phase_cols[_pi]:
+                st.markdown(
+                    f"<div style='background:{_psum['current_color']}22;"
+                    f"border-left:4px solid {_psum['current_color']};"
+                    f"padding:10px;border-radius:6px;margin-bottom:6px'>"
+                    f"<b>{_pmod_label}</b><br>"
+                    f"<span style='font-size:1.3em'>{_psum['current_label']}</span><br>"
+                    f"<small>{_psum['current_desc']}</small><br><br>"
+                    f"<small>📅 {_psum['streak_days']}d nesta fase"
+                    f"{'  ✅ estável' if _psum['stable'] else '  🔄 recente'}</small><br>"
+                    f"<small>CTLγ {_psum['current_ctlg']:.1f} | "
+                    f"ΔCTL {'↑' if _psum['current_dctlg']>0 else '↓'}"
+                    f"{abs(_psum['current_dctlg']):.4f}/d</small>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+
+        # ── Phase timeline chart — last 180d ──────────────────────────────────
+        with st.expander("📊 Timeline de Fases (últimos 180d)", expanded=False):
+            _pov   = _phase_results.get('overall')
+            if _pov is not None:
+                _pov180 = _pov.tail(180).copy()
+                _dates_p = _pov180['Data'].tolist()
+
+                _fig_ph = go.Figure()
+
+                # Add phase background bands
+                _prev_phase = None
+                _band_start = None
+                for _ti, (_row_date, _row_phase, _row_color) in enumerate(
+                        zip(_dates_p, _pov180['phase'].tolist(),
+                            _pov180['phase_color'].tolist())):
+                    if _row_phase != _prev_phase:
+                        if _band_start is not None:
+                            _fig_ph.add_vrect(
+                                x0=_band_start, x1=_row_date,
+                                fillcolor=_prev_color + '33',
+                                layer='below', line_width=0)
+                        _band_start  = _row_date
+                        _prev_phase  = _row_phase
+                        _prev_color  = _row_color
+                # Close last band
+                if _band_start is not None:
+                    _fig_ph.add_vrect(
+                        x0=_band_start, x1=_dates_p[-1],
+                        fillcolor=_prev_color + '33',
+                        layer='below', line_width=0)
+
+                # CTLγ overall on top
+                _fig_ph.add_trace(go.Scatter(
+                    x=_dates_p,
+                    y=_pov180['CTLg'].tolist(),
+                    name='CTLγ global',
+                    line=dict(color=CORES['azul'], width=2),
+                    hovertemplate='CTLγ: %{y:.1f}<extra></extra>'))
+
+                # HRV trend (if available)
+                if _pov180['HRV_z'].notna().any():
+                    _hrv_sc = _pov180['HRV_z'] * (_pov180['CTLg'].max() / 4)
+                    _fig_ph.add_trace(go.Scatter(
+                        x=_dates_p,
+                        y=_hrv_sc.tolist(),
+                        name='HRV trend (escala)',
+                        line=dict(color=CORES['verde'], width=1.5, dash='dot'),
+                        opacity=0.7,
+                        hovertemplate='HRV_z: %{customdata:.2f}<extra></extra>',
+                        customdata=_pov180['HRV_z'].tolist()))
+
+                _fig_ph.update_layout(
+                    paper_bgcolor='white', plot_bgcolor='white',
+                    height=280,
+                    margin=dict(t=30, b=60, l=50, r=20),
+                    hovermode='x unified',
+                    legend=dict(orientation='h', y=-0.25,
+                                font=dict(color='#111', size=9)),
+                    font=dict(color='#111', size=10),
+                    title=dict(text='Timeline de Fases — CTLγ + HRV',
+                               font=dict(size=12)))
+                _fig_ph.update_xaxes(showgrid=True, gridcolor='#eee',
+                                     tickfont=dict(size=9))
+                _fig_ph.update_yaxes(showgrid=True, gridcolor='#eee',
+                                     tickfont=dict(size=9))
+                st.plotly_chart(_fig_ph, use_container_width=True,
+                                config={'displayModeBar': False},
+                                key="pmc_phase_timeline")
+
+                # Phase legend
+                _cols_leg = st.columns(3)
+                for _li, (_pk, _pv) in enumerate(PHASE_LABELS.items()):
+                    _cols_leg[_li % 3].markdown(
+                        f"<span style='color:{_pv['color']};font-weight:bold'>"
+                        f"{_pv['label']}</span> — {_pv['desc']}",
+                        unsafe_allow_html=True)
+
+        # ── Download phases CSV ───────────────────────────────────────────────
+        _dl_phase_frames = []
+        for _pm, _pdf in _phase_results.items():
+            _pdfx = _pdf[['Data','phase','phase_label','CTLg','dCTLg_14d',
+                           'HRV_rel','WEED_z','CTLg_z','dCTLg_z']].copy()
+            _pdfx.insert(1, 'Modalidade', _pm)
+            _dl_phase_frames.append(_pdfx)
+        if _dl_phase_frames:
+            _dl_phase_df = pd.concat(_dl_phase_frames, ignore_index=True)
+            _dl_phase_df['Data'] = _dl_phase_df['Data'].astype(str)
+            _dl_phase_df = _dl_phase_df.round(4)
+            st.download_button(
+                label="📥 Download Fases (.csv)",
+                data=_dl_phase_df.to_csv(
+                    index=False, sep=';', decimal=',').encode('utf-8'),
+                file_name="atheltica_fases_treino.csv",
+                mime="text/csv",
+                key="pmc_dl_phases",
+            )
+            st.caption(
+                f"Exporta fases para: {', '.join(_phase_results.keys())} | "
+                f"Thresholds: percentil rolante 60d | ΔCTLγ slope {14}d")
+
 
     st.markdown("---")
 
