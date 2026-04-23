@@ -784,26 +784,67 @@ def tab_pmc(da, wc=None):
 
             st.markdown(f"**Dimensões activas:** `{_tensor_names}`")
 
+            # Status detalhado — verifica directamente _ld_frac para diagnóstico
+            def _col_status(col, min_n=20):
+                if col not in _ld_frac.columns:
+                    return f"❌ coluna ausente"
+                n = int(_ld_frac[col].notna().sum())
+                if n == 0:   return f"❌ 0 valores"
+                if n < min_n: return f"⚠️ {n} valores (mín {min_n})"
+                return f"✅ {n} valores"
+
             _sig_rows = [
-                ("CTLγ perf",  "✅ sempre",
+                ("CTLγ perf",  _col_status('CTLg_perf'),
                  "Carga fraccionária acumulada — dimensão Load"),
-                ("HRV trend",
-                 "✅" if ('HRV_trend' in _ld_frac.columns
-                          and _ld_frac['HRV_trend'].notna().sum() >= 20) else "⚠️ < 20 dias",
+                ("HRV trend",  _col_status('HRV_trend'),
                  "Estado autonómico — LnRMSSD intercept+slope 7d"),
-                ("WEED_z",
-                 "✅" if ('WEED_z' in _ld_frac.columns
-                          and _ld_frac['WEED_z'].notna().sum() >= 20) else "⚠️ < 20 dias",
-                 "Readiness subjectivo — z-score 28d stress+soreness+fatiga"),
-                ("Sleep_z",    "✅" if _has_sl else "⚠️ sem dados",
-                 "Qualidade sono — z-score 28d (separado do WEED, per paper)"),
-                ("W' stress",  "✅" if _has_ws else "⚠️ sem AllWorkFTP/eW",
+                ("WEED_z",     _col_status('WEED_z'),
+                 "Readiness — z-score 28d de stress+soreness+fatiga"),
+                ("sleep_z",    _col_status('sleep_z'),
+                 "Qualidade sono — z-score 28d (escala 1=mau, 5=óptimo → sem inversão)"),
+                ("w_stress",   _col_status('w_stress'),
                  "AllWorkFTP_kJ / (eW_kJ) — fracção W' consumida acima de FTP"),
-                ("HR drift",   "✅" if _has_hq else "⚠️ sem Hq1/Hq4",
-                 "hq_4/hq_1 z-score 14d — intensidade intra-sessão (HR quartiles)"),
+                ("hq_drift_z", _col_status('hq_drift_z'),
+                 "Hq4/Hq1 z-score 14d — intensidade intra-sessão (HR quartiles)"),
+                ("FMT_kappa",  _col_status('FMT_kappa'),
+                 "κ = trace(F) — curvatura escalar"),
+                ("λ₁/Σλ",      _col_status('FMT_lambda1_frac'),
+                 "Concentração de stress — focal vs multissistémico"),
             ]
-            _sig_df = pd.DataFrame(_sig_rows, columns=["Dimensão", "Estado", "Significado"])
+            _sig_df = pd.DataFrame(_sig_rows, columns=["Sinal", "Estado", "Significado"])
             st.dataframe(_sig_df, hide_index=True, use_container_width=True)
+
+            with st.expander("🔍 Diagnóstico de colunas", expanded=False):
+                st.markdown("**Colunas presentes em `_ld_frac`:**")
+                _diag = []
+                for _dc in ['HRV_trend','WEED_z','sleep_z','w_stress','hq_drift_z',
+                             'FMT_kappa','FMT_lambda1_frac','wp_prime']:
+                    _inn = _dc in _ld_frac.columns if len(_ld_frac) > 0 else False
+                    _nv  = int(_ld_frac[_dc].notna().sum()) if _inn else 0
+                    _diag.append({'Coluna': _dc, 'Existe': '✅' if _inn else '❌', 'Non-NaN': _nv})
+                st.dataframe(pd.DataFrame(_diag), hide_index=True)
+                st.markdown("**Wellness — colunas com sleep/sono:**")
+                if wc is not None and len(wc) > 0:
+                    _slp_cols = [c for c in wc.columns if 'sleep' in c.lower() or 'sono' in c.lower()]
+                    st.text(f"sleep_quality mapeada: {'sleep_quality' in wc.columns}")
+                    st.text(f"Colunas encontradas: {_slp_cols}")
+                    if 'sleep_quality' in wc.columns:
+                        _sq = wc['sleep_quality'].dropna()
+                        st.text(f"Registos: {len(_sq)} | min={_sq.min():.0f} max={_sq.max():.0f} mean={_sq.mean():.2f}")
+                else:
+                    st.text("wc: vazio ou None")
+
+            # Raw columns diagnostic — shows ALL columns in _ld_frac
+            with st.expander("🔬 Diagnóstico: colunas disponíveis em _ld_frac", expanded=False):
+                _avail = sorted(_ld_frac.columns.tolist())
+                st.caption(f"Total: {len(_avail)} colunas")
+                st.code(', '.join(_avail))
+                # Show key columns non-null counts
+                _key_cols = ['sleep_z','w_stress','hq_drift_z','FMT_kappa',
+                             'FMT_lambda1_frac','WEED_z','HRV_trend','wp_prime']
+                _diag = {c: int(_ld_frac[c].notna().sum()) if c in _ld_frac.columns else 0
+                         for c in _key_cols}
+                st.json(_diag)
 
             st.markdown("**Interpretação λ₁/Σλ:**")
             st.markdown(
