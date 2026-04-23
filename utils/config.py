@@ -115,9 +115,22 @@ MAPA_TRAINING = {
     'z2_sec': ['Z2sec'],
     'z3_sec': ['Z3sec'],
     # ── eW (estimated W') e eFTP por actividade ──────────────────────────
-    # Adicionados manualmente — indicar os nomes exactos das colunas da sheet
-    # quando disponíveis. Processados como texto via parse_mmp() em data.py.
+    # icu_pm_w_prime = eW = W' estimado pelo modelo Morton 3P para ESTA sessão
+    #   → varia por sessão e modalidade porque o CP/FTP varia
+    #   → unidades: JOULES (dividir por 1000 para kJ)
+    # icu_w_prime = W' calculado por modalidade (valor fixo de referência)
+    #   → referência canónica por desporto, não muda por sessão
     'icu_pm_w_prime':   ['icu_pm_w_prime', 'eW', 'W_prime', 'w_prime'],
+    'icu_w_prime':      ['icu_w_prime'],
+    # ── HR quartis por actividade (Intervals.icu) ────────────────────────
+    # hq_1..4 = média de FC no quartil 1..4 da actividade
+    # Nomes exactos na sheet: Hq1, Hq2, Hq3, Hq4
+    # hq_4/hq_1 = HR drift ratio = proxy de intensidade intra-sessão
+    # Paper FMT 2019: "HR quartiles" são uma das dimensões do vector de estado
+    'hq_1': ['Hq1', 'hq_1', 'HQ1', 'hq1'],
+    'hq_2': ['Hq2', 'hq_2', 'HQ2', 'hq2'],
+    'hq_3': ['Hq3', 'hq_3', 'HQ3', 'hq3'],
+    'hq_4': ['Hq4', 'hq_4', 'HQ4', 'hq4'],
     # ── MMP (Mean Maximal Power) por actividade ──────────────────────────
     # Formato: "Yes - 318w"  ou  "No (PR: 364w)"
     # "Yes" = PR na sessão actual  |  "No (PR: Xw)" = PR histórico (season best)
