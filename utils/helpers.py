@@ -435,19 +435,27 @@ def fit_gamma_recovery(load_arr, hrv_arr, gamma_range=(0.10, 0.90),
     return best_gamma, best_r2, trend_combined, best_lag
 
 
-def _compute_kappa(series_list, window=28):
+def _compute_kappa(series_list, window=28, return_eigenvalues=False):
     """
     FMT scalar curvature: κ(t) = trace(cov(Δx)) over rolling window.
+    Della Mattia (2019) — Functional Multidimensional Tensor.
 
-    series_list : list of 1D arrays, all same length, representing the
-                  dimensions of the state vector x(t).
-    window      : rolling window for covariance (default 28 days).
+    series_list       : list of 1D arrays, same length — dimensions of x(t).
+    window            : rolling window for covariance (default 28 days).
+    return_eigenvalues: if True, also return λ₁_frac (largest eigenvalue fraction)
+                        λ₁_frac = λ₁ / Σλ — stress concentration index:
+                          → near 1.0  = stress focal (one dimension dominates)
+                          → near 1/d  = stress multisystemic (all dims perturbed equally)
 
     Each dimension is z-scored independently before computing Δx.
     F(t) = cov(Δx[t-window:t]) — d×d covariance matrix.
-    κ(t) = trace(F(t)) — sum of variances of the Δx dimensions.
+    κ(t) = trace(F(t)) — scalar curvature of athlete state.
+    κ rising  → abrupt simultaneous changes across dimensions → fatigue accumulating.
+    κ falling → adaptation stabilising.
 
-    Returns array of length n with κ(t) values (NaN for first `window` days).
+    Returns:
+      kappa (array n) — always
+      lambda1_frac (array n) — only if return_eigenvalues=True
     """
     n   = len(series_list[0])
     d   = len(series_list)
@@ -461,7 +469,9 @@ def _compute_kappa(series_list, window=28):
     delta = np.full_like(mat, np.nan)
     delta[1:] = mat[1:] - mat[:-1]
 
-    kappa = np.full(n, np.nan)
+    kappa       = np.full(n, np.nan)
+    lambda1_frac = np.full(n, np.nan)
+
     for t in range(window, n):
         wd = delta[t - window:t]
         valid = np.all(np.isfinite(wd), axis=1)
@@ -470,8 +480,17 @@ def _compute_kappa(series_list, window=28):
         try:
             F = np.cov(wd[valid].T)
             kappa[t] = float(np.trace(F))
+            if return_eigenvalues and d >= 2:
+                # Eigenvalues of symmetric covariance matrix (all real, sorted desc)
+                eigs = np.sort(np.linalg.eigvalsh(F))[::-1]
+                eigs_pos = eigs[eigs > 0]
+                if len(eigs_pos) > 0:
+                    lambda1_frac[t] = float(eigs_pos[0] / eigs_pos.sum())
         except Exception:
             pass
+
+    if return_eigenvalues:
+        return kappa, lambda1_frac
     return kappa
 
 
@@ -801,27 +820,123 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
     best_source = 'perf'     if r2_perf >= r2_rec else 'recovery'
     ld['FTLM']  = ld['CTLg_perf'] if best_source == 'perf' else ld['CTLg_rec']
 
+    # ── W' stress diário (AllWorkFTP / icu_pm_w_prime) ──────────────────────
+    # w_stress = AllWorkFTP_kJ / (icu_pm_w_prime_J / 1000)
+    #   = fracção de W' consumida acima de FTP por sessão
+    #   > 1.0 significa que o W' foi excedido (esforço anaeróbico severo)
+    # icu_pm_w_prime já é específico da sessão/modalidade (Morton 3P)
+    # Portanto o rácio é automaticamente normalizado por modalidade
+    # Rolling 7d suaviza ruído sessão-a-sessão
+    if ('AllWorkFTP' in df.columns and 'icu_pm_w_prime' in df.columns and
+            df['AllWorkFTP'].notna().sum() >= 10 and df['icu_pm_w_prime'].notna().sum() >= 10):
+        _df_ws = df.copy()
+        _wp_j  = pd.to_numeric(_df_ws['icu_pm_w_prime'], errors='coerce')
+        _aw    = pd.to_numeric(_df_ws['AllWorkFTP'],      errors='coerce')
+        # Converter: icu_pm_w_prime em Joules → kJ; AllWorkFTP já em kJ
+        _wp_kj = _wp_j / 1000.0
+        # Rácio apenas onde W' > 0 para evitar divisão por zero
+        _ws_ratio = np.where(_wp_kj > 0.5, _aw / _wp_kj, np.nan)
+        _df_ws['_w_stress'] = _ws_ratio
+        _w_stress_daily = (_df_ws.groupby('Data')['_w_stress']
+                           .mean()
+                           .reindex(_date_idx, fill_value=np.nan))
+        # Rolling 7d — suaviza ruído (sessões isoladas não dominam)
+        ld['w_stress'] = _w_stress_daily.rolling(7, min_periods=2).mean().values
+    else:
+        # Fallback: wp_prime smoothed (backward compatible)
+        if 'icu_pm_w_prime' in df.columns and df['icu_pm_w_prime'].notna().sum() >= 10:
+            _wp_daily = (df.groupby('Data')['icu_pm_w_prime']
+                         .mean()
+                         .reindex(_date_idx, fill_value=np.nan))
+            ld['wp_prime'] = _wp_daily.rolling(7, min_periods=3).mean().values
+
+    # Manter wp_prime para backward compat (CSV, FMT_kappa_4d legacy)
+    if 'w_stress' in ld.columns and 'wp_prime' not in ld.columns:
+        ld['wp_prime'] = ld['w_stress']   # alias para compatibilidade
+
+    # ── HR quartil drift (hq_4 / hq_1) ──────────────────────────────────────
+    # Paper FMT 2019: HR quartiles são dimensão Load do vector de estado x(t)
+    # hq_4/hq_1 = HR drift ratio = quão concentrada foi a FC no final da sessão
+    # Sessão aeróbica leve: hq_4 ≈ hq_1 (ratio ≈ 1.1)
+    # Sessão intensa/drift: hq_4 >> hq_1 (ratio ≈ 1.3+)
+    # Rolling 14d z-score: captura padrão crónico de intensidade intra-sessão
+    if ('hq_1' in df.columns and 'hq_4' in df.columns and
+            df['hq_1'].notna().sum() >= 10 and df['hq_4'].notna().sum() >= 10):
+        _df_hq = df.copy()
+        _hq1   = pd.to_numeric(_df_hq['hq_1'], errors='coerce')
+        _hq4   = pd.to_numeric(_df_hq['hq_4'], errors='coerce')
+        # Ratio hq_4/hq_1 só onde hq_1 > 40 bpm (evita artefactos)
+        _hq_ratio = np.where(_hq1 > 40, _hq4 / _hq1, np.nan)
+        _df_hq['_hq_ratio'] = _hq_ratio
+        _hq_daily = (_df_hq.groupby('Data')['_hq_ratio']
+                     .mean()
+                     .reindex(_date_idx, fill_value=np.nan))
+        # Z-score rolante 14d: desvio do padrão pessoal de HR drift
+        _hq_mu  = _hq_daily.rolling(14, min_periods=5).mean()
+        _hq_sd  = _hq_daily.rolling(14, min_periods=5).std()
+        ld['hq_drift_z'] = ((_hq_daily - _hq_mu) / _hq_sd.replace(0, np.nan)).values
+
     # ── FMT Tensor κ (Della Mattia 2019) ─────────────────────────────────────
-    # x(t) = [CTLγ_norm, HRV_trend, WEED_z]  — optional 4th: wp_prime
+    # Vector de estado x(t) — alinhado com o paper §02:
+    #   Dimensão 1: CTLγ_perf      — carga acumulada fraccionária (Load)
+    #   Dimensão 2: HRV_trend      — estado autonómico (HRV, se disponível)
+    #   Dimensão 3: WEED_z         — readiness subjectivo (stress+soreness+fatiga)
+    #   Dimensão 4: sleep_z        — sono (paper trata separado do WEED)
+    #   Dimensão 5: w_stress       — fracção W' consumida (W' dimension paper)
+    #   Dimensão 6: hq_drift_z     — HR drift intra-sessão (HR quartiles paper)
+    #
     # F(t) = cov(Δx) over 28-day rolling window
-    # κ(t) = trace(F(t)) — scalar curvature of athlete state
-    # κ rising  → chaos/fatigue accumulating
-    # κ falling → adaptation/recovery stabilising
+    # κ(t) = trace(F(t)) — scalar curvature (enriched TSS per paper §11)
+    # κ rising  → chaos/fatigue accumulating across dimensions
+    # κ falling → adaptation stabilising
+    # λ₁/Σλ    → stress concentration: near 1=focal, near 1/d=multisystemic
     _fmt_w = 28
 
-    # Overall 3×3 (or 2×2 if HRV/WEED missing)
+    # Overall — começa sempre com CTLγ; adiciona dimensões se disponíveis
     _dims_overall = [ld['CTLg_perf'].values]
+    _dim_names    = ['CTLγ']
+
     if 'HRV_trend' in ld.columns and ld['HRV_trend'].notna().sum() >= 20:
         _dims_overall.append(ld['HRV_trend'].values)
+        _dim_names.append('HRV')
     if 'WEED_z' in ld.columns and ld['WEED_z'].notna().sum() >= 20:
         _dims_overall.append(ld['WEED_z'].values)
-    ld['FMT_kappa'] = _compute_kappa(_dims_overall, _fmt_w) if len(_dims_overall) >= 2 else np.nan
+        _dim_names.append('WEED')
+    if 'sleep_z' in ld.columns and ld['sleep_z'].notna().sum() >= 20:
+        _dims_overall.append(ld['sleep_z'].values)
+        _dim_names.append('Sleep')
+    if 'w_stress' in ld.columns and ld['w_stress'].notna().sum() >= 20:
+        _dims_overall.append(ld['w_stress'].values)
+        _dim_names.append("W'")
+    if 'hq_drift_z' in ld.columns and ld['hq_drift_z'].notna().sum() >= 20:
+        _dims_overall.append(ld['hq_drift_z'].values)
+        _dim_names.append('HR_drift')
 
-    # Overall 4×4 if W' available
+    _tensor_dim = len(_dims_overall)
+
+    if _tensor_dim >= 2:
+        _kappa_arr, _lambda1_arr = _compute_kappa(
+            _dims_overall, _fmt_w, return_eigenvalues=True)
+        ld['FMT_kappa']        = _kappa_arr
+        ld['FMT_lambda1_frac'] = _lambda1_arr
+        ld['FMT_tensor_dim']   = _tensor_dim   # dimensão actual do tensor
+    else:
+        ld['FMT_kappa']        = np.nan
+        ld['FMT_lambda1_frac'] = np.nan
+        ld['FMT_tensor_dim']   = _tensor_dim
+
+    # Legacy 4d kappa (backward compat — se wp_prime disponível)
     if 'wp_prime' in ld.columns and ld['wp_prime'].notna().sum() >= 20:
-        ld['FMT_kappa_4d'] = _compute_kappa(_dims_overall + [ld['wp_prime'].values], _fmt_w)
+        _dims_4d = [ld['CTLg_perf'].values]
+        if 'HRV_trend' in ld.columns and ld['HRV_trend'].notna().sum() >= 20:
+            _dims_4d.append(ld['HRV_trend'].values)
+        if 'WEED_z' in ld.columns and ld['WEED_z'].notna().sum() >= 20:
+            _dims_4d.append(ld['WEED_z'].values)
+        _dims_4d.append(ld['wp_prime'].values)
+        if len(_dims_4d) >= 2:
+            ld['FMT_kappa_4d'] = _compute_kappa(_dims_4d, _fmt_w)
 
-    # Per-modality 3×3: [CTLγ_mod, HRV_trend, WEED_z]
+    # Per-modality 3×3: [CTLγ_mod, HRV_trend, WEED_z] — não muda
     for _mod in ['Bike', 'Row', 'Ski', 'Run']:
         _ctlg_col = f'CTLg_{_mod}'
         if _ctlg_col not in ld.columns or ld[_ctlg_col].notna().sum() < 20:
@@ -831,23 +946,32 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
             _dims_mod.append(ld['HRV_trend'].values)
         if 'WEED_z' in ld.columns and ld['WEED_z'].notna().sum() >= 20:
             _dims_mod.append(ld['WEED_z'].values)
-        ld[f'FMT_kappa_{_mod}'] = _compute_kappa(_dims_mod, _fmt_w) if len(_dims_mod) >= 2 else np.nan
+        if len(_dims_mod) >= 2:
+            ld[f'FMT_kappa_{_mod}'] = _compute_kappa(_dims_mod, _fmt_w)
 
     if hrv_trend_arr is not None:
         ld['HRV_trend'] = hrv_trend_arr
 
+    # Store tensor dimension info for display in tab_pmc
+    _tensor_dim_names = ' · '.join(_dim_names)
+
     info = {
-        'fonte':        fonte,
-        'perf_col':     _perf_col_global or 'none',
-        'best_lag_rec': locals().get('_best_lag', 1),
-        'gamma_perf':   round(gamma_perf, 3),
-        'gamma_rec':    round(gamma_rec,  3),
-        'gamma_best':   round(best_gamma, 3),
-        'gamma_source': best_source,
-        'r2_perf':      round(r2_perf, 3),
-        'r2_rec':       round(r2_rec,  3),
-        'best_mod':     best_mod,
-        'mods':         mod_info,
+        'fonte':           fonte,
+        'perf_col':        _perf_col_global or 'none',
+        'best_lag_rec':    locals().get('_best_lag', 1),
+        'gamma_perf':      round(gamma_perf, 3),
+        'gamma_rec':       round(gamma_rec,  3),
+        'gamma_best':      round(best_gamma, 3),
+        'gamma_source':    best_source,
+        'r2_perf':         round(r2_perf, 3),
+        'r2_rec':          round(r2_rec,  3),
+        'best_mod':        best_mod,
+        'mods':            mod_info,
+        'tensor_dim':      locals().get('_tensor_dim', 0),
+        'tensor_dim_names': locals().get('_tensor_dim_names', 'CTLγ'),
+        'has_w_stress':    'w_stress'    in ld.columns and ld['w_stress'].notna().sum() >= 10,
+        'has_hq_drift':    'hq_drift_z'  in ld.columns and ld['hq_drift_z'].notna().sum() >= 10,
+        'has_sleep':       'sleep_z'     in ld.columns and ld['sleep_z'].notna().sum() >= 10,
     }
     return ld, info
 
