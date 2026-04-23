@@ -731,3 +731,103 @@ def tab_pmc(da, wc=None):
                 st.caption(_r2txt)
     else:
         st.info("CTLγ por modalidade não disponível — sem dados suficientes.")
+
+    # ── FMT Tensor — explicação + resultados actuais ──────────────────────────
+    with st.expander("🧮 FMT Tensor κ — Curvatura do Estado Fisiológico", expanded=False):
+        _kappa_last    = float(_ld_frac['FMT_kappa'].dropna().iloc[-1])       if len(_ld_frac) > 0 and 'FMT_kappa'        in _ld_frac.columns and _ld_frac['FMT_kappa'].notna().any()        else None
+        _lambda1_last  = float(_ld_frac['FMT_lambda1_frac'].dropna().iloc[-1]) if len(_ld_frac) > 0 and 'FMT_lambda1_frac'  in _ld_frac.columns and _ld_frac['FMT_lambda1_frac'].notna().any()  else None
+        _tensor_dim_v  = int(_info.get('tensor_dim', 0))
+        _tensor_names  = _info.get('tensor_dim_names', 'CTLγ')
+        _has_ws        = _info.get('has_w_stress', False)
+        _has_hq        = _info.get('has_hq_drift', False)
+        _has_sl        = _info.get('has_sleep', False)
+
+        st.markdown("""
+**O que é o FMT κ (Functional Multidimensional Tensor)?**
+
+Proposto por Della Mattia (2019), o FMT substitui o TSS como métrica de referência.
+O TSS colapsa uma sessão complexa num único número — perde informação sobre como cada
+dimensão fisiológica mudou. O FMT resolve isso construindo uma **matriz de covariância**
+das variações diárias de múltiplos sinais:
+
+```
+F(t) = cov(Δx)  sobre janela 28 dias
+x(t) = [CTLγ, HRV, WEED, Sleep, W', HR_drift]
+κ = trace(F) — curvatura escalar do estado
+```
+
+**κ crescente** → múltiplas dimensões a mudar simultaneamente → stress acumulado não compensado  
+**κ decrescente** → adaptação a estabilizar, sinais a convergir
+""")
+
+        _c1, _c2, _c3 = st.columns(3)
+        with _c1:
+            if _kappa_last is not None:
+                st.metric("κ actual", f"{_kappa_last:.3f}",
+                          help="Curvatura do tensor — quanto maiores as mudanças simultâneas em todas as dimensões")
+            else:
+                st.metric("κ actual", "N/D")
+        with _c2:
+            if _lambda1_last is not None:
+                _lam_pct = _lambda1_last * 100
+                _stress_lbl = "🎯 Focal" if _lambda1_last > 0.65 else ("⚖️ Misto" if _lambda1_last > 0.45 else "🌐 Multissistémico")
+                st.metric("λ₁/Σλ", f"{_lam_pct:.0f}%", delta=_stress_lbl,
+                          help="Fracção do stress na dimensão dominante. Alto=focal(1 dimensão domina), Baixo=multissistémico")
+            else:
+                st.metric("λ₁/Σλ", "N/D")
+        with _c3:
+            st.metric("Tensor", f"{_tensor_dim_v}×{_tensor_dim_v}",
+                      help=f"Dimensões activas: {_tensor_names}")
+
+        st.markdown(f"**Dimensões activas do tensor:** `{_tensor_names}`")
+
+        # Status dos sinais disponíveis
+        _sig_rows = [
+            ("CTLγ perf", "✅ sempre disponível", "Carga fraccionária acumulada — dimensão Load"),
+            ("HRV trend", "✅" if 'HRV_trend' in _ld_frac.columns and _ld_frac['HRV_trend'].notna().sum() >= 20 else "⚠️ < 20 dias", "Estado autonómico — LnRMSSD intercept+slope 7d"),
+            ("WEED_z",    "✅" if 'WEED_z'    in _ld_frac.columns and _ld_frac['WEED_z'].notna().sum() >= 20    else "⚠️ < 20 dias", "Readiness subjectivo — z-score 28d de stress+soreness+fatiga"),
+            ("Sleep_z",   "✅" if _has_sl else "⚠️ sem dados", "Qualidade do sono — z-score 28d (dimensão separada do WEED per paper)"),
+            ("W' stress", "✅" if _has_ws else "⚠️ sem AllWorkFTP/eW", "AllWorkFTP_kJ / (eW_kJ) — fracção do W' consumida acima de FTP"),
+            ("HR drift",  "✅" if _has_hq else "⚠️ sem Hq1/Hq4", "hq_4/hq_1 ratio z-score 14d — intensidade intra-sessão (HR quartiles)"),
+        ]
+        _sig_df = pd.DataFrame(_sig_rows, columns=["Dimensão", "Estado", "Significado"])
+        st.dataframe(_sig_df, hide_index=True, use_container_width=True)
+
+        st.markdown("""
+**Interpretação de λ₁/Σλ (concentração de stress):**
+- **> 65%** → stress **focal**: uma dimensão domina (ex: só carga cresceu, HRV e WEED estáveis)
+  → recuperação dirigida: identificar e tratar a dimensão dominante
+- **45-65%** → stress **misto**: duas dimensões perturbadas
+- **< 45%** → stress **multissistémico**: todas as dimensões em simultâneo
+  → sinal clássico de overreaching — papel §05: "silent fatigue when TSB > 0 but κ rising"
+
+**Diferença vs TSS/TSB:**
+O TSB pode estar positivo (atleta "pronto") enquanto κ cresce na dimensão autonómica.
+O FMT-Transformer detecta esta configuração 3 dias antes do colapso de performance (paper §12, AUC=0.553 vs 0.185 para TSB clássico).
+""")
+
+    # ── FTLM download CSV ─────────────────────────────────────────────────────
+    if len(_ld_frac) > 0:
+        _dl_cols_ftlm = [
+            'Data', 'load_val', 'CTL', 'ATL', 'TSB', 'FTLM',
+            'CTLg_perf', 'CTLg_rec', 'HRV_trend',
+            'CTLg_Bike', 'CTLg_Row', 'CTLg_Ski', 'CTLg_Run',
+            'WEED_z', 'sleep_z', 'w_stress', 'hq_drift_z',
+            'wp_prime',
+            'FMT_kappa', 'FMT_lambda1_frac', 'FMT_kappa_4d',
+            'FMT_kappa_Bike', 'FMT_kappa_Row', 'FMT_kappa_Ski', 'FMT_kappa_Run',
+        ]
+        _avail_cols = [c for c in _dl_cols_ftlm if c in _ld_frac.columns]
+        _dl_df = _ld_frac[_avail_cols].copy()
+        _dl_df['Data'] = _dl_df['Data'].astype(str)
+        _dl_df = _dl_df.round(4)
+        st.download_button(
+            label="📥 Download PMC/FTLM completo (.csv)",
+            data=_dl_df.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
+            file_name="atheltica_pmc_ftlm_completo.csv",
+            mime="text/csv",
+            key="pmc_dl_ftlm",
+        )
+        _new_cols = [c for c in ['sleep_z','w_stress','hq_drift_z','FMT_lambda1_frac'] if c in _ld_frac.columns and _ld_frac[c].notna().sum() > 0]
+        if _new_cols:
+            st.caption(f"Novos campos no CSV: {', '.join(_new_cols)} | Tensor {_info.get('tensor_dim',0)}×{_info.get('tensor_dim',0)}: {_info.get('tensor_dim_names','')}")
