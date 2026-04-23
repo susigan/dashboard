@@ -556,15 +556,17 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
     gamma_rec, r2_rec = 0.35, 0.0
     hrv_trend_arr = None
 
-    if df_wellness is not None and len(df_wellness) > 0 and 'hrv' in df_wellness.columns:
+    if df_wellness is not None and len(df_wellness) > 0:
         _wc = df_wellness.copy()
         _wc['Data'] = pd.to_datetime(_wc['Data'])
 
-        # ── LnRMSSD — primary HRV signal ─────────────────────────────────
-        _hrv_raw = (_wc.groupby('Data')['hrv']
-                    .mean()
-                    .reindex(_date_idx, fill_value=np.nan).values)
-        _hrv_ln  = np.where(_hrv_raw > 0, np.log(_hrv_raw), np.nan)
+        # ── LnRMSSD — primary HRV signal (if available) ──────────────────
+        _hrv_ln = np.full(len(_date_idx), np.nan)
+        if 'hrv' in _wc.columns:
+            _hrv_raw = (_wc.groupby('Data')['hrv']
+                        .mean()
+                        .reindex(_date_idx, fill_value=np.nan).values)
+            _hrv_ln = np.where(_hrv_raw > 0, np.log(_hrv_raw), np.nan)
 
         # ── WEED proxy — z-score relative to rolling 28d baseline ─────────
         # Scale 1-5: 1=WORST, 5=BEST for ALL metrics in this wellness form.
@@ -614,17 +616,22 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
         if _sleep_z is not None:
             _composite_parts.append(('sleep', _sleep_z, 0.15))
 
-        # Use LnRMSSD as primary for γ fitting
+        # Use LnRMSSD as primary for γ fitting (only if sufficient HRV data)
         if int(np.isfinite(_hrv_ln).sum()) >= 21:
             gamma_rec, r2_rec, hrv_trend_arr, _best_lag = fit_gamma_recovery(
                 load_overall, _hrv_ln, hrv_window=7, max_lag=MAX_LAG)
 
-        # Store WEED and sleep z-scores in ld for FMT
+        # Store WEED, sleep z-scores in ld for FMT — always, independent of HRV
         if _weed_parts:
             ld['WEED_z'] = np.nanmean(np.array(_weed_parts), axis=0)
         if _sleep_z is not None:
-            ld['sleep_z'] = _sleep_z
-            # best_lag stored for reporting — response not fixed at 1d
+            # sleep_quality: scale 1=bad, 5=good (confirmed by user)
+            # z-score is scale-invariant: positive z = above personal baseline = good
+            # NO inversion needed: high value = good sleep = good signal
+            # Rolling 28d baseline removes seasonal/trend effects
+            _n_sleep = int(np.isfinite(_sleep_z).sum())
+            if _n_sleep >= 5:   # threshold 5 (not 10 — may have gaps)
+                ld['sleep_z'] = _sleep_z
 
     # ── W' daily series (icu_pm_w_prime per session) ─────────────────────────
     # icu_pm_w_prime = estimated W' capacity for that activity (Morton 3P model)
@@ -827,11 +834,20 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
     # icu_pm_w_prime já é específico da sessão/modalidade (Morton 3P)
     # Portanto o rácio é automaticamente normalizado por modalidade
     # Rolling 7d suaviza ruído sessão-a-sessão
-    if ('AllWorkFTP' in df.columns and 'icu_pm_w_prime' in df.columns and
-            df['AllWorkFTP'].notna().sum() >= 10 and df['icu_pm_w_prime'].notna().sum() >= 10):
+    # W' stress: threshold 5 (not 10) — AllWorkFTP=0 on easy rides becomes NaN
+    # after remove_zeros, so only sessions with actual work above FTP count
+    # Fallback: use z3_kj (zone 3 kJ = above CP) if AllWorkFTP unavailable
+    _allwork_col = None
+    if 'AllWorkFTP' in df.columns and df['AllWorkFTP'].notna().sum() >= 5:
+        _allwork_col = 'AllWorkFTP'
+    elif 'z3_kj' in df.columns and df['z3_kj'].notna().sum() >= 5:
+        _allwork_col = 'z3_kj'   # z3_kj = zone 3 kJ = above CP ≈ AllWorkFTP
+
+    if (_allwork_col is not None and 'icu_pm_w_prime' in df.columns and
+            df['icu_pm_w_prime'].notna().sum() >= 5):
         _df_ws = df.copy()
         _wp_j  = pd.to_numeric(_df_ws['icu_pm_w_prime'], errors='coerce')
-        _aw    = pd.to_numeric(_df_ws['AllWorkFTP'],      errors='coerce')
+        _aw    = pd.to_numeric(_df_ws[_allwork_col],      errors='coerce')
         # Converter: icu_pm_w_prime em Joules → kJ; AllWorkFTP já em kJ
         _wp_kj = _wp_j / 1000.0
         # Rácio apenas onde W' > 0 para evitar divisão por zero
@@ -860,8 +876,15 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
     # Sessão aeróbica leve: hq_4 ≈ hq_1 (ratio ≈ 1.1)
     # Sessão intensa/drift: hq_4 >> hq_1 (ratio ≈ 1.3+)
     # Rolling 14d z-score: captura padrão crónico de intensidade intra-sessão
+    # hq_1..hq_4: HR quartile means per session (Hq1..Hq4 in sheet)
+    # Values of 0 are invalid (no HR data for that quartile) → treat as NaN
+    if 'hq_1' in df.columns:
+        df['hq_1'] = pd.to_numeric(df['hq_1'], errors='coerce').replace(0, np.nan)
+    if 'hq_4' in df.columns:
+        df['hq_4'] = pd.to_numeric(df['hq_4'], errors='coerce').replace(0, np.nan)
+
     if ('hq_1' in df.columns and 'hq_4' in df.columns and
-            df['hq_1'].notna().sum() >= 10 and df['hq_4'].notna().sum() >= 10):
+            df['hq_1'].notna().sum() >= 5 and df['hq_4'].notna().sum() >= 5):
         _df_hq = df.copy()
         _hq1   = pd.to_numeric(_df_hq['hq_1'], errors='coerce')
         _hq4   = pd.to_numeric(_df_hq['hq_4'], errors='coerce')
