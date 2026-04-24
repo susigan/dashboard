@@ -2,6 +2,12 @@
 tab_fmt_tensor.py — ATHELTICA
 Tab dedicada ao FMT Tensor κ — visualização completa com gráficos,
 regimes fisiológicos, e explicação baseada no paper Della Mattia 2019.
+
+ALTERAÇÕES v2:
+  - REST days: _prepare_dims() — w_stress decay 0.5/dia; hq_drift_z → 0
+  - Legibilidade: todos os update_layout com font 12+, axis labels contrastantes
+  - SECTION 6 nova: Análise de Stress Focal — dropdown janela + slider limiar
+                    top-3 dimensões + cards + sugestões de acção + calendário
 """
 import streamlit as st
 import pandas as pd
@@ -28,6 +34,116 @@ REGIME_CFG = {
                   'desc': 'κ alto + HRV baixo + TSB negativo — risco clínico.'},
     'none':      {'label': 'Sem dados',          'color': '#b4b2a9', 'desc': ''},
 }
+
+
+# ── Metadados das dimensões — para a secção focal ────────────────────────────
+DIM_META = {
+    'HRV_trend': {
+        'label': 'HRV Trend',
+        'color': '#4C9BE8',
+        'icon': '💓',
+        'descricao': 'Tendência do HRV matinal nos últimos 14d.',
+        'negativo_sig': 'HRV em queda — sistema nervoso autónomo sobrecarregado.',
+        'positivo_sig': 'HRV a subir — boa adaptação e recuperação.',
+        'acao_alta': [
+            'Reduzir volume total em 20–30% por 5–7 dias.',
+            'Priorizar sessões Z1/Z2 — sem intervalos de alta intensidade.',
+            'Verificar sono: mínimo 8h, evitar luz azul após 22h.',
+            'Considerar sessão de avaliação HRV ortostático.',
+        ],
+    },
+    'WEED_z': {
+        'label': 'WEED (Wellness)',
+        'color': '#F5A623',
+        'icon': '🧠',
+        'descricao': 'Z-score composto de fadiga, humor, dor muscular e stress subjetivo.',
+        'negativo_sig': 'Wellness degradado — fadiga/stress acumulados acima do normal.',
+        'positivo_sig': 'Wellness elevado — condições subjetivas favoráveis.',
+        'acao_alta': [
+            'Rever carga de treino vs. carga de vida (trabalho, viagens).',
+            'Adicionar dia completo de descanso ativo (caminhada ≤45min).',
+            'Técnicas de recovery não-físico: meditação, respiração, massagem.',
+            'Monitorar por 3 dias — se persistir, reduzir CTL alvo em 10%.',
+        ],
+    },
+    'sleep_z': {
+        'label': 'Qualidade do Sono',
+        'color': '#7B68EE',
+        'icon': '🌙',
+        'descricao': 'Z-score da qualidade e duração do sono vs. baseline pessoal.',
+        'negativo_sig': 'Sono abaixo do baseline — recuperação comprometida.',
+        'positivo_sig': 'Sono acima do baseline — recovery otimizado.',
+        'acao_alta': [
+            'Priorizar higiene do sono: horário fixo, quarto frio e escuro.',
+            'Eliminar treinos vespertinos tardios (>20h) por 1 semana.',
+            'Reduzir cafeína após 14h.',
+            'Evitar sessões de alta intensidade quando sleep_z < -1.5.',
+        ],
+    },
+    'w_stress': {
+        'label': "W' Stress (Anaeróbico)",
+        'color': '#E8524C',
+        'icon': '⚡',
+        'descricao': "Utilização de W' (capacidade anaeróbica) relativa ao baseline.",
+        'negativo_sig': "W' pouco utilizado — sem estímulo anaeróbico recente.",
+        'positivo_sig': "W' muito utilizado — alto gasto anaeróbico acumulado.",
+        'acao_alta': [
+            'Reduzir sessões acima de CP por 5–7 dias.',
+            'Substituir intervalos curtos por tempo estendido em Z3/SS.',
+            'Verificar se há múltiplos dias consecutivos de trabalho supra-CP.',
+            "W' precisa de 24–48h para reconstituição completa.",
+        ],
+    },
+    'hq_drift_z': {
+        'label': 'HR Drift (Cardíaco)',
+        'color': '#50C878',
+        'icon': '📈',
+        'descricao': 'Deriva cardíaca intra-sessão (HR Q4/Q1). Alto = fadiga cardiovascular.',
+        'negativo_sig': 'Sem deriva — FC estável. Dias REST ou sessões curtas.',
+        'positivo_sig': 'Deriva elevada — FC desacoplada da potência. Fadiga cardiovascular.',
+        'acao_alta': [
+            'Sessões seguintes: manter potência alvo mas aceitar FC mais alta.',
+            'Evitar treino de limiar por 3–5 dias.',
+            'Hidratar bem — desacoplamento agravado por desidratação.',
+            'Se deriva >15% por 3 dias consecutivos: reduzir carga geral.',
+        ],
+    },
+}
+
+
+def _prepare_dims(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Trata NaN nas dimensões do tensor para dias REST ou dados ausentes.
+
+    Estratégia fisiológica por dimensão:
+      w_stress   → REST day sem atividade. Forward-fill com decay 0.5/dia
+                   (stress anaeróbico persiste mas dissipa com meia-vida ~1 dia)
+      hq_drift_z → Sem sessão = sem deriva cardíaca. Preenche com 0 (baseline neutro).
+      WEED_z     → Forward-fill simples (wellness persiste dia a dia)
+      sleep_z    → Forward-fill simples (sono do dia anterior é o melhor proxy)
+      HRV_trend  → Raramente NaN — sem tratamento
+    """
+    df = df.copy()
+
+    # hq_drift_z: REST day → 0 (ausência de deriva = neutro)
+    if 'hq_drift_z' in df.columns:
+        df['hq_drift_z'] = df['hq_drift_z'].fillna(0.0)
+
+    # w_stress: forward-fill com decay 50% por dia de REST
+    if 'w_stress' in df.columns:
+        ws = df['w_stress'].tolist()
+        for i in range(1, len(ws)):
+            if pd.isna(ws[i]) and not pd.isna(ws[i - 1]):
+                ws[i] = ws[i - 1] * 0.5
+        df['w_stress'] = pd.array(ws, dtype='float64')
+        df['w_stress'] = df['w_stress'].fillna(0.0)
+
+    # WEED_z e sleep_z: forward-fill simples
+    for col in ['WEED_z', 'sleep_z']:
+        if col in df.columns:
+            df[col] = df[col].ffill().fillna(0.0)
+
+    return df
 
 
 def _rolling_slope(series, w=14):
@@ -229,7 +345,7 @@ def tab_fmt_tensor(da, wc=None):
     for _qv, _qlbl, _qcol in [(q75,'p75',CORES['vermelho']),(q50,'p50',CORES['cinza']),(q25,'p25',CORES['verde'])]:
         _fig_kappa.add_hline(y=_qv, line_dash='dot', line_color=_qcol,
                              line_width=1, annotation_text=f'  {_qlbl}={_qv:.2f}',
-                             annotation_font_size=9, row=1, col=1)
+                             annotation_font_size=11, row=1, col=1)
 
     # κ slope (14d) on row=2
     _slope_s = pd.Series(slope_plot, index=dates_plot.values)
@@ -239,21 +355,22 @@ def tab_fmt_tensor(da, wc=None):
         x=dates_plot, y=_slope_s,
         name='Δκ/14d', marker_color=_colors_slope,
         hovertemplate='Δκ/d: %{y:.4f}<extra></extra>'), row=2, col=1)
-    _fig_kappa.add_hline(y=0, line_color='gray', line_width=0.5, row=2, col=1)
+    _fig_kappa.add_hline(y=0, line_color='#666', line_width=0.8, row=2, col=1)
 
     _fig_kappa.update_layout(
-        paper_bgcolor='white', plot_bgcolor='white', height=380,
-        margin=dict(t=10, b=50, l=50, r=20), hovermode='x unified',
-        legend=dict(orientation='h', y=-0.18, font=dict(color='#111', size=9)),
-        font=dict(color='#111', size=10))
-    _fig_kappa.update_xaxes(tickfont=dict(size=9, color='#111'),
-                             linecolor='#333', tickcolor='#333', tickangle=-30)
-    _fig_kappa.update_yaxes(tickfont=dict(size=9, color='#111'),
-                             linecolor='#333', tickcolor='#333')
-    _fig_kappa.update_yaxes(title_text='κ', row=1, col=1,
-                             title_font=dict(size=9, color='#111'))
-    _fig_kappa.update_yaxes(title_text='Δκ/d', row=2, col=1,
-                             title_font=dict(size=9, color='#111'))
+        paper_bgcolor='white', plot_bgcolor='white', height=400,
+        margin=dict(t=20, b=55, l=60, r=20), hovermode='x unified',
+        legend=dict(orientation='h', y=-0.16, font=dict(color='#222', size=11),
+                    bgcolor='rgba(255,255,255,0.85)', borderwidth=0),
+        font=dict(color='#222', size=12))
+    _fig_kappa.update_xaxes(tickfont=dict(size=11, color='#333'),
+                             linecolor='#555', tickcolor='#555', tickangle=-30)
+    _fig_kappa.update_yaxes(tickfont=dict(size=11, color='#333'),
+                             linecolor='#555', tickcolor='#555', gridcolor='rgba(0,0,0,0.06)')
+    _fig_kappa.update_yaxes(title_text='κ — curvatura', row=1, col=1,
+                             title_font=dict(size=12, color='#333'))
+    _fig_kappa.update_yaxes(title_text='Δκ/14d', row=2, col=1,
+                             title_font=dict(size=12, color='#333'))
     st.plotly_chart(_fig_kappa, use_container_width=True,
                     config={'displayModeBar':False}, key='fmt_kappa_chart')
 
@@ -273,7 +390,7 @@ def tab_fmt_tensor(da, wc=None):
         _fig_scatter.add_trace(go.Scatter(
             x=_tdats, y=_kdats, mode='markers',
             name=_rcfg['label'],
-            marker=dict(color=_rcfg['color'], size=5, opacity=0.75),
+            marker=dict(color=_rcfg['color'], size=6, opacity=0.75),
             text=_ddats,
             hovertemplate='%{text}<br>TSB: %{x:.1f} | κ: %{y:.3f}<extra></extra>'))
 
@@ -281,14 +398,14 @@ def tab_fmt_tensor(da, wc=None):
     _fig_scatter.add_trace(go.Scatter(
         x=[tsb_now], y=[kappa_now], mode='markers',
         name='Hoje',
-        marker=dict(color='black', size=12, symbol='star',
+        marker=dict(color='black', size=13, symbol='star',
                     line=dict(color='white', width=1.5)),
         hovertemplate=f'Hoje: TSB={tsb_now:.1f} | κ={kappa_now:.3f}<extra></extra>'))
 
     # Quadrant lines
-    _fig_scatter.add_vline(x=0, line_color='gray', line_width=0.5, line_dash='dot')
-    _fig_scatter.add_hline(y=q75, line_color=CORES['vermelho'], line_width=0.5, line_dash='dot')
-    _fig_scatter.add_hline(y=q25, line_color=CORES['verde'],    line_width=0.5, line_dash='dot')
+    _fig_scatter.add_vline(x=0, line_color='#999', line_width=0.8, line_dash='dot')
+    _fig_scatter.add_hline(y=q75, line_color=CORES['vermelho'], line_width=0.8, line_dash='dot')
+    _fig_scatter.add_hline(y=q25, line_color=CORES['verde'],    line_width=0.8, line_dash='dot')
 
     # Annotations for quadrants
     _tsb_min = float(tsb_plot.min())
@@ -299,17 +416,23 @@ def tab_fmt_tensor(da, wc=None):
         (_tsb_max, q25-0.15,'Supercompensação',   CORES['verde']),
     ]:
         _fig_scatter.add_annotation(x=_xann, y=_yann, text=_txt,
-                                    font=dict(size=9, color=_col),
+                                    font=dict(size=11, color=_col),
                                     showarrow=False, xanchor='right' if _xann>0 else 'left')
 
     _fig_scatter.update_layout(
-        paper_bgcolor='white', plot_bgcolor='white', height=320,
-        margin=dict(t=10, b=40, l=50, r=20),
-        xaxis_title='TSB (Forma)', yaxis_title='κ (Curvatura)',
-        xaxis=dict(tickfont=dict(size=9,color='#111'), linecolor='#333'),
-        yaxis=dict(tickfont=dict(size=9,color='#111'), linecolor='#333'),
-        legend=dict(orientation='h', y=-0.22, font=dict(color='#111', size=9)),
-        font=dict(color='#111', size=10))
+        paper_bgcolor='white', plot_bgcolor='white', height=340,
+        margin=dict(t=15, b=55, l=65, r=20),
+        xaxis=dict(
+            title=dict(text='TSB (Forma)', font=dict(size=13, color='#333')),
+            tickfont=dict(size=11, color='#333'),
+            linecolor='#555', gridcolor='rgba(0,0,0,0.06)'),
+        yaxis=dict(
+            title=dict(text='κ (Curvatura do estado)', font=dict(size=13, color='#333')),
+            tickfont=dict(size=11, color='#333'),
+            linecolor='#555', gridcolor='rgba(0,0,0,0.06)'),
+        legend=dict(orientation='h', y=-0.20, font=dict(color='#222', size=11),
+                    bgcolor='rgba(255,255,255,0.85)', borderwidth=0),
+        font=dict(color='#222', size=12))
     st.plotly_chart(_fig_scatter, use_container_width=True,
                     config={'displayModeBar':False}, key='fmt_scatter_chart')
 
@@ -318,7 +441,7 @@ def tab_fmt_tensor(da, wc=None):
     st.subheader("🔬 Concentração de stress (λ₁/Σλ) e sinais do tensor")
 
     _fig_lam = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                             row_heights=[0.5, 0.5], vertical_spacing=0.04,
+                             row_heights=[0.5, 0.5], vertical_spacing=0.06,
                              subplot_titles=['λ₁/Σλ — concentração do stress','Dimensões do tensor'])
 
     if lam1_plot.notna().any():
@@ -326,44 +449,56 @@ def tab_fmt_tensor(da, wc=None):
             x=dates_plot, y=lam1_plot * 100,
             name='λ₁/Σλ (%)', line=dict(color=CORES['laranja'], width=2),
             fill='tozeroy',
-            fillcolor='rgba(243,156,18,0.08)',
+            fillcolor='rgba(243,156,18,0.10)',
             hovertemplate='λ₁/Σλ: %{y:.1f}%<extra></extra>'), row=1, col=1)
-        _fig_lam.add_hline(y=65, line_color=CORES['vermelho'], line_width=1,
+        _fig_lam.add_hline(y=65, line_color=CORES['vermelho'], line_width=1.2,
                            line_dash='dot', annotation_text='  Focal',
-                           annotation_font_size=9, row=1, col=1)
-        _fig_lam.add_hline(y=45, line_color=CORES['verde'], line_width=1,
+                           annotation_font_size=11,
+                           annotation_font_color=CORES['vermelho'], row=1, col=1)
+        _fig_lam.add_hline(y=45, line_color=CORES['verde'], line_width=1.2,
                            line_dash='dot', annotation_text='  Multissist.',
-                           annotation_font_size=9, row=1, col=1)
+                           annotation_font_size=11,
+                           annotation_font_color=CORES['verde'], row=1, col=1)
 
-    # Dimension signals on row=2
+    # Dimension signals on row=2 — usando _prepare_dims para REST days
+    _ld_dims = ld.iloc[_sl].copy()
+    _ld_dims_prep = _prepare_dims(_ld_dims)
+
     _dim_sigs = [
-        (hrv_plot,  'HRV trend',  CORES['verde']),
-        (weed_s.iloc[_sl], 'WEED_z',   CORES['azul']),
-        (sleep_s.iloc[_sl],'Sleep_z',  CORES['roxo']),
-        (ws_s.iloc[_sl],   "W' stress",CORES['laranja']),
-        (hq_s.iloc[_sl],   'HR drift', CORES['vermelho']),
+        (hrv_plot,                             'HRV trend',  CORES['verde']),
+        (pd.to_numeric(_ld_dims_prep.get('WEED_z',   pd.Series(np.nan, index=_ld_dims_prep.index)), errors='coerce'), 'WEED_z',   CORES['azul']),
+        (pd.to_numeric(_ld_dims_prep.get('sleep_z',  pd.Series(np.nan, index=_ld_dims_prep.index)), errors='coerce'), 'Sleep_z',  CORES['roxo']),
+        (pd.to_numeric(_ld_dims_prep.get('w_stress', pd.Series(np.nan, index=_ld_dims_prep.index)), errors='coerce'), "W' stress",CORES['laranja']),
+        (pd.to_numeric(_ld_dims_prep.get('hq_drift_z',pd.Series(np.nan, index=_ld_dims_prep.index)), errors='coerce'),'HR drift', CORES['vermelho']),
     ]
     for _dv, _dn, _dc in _dim_sigs:
-        if _dv.notna().any():
+        if isinstance(_dv, pd.Series) and _dv.notna().any():
             _fig_lam.add_trace(go.Scatter(
-                x=dates_plot, y=_dv,
-                name=_dn, line=dict(color=_dc, width=1.2),
-                opacity=0.8,
+                x=dates_plot, y=_dv.values if hasattr(_dv, 'values') else _dv,
+                name=_dn, line=dict(color=_dc, width=1.5),
+                opacity=0.85,
                 hovertemplate=f'{_dn}: %{{y:.3f}}σ<extra></extra>'), row=2, col=1)
-    _fig_lam.add_hline(y=0, line_color='gray', line_width=0.5, row=2, col=1)
+    _fig_lam.add_hline(y=0, line_color='#999', line_width=0.8, row=2, col=1)
 
     _fig_lam.update_layout(
-        paper_bgcolor='white', plot_bgcolor='white', height=380,
-        margin=dict(t=30, b=50, l=50, r=20), hovermode='x unified',
-        legend=dict(orientation='h', y=-0.20, font=dict(color='#111', size=9)),
-        font=dict(color='#111', size=10))
-    _fig_lam.update_xaxes(tickfont=dict(size=9,color='#111'),
-                           linecolor='#333', tickangle=-30)
-    _fig_lam.update_yaxes(tickfont=dict(size=9,color='#111'), linecolor='#333')
-    _fig_lam.update_yaxes(title_text='%', row=1, col=1,
-                           title_font=dict(size=9,color='#111'))
-    _fig_lam.update_yaxes(title_text='σ', row=2, col=1,
-                           title_font=dict(size=9,color='#111'))
+        paper_bgcolor='white', plot_bgcolor='white', height=420,
+        margin=dict(t=40, b=60, l=65, r=20), hovermode='x unified',
+        legend=dict(orientation='h', y=-0.18, font=dict(color='#222', size=11),
+                    bgcolor='rgba(255,255,255,0.85)', borderwidth=0),
+        font=dict(color='#222', size=12))
+    _fig_lam.update_xaxes(tickfont=dict(size=11, color='#333'),
+                           linecolor='#555', tickangle=-30,
+                           gridcolor='rgba(0,0,0,0.06)')
+    _fig_lam.update_yaxes(tickfont=dict(size=11, color='#333'),
+                           linecolor='#555', gridcolor='rgba(0,0,0,0.06)')
+    _fig_lam.update_yaxes(title_text='λ₁/Σλ (%)', row=1, col=1,
+                           title_font=dict(size=12, color='#333'))
+    _fig_lam.update_yaxes(title_text='z-score (σ)', row=2, col=1,
+                           title_font=dict(size=12, color='#333'))
+    # Subplot titles font
+    for ann in _fig_lam.layout.annotations:
+        ann.font.size = 13
+        ann.font.color = '#333'
     st.plotly_chart(_fig_lam, use_container_width=True,
                     config={'displayModeBar':False}, key='fmt_lam_chart')
 
@@ -381,13 +516,20 @@ def tab_fmt_tensor(da, wc=None):
             marker_color=[REGIME_CFG[k]['color'] for k in _rc_counts.index],
             text=_rc_counts.values,
             textposition='outside',
+            textfont=dict(size=12, color='#222'),
         ))
         _fig_dist.update_layout(
-            paper_bgcolor='white', plot_bgcolor='white', height=220,
-            margin=dict(t=10, b=80, l=30, r=10),
-            font=dict(color='#111', size=10),
-            xaxis=dict(tickfont=dict(size=9,color='#111'), tickangle=-20),
-            yaxis=dict(tickfont=dict(size=9,color='#111'), title='dias'))
+            paper_bgcolor='white', plot_bgcolor='white', height=240,
+            margin=dict(t=15, b=85, l=50, r=15),
+            font=dict(color='#222', size=12),
+            xaxis=dict(
+                title=dict(text='Regime', font=dict(size=13, color='#333')),
+                tickfont=dict(size=11, color='#333'),
+                tickangle=-20, linecolor='#555'),
+            yaxis=dict(
+                title=dict(text='Nº de dias', font=dict(size=13, color='#333')),
+                tickfont=dict(size=11, color='#333'),
+                linecolor='#555', gridcolor='rgba(0,0,0,0.06)'))
         st.plotly_chart(_fig_dist, use_container_width=True,
                         config={'displayModeBar':False}, key='fmt_dist_chart')
 
@@ -405,7 +547,218 @@ def tab_fmt_tensor(da, wc=None):
                 f"<small style='color:var(--text-color);opacity:0.7'>{_rcfg['desc']}</small></div></div>",
                 unsafe_allow_html=True)
 
-    # ── SECTION 6: Explanation expander ──────────────────────────────────────
+    # ── SECTION 6: Focal Stress Analysis ─────────────────────────────────────
+    st.markdown("---")
+    st.subheader("🎯 Análise de Stress Focal — qual dimensão domina?")
+    st.caption(
+        "Identifica as dimensões com maior stress absoluto e quantos dias estiveram "
+        "acima do limiar. λ₁/Σλ alto indica concentração — aqui vês em qual dimensão."
+    )
+
+    _dims_available = [d for d in DIM_META if d in ld.columns]
+
+    _col_ctrl1, _col_ctrl2 = st.columns([1, 1])
+    with _col_ctrl1:
+        _janela_focal = st.selectbox(
+            "Janela de análise",
+            options=[14, 28, 60, 90],
+            index=1,
+            format_func=lambda x: f"Últimos {x} dias",
+            key="fmt_focal_janela",
+        )
+    with _col_ctrl2:
+        _threshold_focal = st.slider(
+            "Limiar |z-score| para considerar stress",
+            min_value=0.5, max_value=2.5, value=1.0, step=0.25,
+            key="fmt_focal_threshold",
+        )
+
+    # Preparar dados com NaN tratados (REST days)
+    _df_focal_raw = ld.tail(_janela_focal).copy()
+    _df_focal = _prepare_dims(_df_focal_raw)
+    _n_dias = len(_df_focal)
+
+    # Calcular score por dimensão
+    _dim_scores = {}
+    for _d in _dims_available:
+        _vals = pd.to_numeric(_df_focal[_d], errors='coerce').dropna()
+        if len(_vals) == 0:
+            continue
+        _dim_scores[_d] = {
+            'mean_abs':  float(_vals.abs().mean()),
+            'max_abs':   float(_vals.abs().max()),
+            'n_acima':   int((_vals.abs() >= _threshold_focal).sum()),
+            'pct_acima': float((_vals.abs() >= _threshold_focal).sum() / _n_dias * 100),
+            'tendencia': float(_vals.iloc[-1] - _vals.iloc[0]) if len(_vals) > 1 else 0.0,
+            'ultimo':    float(_vals.iloc[-1]) if len(_vals) > 0 else 0.0,
+        }
+
+    if not _dim_scores:
+        st.info("Dados insuficientes para a janela selecionada.")
+    else:
+        # Ordenar por mean_abs — top 3 em destaque
+        _sorted_dims = sorted(_dim_scores.items(), key=lambda x: x[1]['mean_abs'], reverse=True)
+        _top3 = _sorted_dims[:3]
+
+        # Gráfico de barras — stress médio por dimensão
+        _bar_labels = [DIM_META[d]['icon'] + ' ' + DIM_META[d]['label'] for d, _ in _sorted_dims]
+        _bar_values = [v['mean_abs'] for _, v in _sorted_dims]
+        _bar_colors = [
+            DIM_META[d]['color'] if i < 3 else 'rgba(180,180,180,0.45)'
+            for i, (d, _) in enumerate(_sorted_dims)
+        ]
+
+        _fig_focal = go.Figure(go.Bar(
+            x=_bar_labels,
+            y=_bar_values,
+            marker_color=_bar_colors,
+            text=[f"{v:.2f}" for v in _bar_values],
+            textposition='outside',
+            textfont=dict(size=12, color='#222'),
+            hovertemplate='<b>%{x}</b><br>Stress médio |z|: %{y:.3f}<extra></extra>',
+        ))
+        _fig_focal.add_hline(
+            y=_threshold_focal,
+            line_dash="dash",
+            line_color='rgba(200,80,0,0.7)',
+            line_width=1.5,
+            annotation_text=f"Limiar {_threshold_focal}σ",
+            annotation_font=dict(size=11, color='#CC5200'),
+        )
+        _fig_focal.update_layout(
+            paper_bgcolor='white', plot_bgcolor='white', height=300,
+            margin=dict(t=20, b=90, l=60, r=20),
+            title=dict(text=f"Stress por dimensão — últimos {_janela_focal} dias",
+                       font=dict(size=14, color='#222')),
+            showlegend=False,
+            font=dict(color='#222', size=12),
+            xaxis=dict(
+                title=dict(text='Dimensão do tensor', font=dict(size=13, color='#333')),
+                tickfont=dict(size=11, color='#333'), tickangle=-15, linecolor='#555'),
+            yaxis=dict(
+                title=dict(text='Stress médio |z-score|', font=dict(size=13, color='#333')),
+                tickfont=dict(size=11, color='#333'), linecolor='#555',
+                gridcolor='rgba(0,0,0,0.06)'),
+        )
+        st.plotly_chart(_fig_focal, use_container_width=True,
+                        config={'displayModeBar': False}, key='fmt_focal_bar')
+
+        # Cards top-3
+        st.markdown(f"#### Top {min(3, len(_top3))} dimensões mais stressadas")
+        _cols_top = st.columns(min(3, len(_top3)))
+
+        for _i, (_d, _v) in enumerate(_top3):
+            _meta = DIM_META[_d]
+            with _cols_top[_i]:
+                _cor = _meta['color']
+                _trend_icon = '↑' if _v['tendencia'] > 0.1 else ('↓' if _v['tendencia'] < -0.1 else '→')
+                _rank = ['🥇', '🥈', '🥉'][_i]
+                st.markdown(
+                    f"<div style='border:1px solid {_cor}55;border-radius:10px;padding:14px;"
+                    f"background:rgba(245,245,248,0.9);margin-bottom:8px'>"
+                    f"<div style='font-size:15px;font-weight:700;color:{_cor}'>"
+                    f"{_rank} {_meta['icon']} {_meta['label']}</div>"
+                    f"<div style='font-size:26px;font-weight:700;color:#111;margin:6px 0'>"
+                    f"{_v['mean_abs']:.2f}"
+                    f"<span style='font-size:12px;color:#666;margin-left:4px'>|z| médio</span></div>"
+                    f"<div style='font-size:12px;color:#555'>"
+                    f"{_trend_icon} tendência &nbsp;|&nbsp; último: <b>{_v['ultimo']:+.2f}</b></div>"
+                    f"<div style='font-size:12px;color:#C0392B;font-weight:600;margin-top:4px'>"
+                    f"⚠️ {_v['n_acima']} / {_n_dias} dias acima do limiar ({_v['pct_acima']:.0f}%)</div>"
+                    f"<div style='font-size:11px;color:#777;margin-top:6px'>{_meta['descricao']}</div>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
+        # Expander com sugestões — top-1 obrigatório + secundários com dias acima
+        _d1, _v1 = _top3[0]
+        _meta1 = DIM_META[_d1]
+        with st.expander(
+            f"📋 Sugestões de ação — {_meta1['icon']} {_meta1['label']} "
+            f"({_v1['n_acima']} dias acima do limiar nos últimos {_janela_focal}d)",
+            expanded=True,
+        ):
+            _sig = _meta1['positivo_sig'] if _v1['ultimo'] > 0 else _meta1['negativo_sig']
+            st.markdown(f"**Situação atual:** {_sig}")
+            st.markdown("**Ações recomendadas:**")
+            for _acao in _meta1['acao_alta']:
+                st.markdown(f"- {_acao}")
+
+            _secundarios = [(_dx, _vx) for _dx, _vx in _top3[1:] if _vx['n_acima'] > 0]
+            if _secundarios:
+                st.markdown("---")
+                st.markdown("**Ações adicionais (dimensões secundárias também elevadas):**")
+                for _dx, _vx in _secundarios:
+                    _mx = DIM_META[_dx]
+                    st.markdown(
+                        f"**{_mx['icon']} {_mx['label']}** "
+                        f"({_vx['n_acima']} dias) — {_mx['acao_alta'][0]}"
+                    )
+
+        # Calendário de stress — barras sobrepostas por dimensão
+        st.markdown(f"##### Calendário de stress focal — últimos {_janela_focal} dias")
+        _date_vals = pd.to_datetime(_df_focal['Data']) if 'Data' in _df_focal.columns \
+                     else pd.RangeIndex(len(_df_focal))
+
+        _fig_heat_data = []
+        for _d in _dims_available:
+            _vals_abs = pd.to_numeric(_df_focal[_d], errors='coerce').abs()
+            _above_mask = (_vals_abs >= _threshold_focal).astype(float)
+            _y_vals = _above_mask * _vals_abs  # altura = |z| apenas nos dias acima; 0 abaixo
+            _fig_heat_data.append(
+                go.Bar(
+                    name=DIM_META[_d]['icon'] + ' ' + DIM_META[_d]['label'],
+                    x=_date_vals,
+                    y=_y_vals,
+                    marker_color=DIM_META[_d]['color'],
+                    opacity=0.65,
+                    hovertemplate=(
+                        f"<b>{DIM_META[_d]['label']}</b><br>"
+                        "%{x|%d/%m/%Y}<br>|z|: %{customdata:.2f}<extra></extra>"
+                    ),
+                    customdata=_vals_abs.values,
+                )
+            )
+        _fig_heat = go.Figure(data=_fig_heat_data)
+        _fig_heat.add_hline(
+            y=_threshold_focal, line_dash="dot",
+            line_color='rgba(200,80,0,0.5)', line_width=1.2,
+        )
+        _fig_heat.update_layout(
+            paper_bgcolor='white', plot_bgcolor='white', height=290,
+            barmode='overlay',
+            margin=dict(t=20, b=55, l=65, r=20),
+            title=dict(text=f"Quais dias cada dimensão esteve acima de {_threshold_focal}σ",
+                       font=dict(size=13, color='#222')),
+            font=dict(color='#222', size=12),
+            xaxis=dict(
+                title=dict(text='Data', font=dict(size=13, color='#333')),
+                tickfont=dict(size=11, color='#333'), linecolor='#555',
+                tickangle=-30, gridcolor='rgba(0,0,0,0.04)'),
+            yaxis=dict(
+                title=dict(text='|z-score| (dias acima do limiar)', font=dict(size=13, color='#333')),
+                tickfont=dict(size=11, color='#333'), linecolor='#555',
+                gridcolor='rgba(0,0,0,0.06)'),
+            legend=dict(orientation='h', y=-0.22, font=dict(size=11, color='#222'),
+                        bgcolor='rgba(255,255,255,0.85)', borderwidth=0),
+        )
+        st.plotly_chart(_fig_heat, use_container_width=True,
+                        config={'displayModeBar': False}, key='fmt_heat_chart')
+
+        # Tabela resumo compacta
+        _rows = []
+        for _d, _v in _sorted_dims:
+            _rows.append({
+                'Dimensão': DIM_META[_d]['icon'] + ' ' + DIM_META[_d]['label'],
+                '|z| médio': f"{_v['mean_abs']:.3f}",
+                '|z| pico':  f"{_v['max_abs']:.3f}",
+                f'Dias ≥{_threshold_focal}σ': f"{_v['n_acima']} ({_v['pct_acima']:.0f}%)",
+                'Último':    f"{_v['ultimo']:+.3f}",
+                'Tend.':     '↑' if _v['tendencia'] > 0.1 else ('↓' if _v['tendencia'] < -0.1 else '→'),
+            })
+        st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
+
+    # ── SECTION 7: Explanation expander ──────────────────────────────────────
     st.markdown("---")
     with st.expander("📖 O que é o FMT Tensor κ — teoria e interpretação", expanded=False):
         st.markdown("""
@@ -429,10 +782,15 @@ F(t) = cov(Δx) sobre janela 28 dias
 
 **Interpretação de λ₁/Σλ:**
 - **>65%** → stress **focal**: uma dimensão domina (ex: só CTLγ cresceu)
-  → identificar e tratar a dimensão dominante
+  → usar a secção "Análise de Stress Focal" acima para identificar qual
 - **45-65%** → stress **misto**: duas dimensões perturbadas
 - **<45%** → stress **multissistémico**: todas as dimensões em simultâneo
   → sinal clássico de overreaching não-funcional
+
+**Dias REST — tratamento das dimensões:**
+- `w_stress` em REST → decai 50%/dia (W' reconstitui-se mas não zera de imediato)
+- `hq_drift_z` em REST → 0 (sem sessão = sem deriva cardíaca = posição neutra)
+- `WEED_z`, `sleep_z` → forward-fill (wellness do dia anterior é o melhor proxy)
 
 **Comparação FMT vs TSB clássico (cohort 30 atletas × 365 dias):**
 
@@ -443,7 +801,7 @@ F(t) = cov(Δx) sobre janela 28 dias
 | False positive rate | 28.2% | 62.4% |
 """)
 
-    # ── SECTION 7: Download ───────────────────────────────────────────────────
+    # ── SECTION 8: Download ───────────────────────────────────────────────────
     st.markdown("---")
     _dl_cols = ['Data','CTL','ATL','TSB','CTLg_perf','HRV_trend','WEED_z',
                 'sleep_z','w_stress','hq_drift_z','wp_prime',
