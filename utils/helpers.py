@@ -827,63 +827,50 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
     best_source = 'perf'     if r2_perf >= r2_rec else 'recovery'
     ld['FTLM']  = ld['CTLg_perf'] if best_source == 'perf' else ld['CTLg_rec']
 
-    # ── W' stress diário (AllWorkFTP / icu_pm_w_prime) ──────────────────────
-    # w_stress = AllWorkFTP_kJ / (icu_pm_w_prime_J / 1000)
-    #   = fracção de W' consumida acima de FTP por sessão
-    #   > 1.0 significa que o W' foi excedido (esforço anaeróbico severo)
-    # icu_pm_w_prime já é específico da sessão/modalidade (Morton 3P)
-    # Portanto o rácio é automaticamente normalizado por modalidade
-    # Rolling 7d suaviza ruído sessão-a-sessão
-    # W' stress: threshold 5 (not 10) — AllWorkFTP=0 on easy rides becomes NaN
-    # after remove_zeros, so only sessions with actual work above FTP count
-    # Fallback: use z3_kj (zone 3 kJ = above CP) if AllWorkFTP unavailable
-    # AllWorkFTP = kJ above FTP per session (Intervals.icu export, in kJ)
-    # icu_pm_w_prime = W' capacity for that session (in Joules, Morton 3P model)
-    # w_stress = AllWorkFTP_kJ / (icu_pm_w_prime_J / 1000)
-    #          = AllWorkFTP_kJ / W'_kJ  → dimensionless fraction
-    # NOTE: z3_kj is NOT a valid fallback — it's total zone 3 energy (much larger)
-    _allwork_col = None
-    if 'AllWorkFTP' in df.columns and df['AllWorkFTP'].notna().sum() >= 5:
-        _allwork_col = 'AllWorkFTP'
-    # z3_kj NOT used as fallback: different metric (total zone 3 kJ ≠ work above FTP)
-
-    if (_allwork_col is not None and 'icu_pm_w_prime' in df.columns and
+    # ── W' stress diário ─────────────────────────────────────────────────────
+    # Fonte: AllWorkFTP (kJ acima de FTP, Intervals.icu export)
+    #        icu_pm_w_prime (W' estimado pelo modelo Morton 3P, em Joules)
+    #
+    # Rácio bruto por sessão:
+    #   raw_ratio = AllWorkFTP_kJ / (icu_pm_w_prime_J / 1000)
+    #             = AllWorkFTP_kJ / W'_kJ  → fracção de W' consumida
+    #   raw_ratio > 1 → W' excedido nessa sessão
+    #   raw_ratio típico: 0.1 (sessão leve) a 3-5 (intervalos duros)
+    #
+    # Normalização final: z-score relativo ao baseline 60d
+    #   w_stress = (rolling_7d_raw - media_60d) / std_60d
+    #   → insensível às unidades absolutas (kJ vs J)
+    #   → positivo = semana mais intensa que o normal
+    #   → negativo = semana mais leve que o normal
+    #   → comparável entre desportos e períodos
+    #
+    # z3_kj NÃO é usado como fallback: é energia total da zona 3
+    # (muito maior que AllWorkFTP — métricas diferentes)
+    if ('AllWorkFTP' in df.columns and 'icu_pm_w_prime' in df.columns and
+            df['AllWorkFTP'].notna().sum() >= 5 and
             df['icu_pm_w_prime'].notna().sum() >= 5):
-        _df_ws = df.copy()
-        _wp_j  = pd.to_numeric(_df_ws['icu_pm_w_prime'], errors='coerce')
-        _aw    = pd.to_numeric(_df_ws[_allwork_col],      errors='coerce')
-        # AllWorkFTP in kJ (Intervals.icu export unit)
-        # icu_pm_w_prime in Joules (eW field) → convert to kJ by /1000
-        # ratio = AllWorkFTP_kJ / W'_kJ → dimensionless
-        # Values > 1: W' consumed more than full capacity (multiple intervals / W' > eW estimate)
-        # Expected range: 0.1 (easy ride) to 3-5 (very hard interval session)
-        # Rolling 7d smooths session noise
-        _wp_kj    = _wp_j / 1000.0
-        _ws_ratio = np.where(_wp_kj > 0.5, _aw / _wp_kj, np.nan)
-        _df_ws['_w_stress'] = _ws_ratio
-        _w_stress_daily = (_df_ws.groupby('Data')['_w_stress']
-                           .mean()
-                           .reindex(_date_idx, fill_value=np.nan))
-        # Rolling 7d — suaviza ruído (sessões isoladas não dominam)
-        _ws_7d = _w_stress_daily.rolling(7, min_periods=2).mean()
-        # Z-score relative to 60d rolling baseline → unit-invariant
-        # This removes sensitivity to AllWorkFTP units (kJ vs J)
-        # Positive z = more W' stress than personal baseline (last 60d)
-        # Negative z = less W' stress than baseline (easy week)
-        _ws_mu = _ws_7d.rolling(60, min_periods=10).mean()
-        _ws_sd = _ws_7d.rolling(60, min_periods=10).std()
-        ld['w_stress'] = ((_ws_7d - _ws_mu) / _ws_sd.replace(0, np.nan)).values
-    else:
-        # Fallback: wp_prime smoothed (backward compatible)
-        if 'icu_pm_w_prime' in df.columns and df['icu_pm_w_prime'].notna().sum() >= 10:
-            _wp_daily = (df.groupby('Data')['icu_pm_w_prime']
-                         .mean()
-                         .reindex(_date_idx, fill_value=np.nan))
-            ld['wp_prime'] = _wp_daily.rolling(7, min_periods=3).mean().values
+        _df_ws  = df.copy()
+        _wp_j   = pd.to_numeric(_df_ws['icu_pm_w_prime'], errors='coerce')
+        _aw     = pd.to_numeric(_df_ws['AllWorkFTP'],      errors='coerce')
+        _wp_kj  = _wp_j / 1000.0
+        # Rácio por sessão (só onde W' > 0.5 kJ para evitar divisão por zero)
+        _df_ws['_w_ratio'] = np.where(_wp_kj > 0.5, _aw / _wp_kj, np.nan)
+        # Média diária → rolling 7d → z-score 60d
+        _w_daily = (_df_ws.groupby('Data')['_w_ratio']
+                    .mean()
+                    .reindex(_date_idx, fill_value=np.nan))
+        _w_7d   = _w_daily.rolling(7, min_periods=2).mean()
+        _w_mu   = _w_7d.rolling(60, min_periods=10).mean()
+        _w_sd   = _w_7d.rolling(60, min_periods=10).std()
+        ld['w_stress']     = ((_w_7d - _w_mu) / _w_sd.replace(0, np.nan)).values
+        ld['w_stress_raw'] = _w_7d.values   # rácio bruto para referência no CSV
 
-    # Manter wp_prime para backward compat (CSV, FMT_kappa_4d legacy)
-    if 'w_stress' in ld.columns and 'wp_prime' not in ld.columns:
-        ld['wp_prime'] = ld['w_stress']   # alias para compatibilidade
+    # wp_prime (backward compat — usado no FMT_kappa_4d e download CSV)
+    if 'icu_pm_w_prime' in df.columns and df['icu_pm_w_prime'].notna().sum() >= 5:
+        _wp_daily = (df.groupby('Data')['icu_pm_w_prime']
+                     .mean()
+                     .reindex(_date_idx, fill_value=np.nan))
+        ld['wp_prime'] = _wp_daily.rolling(7, min_periods=3).mean().values
 
     # ── HR quartil drift (hq_4 / hq_1) ──────────────────────────────────────
     # Paper FMT 2019: HR quartiles são dimensão Load do vector de estado x(t)
