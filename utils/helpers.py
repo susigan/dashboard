@@ -837,27 +837,42 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
     # W' stress: threshold 5 (not 10) — AllWorkFTP=0 on easy rides becomes NaN
     # after remove_zeros, so only sessions with actual work above FTP count
     # Fallback: use z3_kj (zone 3 kJ = above CP) if AllWorkFTP unavailable
+    # AllWorkFTP = kJ above FTP per session (Intervals.icu export, in kJ)
+    # icu_pm_w_prime = W' capacity for that session (in Joules, Morton 3P model)
+    # w_stress = AllWorkFTP_kJ / (icu_pm_w_prime_J / 1000)
+    #          = AllWorkFTP_kJ / W'_kJ  → dimensionless fraction
+    # NOTE: z3_kj is NOT a valid fallback — it's total zone 3 energy (much larger)
     _allwork_col = None
     if 'AllWorkFTP' in df.columns and df['AllWorkFTP'].notna().sum() >= 5:
         _allwork_col = 'AllWorkFTP'
-    elif 'z3_kj' in df.columns and df['z3_kj'].notna().sum() >= 5:
-        _allwork_col = 'z3_kj'   # z3_kj = zone 3 kJ = above CP ≈ AllWorkFTP
+    # z3_kj NOT used as fallback: different metric (total zone 3 kJ ≠ work above FTP)
 
     if (_allwork_col is not None and 'icu_pm_w_prime' in df.columns and
             df['icu_pm_w_prime'].notna().sum() >= 5):
         _df_ws = df.copy()
         _wp_j  = pd.to_numeric(_df_ws['icu_pm_w_prime'], errors='coerce')
         _aw    = pd.to_numeric(_df_ws[_allwork_col],      errors='coerce')
-        # Converter: icu_pm_w_prime em Joules → kJ; AllWorkFTP já em kJ
-        _wp_kj = _wp_j / 1000.0
-        # Rácio apenas onde W' > 0 para evitar divisão por zero
+        # AllWorkFTP in kJ (Intervals.icu export unit)
+        # icu_pm_w_prime in Joules (eW field) → convert to kJ by /1000
+        # ratio = AllWorkFTP_kJ / W'_kJ → dimensionless
+        # Values > 1: W' consumed more than full capacity (multiple intervals / W' > eW estimate)
+        # Expected range: 0.1 (easy ride) to 3-5 (very hard interval session)
+        # Rolling 7d smooths session noise
+        _wp_kj    = _wp_j / 1000.0
         _ws_ratio = np.where(_wp_kj > 0.5, _aw / _wp_kj, np.nan)
         _df_ws['_w_stress'] = _ws_ratio
         _w_stress_daily = (_df_ws.groupby('Data')['_w_stress']
                            .mean()
                            .reindex(_date_idx, fill_value=np.nan))
         # Rolling 7d — suaviza ruído (sessões isoladas não dominam)
-        ld['w_stress'] = _w_stress_daily.rolling(7, min_periods=2).mean().values
+        _ws_7d = _w_stress_daily.rolling(7, min_periods=2).mean()
+        # Z-score relative to 60d rolling baseline → unit-invariant
+        # This removes sensitivity to AllWorkFTP units (kJ vs J)
+        # Positive z = more W' stress than personal baseline (last 60d)
+        # Negative z = less W' stress than baseline (easy week)
+        _ws_mu = _ws_7d.rolling(60, min_periods=10).mean()
+        _ws_sd = _ws_7d.rolling(60, min_periods=10).std()
+        ld['w_stress'] = ((_ws_7d - _ws_mu) / _ws_sd.replace(0, np.nan)).values
     else:
         # Fallback: wp_prime smoothed (backward compatible)
         if 'icu_pm_w_prime' in df.columns and df['icu_pm_w_prime'].notna().sum() >= 10:
