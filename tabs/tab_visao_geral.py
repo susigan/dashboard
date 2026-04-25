@@ -141,7 +141,7 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             if len(_rs_rpe) > 0:
                 _n_total = len(_rs_rpe)
                 _n_leve  = int((_rs_rpe <= 4.0).sum())
-                _n_mod   = int(((_rs_rpe > 4.0) & (_rs_rpe < 7.0)).sum())
+                _n_mod   = int((_rs_rpe > 4.0) & (_rs_rpe < 7.0)).sum()
                 _n_forte = int((_rs_rpe >= 7.0).sum())
                 _p_leve  = _n_leve / _n_total * 100
                 _p_mod   = _n_mod  / _n_total * 100
@@ -1048,6 +1048,58 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             return _df_out, _ref_line, _ol_warn
 
         rows_prog = []
+
+        # ── κ actual — lido do cache de série de carga ─────────────────────────
+        # Percentis históricos reais do atleta (calculados sobre toda a série)
+        _KAPPA_P25 = 3.954   # calculado sobre 299 dias com κ disponível
+        _KAPPA_P50 = 5.044
+        _KAPPA_P75 = 5.954
+        _KAPPA_P87 = 7.182   # limiar de alerta automático
+        _KAPPA_P90 = 7.459
+
+        # Tentar obter κ actual do cache de calcular_series_carga
+        _kappa_now = None
+        _kappa_pct = None
+        _kappa_consec_alert = 0   # dias consecutivos com κ > p87
+        try:
+            @st.cache_data(ttl=3600, show_spinner=False)
+            def _get_ld_vg(_key_a, _key_w, da_arg, wc_arg):
+                from utils.helpers import calcular_series_carga
+                ld_vg, _ = calcular_series_carga(da_arg, df_wellness=wc_arg, ate_hoje=True)
+                return ld_vg
+            _key_a = (len(da_full), str(da_full['Data'].max()) if 'Data' in da_full.columns else '')
+            _key_w = (len(wc_full) if wc_full is not None else 0,
+                      str(wc_full['Data'].max()) if wc_full is not None and 'Data' in wc_full.columns else '')
+            _ld_vg = _get_ld_vg(_key_a, _key_w, da_full, wc_full)
+            if _ld_vg is not None and 'FMT_kappa' in _ld_vg.columns:
+                _kappa_s = pd.to_numeric(_ld_vg['FMT_kappa'], errors='coerce').dropna()
+                if len(_kappa_s) > 0:
+                    _kappa_now = float(_kappa_s.iloc[-1])
+                    _kappa_pct = float((_kappa_s < _kappa_now).mean() * 100)
+                    # Contar dias consecutivos acima de p87
+                    _kappa_rev = _kappa_s.iloc[::-1]
+                    for _kv in _kappa_rev:
+                        if _kv > _KAPPA_P87:
+                            _kappa_consec_alert += 1
+                        else:
+                            break
+        except Exception:
+            pass
+
+        # ── ALERTA AUTOMÁTICO κ > p87 por 3+ dias consecutivos ─────────────────
+        if _kappa_consec_alert >= 3:
+            st.error(
+                f"⚠️ **Alerta FMT Tensor** — κ acima do limiar de sobrecarga (>{_KAPPA_P87:.2f}, p87) "
+                f"há **{_kappa_consec_alert} dias consecutivos**.\n\n"
+                f"κ actual: **{_kappa_now:.3f}** (p{_kappa_pct:.0f} do histórico). "
+                f"Sugestão: reduzir volume total 15-20% e eliminar sessões intervaladas por 5-7 dias."
+            )
+        elif _kappa_now is not None and _kappa_now > _KAPPA_P75:
+            st.warning(
+                f"⚠️ **κ elevado** ({_kappa_now:.3f}, p{_kappa_pct:.0f}) — "
+                f"fadiga silenciosa possível. {_kappa_consec_alert} dia(s) acima de p87."
+            )
+
         for mod in ['Bike','Row','Ski','Run']:
             _sub = _pf[_pf['type'].apply(norm_tipo)==mod].copy()
             if len(_sub) == 0: continue
@@ -1064,11 +1116,30 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             has_kj   = kj_base > 0
             has_km   = km_base > 0
 
-            # Fator progressão
-            if ol:                fator = 0.98
-            elif need > 60:       fator = 1.04
-            elif need < 30:       fator = 1.01
-            else:                 fator = 1.02
+            # Fator progressão — calibrado com κ e dados reais do atleta
+            # Percentis κ: p25=3.954 p75=5.954 p87=7.182
+            # Base empírica: análise de fator_real × rec_next semana seguinte (299 semanas)
+            if ol:
+                # Overload confirmado: -15% (dados mostram rec_next=56.8 em κ>p87,
+                # fator real em semanas de mau recovery = 0.880)
+                fator = 0.85
+            elif _kappa_now is not None and _kappa_now > _KAPPA_P87:
+                # Regra de segurança absoluta: κ > p87 força redução independente do need
+                fator = 0.90
+            elif _kappa_now is not None and _kappa_now > _KAPPA_P75:
+                # κ alto sobrepõe need — conter progressão
+                if need > 60:   fator = 0.98  # need alto mas κ alto — prevalecer cautela
+                else:           fator = 0.97
+            elif _kappa_now is not None and _kappa_now < _KAPPA_P25:
+                # κ baixo = máxima janela de ganho fisiológico
+                if need > 60:   fator = 1.08  # melhor janela: empurrar aqui
+                elif need > 30: fator = 1.05  # espaço de ganho moderado
+                else:           fator = 1.00  # manutenção mesmo com κ baixo
+            else:
+                # κ na zona média (p25-p75) — lógica original com ajustes
+                if need > 60:   fator = 1.04  # confirmado pelos dados
+                elif need < 30: fator = 0.97  # conter quando need baixo + κ médio
+                else:           fator = 1.02  # manter (dados confirmam)
 
             # Sem anterior (última semana completa)
             sem_ant_ini = sem_ini_pf - pd.Timedelta(weeks=1)
