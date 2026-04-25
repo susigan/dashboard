@@ -459,3 +459,49 @@ def tab_wellness(dw):
     if rows_tbl:
         st.dataframe(pd.DataFrame(rows_tbl),
                      use_container_width=True, hide_index=True)
+
+    # ── DOWNLOAD CSV — série wellness completa com baseline e z-scores ────────
+    st.markdown("---")
+    try:
+        _wdl_cols = [c for c in [
+            'Data', 'hrv', 'rhr', 'sleep_hours', 'sleep_quality',
+            'fatiga', 'stress', 'humor', 'soreness', 'peso', 'fat',
+        ] if c in dw.columns]
+        _wdl = dw[_wdl_cols].copy()
+
+        # Adicionar baseline 28d e z-scores para hrv e rhr
+        for _wc in ['hrv', 'rhr']:
+            if _wc in _wdl.columns:
+                _s = pd.to_numeric(_wdl[_wc], errors='coerce')
+                _wdl[f'{_wc}_baseline28d'] = _s.rolling(28, min_periods=7).mean().round(3)
+                _wdl[f'{_wc}_cv28d'] = (
+                    _s.rolling(28, min_periods=7).std() /
+                    _s.rolling(28, min_periods=7).mean() * 100
+                ).round(3)
+
+        # Composite wellness z-score (igual ao tab_wellness interno)
+        _subj_cols = [c for c in ['fatiga', 'stress', 'humor', 'soreness', 'sleep_quality'] if c in _wdl.columns]
+        if _subj_cols:
+            _comp = _wdl[_subj_cols].apply(pd.to_numeric, errors='coerce')
+            _comp_z = (_comp - _comp.rolling(28, min_periods=7).mean()) / _comp.rolling(28, min_periods=7).std().replace(0, 1)
+            _wdl['wellness_composite_z'] = _comp_z.mean(axis=1).round(3)
+
+        _wdl['Data'] = _wdl['Data'].astype(str)
+        _wdl = _wdl.round(3)
+
+        _wd1, _wd2 = st.columns([2, 1])
+        with _wd1:
+            st.subheader("📥 Export Wellness CSV")
+            st.caption("HRV/RHR + baseline 28d + CV + composite wellness z-score")
+            st.dataframe(_wdl.tail(10), use_container_width=True, hide_index=True)
+        with _wd2:
+            st.metric("Dias exportados", len(_wdl))
+            st.download_button(
+                label="📥 Download Wellness CSV",
+                data=_wdl.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
+                file_name="atheltica_wellness.csv",
+                mime="text/csv",
+                key="well_dl_csv",
+            )
+    except Exception as _we:
+        st.info(f"Export não disponível: {_we}")
