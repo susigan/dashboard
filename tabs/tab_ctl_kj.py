@@ -305,6 +305,56 @@ def tab_ctl_kj(da_full):
             if rows_eff:
                 st.dataframe(pd.DataFrame(rows_eff), width='stretch', hide_index=True)
 
+            # ── Download eficiência — histórico completo ──────────────────────
+            st.markdown("---")
+            try:
+                _eff_rows_dl = []
+                _mods_all = [m for m in ['Bike','Row','Ski','Run']
+                             if m in da_full['type'].apply(norm_tipo).values]
+                _df_full_eff = da_full.copy()
+                _df_full_eff['Data'] = pd.to_datetime(_df_full_eff['Data'])
+                _df_full_eff['type'] = _df_full_eff['type'].apply(norm_tipo)
+                _df_full_eff['_kj'] = pd.to_numeric(_df_full_eff.get('icu_joules', pd.Series(dtype=float)), errors='coerce').div(1000)
+                _df_full_eff['_trimp'] = (pd.to_numeric(_df_full_eff.get('moving_time', pd.Series(dtype=float)), errors='coerce') / 60) * pd.to_numeric(_df_full_eff.get('rpe', pd.Series(dtype=float)), errors='coerce').fillna(5)
+                _df_full_eff['_eff'] = (_df_full_eff['_trimp'] / _df_full_eff['_kj'].replace(0, np.nan)).round(4)
+
+                for _mod_e in _mods_all:
+                    _dm_e = _df_full_eff[_df_full_eff['type'] == _mod_e].dropna(subset=['_eff']).copy()
+                    if len(_dm_e) < 4: continue
+                    _dm_e = _dm_e[_dm_e['_eff'].between(
+                        _dm_e['_eff'].quantile(0.05), _dm_e['_eff'].quantile(0.95))]
+                    _dm_e['_sem'] = _dm_e['Data'].dt.to_period('W').dt.start_time
+                    _eff_sem_dl = (_dm_e.groupby('_sem')['_eff']
+                                   .agg(['median','count']).reset_index()
+                                   .rename(columns={'_sem':'semana','median':'eff_mediana','count':'n_sessoes'}))
+                    _eff_sem_dl['eff_roll4'] = _eff_sem_dl['eff_mediana'].rolling(4, min_periods=2).mean().round(4)
+                    _eff_sem_dl['modalidade'] = _mod_e
+                    _eff_rows_dl.append(_eff_sem_dl)
+
+                if _eff_rows_dl:
+                    _df_eff_dl = pd.concat(_eff_rows_dl, ignore_index=True)
+                    _df_eff_dl['semana'] = _df_eff_dl['semana'].astype(str)
+                    _df_eff_dl = _df_eff_dl[['semana','modalidade','eff_mediana','eff_roll4','n_sessoes']]
+                    _df_eff_dl = _df_eff_dl.sort_values(['modalidade','semana'])
+
+                    _ce1, _ce2 = st.columns([2,1])
+                    with _ce1:
+                        st.caption("📥 Eficiência semanal — histórico completo (TRIMP/KJ rolling 4 semanas)")
+                        st.dataframe(_df_eff_dl.tail(12), use_container_width=True, hide_index=True)
+                        st.caption(f"Mostrando últimas 12 de {len(_df_eff_dl)} semanas × modalidade")
+                    with _ce2:
+                        st.metric("Registos no CSV", len(_df_eff_dl))
+                        st.caption("CSV = histórico completo\nGráficos = período sidebar")
+                        st.download_button(
+                            label="📥 Download Eficiência CSV",
+                            data=_df_eff_dl.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
+                            file_name="atheltica_eficiencia_trimp_kj.csv",
+                            mime="text/csv",
+                            key="dl_eff_hist",
+                        )
+            except Exception as _eff_err:
+                st.info(f"Export eficiência não disponível: {_eff_err}")
+
     # ════════════════════════════════════════════════════════════════════════
     # TAB 3 — CTL pred vs real
     # ════════════════════════════════════════════════════════════════════════
@@ -350,6 +400,73 @@ def tab_ctl_kj(da_full):
         if rows_met:
             st.dataframe(pd.DataFrame(rows_met), width='stretch', hide_index=True)
             st.caption("Bias positivo = sobreestima. RMSE < 15 = bom ajuste.")
+
+            # ── Download CTL pred vs real — série diária ──────────────────────
+            st.markdown("---")
+            try:
+                _ctl_dl_frames = []
+                for _mod_c in sorted(df['type'].unique()):
+                    _dm_c = df[df['type'] == _mod_c].copy()
+                    _kj_col_c = 'KJ_work' if _mod_c == 'Bike' else 'KJ'
+
+                    if _mod_c == 'Run':
+                        _dm_c['_trimp_pred'] = _dm_c['dur_min'] * _dm_c['rpe_n'].fillna(5)
+                    else:
+                        _dm_ok_c = _dm_c.dropna(subset=[_kj_col_c, 'TRIMP_corr', 'tipo', 'densidade'])
+                        if len(_dm_ok_c) < 8: continue
+                        _X_c = np.column_stack([np.ones(len(_dm_ok_c)),
+                                                _dm_ok_c[_kj_col_c].values,
+                                                _dm_ok_c['densidade'].values])
+                        try:
+                            _beta_c = np.linalg.lstsq(_X_c, _dm_ok_c['TRIMP_corr'].values, rcond=None)[0]
+                        except Exception:
+                            continue
+                        _dm_c['_kj_fc']   = _dm_c[_kj_col_c].fillna(0)
+                        _dm_c['_dens_fc'] = _dm_c['densidade'].fillna(_dm_c['densidade'].median())
+                        _dm_c['_trimp_pred'] = (_beta_c[0] + _beta_c[1] * _dm_c['_kj_fc'] +
+                                                 _beta_c[2] * _dm_c['_dens_fc']).clip(lower=0)
+
+                    _pred_d_c = _dm_c.groupby('Data')['_trimp_pred'].sum().reindex(all_dates, fill_value=0)
+                    _real_d_c = _dm_c.groupby('Data')['TRIMP_corr'].sum().reindex(all_dates, fill_value=0)
+                    _ctl_p_c  = _pred_d_c.ewm(span=42, adjust=False).mean().round(3)
+                    _ctl_r_c  = _real_d_c.ewm(span=42, adjust=False).mean().round(3)
+                    _atl_r_c  = _real_d_c.ewm(span=7,  adjust=False).mean().round(3)
+
+                    _frame_c = pd.DataFrame({
+                        'Data':         all_dates.strftime('%Y-%m-%d'),
+                        'modalidade':   _mod_c,
+                        'CTL_real':     _ctl_r_c.values,
+                        'CTL_pred':     _ctl_p_c.values,
+                        'ATL_real':     _atl_r_c.values,
+                        'TSB_real':     (_ctl_r_c - _atl_r_c).values.round(3),
+                        'erro_abs':     (_ctl_p_c - _ctl_r_c).abs().values.round(3),
+                        'trimp_real_d': _real_d_c.values.round(2),
+                        'trimp_pred_d': _pred_d_c.values.round(2),
+                    })
+                    # Filtrar apenas dias com carga real > 0 para não encher de zeros
+                    _frame_c = _frame_c[_frame_c['trimp_real_d'] > 0].copy()
+                    _ctl_dl_frames.append(_frame_c)
+
+                if _ctl_dl_frames:
+                    _df_ctl_dl = pd.concat(_ctl_dl_frames, ignore_index=True).sort_values(['modalidade','Data'])
+
+                    _cc1, _cc2 = st.columns([2,1])
+                    with _cc1:
+                        st.caption("📥 CTL pred vs real — dias com treino, todas as modalidades")
+                        st.dataframe(_df_ctl_dl.tail(12), use_container_width=True, hide_index=True)
+                        st.caption(f"Mostrando últimos 12 de {len(_df_ctl_dl)} registos")
+                    with _cc2:
+                        st.metric("Registos no CSV", len(_df_ctl_dl))
+                        st.caption("Apenas dias com treino (trimp_real > 0)")
+                        st.download_button(
+                            label="📥 Download CTL pred vs real CSV",
+                            data=_df_ctl_dl.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
+                            file_name="atheltica_ctl_pred_vs_real.csv",
+                            mime="text/csv",
+                            key="dl_ctl_pred_real",
+                        )
+            except Exception as _ctl_err:
+                st.info(f"Export CTL pred vs real não disponível: {_ctl_err}")
 
     # ════════════════════════════════════════════════════════════════════════
     # TAB 4 — SÉRIE CTL
