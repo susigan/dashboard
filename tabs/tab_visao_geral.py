@@ -134,15 +134,15 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 if not vp or vp == 0: return None
                 return f"{(vc-vp)/vp*100:+.0f}% vs sem.ant"
 
-            # RPE distribuição Leve/Moderado/Forte (escala 1-10)
-            # Leve: RPE 1-4 | Moderado: 5-7 | Forte: 8-10
+            # RPE distribuição Leve/Moderado/Forte — mesma escala de todas as outras tabs:
+            # Leve: 1–4 | Moderado: 4.1–6.9 | Forte: 7–10
             _rs_rpe = pd.to_numeric(_rs_cur.get('rpe', pd.Series()), errors='coerce').dropna() if 'rpe' in _rs_cur.columns else pd.Series()
             _rs_rpe_str = "—"
             if len(_rs_rpe) > 0:
                 _n_total = len(_rs_rpe)
-                _n_leve  = int((_rs_rpe <= 4).sum())
-                _n_mod   = int((_rs_rpe.between(5, 7)).sum())
-                _n_forte = int((_rs_rpe >= 8).sum())
+                _n_leve  = int((_rs_rpe <= 4.0).sum())
+                _n_mod   = int((_rs_rpe > 4.0) & (_rs_rpe < 7.0)).sum()
+                _n_forte = int((_rs_rpe >= 7.0).sum())
                 _p_leve  = _n_leve / _n_total * 100
                 _p_mod   = _n_mod  / _n_total * 100
                 _p_forte = _n_forte/ _n_total * 100
@@ -1117,13 +1117,27 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             h_feito  = float(_sem_cur['_mt'].sum())
             km_feito = float(_sem_cur['_km'].sum()) if has_km else 0.0
 
-            kj_rest  = max(0.0, kj_meta - kj_feito) if has_kj else 0.0
-            h_rest   = max(0.0, h_meta  - h_feito)
-            km_rest  = max(0.0, km_meta - km_feito) if has_km else 0.0
+            # Restante real (sem forçar 0 por overload — overload indica-se no display)
+            kj_rest_real  = max(0.0, kj_meta - kj_feito) if has_kj else 0.0
+            h_rest_real   = max(0.0, h_meta  - h_feito)
+            km_rest_real  = max(0.0, km_meta - km_feito) if has_km else 0.0
 
-            # Overload: nao adicionar carga — sugestao apenas de recuperacao
+            # Para o engine de sugestão: overload → não adicionar carga
             if ol:
                 kj_rest = 0.0; h_rest = 0.0; km_rest = 0.0
+            else:
+                kj_rest = kj_rest_real; h_rest = h_rest_real; km_rest = km_rest_real
+
+            # Display do Restante: se overload, mostra aviso em vez de "✅ 0"
+            if ol:
+                _restante_display = "⚠️ Overload"
+            elif has_kj:
+                _restante_display = "✅ 0" if kj_rest_real == 0 else f"{kj_rest_real:.0f} kJ"
+            elif has_km:
+                _restante_display = ("✅ 0" if km_rest_real == 0 and h_rest_real == 0
+                                     else f"{km_rest_real:.0f} km | {fmt_dur(h_rest_real)}")
+            else:
+                _restante_display = fmt_dur(h_rest_real)
 
             # Sugestão — retorna (df, ref_line, ol_warn)
             # Calcular f_delta para esta modalidade
@@ -1157,11 +1171,7 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 'Feito':         f"{kj_feito:.0f} kJ" if has_kj else
                                   (f"{km_feito:.0f} km | {fmt_dur(h_feito)}" if has_km
                                    else fmt_dur(h_feito)),
-                'Restante':      (f"✅ 0" if kj_rest==0 and has_kj else
-                                   f"{kj_rest:.0f} kJ") if has_kj else
-                                  (f"✅ 0" if km_rest==0 and h_rest==0 else
-                                   f"{km_rest:.0f} km | {fmt_dur(h_rest)}" if has_km
-                                   else fmt_dur(h_rest)),
+                'Restante':      _restante_display,
                 'Proj. Horas 2026': fmt_dur(h_proj) if h_proj>0 else "—",
                 'Range Horas (+3–12%)': (
                     f"{fmt_dur(h_2025)} → {fmt_dur(h_2025*1.03)}–{fmt_dur(h_2025*1.12)}"
