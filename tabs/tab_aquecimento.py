@@ -893,3 +893,39 @@ def tab_aquecimento(dfs_annual, df_annual, di):
                     if treino_rows:
                         st.markdown(f"**{tipo_d} ({unid_d}) — impacto do treino anterior**")
                         st.dataframe(pd.DataFrame(treino_rows), width="stretch", hide_index=True)
+
+            # ── Download CSV — histórico completo desta modalidade ──────────────
+            st.markdown("---")
+            try:
+                _dl_aba = aba.replace('Aquec', '')  # Bike / Ski / Row
+                _df_dl  = df_a.copy()
+
+                # Garantir que DATA está em formato string legível
+                if 'DATA' in _df_dl.columns:
+                    _df_dl['DATA'] = pd.to_datetime(_df_dl['DATA'], errors='coerce'
+                                                    ).dt.strftime('%Y-%m-%d')
+
+                # Remover coluna Atividade (redundante no CSV por modalidade)
+                _df_dl = _df_dl.drop(columns=['Atividade'], errors='ignore')
+
+                # Ordenar por data
+                _df_dl = _df_dl.sort_values('DATA', ascending=True) if 'DATA' in _df_dl.columns else _df_dl
+
+                _dc1, _dc2 = st.columns([2, 1])
+                with _dc1:
+                    st.caption(
+                        f"📥 **{_dl_aba}** — {len(_df_dl)} sessões de aquecimento | "
+                        f"Colunas: {', '.join(_df_dl.columns.tolist())}"
+                    )
+                    st.dataframe(_df_dl.tail(5), use_container_width=True, hide_index=True)
+                with _dc2:
+                    st.metric("Sessões no CSV", len(_df_dl))
+                    st.download_button(
+                        label=f"📥 Download {_dl_aba} Aquecimento CSV",
+                        data=_df_dl.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
+                        file_name=f"atheltica_aquec_{_dl_aba.lower()}.csv",
+                        mime="text/csv",
+                        key=f"dl_aquec_{aba}",
+                    )
+            except Exception as _ae:
+                st.info(f"Export não disponível: {_ae}")
