@@ -391,6 +391,40 @@ def tab_eftp(da, mods_sel, da_full=None):
     else:
         st.info("Coluna icu_eftp não disponível para análise de correlação.")
 
+    # ── DOWNLOAD CSV — eFTP série temporal por modalidade ─────────────────────
+    st.markdown("---")
+    try:
+        _ecol = next((c for c in ['icu_eftp', 'eFTP', 'eftp'] if c in da.columns), None)
+        if _ecol:
+            _eftp_dl = da.copy()
+            _eftp_dl['Data'] = pd.to_datetime(_eftp_dl['Data'])
+            _eftp_dl[_ecol] = pd.to_numeric(_eftp_dl[_ecol], errors='coerce')
+            _eftp_dl = _eftp_dl[_eftp_dl[_ecol].notna()][['Data', 'type', _ecol]].copy()
+            _eftp_dl = _eftp_dl.rename(columns={_ecol: 'eFTP'})
+            # Pivot: uma linha por data, uma coluna por modalidade
+            _eftp_pivot = (_eftp_dl.groupby(['Data', 'type'])['eFTP'].max()
+                           .unstack('type').reset_index())
+            _eftp_pivot.columns.name = None
+            _eftp_pivot['Data'] = _eftp_pivot['Data'].astype(str)
+            _eftp_pivot = _eftp_pivot.round(1)
+
+            _ec1, _ec2 = st.columns([2, 1])
+            with _ec1:
+                st.subheader("📥 Export eFTP CSV")
+                st.caption("eFTP por data e modalidade — para cruzar com κ e fases de treino")
+                st.dataframe(_eftp_pivot.tail(10), use_container_width=True, hide_index=True)
+            with _ec2:
+                st.metric("Sessões exportadas", len(_eftp_dl))
+                st.download_button(
+                    label="📥 Download eFTP CSV",
+                    data=_eftp_pivot.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
+                    file_name="atheltica_eftp.csv",
+                    mime="text/csv",
+                    key="eftp_dl_csv",
+                )
+    except Exception as _ee:
+        st.info(f"Export eFTP não disponível: {_ee}")
+
 
 # ════════════════════════════════════════════════════════════════════════════════
 # TAB 5 — HR ZONES + RPE ZONES + CORRELAÇÃO
