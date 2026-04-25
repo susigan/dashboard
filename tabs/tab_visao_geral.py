@@ -1049,55 +1049,69 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
 
         rows_prog = []
 
-        # ── κ actual — lido do cache de série de carga ─────────────────────────
-        # Percentis históricos reais do atleta (calculados sobre toda a série)
-        _KAPPA_P25 = 3.954   # calculado sobre 299 dias com κ disponível
-        _KAPPA_P50 = 5.044
-        _KAPPA_P75 = 5.954
-        _KAPPA_P87 = 7.182   # limiar de alerta automático
-        _KAPPA_P90 = 7.459
+        # ── κ actual — lido do session_state (populado pelo tab_pmc via calcular_series_carga) ──
+        # Os percentis são calculados DINAMICAMENTE sobre a série histórica real do atleta.
+        # Fallback: se tab_pmc ainda não correu nesta sessão, calcula aqui (sem cache interno).
+        _kappa_s           = None   # série completa de κ
+        _kappa_now         = None   # valor actual
+        _kappa_pct         = None   # percentil actual no histórico do atleta
+        _kappa_consec_alert = 0     # dias consecutivos com κ > p87
 
-        # Tentar obter κ actual do cache de calcular_series_carga
-        _kappa_now = None
-        _kappa_pct = None
-        _kappa_consec_alert = 0   # dias consecutivos com κ > p87
-        try:
-            @st.cache_data(ttl=3600, show_spinner=False)
-            def _get_ld_vg(_key_a, _key_w, da_arg, wc_arg):
-                from utils.helpers import calcular_series_carga
-                ld_vg, _ = calcular_series_carga(da_arg, df_wellness=wc_arg, ate_hoje=True)
-                return ld_vg
-            _key_a = (len(da_full), str(da_full['Data'].max()) if 'Data' in da_full.columns else '')
-            _key_w = (len(wc_full) if wc_full is not None else 0,
-                      str(wc_full['Data'].max()) if wc_full is not None and 'Data' in wc_full.columns else '')
-            _ld_vg = _get_ld_vg(_key_a, _key_w, da_full, wc_full)
-            if _ld_vg is not None and 'FMT_kappa' in _ld_vg.columns:
-                _kappa_s = pd.to_numeric(_ld_vg['FMT_kappa'], errors='coerce').dropna()
-                if len(_kappa_s) > 0:
-                    _kappa_now = float(_kappa_s.iloc[-1])
-                    _kappa_pct = float((_kappa_s < _kappa_now).mean() * 100)
-                    # Contar dias consecutivos acima de p87
-                    _kappa_rev = _kappa_s.iloc[::-1]
-                    for _kv in _kappa_rev:
-                        if _kv > _KAPPA_P87:
-                            _kappa_consec_alert += 1
-                        else:
-                            break
-        except Exception:
-            pass
+        # Percentis dinâmicos — inicializam com valores do histórico do atleta
+        # (serão recalculados abaixo assim que tivermos a série real)
+        _KAPPA_P25 = 3.954
+        _KAPPA_P75 = 5.954
+        _KAPPA_P87 = 7.182
+
+        # 1ª tentativa: session_state (populado pelo tab_pmc quando é visitado)
+        _ld_ss = st.session_state.get('ld_frac_cache', None)
+        if _ld_ss is not None and 'FMT_kappa' in _ld_ss.columns:
+            _kappa_s = pd.to_numeric(_ld_ss['FMT_kappa'], errors='coerce').dropna()
+
+        # 2ª tentativa: calcular directamente (tab_pmc ainda não foi visitada)
+        if _kappa_s is None or len(_kappa_s) < 10:
+            try:
+                _ld_direct, _ = calcular_series_carga(
+                    da_full, df_wellness=wc_full, ate_hoje=True)
+                if _ld_direct is not None and 'FMT_kappa' in _ld_direct.columns:
+                    _kappa_s = pd.to_numeric(
+                        _ld_direct['FMT_kappa'], errors='coerce').dropna()
+                    # Guardar no session_state para evitar recálculo noutras tabs
+                    st.session_state['ld_frac_cache'] = _ld_direct
+            except Exception:
+                _kappa_s = None
+
+        # Calcular percentis REAIS do atleta e estado actual
+        if _kappa_s is not None and len(_kappa_s) >= 10:
+            # Percentis dinâmicos sobre o histórico real
+            _KAPPA_P25 = float(_kappa_s.quantile(0.25))
+            _KAPPA_P75 = float(_kappa_s.quantile(0.75))
+            _KAPPA_P87 = float(_kappa_s.quantile(0.87))
+
+            _kappa_now = float(_kappa_s.iloc[-1])
+            _kappa_pct = float((_kappa_s < _kappa_now).mean() * 100)
+
+            # Dias consecutivos acima de p87
+            for _kv in _kappa_s.iloc[::-1]:
+                if _kv > _KAPPA_P87:
+                    _kappa_consec_alert += 1
+                else:
+                    break
 
         # ── ALERTA AUTOMÁTICO κ > p87 por 3+ dias consecutivos ─────────────────
         if _kappa_consec_alert >= 3:
             st.error(
-                f"⚠️ **Alerta FMT Tensor** — κ acima do limiar de sobrecarga (>{_KAPPA_P87:.2f}, p87) "
+                f"⚠️ **Alerta FMT Tensor** — κ acima do limiar de sobrecarga "
+                f"(>{_KAPPA_P87:.2f}, p87 do histórico do atleta) "
                 f"há **{_kappa_consec_alert} dias consecutivos**.\n\n"
-                f"κ actual: **{_kappa_now:.3f}** (p{_kappa_pct:.0f} do histórico). "
+                f"κ actual: **{_kappa_now:.3f}** (p{_kappa_pct:.0f} do teu histórico). "
                 f"Sugestão: reduzir volume total 15-20% e eliminar sessões intervaladas por 5-7 dias."
             )
         elif _kappa_now is not None and _kappa_now > _KAPPA_P75:
             st.warning(
-                f"⚠️ **κ elevado** ({_kappa_now:.3f}, p{_kappa_pct:.0f}) — "
-                f"fadiga silenciosa possível. {_kappa_consec_alert} dia(s) acima de p87."
+                f"⚠️ **κ elevado** ({_kappa_now:.3f}, p{_kappa_pct:.0f} do teu histórico) — "
+                f"fadiga silenciosa possível. {_kappa_consec_alert} dia(s) acima de p87 "
+                f"({_KAPPA_P87:.2f})."
             )
 
         for mod in ['Bike','Row','Ski','Run']:
