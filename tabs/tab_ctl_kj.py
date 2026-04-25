@@ -305,70 +305,51 @@ def tab_ctl_kj(da_full):
             if rows_eff:
                 st.dataframe(pd.DataFrame(rows_eff), width='stretch', hide_index=True)
 
-            # ── Download eficiência — histórico completo ──────────────────────
-            st.markdown("---")
-            try:
-                _eff_rows_dl = []
-                _mods_all = [m for m in ['Bike','Row','Ski','Run']
-                             if m in da_full['type'].apply(norm_tipo).values]
-                _df_full_eff = da_full.copy()
-                _df_full_eff['Data'] = pd.to_datetime(_df_full_eff['Data'])
-                _df_full_eff['type'] = _df_full_eff['type'].apply(norm_tipo)
-                _df_full_eff['_kj'] = pd.to_numeric(_df_full_eff.get('icu_joules', pd.Series(dtype=float)), errors='coerce').div(1000)
-                _df_full_eff['_trimp'] = (pd.to_numeric(_df_full_eff.get('moving_time', pd.Series(dtype=float)), errors='coerce') / 60) * pd.to_numeric(_df_full_eff.get('rpe', pd.Series(dtype=float)), errors='coerce').fillna(5)
-                _df_full_eff['_eff'] = (_df_full_eff['_trimp'] / _df_full_eff['_kj'].replace(0, np.nan)).round(4)
-
-                for _mod_e in _mods_all:
-                    _dm_e = _df_full_eff[_df_full_eff['type'] == _mod_e].dropna(subset=['_eff']).copy()
-                    if len(_dm_e) < 4: continue
-                    _dm_e = _dm_e[_dm_e['_eff'].between(
-                        _dm_e['_eff'].quantile(0.05), _dm_e['_eff'].quantile(0.95))]
-                    _dm_e['_sem'] = _dm_e['Data'].dt.to_period('W').dt.start_time
-                    _eff_sem_dl = (_dm_e.groupby('_sem')['_eff']
-                                   .agg(['median','count']).reset_index()
-                                   .rename(columns={'_sem':'semana','median':'eff_mediana','count':'n_sessoes'}))
-                    _eff_sem_dl['eff_roll4'] = _eff_sem_dl['eff_mediana'].rolling(4, min_periods=2).mean().round(4)
-                    _eff_sem_dl['modalidade'] = _mod_e
-                    _eff_rows_dl.append(_eff_sem_dl)
-
-                if _eff_rows_dl:
-                    _df_eff_dl = pd.concat(_eff_rows_dl, ignore_index=True)
-                    _df_eff_dl['semana'] = _df_eff_dl['semana'].astype(str)
-                    _df_eff_dl = _df_eff_dl[['semana','modalidade','eff_mediana','eff_roll4','n_sessoes']]
-                    _df_eff_dl = _df_eff_dl.sort_values(['modalidade','semana'])
-
-                    _ce1, _ce2 = st.columns([2,1])
-                    with _ce1:
-                        st.caption("📥 Eficiência semanal — histórico completo (TRIMP/KJ rolling 4 semanas)")
-                        st.dataframe(_df_eff_dl.tail(12), use_container_width=True, hide_index=True)
-                        st.caption(f"Mostrando últimas 12 de {len(_df_eff_dl)} semanas × modalidade")
-                    with _ce2:
-                        st.metric("Registos no CSV", len(_df_eff_dl))
-                        st.caption("CSV = histórico completo\nGráficos = período sidebar")
-                        st.download_button(
-                            label="📥 Download Eficiência CSV",
-                            data=_df_eff_dl.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
-                            file_name="atheltica_eficiencia_trimp_kj.csv",
-                            mime="text/csv",
-                            key="dl_eff_hist",
-                        )
-            except Exception as _eff_err:
-                st.info(f"Export eficiência não disponível: {_eff_err}")
-
     # ════════════════════════════════════════════════════════════════════════
     # TAB 3 — CTL pred vs real
     # ════════════════════════════════════════════════════════════════════════
     with t_ctl:
         st.subheader("CTL predito vs real por modalidade")
+
+        # Toggle: calibração histórica completa vs rolling 90d
+        _calib_mode = st.radio(
+            "Janela de calibração dos coeficientes β",
+            ["Histórico completo", "Rolling 90 dias (re-calibração recente)"],
+            horizontal=True, index=0, key="ctl_calib_mode",
+        )
+        st.caption(
+            "**Histórico completo**: β calibrado sobre toda a série — estável mas pode divergir se "
+            "o atleta mudou muito recentemente. "
+            "**Rolling 90d**: β re-calibrado com as últimas 90 dias — acompanha evolução rápida "
+            "(ex: Row que melhorou muito em 2024-2026)."
+        )
+
+        _usar_rolling = "Rolling" in _calib_mode
+        _janela_calib = 90  # dias
+
         rows_met = []
         for mod in sorted(df['type'].unique()):
-            dm = df[df['type']==mod].copy()
-            kj_col = 'KJ_work' if mod == 'Bike' else 'KJ'
+            dm_full = df[df['type']==mod].copy()
+            kj_col  = 'KJ_work' if mod == 'Bike' else 'KJ'
 
             if mod == 'Run':
-                dm['TRIMP_pred_m'] = dm['dur_min'] * dm['rpe_n'].fillna(5)
+                dm_full['TRIMP_pred_m'] = dm_full['dur_min'] * dm_full['rpe_n'].fillna(5)
             else:
-                dm_ok = dm.dropna(subset=[kj_col,'TRIMP_corr','tipo','densidade'])
+                # Seleccionar janela de calibração
+                if _usar_rolling:
+                    _corte_calib = dm_full['Data'].max() - pd.Timedelta(days=_janela_calib)
+                    dm_ok = dm_full[dm_full['Data'] >= _corte_calib].dropna(
+                        subset=[kj_col,'TRIMP_corr','tipo','densidade'])
+                    _calib_label = f"(β calibrado nos últimos {_janela_calib}d)"
+                else:
+                    dm_ok = dm_full.dropna(subset=[kj_col,'TRIMP_corr','tipo','densidade'])
+                    _calib_label = "(β calibrado no histórico completo)"
+
+                if len(dm_ok) < 8:
+                    # Fallback para histórico completo se rolling tem poucos dados
+                    dm_ok = dm_full.dropna(subset=[kj_col,'TRIMP_corr','tipo','densidade'])
+                    _calib_label = "(β fallback — dados insuficientes no rolling)"
+
                 if len(dm_ok) < 8: continue
                 X_ok = np.column_stack([np.ones(len(dm_ok)),
                                         dm_ok[kj_col].values,
@@ -377,96 +358,46 @@ def tab_ctl_kj(da_full):
                     beta = np.linalg.lstsq(X_ok, dm_ok['TRIMP_corr'].values, rcond=None)[0]
                 except Exception:
                     continue
-                dm['_kj_f']   = dm[kj_col].fillna(0)
-                dm['_dens_f'] = dm['densidade'].fillna(dm['densidade'].median())
-                dm['TRIMP_pred_m'] = (beta[0] + beta[1]*dm['_kj_f'] +
-                                      beta[2]*dm['_dens_f']).clip(lower=0)
+                dm_full['_kj_f']   = dm_full[kj_col].fillna(0)
+                dm_full['_dens_f'] = dm_full['densidade'].fillna(dm_full['densidade'].median())
+                dm_full['TRIMP_pred_m'] = (beta[0] + beta[1]*dm_full['_kj_f'] +
+                                           beta[2]*dm_full['_dens_f']).clip(lower=0)
 
-            pred_d = dm.groupby('Data')['TRIMP_pred_m'].sum().reindex(all_dates, fill_value=0)
-            real_d = dm.groupby('Data')['TRIMP_corr'].sum().reindex(all_dates, fill_value=0)
+                # Nota de calibração para Row (onde bias é mais relevante)
+                if mod == 'Row' and _usar_rolling:
+                    _n_calib = len(dm_ok)
+                    _beta_kj  = round(beta[1], 4)
+                    st.info(
+                        f"**Row — β re-calibrado**: dTRIMP/dKJ={_beta_kj} "
+                        f"(últimos {_janela_calib}d, n={_n_calib} sessões). "
+                        f"O bias de Row varia temporalmente (2023: +2.4, 2024: +4.9, 2025: -0.5, 2026: -16) "
+                        f"porque o modelo histórico não acompanha a melhoria rápida do atleta em Row."
+                    )
+
+            pred_d = dm_full.groupby('Data')['TRIMP_pred_m'].sum().reindex(all_dates, fill_value=0)
+            real_d = dm_full.groupby('Data')['TRIMP_corr'].sum().reindex(all_dates, fill_value=0)
             ctl_p  = pred_d.ewm(span=42, adjust=False).mean()
             ctl_r  = real_d.ewm(span=42, adjust=False).mean()
             diff   = ctl_p - ctl_r
             valid  = ctl_r > 0
+            # Bias últimos 30d vs global
+            diff_30d = diff[valid].tail(30)
             rows_met.append({
-                'Modalidade':         mod,
-                'CTL real':           round(float(ctl_r.iloc[-1]), 1),
-                'CTL pred':           round(float(ctl_p.iloc[-1]), 1),
-                'MAE':                round(float(diff[valid].abs().mean()), 2),
-                'RMSE':               round(float(np.sqrt((diff[valid]**2).mean())), 2),
-                'Bias':               round(float(diff[valid].mean()), 3),
-                'Err%':               round(float((diff[valid].abs()/ctl_r[valid]*100).mean()), 1),
+                'Modalidade':     mod,
+                'CTL real':       round(float(ctl_r.iloc[-1]), 1),
+                'CTL pred':       round(float(ctl_p.iloc[-1]), 1),
+                'MAE':            round(float(diff[valid].abs().mean()), 2),
+                'Bias global':    round(float(diff[valid].mean()), 3),
+                'Bias 30d':       round(float(diff_30d.mean()), 3) if len(diff_30d) > 0 else '—',
+                'Err%':           round(float((diff[valid].abs()/ctl_r[valid]*100).mean()), 1),
             })
         if rows_met:
-            st.dataframe(pd.DataFrame(rows_met), width='stretch', hide_index=True)
-            st.caption("Bias positivo = sobreestima. RMSE < 15 = bom ajuste.")
-
-            # ── Download CTL pred vs real — série diária ──────────────────────
-            st.markdown("---")
-            try:
-                _ctl_dl_frames = []
-                for _mod_c in sorted(df['type'].unique()):
-                    _dm_c = df[df['type'] == _mod_c].copy()
-                    _kj_col_c = 'KJ_work' if _mod_c == 'Bike' else 'KJ'
-
-                    if _mod_c == 'Run':
-                        _dm_c['_trimp_pred'] = _dm_c['dur_min'] * _dm_c['rpe_n'].fillna(5)
-                    else:
-                        _dm_ok_c = _dm_c.dropna(subset=[_kj_col_c, 'TRIMP_corr', 'tipo', 'densidade'])
-                        if len(_dm_ok_c) < 8: continue
-                        _X_c = np.column_stack([np.ones(len(_dm_ok_c)),
-                                                _dm_ok_c[_kj_col_c].values,
-                                                _dm_ok_c['densidade'].values])
-                        try:
-                            _beta_c = np.linalg.lstsq(_X_c, _dm_ok_c['TRIMP_corr'].values, rcond=None)[0]
-                        except Exception:
-                            continue
-                        _dm_c['_kj_fc']   = _dm_c[_kj_col_c].fillna(0)
-                        _dm_c['_dens_fc'] = _dm_c['densidade'].fillna(_dm_c['densidade'].median())
-                        _dm_c['_trimp_pred'] = (_beta_c[0] + _beta_c[1] * _dm_c['_kj_fc'] +
-                                                 _beta_c[2] * _dm_c['_dens_fc']).clip(lower=0)
-
-                    _pred_d_c = _dm_c.groupby('Data')['_trimp_pred'].sum().reindex(all_dates, fill_value=0)
-                    _real_d_c = _dm_c.groupby('Data')['TRIMP_corr'].sum().reindex(all_dates, fill_value=0)
-                    _ctl_p_c  = _pred_d_c.ewm(span=42, adjust=False).mean().round(3)
-                    _ctl_r_c  = _real_d_c.ewm(span=42, adjust=False).mean().round(3)
-                    _atl_r_c  = _real_d_c.ewm(span=7,  adjust=False).mean().round(3)
-
-                    _frame_c = pd.DataFrame({
-                        'Data':         all_dates.strftime('%Y-%m-%d'),
-                        'modalidade':   _mod_c,
-                        'CTL_real':     _ctl_r_c.values,
-                        'CTL_pred':     _ctl_p_c.values,
-                        'ATL_real':     _atl_r_c.values,
-                        'TSB_real':     (_ctl_r_c - _atl_r_c).values.round(3),
-                        'erro_abs':     (_ctl_p_c - _ctl_r_c).abs().values.round(3),
-                        'trimp_real_d': _real_d_c.values.round(2),
-                        'trimp_pred_d': _pred_d_c.values.round(2),
-                    })
-                    # Filtrar apenas dias com carga real > 0 para não encher de zeros
-                    _frame_c = _frame_c[_frame_c['trimp_real_d'] > 0].copy()
-                    _ctl_dl_frames.append(_frame_c)
-
-                if _ctl_dl_frames:
-                    _df_ctl_dl = pd.concat(_ctl_dl_frames, ignore_index=True).sort_values(['modalidade','Data'])
-
-                    _cc1, _cc2 = st.columns([2,1])
-                    with _cc1:
-                        st.caption("📥 CTL pred vs real — dias com treino, todas as modalidades")
-                        st.dataframe(_df_ctl_dl.tail(12), use_container_width=True, hide_index=True)
-                        st.caption(f"Mostrando últimos 12 de {len(_df_ctl_dl)} registos")
-                    with _cc2:
-                        st.metric("Registos no CSV", len(_df_ctl_dl))
-                        st.caption("Apenas dias com treino (trimp_real > 0)")
-                        st.download_button(
-                            label="📥 Download CTL pred vs real CSV",
-                            data=_df_ctl_dl.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
-                            file_name="atheltica_ctl_pred_vs_real.csv",
-                            mime="text/csv",
-                            key="dl_ctl_pred_real",
-                        )
-            except Exception as _ctl_err:
-                st.info(f"Export CTL pred vs real não disponível: {_ctl_err}")
+            st.dataframe(pd.DataFrame(rows_met), use_container_width=True, hide_index=True)
+            st.caption(
+                "Bias positivo = sobreestima. Bias negativo = subestima. "
+                "**Bias 30d** é o mais relevante — mostra o estado actual do modelo. "
+                "RMSE < 15 = bom ajuste. Row: bias muda de sinal ao longo do tempo (deriva temporal)."
+            )
 
     # ════════════════════════════════════════════════════════════════════════
     # TAB 4 — SÉRIE CTL
@@ -878,67 +809,3 @@ def tab_ctl_kj(da_full):
                     "⬇️ Download debug CSV",
                     _csv_dbg, "atheltica_debug_signals.csv",
                     "text/csv", key="dl_dbg_signals")
-
-                # ── Download HISTÓRICO COMPLETO de sessões (independente do filtro) ──
-                st.markdown("---")
-                st.subheader("📥 Export CTL/KJ — Histórico Completo")
-                st.caption(
-                    "Histórico **completo** de sessões com CTL/ATL, KJ por zona, "
-                    "TRIMP, eficiência e RPE — independente do filtro global do sidebar.")
-                try:
-                    _exp_full = da_full.copy()
-                    _exp_full['Data'] = pd.to_datetime(_exp_full['Data'])
-                    _exp_full = _exp_full.sort_values('Data').reset_index(drop=True)
-
-                    # CTL/ATL via EWM sobre histórico completo
-                    _load_full = pd.to_numeric(
-                        _exp_full.get('icu_training_load', pd.Series(dtype=float)),
-                        errors='coerce').fillna(0)
-                    _all_d_full = pd.date_range(_exp_full['Data'].min(), _exp_full['Data'].max(), freq='D')
-                    _load_by_d  = _exp_full.groupby('Data')['icu_training_load'].apply(
-                        lambda x: pd.to_numeric(x, errors='coerce').sum()
-                    ).reindex(_all_d_full, fill_value=0) if 'icu_training_load' in _exp_full.columns else pd.Series(0, index=_all_d_full)
-                    _ctl_f = _load_by_d.ewm(span=42, adjust=False).mean()
-                    _atl_f = _load_by_d.ewm(span=7,  adjust=False).mean()
-                    _ctl_map_f = _ctl_f.to_dict()
-                    _atl_map_f = _atl_f.to_dict()
-
-                    _exp_cols_full = {
-                        'date':         _exp_full['Data'].dt.strftime('%Y-%m-%d'),
-                        'modality':     _exp_full['type'].apply(norm_tipo) if 'type' in _exp_full.columns else '',
-                        'duration_min': (pd.to_numeric(_exp_full.get('moving_time', np.nan), errors='coerce') / 60).round(1),
-                        'kj_total':     pd.to_numeric(_exp_full.get('icu_joules', np.nan), errors='coerce').div(1000).round(1),
-                        'rpe':          pd.to_numeric(_exp_full.get('rpe', np.nan), errors='coerce').round(1),
-                        'ctl':          _exp_full['Data'].map(_ctl_map_f).round(2),
-                        'atl':          _exp_full['Data'].map(_atl_map_f).round(2),
-                    }
-                    # KJ por zona se disponível
-                    for _zc in ['z1_kj','z2_kj','z3_kj']:
-                        if _zc in _exp_full.columns:
-                            _exp_cols_full[_zc] = pd.to_numeric(_exp_full[_zc], errors='coerce').round(1)
-                    # eFTP se disponível
-                    for _ec in ['icu_eftp','icu_ftp']:
-                        if _ec in _exp_full.columns:
-                            _exp_cols_full[_ec] = pd.to_numeric(_exp_full[_ec], errors='coerce').round(1)
-                            break
-
-                    _df_exp_full = pd.DataFrame(_exp_cols_full)
-                    _df_exp_full = _df_exp_full[_df_exp_full['kj_total'].notna() | _df_exp_full['duration_min'].notna()]
-
-                    _cex1, _cex2 = st.columns([2,1])
-                    with _cex1:
-                        st.dataframe(_df_exp_full.tail(10), use_container_width=True, hide_index=True)
-                        st.caption(f"Mostrando últimas 10 de {len(_df_exp_full)} sessões totais")
-                    with _cex2:
-                        st.metric("Sessões no CSV", len(_df_exp_full))
-                        st.metric("Sidebar (filtrado)", len(df))
-                        st.caption("CSV = histórico completo\nGráficos = período sidebar")
-                        st.download_button(
-                            label="📥 Download CTL/KJ Histórico CSV",
-                            data=_df_exp_full.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
-                            file_name="atheltica_ctl_kj_historico.csv",
-                            mime="text/csv",
-                            key="dl_ctl_kj_hist",
-                        )
-                except Exception as _ek:
-                    st.info(f"Export histórico não disponível: {_ek}")
