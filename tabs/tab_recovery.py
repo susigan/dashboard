@@ -16,7 +16,7 @@ sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))
 warnings.filterwarnings('ignore')
 
 
-def tab_recovery(dw, da=None):
+def tab_recovery(dw, da=None, wc_full=None, da_full=None):
     
     st.header("🔋 Recovery Score & HRV Analysis")
     
@@ -1365,15 +1365,31 @@ def tab_recovery(dw, da=None):
             - Considerar outros marcadores (sensação subjetiva, sono, etc.)
             """)
 
-    # ── DOWNLOAD CSV — sinais de recovery diários ─────────────────────────────
+    # ── DOWNLOAD CSV — sinais de recovery diários (histórico completo) ────────
     st.markdown("---")
     st.subheader("📥 Export Recovery CSV")
     st.caption(
-        "Sinais diários de HRV, recovery_score, zonas Altini/Plews, "
-        "baseline, CV e slope — para análise integrada.")
+        "Histórico **completo** de recovery — independente do filtro global do sidebar. "
+        "Inclui: recovery_score, HRV baseline, CV, zonas Altini/Plews, slope LnrMSSD.")
 
     try:
-        _rec_dl = calcular_recovery(dw)
+        # Usar wc_full (histórico completo) se disponível; senão usa dw (filtrado)
+        _dw_csv = wc_full if (wc_full is not None and len(wc_full) > 0) else dw
+        # Integrar RPE do histórico completo de atividades
+        _da_csv = da_full if (da_full is not None and len(da_full) > 0) else (da if da is not None else pd.DataFrame())
+
+        # Integrar RPE no _dw_csv
+        _rpe_col_csv = next((c for c in ['icu_rpe', 'rpe', 'RPE'] if c in _da_csv.columns), None) if not _da_csv.empty else None
+        if _rpe_col_csv:
+            _da_rpe = _da_csv.copy()
+            _da_rpe['Data'] = pd.to_datetime(_da_rpe['Data']).dt.normalize()
+            _rpe_agg = _da_rpe.groupby('Data')[_rpe_col_csv].mean().reset_index()
+            _rpe_agg.columns = ['Data', 'rpe_diario']
+            _dw_csv = _dw_csv.copy()
+            _dw_csv['Data'] = pd.to_datetime(_dw_csv['Data']).dt.normalize()
+            _dw_csv = _dw_csv.merge(_rpe_agg, on='Data', how='left')
+
+        _rec_dl = calcular_recovery(_dw_csv)
         if len(_rec_dl) > 0:
             _dl_cols_rec = [c for c in [
                 'Data', 'hrv', 'rhr', 'recovery_score',
@@ -1382,14 +1398,12 @@ def tab_recovery(dw, da=None):
             ] if c in _rec_dl.columns]
             _df_rec_export = _rec_dl[_dl_cols_rec].copy()
 
-            # Adicionar icu_rpe/rpe do dw se disponível
-            for _rc in ['icu_rpe', 'rpe']:
-                if _rc in dw.columns and _rc not in _df_rec_export.columns:
-                    _rpe_m = dw[['Data', _rc]].copy()
-                    _rpe_m['Data'] = pd.to_datetime(_rpe_m['Data'])
-                    _df_rec_export['Data'] = pd.to_datetime(_df_rec_export['Data'])
-                    _df_rec_export = _df_rec_export.merge(_rpe_m, on='Data', how='left')
-                    break
+            # Adicionar rpe_diario se disponível
+            if 'rpe_diario' in _dw_csv.columns:
+                _rpe_merge = _dw_csv[['Data', 'rpe_diario']].copy()
+                _rpe_merge['Data'] = pd.to_datetime(_rpe_merge['Data'])
+                _df_rec_export['Data'] = pd.to_datetime(_df_rec_export['Data'])
+                _df_rec_export = _df_rec_export.merge(_rpe_merge, on='Data', how='left')
 
             _df_rec_export['Data'] = _df_rec_export['Data'].astype(str)
             _df_rec_export = _df_rec_export.round(4)
@@ -1397,8 +1411,11 @@ def tab_recovery(dw, da=None):
             _c_dl1, _c_dl2 = st.columns([2, 1])
             with _c_dl1:
                 st.dataframe(_df_rec_export.tail(14), use_container_width=True, hide_index=True)
+                st.caption(f"Mostrando últimos 14 de {len(_df_rec_export)} dias totais no CSV")
             with _c_dl2:
-                st.metric("Dias exportados", len(_df_rec_export))
+                st.metric("Dias no CSV", len(_df_rec_export))
+                st.metric("Sidebar (gráficos)", len(dw))
+                st.caption("CSV = histórico completo\nGráficos = período sidebar")
                 st.download_button(
                     label="📥 Download Recovery CSV",
                     data=_df_rec_export.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
