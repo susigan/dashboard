@@ -195,6 +195,10 @@ def tab_pmc(da, wc=None):
                 len(wc) if wc is not None else 0)
     _ld_frac, _info = _cached_csc(_da_key, _wc_key, da_full, wc)
 
+    # Guardar no session_state para que tab_visao_geral possa ler κ sem recalcular
+    if len(_ld_frac) > 0:
+        st.session_state['ld_frac_cache'] = _ld_frac
+
     if len(_ld_frac) > 0 and 'FTLM' in _ld_frac.columns:
         # Align fractional ld with our ld (may have different date range)
         _frac_idx = _ld_frac.set_index('Data')
