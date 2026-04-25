@@ -18,11 +18,18 @@ warnings.filterwarnings('ignore')
 DIAS_SEMANA = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom']
 
 def _zona_rpe(v):
+    """
+    Zonas RPE — igual ao tab_zones, tab_correlacoes e helpers:
+      Leve    : 0  < RPE <= 4.0
+      Moderado: 4.0 < RPE <  7.0
+      Forte   : 7.0 <= RPE <= 10
+    Sem overlap — bins fechados/abertos consistentes.
+    """
     try:
         v = float(v)
-        if 1 <= v <= 4.9:  return 'Z1 (Leve)'
-        if 5 <= v <= 6.9:  return 'Z2 (Mod.)'
-        if 7 <= v <= 10:   return 'Z3 (Pesado)'
+        if 0 < v <= 4.0:   return 'Z1 (Leve)'
+        if 4.0 < v < 7.0:  return 'Z2 (Mod.)'
+        if v >= 7.0:        return 'Z3 (Pesado)'
     except Exception:
         pass
     return None
@@ -363,7 +370,7 @@ def tab_padrao(da_full, dw_full):
     st.subheader("⚡ Padrão de RPE por Dia da Semana")
     st.caption(
         "Zona dominante por dia. "
-        "Z1=RPE 1–5 | Z2=RPE 5–7 | Z3=RPE 7–10 | Rest=sem actividade. "
+        "Z1=RPE ≤4 (Leve) | Z2=RPE 5–6 (Moderado) | Z3=RPE ≥7 (Forte) | Rest=sem actividade. "
         "Contagem = nº de dias da semana com cada zona como dominante.")
 
     if len(da) > 0 and 'rpe' in da.columns:
