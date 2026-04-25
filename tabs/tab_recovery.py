@@ -1364,3 +1364,47 @@ def tab_recovery(dw, da=None):
             - Verificar qualidade dos dados de medição
             - Considerar outros marcadores (sensação subjetiva, sono, etc.)
             """)
+
+    # ── DOWNLOAD CSV — sinais de recovery diários ─────────────────────────────
+    st.markdown("---")
+    st.subheader("📥 Export Recovery CSV")
+    st.caption(
+        "Sinais diários de HRV, recovery_score, zonas Altini/Plews, "
+        "baseline, CV e slope — para análise integrada.")
+
+    try:
+        _rec_dl = calcular_recovery(dw)
+        if len(_rec_dl) > 0:
+            _dl_cols_rec = [c for c in [
+                'Data', 'hrv', 'rhr', 'recovery_score',
+                'hrv_baseline', 'hrv_cv_7d',
+                'sleep_quality', 'fatiga', 'stress', 'humor', 'soreness',
+            ] if c in _rec_dl.columns]
+            _df_rec_export = _rec_dl[_dl_cols_rec].copy()
+
+            # Adicionar icu_rpe/rpe do dw se disponível
+            for _rc in ['icu_rpe', 'rpe']:
+                if _rc in dw.columns and _rc not in _df_rec_export.columns:
+                    _rpe_m = dw[['Data', _rc]].copy()
+                    _rpe_m['Data'] = pd.to_datetime(_rpe_m['Data'])
+                    _df_rec_export['Data'] = pd.to_datetime(_df_rec_export['Data'])
+                    _df_rec_export = _df_rec_export.merge(_rpe_m, on='Data', how='left')
+                    break
+
+            _df_rec_export['Data'] = _df_rec_export['Data'].astype(str)
+            _df_rec_export = _df_rec_export.round(4)
+
+            _c_dl1, _c_dl2 = st.columns([2, 1])
+            with _c_dl1:
+                st.dataframe(_df_rec_export.tail(14), use_container_width=True, hide_index=True)
+            with _c_dl2:
+                st.metric("Dias exportados", len(_df_rec_export))
+                st.download_button(
+                    label="📥 Download Recovery CSV",
+                    data=_df_rec_export.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
+                    file_name="atheltica_recovery.csv",
+                    mime="text/csv",
+                    key="rec_dl_csv",
+                )
+    except Exception as _rec_err:
+        st.info(f"Export não disponível: {_rec_err}")
