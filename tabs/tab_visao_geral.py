@@ -38,18 +38,119 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
     _sess_mp  = len(_kpi_mp)
     _horas_mc = _kpi_mc['moving_time'].sum() / 3600 if 'moving_time' in _kpi_mc.columns and len(_kpi_mc) > 0 else 0
     _horas_mp = _kpi_mp['moving_time'].sum() / 3600 if 'moving_time' in _kpi_mp.columns and len(_kpi_mp) > 0 else 0
+    _kj_mc = pd.to_numeric(_kpi_mc.get('icu_joules', pd.Series()), errors='coerce').sum() / 1000 if 'icu_joules' in _kpi_mc.columns and len(_kpi_mc) > 0 else 0
+    _kj_mp = pd.to_numeric(_kpi_mp.get('icu_joules', pd.Series()), errors='coerce').sum() / 1000 if 'icu_joules' in _kpi_mp.columns and len(_kpi_mp) > 0 else 0
 
-    def _delta_pct(vc, vp):
+    # Delta absoluto (não %)
+    def _delta_abs_sess(vc, vp):
         if not vp or vp == 0: return None
-        p = (vc - vp) / vp * 100
-        return f"{p:+.0f}% vs mês ant."
+        d = vc - vp
+        return f"{d:+.0f} vs mês ant."
 
-    c1, c2, c3, c4 = st.columns(4)
+    def _delta_abs_h(vc, vp):
+        if not vp or vp == 0: return None
+        d = vc - vp
+        return f"{d:+.1f}h vs mês ant."
+
+    def _delta_abs_kj(vc, vp):
+        if not vp or vp == 0: return None
+        d = vc - vp
+        return f"{d:+.0f} kJ vs mês ant."
+
+    # Intensidade do mês — RPE / HR / Power
+    def _calc_intensidade(df_src):
+        """Retorna dicts com distribuição leve/mod/forte por RPE, HR e Power."""
+        result = {}
+        if len(df_src) == 0:
+            return result
+
+        # RPE: Leve≤4 / Mod 4.1-6.9 / Forte≥7
+        _rpe = pd.to_numeric(df_src.get('rpe', pd.Series(dtype=float)), errors='coerce').dropna()
+        if len(_rpe) > 0:
+            n = len(_rpe)
+            result['rpe'] = {
+                'L': int((_rpe <= 4.0).sum()),
+                'M': int(((_rpe > 4.0) & (_rpe < 7.0)).sum()),
+                'F': int((_rpe >= 7.0).sum()),
+                'n': n,
+            }
+
+        # HR: Leve<120 / Mod 120-149 / Forte≥150 bpm (médias por sessão)
+        _hr = pd.to_numeric(df_src.get('hr_avg', df_src.get('average_heartrate', pd.Series(dtype=float))), errors='coerce').dropna()
+        if len(_hr) > 0:
+            n = len(_hr)
+            result['hr'] = {
+                'L': int((_hr < 120).sum()),
+                'M': int(((_hr >= 120) & (_hr < 150)).sum()),
+                'F': int((_hr >= 150).sum()),
+                'n': n,
+            }
+
+        # Power: Leve<0.75IF / Mod 0.75-0.90IF / Forte>0.90IF
+        # Proxy: usar IF se disponível, ou usar power_avg vs eFTP
+        _if = pd.to_numeric(df_src.get('IF', df_src.get('icu_intensity', pd.Series(dtype=float))), errors='coerce').dropna()
+        if len(_if) == 0 and 'power_avg' in df_src.columns and 'icu_eftp' in df_src.columns:
+            _pwr = pd.to_numeric(df_src['power_avg'], errors='coerce')
+            _ftp = pd.to_numeric(df_src['icu_eftp'],  errors='coerce')
+            _if  = (_pwr / _ftp.replace(0, np.nan)).dropna()
+        if len(_if) > 0:
+            n = len(_if)
+            result['pwr'] = {
+                'L': int((_if < 0.75).sum()),
+                'M': int(((_if >= 0.75) & (_if < 0.90)).sum()),
+                'F': int((_if >= 0.90).sum()),
+                'n': n,
+            }
+
+        return result
+
+    def _fmt_int(d, key):
+        """Formata distribuição como 'X%/Y%/Z%' com legenda de cores."""
+        if key not in d or d[key]['n'] == 0:
+            return '—', ''
+        n  = d[key]['n']
+        pl = d[key]['L'] / n * 100
+        pm = d[key]['M'] / n * 100
+        pf = d[key]['F'] / n * 100
+        s  = f"{pl:.0f}%/{pm:.0f}%/{pf:.0f}%"
+        cap = (f"<span style='color:#2ecc71'>●</span> {d[key]['L']} &nbsp;"
+               f"<span style='color:#f39c12'>●</span> {d[key]['M']} &nbsp;"
+               f"<span style='color:#e74c3c'>●</span> {d[key]['F']}")
+        return s, cap
+
+    _int_mc = _calc_intensidade(_kpi_mc)
+    _rpe_str_mc, _rpe_cap_mc = _fmt_int(_int_mc, 'rpe')
+    _hr_str_mc,  _hr_cap_mc  = _fmt_int(_int_mc, 'hr')
+    _pwr_str_mc, _pwr_cap_mc = _fmt_int(_int_mc, 'pwr')
+
+    # Linha 1: Sessões / Horas / KJ
+    c1, c2, c3 = st.columns(3)
     c1.metric("🏋️ Sessões (mês)", f"{_sess_mc}",
-              _delta_pct(_sess_mc, _sess_mp))
+              _delta_abs_sess(_sess_mc, _sess_mp))
     c2.metric("⏱️ Horas (mês)", fmt_dur(_horas_mc) if _horas_mc else "—",
-              _delta_pct(_horas_mc, _horas_mp))
-    # HRV e RHR — média mês corrente vs mês anterior (de wc_full)
+              _delta_abs_h(_horas_mc, _horas_mp))
+    c3.metric("⚡ KJ (mês)", f"{_kj_mc:.0f}" if _kj_mc else "—",
+              _delta_abs_kj(_kj_mc, _kj_mp))
+
+    # Linha 2: Intensidade RPE / HR / Power
+    _ci1, _ci2, _ci3 = st.columns(3)
+    with _ci1:
+        st.metric("Intensidade RPE (L/M/F)", _rpe_str_mc,
+                  help="Leve ≤4 / Moderado 4.1–6.9 / Forte ≥7")
+        if _rpe_cap_mc:
+            st.caption(_rpe_cap_mc + " sess.", unsafe_allow_html=True)
+    with _ci2:
+        st.metric("Intensidade HR (L/M/F)", _hr_str_mc,
+                  help="Leve <120 bpm / Moderado 120–149 bpm / Forte ≥150 bpm")
+        if _hr_cap_mc:
+            st.caption(_hr_cap_mc + " sess.", unsafe_allow_html=True)
+    with _ci3:
+        st.metric("Intensidade Power (L/M/F)", _pwr_str_mc,
+                  help="Leve IF<0.75 / Moderado IF 0.75–0.89 / Forte IF≥0.90")
+        if _pwr_cap_mc:
+            st.caption(_pwr_cap_mc + " sess.", unsafe_allow_html=True)
+
+    # HRV e RHR
     _src_wkpi = wc_full if wc_full is not None and len(wc_full) > 0 else dw
     if _src_wkpi is not None and len(_src_wkpi) > 0 and 'hrv' in _src_wkpi.columns:
         _wkpi = _src_wkpi.copy()
@@ -65,10 +166,19 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
     else:
         _hrv_mc_v = _hrv_mp_v = _rhr_mc_v = _rhr_mp_v = None
 
-    c3.metric("💚 HRV (mês)", f"{_hrv_mc_v:.0f} ms" if _hrv_mc_v else "—",
-              _delta_pct(_hrv_mc_v, _hrv_mp_v) if _hrv_mc_v and _hrv_mp_v else None)
-    c4.metric("❤️ RHR (mês)", f"{_rhr_mc_v:.0f} bpm" if _rhr_mc_v else "—",
-              _delta_pct(_rhr_mc_v, _rhr_mp_v) if _rhr_mc_v and _rhr_mp_v else None)
+    def _delta_abs_ms(vc, vp):
+        if vc is None or vp is None: return None
+        return f"{vc-vp:+.0f} ms vs mês ant."
+
+    def _delta_abs_bpm(vc, vp):
+        if vc is None or vp is None: return None
+        return f"{vc-vp:+.0f} bpm vs mês ant."
+
+    _ch1, _ch2 = st.columns(2)
+    _ch1.metric("💚 HRV (mês)", f"{_hrv_mc_v:.0f} ms" if _hrv_mc_v else "—",
+                _delta_abs_ms(_hrv_mc_v, _hrv_mp_v))
+    _ch2.metric("❤️ RHR (mês)", f"{_rhr_mc_v:.0f} bpm" if _rhr_mc_v else "—",
+                _delta_abs_bpm(_rhr_mc_v, _rhr_mp_v))
     st.markdown("---")
 
     # ── Semana ACTUAL (seg→hoje) ──────────────────────────────────────────
@@ -134,10 +244,22 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 if not vp or vp == 0: return None
                 return f"{(vc-vp)/vp*100:+.0f}% vs sem.ant"
 
-            # RPE distribuição Leve/Moderado/Forte — mesma escala de todas as outras tabs:
-            # Leve: 1–4 | Moderado: 4.1–6.9 | Forte: 7–10
+            def _rs_delta_abs_sess(vc, vp):
+                if not vp: return None
+                return f"{vc-vp:+.0f} vs sem.ant"
+
+            def _rs_delta_abs_h(vc, vp):
+                if not vp: return None
+                return f"{vc-vp:+.1f}h vs sem.ant"
+
+            def _rs_delta_abs_kj(vc, vp):
+                if not vp: return None
+                return f"{vc-vp:+.0f} kJ vs sem.ant"
+
+            # RPE distribuição Leve/Moderado/Forte — Leve≤4 / Mod 4.1–6.9 / Forte≥7
             _rs_rpe = pd.to_numeric(_rs_cur.get('rpe', pd.Series()), errors='coerce').dropna() if 'rpe' in _rs_cur.columns else pd.Series()
             _rs_rpe_str = "—"
+            _n_leve = _n_mod = _n_forte = 0
             if len(_rs_rpe) > 0:
                 _n_total = len(_rs_rpe)
                 _n_leve  = int((_rs_rpe <= 4.0).sum())
@@ -146,7 +268,44 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 _p_leve  = _n_leve / _n_total * 100
                 _p_mod   = _n_mod  / _n_total * 100
                 _p_forte = _n_forte/ _n_total * 100
-                _rs_rpe_str = f"{_p_leve:.0f}% / {_p_mod:.0f}% / {_p_forte:.0f}%"
+                _rs_rpe_str = f"{_p_leve:.0f}%/{_p_mod:.0f}%/{_p_forte:.0f}%"
+
+            # HR intensidade (média por sessão): Leve<120 / Mod 120-149 / Forte≥150
+            _hr_col = next((c for c in ['hr_avg','average_heartrate'] if c in _rs_cur.columns), None)
+            _rs_hr_str = "—"; _rs_hr_cap = ""
+            _nh_l = _nh_m = _nh_f = 0
+            if _hr_col:
+                _rs_hr = pd.to_numeric(_rs_cur[_hr_col], errors='coerce').dropna()
+                if len(_rs_hr) > 0:
+                    _nh_l = int((_rs_hr < 120).sum())
+                    _nh_m = int(((_rs_hr >= 120) & (_rs_hr < 150)).sum())
+                    _nh_f = int((_rs_hr >= 150).sum())
+                    _nt   = len(_rs_hr)
+                    _rs_hr_str = f"{_nh_l/_nt*100:.0f}%/{_nh_m/_nt*100:.0f}%/{_nh_f/_nt*100:.0f}%"
+                    _rs_hr_cap = (f"<span style='color:#2ecc71'>●</span> {_nh_l} &nbsp;"
+                                  f"<span style='color:#f39c12'>●</span> {_nh_m} &nbsp;"
+                                  f"<span style='color:#e74c3c'>●</span> {_nh_f}")
+
+            # Power intensidade via IF: Leve IF<0.75 / Mod 0.75-0.89 / Forte≥0.90
+            _rs_pwr_str = "—"; _rs_pwr_cap = ""
+            _np_l = _np_m = _np_f = 0
+            _if_col = next((c for c in ['IF','icu_intensity'] if c in _rs_cur.columns), None)
+            _rs_if = pd.Series(dtype=float)
+            if _if_col:
+                _rs_if = pd.to_numeric(_rs_cur[_if_col], errors='coerce').dropna()
+            elif 'power_avg' in _rs_cur.columns and 'icu_eftp' in _rs_cur.columns:
+                _p = pd.to_numeric(_rs_cur['power_avg'], errors='coerce')
+                _e = pd.to_numeric(_rs_cur['icu_eftp'],  errors='coerce')
+                _rs_if = (_p / _e.replace(0, np.nan)).dropna()
+            if len(_rs_if) > 0:
+                _np_l = int((_rs_if < 0.75).sum())
+                _np_m = int(((_rs_if >= 0.75) & (_rs_if < 0.90)).sum())
+                _np_f = int((_rs_if >= 0.90).sum())
+                _nt_p = len(_rs_if)
+                _rs_pwr_str = f"{_np_l/_nt_p*100:.0f}%/{_np_m/_nt_p*100:.0f}%/{_np_f/_nt_p*100:.0f}%"
+                _rs_pwr_cap = (f"<span style='color:#2ecc71'>●</span> {_np_l} &nbsp;"
+                               f"<span style='color:#f39c12'>●</span> {_np_m} &nbsp;"
+                               f"<span style='color:#e74c3c'>●</span> {_np_f}")
 
             # HRV e RHR — semana actual vs semana anterior
             _rs_wc = (wc_full if wc_full is not None and len(wc_full) > 0 else dw).copy() if (wc_full is not None or len(dw) > 0) else pd.DataFrame()
@@ -188,42 +347,54 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             except Exception:
                 pass
 
-            # Layout: 4 colunas principais + linha adicional para RPE e CTL
-            _rs1, _rs2, _rs3, _rs4 = st.columns(4)
+            # Layout: linha 1 — Sessões / Horas / KJ (delta absoluto)
+            _rs1, _rs2, _rs3 = st.columns(3)
             _rs1.metric("Sessões (sem.)",
                         str(_rs_sess_c),
-                        _rs_delta(_rs_sess_c, _rs_sess_p))
+                        _rs_delta_abs_sess(_rs_sess_c, _rs_sess_p))
             _rs2.metric("Horas (sem.)",
                         fmt_dur(_rs_h_c) if _rs_h_c else "—",
-                        _rs_delta(_rs_h_c, _rs_h_p))
-            _rs3.metric("HRV médio (sem.)",
-                        f"{_rs_hrv_c:.0f} ms" if _rs_hrv_c else "—",
-                        _rs_delta(_rs_hrv_c, _rs_hrv_p) if _rs_hrv_c and _rs_hrv_p else None)
-            _rs4.metric("RHR médio (sem.)",
-                        f"{_rs_rhr_c:.0f} bpm" if _rs_rhr_c else "—",
-                        _rs_delta(_rs_rhr_c, _rs_rhr_p) if _rs_rhr_c and _rs_rhr_p else None)
-
-            # Linha 2: KJ + RPE distribuição + CTL
-            _rs5, _rs6, _rs7 = st.columns(3)
-            _rs5.metric("KJ (sem.)",
+                        _rs_delta_abs_h(_rs_h_c, _rs_h_p))
+            _rs3.metric("KJ (sem.)",
                         f"{_rs_kj_c:.0f}" if _rs_kj_c else "—",
-                        _rs_delta(_rs_kj_c, _rs_kj_p))
+                        _rs_delta_abs_kj(_rs_kj_c, _rs_kj_p))
+
+            # Linha 2 — HRV / RHR / CTL
+            _rs4, _rs5, _rs6 = st.columns(3)
+            _rs4.metric("HRV médio (sem.)",
+                        f"{_rs_hrv_c:.0f} ms" if _rs_hrv_c else "—",
+                        (f"{_rs_hrv_c-_rs_hrv_p:+.0f} ms vs sem.ant"
+                         if _rs_hrv_c and _rs_hrv_p else None))
+            _rs5.metric("RHR médio (sem.)",
+                        f"{_rs_rhr_c:.0f} bpm" if _rs_rhr_c else "—",
+                        (f"{_rs_rhr_c-_rs_rhr_p:+.0f} bpm vs sem.ant"
+                         if _rs_rhr_c and _rs_rhr_p else None))
             with _rs6:
-                st.metric("Intensidade (Leve/Mod/Forte)",
-                          _rs_rpe_str,
-                          help="% sessões por zona RPE: Leve≤4 / Moderado 5–7 / Forte≥8")
+                if _rs_ctl_str:
+                    st.metric("CTL actual", _rs_ctl_str, _rs_dctl_str)
+                    st.caption(_rs_ctl_proj_str or "")
+
+            # Linha 3 — Intensidade RPE / HR / Power (L/M/F)
+            _ri1, _ri2, _ri3 = st.columns(3)
+            with _ri1:
+                st.metric("Intensidade RPE (L/M/F)", _rs_rpe_str,
+                          help="Leve ≤4 / Moderado 4.1–6.9 / Forte ≥7")
                 if len(_rs_rpe) > 0:
                     st.caption(
-                        f"<span style='color:#2ecc71'>●</span> Leve {_n_leve} &nbsp;"
-                        f"<span style='color:#f39c12'>●</span> Mod {_n_mod} &nbsp;"
-                        f"<span style='color:#e74c3c'>●</span> Forte {_n_forte} sessões",
+                        f"<span style='color:#2ecc71'>●</span> {_n_leve} &nbsp;"
+                        f"<span style='color:#f39c12'>●</span> {_n_mod} &nbsp;"
+                        f"<span style='color:#e74c3c'>●</span> {_n_forte} sess.",
                         unsafe_allow_html=True)
-            with _rs7:
-                if _rs_ctl_str:
-                    st.metric("CTL actual",
-                              _rs_ctl_str,
-                              _rs_dctl_str)
-                    st.caption(_rs_ctl_proj_str or "")
+            with _ri2:
+                st.metric("Intensidade HR (L/M/F)", _rs_hr_str,
+                          help="Leve <120 bpm / Moderado 120–149 bpm / Forte ≥150 bpm")
+                if _rs_hr_cap:
+                    st.caption(_rs_hr_cap + " sess.", unsafe_allow_html=True)
+            with _ri3:
+                st.metric("Intensidade Power (L/M/F)", _rs_pwr_str,
+                          help="Leve IF<0.75 / Moderado IF 0.75–0.89 / Forte IF≥0.90")
+                if _rs_pwr_cap:
+                    st.caption(_rs_pwr_cap + " sess.", unsafe_allow_html=True)
 
             st.markdown("---")
 
