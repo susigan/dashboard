@@ -761,3 +761,67 @@ def tab_ctl_kj(da_full):
                     "⬇️ Download debug CSV",
                     _csv_dbg, "atheltica_debug_signals.csv",
                     "text/csv", key="dl_dbg_signals")
+
+                # ── Download HISTÓRICO COMPLETO de sessões (independente do filtro) ──
+                st.markdown("---")
+                st.subheader("📥 Export CTL/KJ — Histórico Completo")
+                st.caption(
+                    "Histórico **completo** de sessões com CTL/ATL, KJ por zona, "
+                    "TRIMP, eficiência e RPE — independente do filtro global do sidebar.")
+                try:
+                    _exp_full = da_full.copy()
+                    _exp_full['Data'] = pd.to_datetime(_exp_full['Data'])
+                    _exp_full = _exp_full.sort_values('Data').reset_index(drop=True)
+
+                    # CTL/ATL via EWM sobre histórico completo
+                    _load_full = pd.to_numeric(
+                        _exp_full.get('icu_training_load', pd.Series(dtype=float)),
+                        errors='coerce').fillna(0)
+                    _all_d_full = pd.date_range(_exp_full['Data'].min(), _exp_full['Data'].max(), freq='D')
+                    _load_by_d  = _exp_full.groupby('Data')['icu_training_load'].apply(
+                        lambda x: pd.to_numeric(x, errors='coerce').sum()
+                    ).reindex(_all_d_full, fill_value=0) if 'icu_training_load' in _exp_full.columns else pd.Series(0, index=_all_d_full)
+                    _ctl_f = _load_by_d.ewm(span=42, adjust=False).mean()
+                    _atl_f = _load_by_d.ewm(span=7,  adjust=False).mean()
+                    _ctl_map_f = _ctl_f.to_dict()
+                    _atl_map_f = _atl_f.to_dict()
+
+                    _exp_cols_full = {
+                        'date':         _exp_full['Data'].dt.strftime('%Y-%m-%d'),
+                        'modality':     _exp_full['type'].apply(norm_tipo) if 'type' in _exp_full.columns else '',
+                        'duration_min': (pd.to_numeric(_exp_full.get('moving_time', np.nan), errors='coerce') / 60).round(1),
+                        'kj_total':     pd.to_numeric(_exp_full.get('icu_joules', np.nan), errors='coerce').div(1000).round(1),
+                        'rpe':          pd.to_numeric(_exp_full.get('rpe', np.nan), errors='coerce').round(1),
+                        'ctl':          _exp_full['Data'].map(_ctl_map_f).round(2),
+                        'atl':          _exp_full['Data'].map(_atl_map_f).round(2),
+                    }
+                    # KJ por zona se disponível
+                    for _zc in ['z1_kj','z2_kj','z3_kj']:
+                        if _zc in _exp_full.columns:
+                            _exp_cols_full[_zc] = pd.to_numeric(_exp_full[_zc], errors='coerce').round(1)
+                    # eFTP se disponível
+                    for _ec in ['icu_eftp','icu_ftp']:
+                        if _ec in _exp_full.columns:
+                            _exp_cols_full[_ec] = pd.to_numeric(_exp_full[_ec], errors='coerce').round(1)
+                            break
+
+                    _df_exp_full = pd.DataFrame(_exp_cols_full)
+                    _df_exp_full = _df_exp_full[_df_exp_full['kj_total'].notna() | _df_exp_full['duration_min'].notna()]
+
+                    _cex1, _cex2 = st.columns([2,1])
+                    with _cex1:
+                        st.dataframe(_df_exp_full.tail(10), use_container_width=True, hide_index=True)
+                        st.caption(f"Mostrando últimas 10 de {len(_df_exp_full)} sessões totais")
+                    with _cex2:
+                        st.metric("Sessões no CSV", len(_df_exp_full))
+                        st.metric("Sidebar (filtrado)", len(df))
+                        st.caption("CSV = histórico completo\nGráficos = período sidebar")
+                        st.download_button(
+                            label="📥 Download CTL/KJ Histórico CSV",
+                            data=_df_exp_full.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
+                            file_name="atheltica_ctl_kj_historico.csv",
+                            mime="text/csv",
+                            key="dl_ctl_kj_hist",
+                        )
+                except Exception as _ek:
+                    st.info(f"Export histórico não disponível: {_ek}")
