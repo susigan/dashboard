@@ -141,7 +141,7 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             if len(_rs_rpe) > 0:
                 _n_total = len(_rs_rpe)
                 _n_leve  = int((_rs_rpe <= 4.0).sum())
-                _n_mod   = int((_rs_rpe > 4.0) & (_rs_rpe < 7.0)).sum()
+                _n_mod   = int(((_rs_rpe > 4.0) & (_rs_rpe < 7.0)).sum())
                 _n_forte = int((_rs_rpe >= 7.0).sum())
                 _p_leve  = _n_leve / _n_total * 100
                 _p_mod   = _n_mod  / _n_total * 100
