@@ -70,7 +70,7 @@ def _score_colour(v, vmin=1, vmax=5):
     return f'#{r:02x}{g:02x}00'
 
 
-def tab_wellness(dw):
+def tab_wellness(dw, wc_full=None):
     st.header("🧘 Wellness")
 
     if len(dw) == 0:
@@ -460,16 +460,19 @@ def tab_wellness(dw):
         st.dataframe(pd.DataFrame(rows_tbl),
                      use_container_width=True, hide_index=True)
 
-    # ── DOWNLOAD CSV — série wellness completa com baseline e z-scores ────────
+    # ── DOWNLOAD CSV — série wellness completa (histórico completo) ───────────
     st.markdown("---")
     try:
+        # Usar wc_full (histórico completo) se disponível; senão usa dw (filtrado)
+        _dw_csv = wc_full if (wc_full is not None and len(wc_full) > 0) else dw
+
         _wdl_cols = [c for c in [
             'Data', 'hrv', 'rhr', 'sleep_hours', 'sleep_quality',
             'fatiga', 'stress', 'humor', 'soreness', 'peso', 'fat',
-        ] if c in dw.columns]
-        _wdl = dw[_wdl_cols].copy()
+        ] if c in _dw_csv.columns]
+        _wdl = _dw_csv[_wdl_cols].copy()
 
-        # Adicionar baseline 28d e z-scores para hrv e rhr
+        # Adicionar baseline 28d e CV para hrv e rhr
         for _wc in ['hrv', 'rhr']:
             if _wc in _wdl.columns:
                 _s = pd.to_numeric(_wdl[_wc], errors='coerce')
@@ -479,7 +482,7 @@ def tab_wellness(dw):
                     _s.rolling(28, min_periods=7).mean() * 100
                 ).round(3)
 
-        # Composite wellness z-score (igual ao tab_wellness interno)
+        # Composite wellness z-score
         _subj_cols = [c for c in ['fatiga', 'stress', 'humor', 'soreness', 'sleep_quality'] if c in _wdl.columns]
         if _subj_cols:
             _comp = _wdl[_subj_cols].apply(pd.to_numeric, errors='coerce')
@@ -492,10 +495,15 @@ def tab_wellness(dw):
         _wd1, _wd2 = st.columns([2, 1])
         with _wd1:
             st.subheader("📥 Export Wellness CSV")
-            st.caption("HRV/RHR + baseline 28d + CV + composite wellness z-score")
+            st.caption(
+                "Histórico **completo** — independente do filtro global do sidebar. "
+                "HRV/RHR + baseline 28d + CV + composite wellness z-score.")
             st.dataframe(_wdl.tail(10), use_container_width=True, hide_index=True)
+            st.caption(f"Mostrando últimos 10 de {len(_wdl)} dias totais no CSV")
         with _wd2:
-            st.metric("Dias exportados", len(_wdl))
+            st.metric("Dias no CSV", len(_wdl))
+            st.metric("Sidebar (gráficos)", len(dw))
+            st.caption("CSV = histórico completo\nGráficos = período sidebar")
             st.download_button(
                 label="📥 Download Wellness CSV",
                 data=_wdl.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
