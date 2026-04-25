@@ -391,12 +391,14 @@ def tab_eftp(da, mods_sel, da_full=None):
     else:
         st.info("Coluna icu_eftp não disponível para análise de correlação.")
 
-    # ── DOWNLOAD CSV — eFTP série temporal por modalidade ─────────────────────
+    # ── DOWNLOAD CSV — eFTP série temporal por modalidade (histórico completo) ─
     st.markdown("---")
     try:
-        _ecol = next((c for c in ['icu_eftp', 'eFTP', 'eftp'] if c in da.columns), None)
+        # Usar da_full (histórico completo) se disponível; senão usa da (filtrado)
+        _da_csv = da_full if (da_full is not None and len(da_full) > 0) else da
+        _ecol = next((c for c in ['icu_eftp', 'eFTP', 'eftp'] if c in _da_csv.columns), None)
         if _ecol:
-            _eftp_dl = da.copy()
+            _eftp_dl = _da_csv.copy()
             _eftp_dl['Data'] = pd.to_datetime(_eftp_dl['Data'])
             _eftp_dl[_ecol] = pd.to_numeric(_eftp_dl[_ecol], errors='coerce')
             _eftp_dl = _eftp_dl[_eftp_dl[_ecol].notna()][['Data', 'type', _ecol]].copy()
@@ -411,10 +413,15 @@ def tab_eftp(da, mods_sel, da_full=None):
             _ec1, _ec2 = st.columns([2, 1])
             with _ec1:
                 st.subheader("📥 Export eFTP CSV")
-                st.caption("eFTP por data e modalidade — para cruzar com κ e fases de treino")
+                st.caption(
+                    "Histórico **completo** — independente do filtro global do sidebar. "
+                    "eFTP por data e modalidade em pivot — para cruzar com κ e fases de treino.")
                 st.dataframe(_eftp_pivot.tail(10), use_container_width=True, hide_index=True)
+                st.caption(f"Mostrando últimas 10 de {len(_eftp_pivot)} datas totais no CSV")
             with _ec2:
-                st.metric("Sessões exportadas", len(_eftp_dl))
+                st.metric("Sessões no CSV", len(_eftp_dl))
+                st.metric("Sidebar (gráficos)", len(da))
+                st.caption("CSV = histórico completo\nGráficos = período sidebar")
                 st.download_button(
                     label="📥 Download eFTP CSV",
                     data=_eftp_pivot.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
@@ -422,6 +429,8 @@ def tab_eftp(da, mods_sel, da_full=None):
                     mime="text/csv",
                     key="eftp_dl_csv",
                 )
+        else:
+            st.info("Coluna eFTP não disponível para exportação.")
     except Exception as _ee:
         st.info(f"Export eFTP não disponível: {_ee}")
 
