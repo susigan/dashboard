@@ -325,10 +325,15 @@ def _grafico_plateau_interanual(df_eftp_orig: pd.DataFrame, mods_sel: list) -> g
         anos = list(picos.index)
         vals = list(picos.values)
         deltas = [None] + [vals[i] - vals[i-1] for i in range(1, len(vals))]
+        # Converter cor base para rgba (Plotly não aceita hex+alpha)
+        _h = cor.lstrip("#")
+        _r, _g, _b = int(_h[0:2],16), int(_h[2:4],16), int(_h[4:6],16)
+        cor_rgba_base = f"rgba({_r},{_g},{_b},0.85)"
+
         colors = []
         for d in deltas:
             if d is None:
-                colors.append(cor + "CC")
+                colors.append(cor_rgba_base)
             elif abs(d) >= mdc:
                 colors.append("#2ECC71" if d > 0 else "#E74C3C")
             else:
