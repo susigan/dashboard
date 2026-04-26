@@ -279,8 +279,11 @@ def tab_fmt_tensor(da, wc=None):
 
     with _c1:
         _kp_lbl = "alto ⚠️" if kappa_now > q75 else ("baixo ✅" if kappa_now < q25 else "médio")
+        # Fix: usar dropna() antes de rank para evitar NaN no último elemento
+        _kappa_rank_val = kappa_s.dropna()
+        _kappa_pct = int(100 * (_kappa_rank_val <= kappa_now).mean())
         st.metric("κ actual", f"{kappa_now:.3f}",
-                  delta=f"p{int(100*kappa_s.rank(pct=True).iloc[-1]):.0f} — {_kp_lbl}",
+                  delta=f"p{_kappa_pct:.0f} — {_kp_lbl}",
                   help="Curvatura escalar — trace(cov(Δx)). Alto=dimensões a mudar em simultâneo")
 
     with _c2:
