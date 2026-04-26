@@ -1,463 +1,700 @@
-from utils.config import *
-from utils.helpers import *
-from utils.data import *
+"""
+tab_eftp.py — eFTP por modalidade + Diagnóstico de Resposta ao Treino
+Implementa o framework do paper "Variabilidad Inter-Individual en el Entrenamiento
+de Resistencia" (Della Mattia, ednacore AI 2025) com dados reais do atleta.
+
+Assinatura actualizada:
+    tab_eftp(da_filt, mods_sel, ac_full, wc_full=None)
+
+Novas fontes utilizadas:
+    - ac_full          → icu_eftp sessão-a-sessão + CTL + z1/z2/z3_kj
+    - wc_full          → HRV para contexto de wellness por bloco
+    - session_state    → ld_frac_cache com FMT_kappa por dia
+"""
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import datetime, timedelta
-import re as _re
-import warnings
-import sys, os as _os
-sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
-warnings.filterwarnings('ignore')
+# ─────────────────────────────────────────────
+# CONSTANTES: SEM empírico calculado sobre série histórica real
+# Método: std das variações dia-a-dia em janelas ≤14 dias
+# (representa ruído puro do estimador icu_eftp, não mudança real)
+# MDC 95% = 1.96 × √2 × SEM
+# ─────────────────────────────────────────────
+_SEM = {"Bike": 3.92, "Row": 5.75, "Ski": 4.23, "Run": 10.27}
+_MDC = {m: round(1.96 * np.sqrt(2) * s, 1) for m, s in _SEM.items()}
 
-def tab_eftp(da, mods_sel, da_full=None):
-    st.header("⚡ Evolução do eFTP por Modalidade")
-    ecol = next((c for c in ['icu_eftp', 'eFTP', 'eftp', 'EFTP'] if c in da.columns), None)
-    if ecol is None: st.warning("Coluna eFTP não encontrada."); return
-    df = filtrar_principais(da).copy(); df['Data'] = pd.to_datetime(df['Data']); df['ano'] = df['Data'].dt.year
-    df[ecol] = pd.to_numeric(df[ecol], errors='coerce'); df = df[df['type'].isin(mods_sel)].dropna(subset=[ecol]); df = df[df[ecol] > 50]
-    if len(df) == 0: st.warning("Sem dados de eFTP."); return
-    anos = sorted(df['ano'].unique()); CANO = ['#3498DB', '#E74C3C', '#2ECC71', '#9B59B6', '#F39C12']
-    mapa_cor = {a: CANO[i % len(CANO)] for i, a in enumerate(anos)}
-    anos_sel = st.multiselect("Filtrar anos", anos, default=list(anos)); df = df[df['ano'].isin(anos_sel)]
-    mods = [m for m in mods_sel if m in df['type'].values]
-    if not mods: st.info("Nenhuma modalidade com eFTP."); return
-    _fig_eftp_m = go.Figure()
-    if 'mods' in dir() and mods:
-        for _mod in mods:
-            _dm = df[df['type']==_mod].sort_values('Data')
-            _ec2 = 'icu_eftp' if 'icu_eftp' in _dm.columns else ecol
-            _cor = CORES_MOD.get(_mod, get_cor(_mod))
-            if _ec2 and len(_dm) > 0:
-                _fig_eftp_m.add_trace(go.Scatter(
-                    x=_dm['Data'].tolist(),
-                    y=pd.to_numeric(_dm[_ec2],errors='coerce').tolist(),
-                    mode='markers+lines', name=f'eFTP {_mod}',
-                    line=dict(color=_cor, width=2),
-                    marker=dict(size=4, color=_cor)))
-    _fig_eftp_m.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), height=360,
-        title=dict(text='Evolução eFTP por Modalidade', font=dict(size=14,color='#111')),
-        legend=dict(orientation='h', y=-0.25, font=dict(color='#111')), hovermode='closest',
-        xaxis=dict(title='Data', showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')), yaxis=dict(title='eFTP (W)', showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')))
-    st.plotly_chart(_fig_eftp_m, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
+# Run tem MDC=28.5W sobre média 140W (20.3%) → praticamente não interpretável
+_MDC_PCT = {"Bike": 6.4, "Row": 8.2, "Ski": 7.4, "Run": 20.3}
 
-    st.subheader("📦 RPE por Modalidade")
-    if 'rpe' in da.columns:
-        df_r = filtrar_principais(da).copy(); df_r = add_tempo(df_r); df_r = df_r[df_r['type'].isin(mods_sel)].dropna(subset=['rpe'])
-        if len(df_r) > 0:
-            _tipos_bp = [t for t in mods_sel if 'df_r' in dir() and t in df_r['type'].values] if 'mods_sel' in dir() else []
-            _fig_rpe_b = go.Figure()
-            for _tip in _tipos_bp:
-                _vrpe = pd.to_numeric(df_r[df_r['type']==_tip]['rpe'],errors='coerce').dropna().tolist() if 'df_r' in dir() else []
-                _fig_rpe_b.add_trace(go.Box(y=_vrpe, name=_tip,
-                    marker_color=CORES_MOD.get(_tip, '#888'), boxmean=True))
-            _fig_rpe_b.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), height=300,
-                title=dict(text='RPE por Modalidade', font=dict(size=12,color='#111')),
-                legend=dict(orientation='h', y=-0.25, font=dict(color='#111')), yaxis=dict(title='RPE', showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')), xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')))
-            st.plotly_chart(_fig_rpe_b, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
+# Cores por modalidade (config.py)
+_CORES = {
+    "Bike": "#E74C3C",
+    "Row":  "#3498DB",
+    "Ski":  "#9B59B6",
+    "Run":  "#2ECC71",
+}
 
-    st.markdown("---")
-    # ── TABELAS eFTP + KM/KJ — filtro próprio + agrupamento ─────────────────────
-    st.markdown("---")
-    st.subheader("📅 Tabelas históricas por modalidade")
+# Thresholds diagnóstico (baseados em dados do atleta, handoff Abril 2026)
+_CTL_DOSE_MIN   = 45   # CTL médio abaixo = dose insuficiente
+_KAPPA_P75      = 5.954
+_KAPPA_P87      = 7.182
+_Z2_POLAR_MAX   = 0.35  # Z2% acima → não polarizado
 
-    # Tabelas usam histórico COMPLETO (da_full) independente do filtro do sidebar
-    # Assim o filtro próprio das tabelas funciona sobre todos os dados disponíveis
-    # da_full param (passed from main) or session_state fallback or da
-    _da_full_tab = da_full if da_full is not None and len(da_full) > 0 else st.session_state.get('da_full', da)
-    _df_full_tab = filtrar_principais(_da_full_tab).copy()
-    _df_full_tab['Data'] = pd.to_datetime(_df_full_tab['Data'])
 
-    # ── Filtro de período (só para tabelas — gráficos usam filtro sidebar) ──
-    _c1, _c2, _c3 = st.columns([2, 1, 1])
-    _tab_opts = {
-        "Últimos 3 meses": 90,  "Últimos 6 meses": 180,
-        "Último ano": 365,      "Últimos 2 anos": 730,
-        "Últimos 3 anos": 1095, "Todo histórico": 9999,
-        "Datas manuais": -1,
-    }
-    _tab_sel  = _c1.selectbox("Período das tabelas",
-                               list(_tab_opts.keys()), index=3,
-                               key="pmc_tab_periodo")
-    _tab_dias = _tab_opts[_tab_sel]
-    if _tab_dias == -1:
-        _tab_di  = _c2.date_input("Início", datetime(2017, 1, 1).date(), key="pmc_tab_di")
-        _tab_df_ = _c3.date_input("Fim",    datetime.now().date(),       key="pmc_tab_df")
-    else:
-        _tab_df_ = datetime.now().date()
-        _tab_di  = (_tab_df_ - timedelta(days=_tab_dias)
-                    if _tab_dias < 9999 else datetime(2017, 1, 1).date())
-        _c2.caption(f"De {_tab_di.strftime('%d/%m/%Y')}")
-        _c3.caption(f"Até {_tab_df_.strftime('%d/%m/%Y')}")
+# ─────────────────────────────────────────────────────────────────────────────
+# HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
 
-    df_tab = _df_full_tab[
-        (_df_full_tab['Data'] >= pd.Timestamp(_tab_di)) &
-        (_df_full_tab['Data'] <= pd.Timestamp(_tab_df_))
-    ].copy()
-    df_tab = df_tab[df_tab['type'] != 'WeightTraining']
-    st.caption(f"📊 {len(df_tab)} actividades "
-               f"({_tab_di.strftime('%d/%m/%Y')} → {_tab_df_.strftime('%d/%m/%Y')})")
+def _preparar_eftp_semanal(ac_full: pd.DataFrame, mod: str) -> pd.DataFrame:
+    """
+    Extrai eFTP semanal para uma modalidade a partir de ac_full.
+    Usa coluna 'icu_eftp' filtrada por modality == mod.
+    Retorna df semanal com last() value — o mais recente da semana.
+    """
+    col_mod = "type" if "type" in ac_full.columns else "modality"
+    col_eftp = "icu_eftp" if "icu_eftp" in ac_full.columns else "eFTP"
+    col_date = "date" if "date" in ac_full.columns else "Data"
 
-    # ── Função auxiliar: agregar período ─────────────────────────────────────
-    def _agrupar(df_in, agrup):
-        """Agrupa df_in por período (Ano / Mês / Semana) e devolve coluna label."""
-        df_in = df_in.copy()
-        if agrup == "Ano":
-            df_in['_periodo'] = df_in['Data'].dt.to_period('Y')
-            fmt = lambda p: str(p.year)
-        elif agrup == "Semana":
-            df_in['_periodo'] = df_in['Data'].dt.to_period('W')
-            fmt = lambda p: f"Sem {p.start_time.strftime('%d/%m/%y')}"
-        else:  # Mês (default)
-            df_in['_periodo'] = df_in['Data'].dt.to_period('M')
-            fmt = lambda p: pd.to_datetime(str(p)).strftime('%B %Y').title()
-        return df_in, fmt
+    sub = ac_full[ac_full[col_mod] == mod][[col_date, col_eftp, "ctl", "z1_kj", "z2_kj", "z3_kj"]].copy()
+    if sub.empty or sub[col_eftp].isna().all():
+        return pd.DataFrame()
 
-    # ── Função auxiliar: linha de tendência ──────────────────────────────────
-    def _tendencia(series_num):
-        """Calcula slope da regressão linear sobre a série numérica. Retorna sinal."""
-        s = series_num.dropna().reset_index(drop=True)
-        if len(s) < 3: return None
-        x = np.arange(len(s), dtype=float)
-        from scipy.stats import linregress
-        sl, _, _, pv, _ = linregress(x, s.values)
-        pct = (sl / s.mean() * 100) if s.mean() != 0 else 0
-        sig = pv < 0.10  # p<10% como threshold de tendência
-        if not sig or abs(pct) < 2: return "→ Estável"
-        return f"↗ +{abs(pct):.1f}%/período" if sl > 0 else f"↘ -{abs(pct):.1f}%/período"
+    sub[col_date] = pd.to_datetime(sub[col_date])
+    sub = sub.sort_values(col_date).set_index(col_date)
+    sub[col_eftp] = pd.to_numeric(sub[col_eftp], errors="coerce")
 
-    # ════════════════════════════════════════════════════════════════
-    # TABELA eFTP — com agrupamento ao lado do título
-    # ════════════════════════════════════════════════════════════════
-    _hdr1, _agr1 = st.columns([3, 1])
-    _hdr1.markdown("**eFTP por modalidade**")
-    _agrup_eftp = _agr1.selectbox("Agrupar por", ["Mês", "Ano", "Semana"],
-                                   key="pmc_agrup_eftp")
+    weekly = sub.resample("W").agg({
+        col_eftp: "last",
+        "ctl": "mean",
+        "z1_kj": "sum",
+        "z2_kj": "sum",
+        "z3_kj": "sum",
+    }).dropna(subset=[col_eftp])
 
-    if 'icu_eftp' in df_tab.columns and df_tab['icu_eftp'].notna().any():
-        tipos_eftp = [t for t in ['Bike', 'Run', 'Ski', 'Row']
-                      if t in df_tab['type'].unique()]
+    weekly.columns = ["eftp", "ctl", "z1_kj", "z2_kj", "z3_kj"]
+    weekly["z_total"] = weekly["z1_kj"] + weekly["z2_kj"] + weekly["z3_kj"]
+    weekly["z1_pct"] = weekly["z1_kj"] / weekly["z_total"].replace(0, np.nan)
+    weekly["z2_pct"] = weekly["z2_kj"] / weekly["z_total"].replace(0, np.nan)
+    weekly["z3_pct"] = weekly["z3_kj"] / weekly["z_total"].replace(0, np.nan)
+    return weekly
 
-        # Agregar por período escolhido
-        df_tab_e, fmt_e = _agrupar(df_tab, _agrup_eftp)
-        eftp_pivot = {}
-        for tipo in tipos_eftp:
-            df_t = (df_tab_e[df_tab_e['type'] == tipo][['_periodo', 'icu_eftp']]
-                    .dropna())
-            if len(df_t) == 0: continue
-            eftp_pivot[tipo] = (df_t.groupby('_periodo')['icu_eftp']
-                                .max().reset_index()
-                                .rename(columns={'icu_eftp': tipo}))
 
-        if eftp_pivot:
-            df_e = None
-            for tipo, dft in eftp_pivot.items():
-                df_e = dft if df_e is None else df_e.merge(dft, on='_periodo', how='outer')
-            df_e = df_e.sort_values('_periodo', ascending=False)
+def _calcular_blocos(weekly: pd.DataFrame, mdc: float, janela: int = 8) -> pd.DataFrame:
+    """
+    Calcula blocos de N semanas (rolante).
+    Para cada semana t: compara eftp[t] vs eftp[t-janela].
+    Classifica: REAL / INCERTO / RUÍDO.
+    """
+    w = weekly.copy()
+    w["eftp_prev"]  = w["eftp"].shift(janela)
+    w["delta"]      = w["eftp"] - w["eftp_prev"]
+    w["ctl_bloco"]  = w["ctl"].rolling(janela).mean()
+    w["z1_bloco"]   = w["z1_pct"].rolling(janela).mean()
+    w["z2_bloco"]   = w["z2_pct"].rolling(janela).mean()
+    w["z3_bloco"]   = w["z3_pct"].rolling(janela).mean()
 
-            num_e = [t for t in tipos_eftp if t in df_e.columns]
-            rows_e = []
-            for _, r in df_e.iterrows():
-                row = {'Período': fmt_e(r['_periodo'])}
-                for t in num_e:
-                    row[f'{t} eFTP'] = f"{r[t]:.0f}w" if pd.notna(r.get(t)) else '—'
-                rows_e.append(row)
-
-            # Avg
-            avg_e = {'Período': 'Avg'}
-            for t in num_e:
-                v = df_e[t].dropna()
-                avg_e[f'{t} eFTP'] = f"{v.mean():.0f}w" if len(v) > 0 else '—'
-            rows_e.append(avg_e)
-
-            # Tendência
-            tend_e = {'Período': 'Tendência'}
-            for t in num_e:
-                tr = _tendencia(df_e[t])
-                tend_e[f'{t} eFTP'] = tr if tr else '—'
-            rows_e.append(tend_e)
-
-            st.dataframe(pd.DataFrame(rows_e),
-                         width="stretch", hide_index=True)
-    else:
-        st.caption("Sem dados de eFTP disponíveis.")
-
-    # ════════════════════════════════════════════════════════════════
-    # TABELAS KM / Moving Time / kJ / Sessions — uma por modalidade
-    # ════════════════════════════════════════════════════════════════
-    tipos_vol = [t for t in ['Bike', 'Ski', 'Row', 'Run']
-                 if t in df_tab['type'].unique()]
-
-    for tipo in tipos_vol:
-        df_t = df_tab[df_tab['type'] == tipo].copy()
-        if len(df_t) == 0: continue
-
-        _hdr2, _agr2 = st.columns([3, 1])
-        _hdr2.markdown(f"**{tipo} — Distância, Tempo, kJ e Sessões**")
-        _agrup_vol = _agr2.selectbox("Agrupar por", ["Mês", "Ano", "Semana"],
-                                      key=f"pmc_agrup_{tipo}")
-
-        df_t_a, fmt_v = _agrupar(df_t, _agrup_vol)
-
-        # kJ: icu_joules (J → kJ dividindo por 1000)
-        if 'icu_joules' in df_t_a.columns and df_t_a['icu_joules'].notna().any():
-            df_t_a['_kj'] = pd.to_numeric(df_t_a['icu_joules'], errors='coerce') / 1000
-        elif 'power_avg' in df_t_a.columns and df_t_a['power_avg'].notna().any():
-            df_t_a['_kj'] = (pd.to_numeric(df_t_a['power_avg'], errors='coerce') *
-                              pd.to_numeric(df_t_a['moving_time'], errors='coerce') / 1000)
+    def _classif(d):
+        if pd.isna(d):
+            return None
+        ad = abs(d)
+        if ad >= mdc:
+            return "REAL"
+        elif ad >= mdc * 0.5:
+            return "INCERTO"
         else:
-            df_t_a['_kj'] = np.nan
+            return "RUÍDO"
 
-        if 'distance' in df_t_a.columns:
-            df_t_a['_km'] = pd.to_numeric(df_t_a['distance'], errors='coerce') / 1000
-        else:
-            df_t_a['_km'] = np.nan
+    w["classificacao"] = w["delta"].apply(_classif)
+    return w.dropna(subset=["delta"])
 
-        df_t_a['_mt'] = pd.to_numeric(df_t_a['moving_time'], errors='coerce').fillna(0)
 
-        agg = df_t_a.groupby('_periodo').agg(
-            _km_s=('_km',  'sum'),
-            _mt_s=('_mt',  'sum'),
-            _kj_s=('_kj',  'sum'),
-            _ses=('Data',  'count'),
-        ).reset_index().sort_values('_periodo', ascending=False)
+def _kappa_por_periodo(ld: pd.DataFrame, data_ini, data_fim) -> float | None:
+    """
+    Retorna κ médio de um período. ld vem do session_state['ld_frac_cache'].
+    """
+    if ld is None or ld.empty:
+        return None
+    col_date = "Data" if "Data" in ld.columns else ld.index.name
+    if col_date and col_date in ld.columns:
+        sub = ld[(ld[col_date] >= data_ini) & (ld[col_date] <= data_fim)]
+    else:
+        sub = ld.loc[data_ini:data_fim]
+    if "FMT_kappa" not in sub.columns or sub.empty:
+        return None
+    return float(sub["FMT_kappa"].mean())
 
-        rows_v = []
-        for _, r in agg.iterrows():
-            mt_h = int(r['_mt_s'] // 3600); mt_m = int((r['_mt_s'] % 3600) // 60)
-            rows_v.append({
-                'Período':       fmt_v(r['_periodo']),
-                'Distance':      f"{r['_km_s']:.0f} km" if pd.notna(r['_km_s']) and r['_km_s'] > 0 else '—',
-                'Moving Time':   f"{mt_h}h{mt_m:02d}m",
-                'kJ':            f"{r['_kj_s']:.0f}" if pd.notna(r['_kj_s']) and r['_kj_s'] > 0 else '—',
-                'Sessions':      str(int(r['_ses'])),
-            })
 
-        if not rows_v: continue
+def _diagnostico_texto(delta: float, ctl: float, kappa, z2_pct: float,
+                       mdc: float, mod: str) -> tuple[str, str]:
+    """
+    Retorna (diagnóstico_curto, diagnóstico_detalhe) baseado no framework do paper.
+    Só chamado quando classificacao == 'RUÍDO' ou INCERTO sem crescimento.
+    """
+    causas = []
+    prescricoes = []
 
-        # Avg
-        avg_km  = agg['_km_s'][agg['_km_s'] > 0].mean()   if (agg['_km_s'] > 0).any() else None
-        avg_mt  = agg['_mt_s'].mean()
-        avg_kj  = agg['_kj_s'][agg['_kj_s'] > 0].mean()   if (agg['_kj_s'] > 0).any() else None
-        avg_ses = agg['_ses'].mean()
-        avg_h   = int(avg_mt // 3600); avg_m = int((avg_mt % 3600) // 60)
-        rows_v.append({
-            'Período':     'Avg',
-            'Distance':    f"{avg_km:.0f} km" if avg_km else '—',
-            'Moving Time': f"{avg_h}h{avg_m:02d}m",
-            'kJ':          f"{avg_kj:.0f}" if avg_kj else '—',
-            'Sessions':    f"{avg_ses:.0f}",
+    # 1. Dose (Montero & Lundby 2017)
+    if ctl is not None and ctl < _CTL_DOSE_MIN:
+        causas.append(f"📉 **Dose insuficiente** (CTL médio={ctl:.0f}, mínimo recomendado={_CTL_DOSE_MIN})")
+        prescricoes.append("Aumentar frequência/volume de sessões antes de mudar qualidade")
+
+    # 2. Qualidade do estímulo via κ (stress silencioso)
+    if kappa is not None and kappa > _KAPPA_P75:
+        nivel_k = "crítico (>p87)" if kappa > _KAPPA_P87 else "elevado (>p75)"
+        causas.append(f"⚡ **Stress silencioso** (κ={kappa:.2f}, {nivel_k})")
+        prescricoes.append("SNA em modo defensivo → adaptações suprimidas. Reduzir κ antes de aumentar estímulo")
+
+    # 3. Distribuição de intensidade (Iannetta et al. 2020)
+    if not pd.isna(z2_pct) and z2_pct > _Z2_POLAR_MAX:
+        causas.append(f"🔄 **Distribuição não polarizada** (Z2={z2_pct*100:.0f}% — zona 'moderada dura')")
+        prescricoes.append("Redistribuir: mais Z1 (<4 RPE) + mais Z3 (≥7 RPE), menos Z2")
+
+    # 4. Meseta homeostática (Issurin / mTOR)
+    if not causas:
+        causas.append("🔬 **Possível meseta homeostática** — estímulo familiar, sinalização mTOR/PGC-1α saturada")
+        prescricoes.append("Mudar natureza do estímulo: novo tipo de sessão, nova intensidade-alvo, bloco neuromuscular")
+
+    # Run — aviso especial
+    if mod == "Run":
+        causas.insert(0, f"⚠️ **Nota Run**: MDC={mdc:.0f}W sobre média ~140W (20%). eFTP Run tem baixa confiança — requer teste controlado")
+
+    diag_curto = causas[0].split("**")[1] if "**" in causas[0] else causas[0]
+    diag_detalhe = "\n\n".join([f"**Causa:** {c}\n\n**Prescrição:** {p}"
+                                 for c, p in zip(causas, prescricoes)])
+    return diag_curto, diag_detalhe
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# COMPONENTE A — Gráfico eFTP com banda de incerteza
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _grafico_eftp_banda(df_eftp_orig: pd.DataFrame, mods_sel: list) -> go.Figure:
+    """
+    Gráfico da série eFTP por modalidade com banda ±MDC/2 (zona de ruído).
+    df_eftp_orig: o DataFrame pivot original (Data, Bike, Row, Ski, Run).
+    """
+    fig = go.Figure()
+
+    for mod in mods_sel:
+        if mod not in df_eftp_orig.columns:
+            continue
+        cor = _CORES.get(mod, "#888")
+        mdc = _MDC[mod]
+        sub = df_eftp_orig[["Data", mod]].dropna().copy()
+        sub["Data"] = pd.to_datetime(sub["Data"])
+        sub = sub.sort_values("Data")
+
+        # Banda de ruído (±MDC/2 em volta da série)
+        fig.add_trace(go.Scatter(
+            x=pd.concat([sub["Data"], sub["Data"][::-1]]),
+            y=pd.concat([sub[mod] + mdc/2, (sub[mod] - mdc/2)[::-1]]),
+            fill="toself",
+            fillcolor=cor.replace(")", ",0.10)").replace("rgb", "rgba") if "rgb" in cor
+                       else cor + "1A",  # hex + alpha
+            line=dict(width=0),
+            showlegend=False,
+            hoverinfo="skip",
+            name=f"{mod} banda ruído",
+        ))
+
+        # Linha principal
+        fig.add_trace(go.Scatter(
+            x=sub["Data"],
+            y=sub[mod],
+            mode="lines",
+            name=mod,
+            line=dict(color=cor, width=2.5),
+            hovertemplate=f"<b>{mod}</b><br>%{{x|%d %b %Y}}<br>eFTP: %{{y:.0f}}W<extra></extra>",
+        ))
+
+    # Linha MDC annotation — legenda
+    fig.add_annotation(
+        text="Banda cinzenta = zona de ruído (±MDC/2). Mudanças dentro desta banda são estatisticamente indistinguíveis de zero.",
+        xref="paper", yref="paper",
+        x=0, y=-0.12, showarrow=False,
+        font=dict(size=11, color="#888"),
+        align="left",
+    )
+
+    fig.update_layout(
+        title=dict(text="eFTP por modalidade — com banda de incerteza empírica", font=dict(size=15)),
+        xaxis_title="Data",
+        yaxis_title="eFTP (W)",
+        hovermode="x unified",
+        height=420,
+        legend=dict(orientation="h", y=1.08),
+        margin=dict(b=80),
+    )
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# COMPONENTE B — Tabela de blocos 8 semanas
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _tabela_blocos(blocos: pd.DataFrame, mod: str, ld=None) -> pd.DataFrame:
+    """
+    Prepara tabela de blocos para st.dataframe().
+    Mostra últimos 8 blocos com: período, eFTP, Δ, vs MDC, dose CTL, κ, Z1/Z2/Z3, classificação.
+    """
+    mdc = _MDC[mod]
+    rows = []
+    for idx, row in blocos.tail(10).iterrows():
+        ini = idx - pd.Timedelta(weeks=8)
+        kappa = _kappa_por_periodo(ld, ini, idx)
+
+        delta = row["delta"]
+        classif = row["classificacao"]
+        emoji = {"REAL": "✅", "INCERTO": "⚠️", "RUÍDO": "🔴"}.get(classif, "")
+
+        rows.append({
+            "Período (fim)":     idx.strftime("%d %b %Y"),
+            "eFTP fim (W)":      f"{row['eftp']:.0f}",
+            "Δ 8 sem (W)":       f"{delta:+.0f}",
+            f"MDC={mdc:.0f}W":   f"{abs(delta)/mdc*100:.0f}%",
+            "Sinal":             f"{emoji} {classif}",
+            "CTL médio":         f"{row['ctl_bloco']:.0f}" if not pd.isna(row['ctl_bloco']) else "—",
+            "κ médio":           f"{kappa:.2f}" if kappa is not None else "—",
+            "Z1%":               f"{row['z1_bloco']*100:.0f}%" if not pd.isna(row.get('z1_bloco', np.nan)) else "—",
+            "Z2%":               f"{row['z2_bloco']*100:.0f}%" if not pd.isna(row.get('z2_bloco', np.nan)) else "—",
+            "Z3%":               f"{row['z3_bloco']*100:.0f}%" if not pd.isna(row.get('z3_bloco', np.nan)) else "—",
         })
 
-        # Tendência — regressão linear sobre série cronológica (ascending)
-        agg_asc = agg.sort_values('_periodo', ascending=True)
-        tend_km  = _tendencia(agg_asc['_km_s'])
-        tend_mt  = _tendencia(agg_asc['_mt_s'])
-        tend_kj  = _tendencia(agg_asc['_kj_s'])
-        tend_ses = _tendencia(agg_asc['_ses'].astype(float))
-        rows_v.append({
-            'Período':     'Tendência',
-            'Distance':    tend_km  if tend_km  else '—',
-            'Moving Time': tend_mt  if tend_mt  else '—',
-            'kJ':          tend_kj  if tend_kj  else '—',
-            'Sessions':    tend_ses if tend_ses else '—',
-        })
-
-        st.dataframe(pd.DataFrame(rows_v),
-                     width="stretch", hide_index=True)
+    return pd.DataFrame(rows)
 
 
-    st.markdown("---")
-    # ── CORRELAÇÕES: variáveis de carga vs eFTP ─────────────────────────────────
-    st.subheader("🔗 O que está correlacionado com o eFTP?")
-    st.caption("Correlação semanal, mensal e anual entre variáveis de carga e eFTP. "
-               "Apenas correlações moderadas/fortes e estatisticamente significativas são mostradas.")
+# ─────────────────────────────────────────────────────────────────────────────
+# COMPONENTE C — Diagnóstico interanual (plateau)
+# ─────────────────────────────────────────────────────────────────────────────
 
-    # Correlações usam histórico completo
-    _df_corr = _df_full_tab.copy() if '_df_full_tab' in locals() else df.copy()
-    if 'icu_eftp' in _df_corr.columns and _df_corr['icu_eftp'].notna().any():
-        from scipy.stats import spearmanr
+def _grafico_plateau_interanual(df_eftp_orig: pd.DataFrame, mods_sel: list) -> go.Figure:
+    """
+    Barras de eFTP pico por ano, com classificação REAL/RUÍDO vs MDC.
+    Implementa directamente Paper §5 "Ausência de Periodização Longitudinal".
+    """
+    fig = go.Figure()
+    df = df_eftp_orig.copy()
+    df["Data"] = pd.to_datetime(df["Data"])
+    df["Ano"] = df["Data"].dt.year
 
-        def _cv_ok(series, max_cv=50):
-            """Retorna True se CV% da série for aceitável (não muito disperso)."""
-            s = series.dropna()
-            if len(s) < 3 or s.mean() == 0: return False
-            return (s.std() / s.mean() * 100) < max_cv
+    for mod in mods_sel:
+        if mod not in df.columns:
+            continue
+        cor = _CORES.get(mod, "#888")
+        mdc = _MDC[mod]
+        picos = df.groupby("Ano")[mod].max().dropna()
+        if len(picos) < 2:
+            continue
 
-        def _mdc_ok(eftp_series, icc=0.9):
-            """Verifica se variação de eFTP excede MDC — confirma mudança real."""
-            s = eftp_series.dropna()
-            if len(s) < 3: return False
-            std = s.std(ddof=1)
-            sem = std * np.sqrt(1 - icc)
-            mdc = sem * 1.96 * np.sqrt(2)
-            return (s.max() - s.min()) > mdc
+        anos = list(picos.index)
+        vals = list(picos.values)
+        deltas = [None] + [vals[i] - vals[i-1] for i in range(1, len(vals))]
+        colors = []
+        for d in deltas:
+            if d is None:
+                colors.append(cor + "CC")
+            elif abs(d) >= mdc:
+                colors.append("#2ECC71" if d > 0 else "#E74C3C")
+            else:
+                colors.append("#888888")
 
-        def _forca(r):
-            ar = abs(r)
-            if ar >= 0.60: return "★★★ Forte"
-            if ar >= 0.40: return "★★ Moderada"
-            return None  # fraca — não mostrar
+        fig.add_trace(go.Bar(
+            name=mod,
+            x=[f"{a} ({mod})" for a in anos],
+            y=vals,
+            marker_color=colors,
+            text=[f"{v:.0f}W" + (f"<br>{d:+.0f}W" if d is not None else "")
+                  for v, d in zip(vals, deltas)],
+            textposition="outside",
+            hovertemplate=(
+                f"<b>{mod}</b> %{{x}}<br>"
+                f"eFTP pico: %{{y:.0f}}W<extra></extra>"
+            ),
+        ))
 
-        def _corr_periodo(df_mod, periodo_label, periodo_code):
-            """
-            Agrega por período, filtra qualidade, calcula correlação Spearman
-            entre variáveis de carga e eFTP.
-            Retorna lista de resultados significativos.
-            """
-            results = []
-            d = df_mod.copy()
-            d['_p'] = d['Data'].dt.to_period(periodo_code)
+    fig.add_annotation(
+        text="🟢 Verde = mudança real (>MDC) | ⬜ Cinzento = ruído (<MDC) | 🔴 Vermelho = queda real",
+        xref="paper", yref="paper",
+        x=0, y=-0.15, showarrow=False,
+        font=dict(size=11, color="#888"), align="left",
+    )
 
-            # eFTP: máximo do período
-            eftp_agg = d.groupby('_p')['icu_eftp'].max()
-            if eftp_agg.notna().sum() < 5: return results
-            if not _mdc_ok(eftp_agg.dropna()): return results
+    fig.update_layout(
+        title=dict(text="eFTP pico por ano — progressão interanual (verde=real, cinzento=ruído)", font=dict(size=15)),
+        barmode="group",
+        yaxis_title="eFTP (W)",
+        height=420,
+        legend=dict(orientation="h", y=1.08),
+        margin=dict(b=80),
+    )
+    return fig
 
-            # Variáveis a testar
-            vars_test = {}
 
-            if 'icu_joules' in d.columns and d['icu_joules'].notna().any():
-                kj = d.groupby('_p')['icu_joules'].sum() / 1000
-                vars_test['KJ'] = kj
+# ─────────────────────────────────────────────────────────────────────────────
+# PAINEL DE DIAGNÓSTICO COMPLETO POR MODALIDADE
+# ─────────────────────────────────────────────────────────────────────────────
 
-            if 'moving_time' in d.columns:
-                hrs = d.groupby('_p')['moving_time'].sum() / 3600
-                vars_test['Horas'] = hrs
+def _painel_diagnostico(mod: str, blocos: pd.DataFrame, ld=None):
+    """
+    Caixa de diagnóstico diferencial para uma modalidade.
+    Analisa o bloco mais recente e produz texto accionável.
+    """
+    mdc = _MDC[mod]
+    sem = _SEM[mod]
+    mdc_pct = _MDC_PCT[mod]
 
-            if 'distance' in d.columns and d['distance'].notna().any():
-                km = d.groupby('_p')['distance'].sum() / 1000
-                vars_test['KM'] = km
+    if blocos.empty:
+        st.info(f"Dados insuficientes para diagnóstico de {mod}.")
+        return
 
-            sess = d.groupby('_p')['Data'].count()
-            vars_test['Sessões'] = sess
+    ultimo = blocos.iloc[-1]
+    classif = ultimo["classificacao"]
+    delta = ultimo["delta"]
+    ctl = ultimo.get("ctl_bloco", np.nan)
+    z2 = ultimo.get("z2_bloco", np.nan)
+    idx_ult = blocos.index[-1]
+    ini_ult = idx_ult - pd.Timedelta(weeks=8)
+    kappa = _kappa_por_periodo(ld, ini_ult, idx_ult)
 
-            for var_name, var_series in vars_test.items():
-                # Alinhar índices
-                combined = pd.DataFrame({'eftp': eftp_agg, 'var': var_series}).dropna()
-                if len(combined) < 5: continue
-                # Filtro CV
-                if not _cv_ok(combined['var']): continue
-                # Correlação Spearman
-                r, pv = spearmanr(combined['var'].values, combined['eftp'].values)
-                if pv >= 0.10: continue  # não significativo
-                forca = _forca(r)
-                if forca is None: continue  # fraca — não mostrar
-                results.append({
-                    'Período': periodo_label,
-                    'Variável': var_name,
-                    'r (Spearman)': f"{r:+.2f}",
-                    'p-value': f"{pv:.3f}",
-                    'Força': forca,
-                    'Correlação': (f"↗ {var_name} ↑ → eFTP ↑" if r > 0
-                                   else f"↘ {var_name} ↑ → eFTP ↓"),
-                })
-            return results
+    # Header do card
+    cor_status = {"REAL": "#2ECC71", "INCERTO": "#F39C12", "RUÍDO": "#E74C3C"}.get(classif, "#888")
+    emoji_status = {"REAL": "✅", "INCERTO": "⚠️", "RUÍDO": "🔴"}.get(classif, "")
 
-        tipos_corr = [t for t in ['Bike', 'Run', 'Ski', 'Row']
-                      if t in _df_corr['type'].unique()]
+    st.markdown(f"""
+    <div style="border-left: 4px solid {cor_status}; padding: 12px 16px; 
+                background: rgba(0,0,0,0.03); border-radius: 0 8px 8px 0; margin-bottom: 8px;">
+        <span style="font-size: 1.1em; font-weight: 700;">{emoji_status} {mod} — {classif}</span>
+        <span style="color: #888; margin-left: 12px; font-size: 0.9em;">
+            Δ 8 semanas: {delta:+.0f}W &nbsp;|&nbsp; MDC={mdc:.0f}W &nbsp;|&nbsp; 
+            SEM={sem:.1f}W &nbsp;|&nbsp; MDC%={mdc_pct:.1f}%
+        </span>
+    </div>
+    """, unsafe_allow_html=True)
 
-        for tipo in tipos_corr:
-            df_mod = _df_corr[_df_corr['type'] == tipo].copy()
-            if len(df_mod) < 10: continue
+    # Aviso especial Run
+    if mod == "Run":
+        st.warning(
+            f"⚠️ **Run — baixa confiabilidade do eFTP estimado.** "
+            f"MDC = {mdc:.0f}W sobre média histórica ~140W ({mdc_pct:.0f}%). "
+            f"Qualquer variação abaixo de {mdc:.0f}W é estatisticamente ruído. "
+            f"Recomendado: teste controlado (TT de 20-30 min) para medir eFTP real."
+        )
 
-            all_results = []
-            for label, code in [("Semanal", "W"), ("Mensal", "M"), ("Anual", "Y")]:
-                all_results.extend(_corr_periodo(df_mod, label, code))
+    if classif == "REAL" and delta > 0:
+        st.success(
+            f"**Resposta real positiva confirmada.** eFTP aumentou {delta:+.0f}W nas últimas 8 semanas "
+            f"(>{mdc:.0f}W MDC). O estímulo está a gerar adaptação mensurável."
+        )
+        return
 
-            if not all_results:
-                continue  # sem correlações relevantes — não mostrar nada
+    if classif == "REAL" and delta < 0:
+        st.error(
+            f"**Queda real confirmada.** eFTP diminuiu {delta:.0f}W nas últimas 8 semanas "
+            f"(>{mdc:.0f}W MDC). Não é ruído — requer diagnóstico activo."
+        )
 
-            st.markdown(f"**{tipo}**")
-            df_res = pd.DataFrame(all_results)
-            # Remover duplicados (mesma variável em múltiplos períodos — mostrar o mais forte)
-            df_res['_ar'] = df_res['r (Spearman)'].str.replace('+','',regex=False).astype(float).abs()
-            df_res = (df_res.sort_values('_ar', ascending=False)
-                            .drop_duplicates(subset=['Variável'], keep='first')
-                            .drop(columns=['_ar'])
-                            .sort_values('Força', ascending=True))
-            st.dataframe(df_res, width="stretch", hide_index=True)
+    # Diagnóstico diferencial (para RUÍDO, INCERTO, ou queda REAL)
+    if classif in ("RUÍDO", "INCERTO") or (classif == "REAL" and delta < 0):
+        st.markdown("#### Diagnóstico diferencial")
 
-        if not any(
-            len(df[df['type']==t]) >= 10 and
-            'icu_eftp' in df.columns
-            for t in tipos_corr
-        ):
-            st.info("Dados insuficientes para análise de correlação.")
+        col1, col2, col3, col4 = st.columns(4)
+
+        # 1. Dose
+        dose_ok = not (pd.isna(ctl) or ctl < _CTL_DOSE_MIN)
+        with col1:
+            st.metric(
+                "📊 Dose (CTL médio)",
+                f"{ctl:.0f}" if not pd.isna(ctl) else "—",
+                delta=f"{'OK' if dose_ok else f'< {_CTL_DOSE_MIN} ⚠️'}",
+                delta_color="normal" if dose_ok else "inverse",
+            )
+
+        # 2. κ stress silencioso
+        kappa_ok = kappa is None or kappa <= _KAPPA_P75
+        with col2:
+            st.metric(
+                "⚡ κ médio bloco",
+                f"{kappa:.2f}" if kappa is not None else "—",
+                delta=f"{'OK' if kappa_ok else f'> p75 ⚠️'}",
+                delta_color="normal" if kappa_ok else "inverse",
+            )
+
+        # 3. Polarização Z2
+        polar_ok = pd.isna(z2) or z2 <= _Z2_POLAR_MAX
+        with col3:
+            st.metric(
+                "🎯 Z2% bloco",
+                f"{z2*100:.0f}%" if not pd.isna(z2) else "—",
+                delta=f"{'Polarizado' if polar_ok else 'Não polarizado ⚠️'}",
+                delta_color="normal" if polar_ok else "inverse",
+            )
+
+        # 4. Classificação MDC
+        with col4:
+            pct_mdc = abs(delta) / mdc * 100
+            st.metric(
+                "📏 Sinal vs Ruído",
+                f"{pct_mdc:.0f}% do MDC",
+                delta=classif,
+                delta_color="normal" if classif == "REAL" else "inverse",
+            )
+
+        # Texto de diagnóstico principal
+        st.markdown("---")
+        _, detalhe = _diagnostico_texto(delta, ctl, kappa, z2, mdc, mod)
+
+        causas_lista = detalhe.split("\n\n")
+        for bloco_causa in causas_lista:
+            if bloco_causa.strip():
+                linhas = bloco_causa.strip().split("\n\n")
+                causa_txt = linhas[0].replace("**Causa:** ", "") if linhas else ""
+                presc_txt = linhas[1].replace("**Prescrição:** ", "") if len(linhas) > 1 else ""
+                st.markdown(f"**→ {causa_txt}**")
+                if presc_txt:
+                    st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;*Prescrição:* {presc_txt}")
+
+        # Referências do paper
+        st.caption(
+            "Fontes: Montero & Lundby (2017) — dose; Iannetta et al. (2020) — prescrição por domínio; "
+            "Issurin (2010) — meseta homeostática; FMT Tensor κ (Della Mattia 2019) — stress silencioso."
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FUNÇÃO PRINCIPAL — tab_eftp()
+# ─────────────────────────────────────────────────────────────────────────────
+
+def tab_eftp(da_filt: pd.DataFrame, mods_sel: list, ac_full: pd.DataFrame,
+             wc_full: pd.DataFrame = None):
+    """
+    Tab eFTP completa com Diagnóstico de Resposta ao Treino.
+
+    Parâmetros:
+        da_filt   : actividades filtradas pelo sidebar
+        mods_sel  : modalidades seleccionadas
+        ac_full   : actividades completas (sem filtro de data) — necessário para histórico
+        wc_full   : wellness completo (opcional — usado para contexto HRV)
+    """
+
+    # ── Carregar κ do session_state ──
+    ld = st.session_state.get("ld_frac_cache", None)
+
+    # ── Construir DataFrame pivot eFTP a partir de ac_full ──
+    # (replica o que o CSV atheltica_eftp.csv contém, mas em tempo real)
+    col_mod  = "type" if "type" in ac_full.columns else "modality"
+    col_eftp = "icu_eftp" if "icu_eftp" in ac_full.columns else "eFTP"
+    col_date = "date" if "date" in ac_full.columns else "Data"
+
+    pivot_rows = []
+    for mod in ["Bike", "Row", "Ski", "Run"]:
+        sub = ac_full[ac_full[col_mod] == mod][[col_date, col_eftp]].dropna()
+        if not sub.empty:
+            sub = sub.copy()
+            sub[col_date] = pd.to_datetime(sub[col_date])
+            sub = sub.rename(columns={col_date: "Data", col_eftp: mod})
+            pivot_rows.append(sub.set_index("Data")[mod])
+
+    if pivot_rows:
+        df_pivot = pd.concat(pivot_rows, axis=1).reset_index()
+        df_pivot.columns.name = None
     else:
-        st.info("Coluna icu_eftp não disponível para análise de correlação.")
+        st.warning("Sem dados eFTP disponíveis em ac_full.")
+        return
 
-    # ── DOWNLOAD CSV — eFTP série temporal por modalidade (histórico completo) ─
-    st.markdown("---")
-    try:
-        # Usar da_full (histórico completo) se disponível; senão usa da (filtrado)
-        _da_csv = da_full if (da_full is not None and len(da_full) > 0) else da
-        _ecol = next((c for c in ['icu_eftp', 'eFTP', 'eftp'] if c in _da_csv.columns), None)
-        if _ecol:
-            _eftp_dl = _da_csv.copy()
-            _eftp_dl['Data'] = pd.to_datetime(_eftp_dl['Data'])
-            _eftp_dl[_ecol] = pd.to_numeric(_eftp_dl[_ecol], errors='coerce')
-            _eftp_dl = _eftp_dl[_eftp_dl[_ecol].notna()][['Data', 'type', _ecol]].copy()
-            _eftp_dl = _eftp_dl.rename(columns={_ecol: 'eFTP'})
-            # Pivot: uma linha por data, uma coluna por modalidade
-            _eftp_pivot = (_eftp_dl.groupby(['Data', 'type'])['eFTP'].max()
-                           .unstack('type').reset_index())
-            _eftp_pivot.columns.name = None
-            _eftp_pivot['Data'] = _eftp_pivot['Data'].astype(str)
-            _eftp_pivot = _eftp_pivot.round(1)
+    # ═══════════════════════════════════════════════════════════
+    # HEADER
+    # ═══════════════════════════════════════════════════════════
+    st.markdown("## eFTP por Modalidade")
+    st.caption(
+        "Estimativa de FTP funcional por modalidade ao longo do tempo. "
+        "A banda cinzenta representa a zona de ruído empírico (±MDC/2) — "
+        "variações dentro desta zona são estatisticamente indistinguíveis de zero."
+    )
 
-            _ec1, _ec2 = st.columns([2, 1])
-            with _ec1:
-                st.subheader("📥 Export eFTP CSV")
-                st.caption(
-                    "Histórico **completo** — independente do filtro global do sidebar. "
-                    "eFTP por data e modalidade em pivot — para cruzar com κ e fases de treino.")
-                st.dataframe(_eftp_pivot.tail(10), use_container_width=True, hide_index=True)
-                st.caption(f"Mostrando últimas 10 de {len(_eftp_pivot)} datas totais no CSV")
-            with _ec2:
-                st.metric("Sessões no CSV", len(_eftp_dl))
-                st.metric("Sidebar (gráficos)", len(da))
-                st.caption("CSV = histórico completo\nGráficos = período sidebar")
-                st.download_button(
-                    label="📥 Download eFTP CSV",
-                    data=_eftp_pivot.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
-                    file_name="atheltica_eftp.csv",
-                    mime="text/csv",
-                    key="eftp_dl_csv",
+    # ── MDC por modalidade — cards informativos ──
+    cols_mdc = st.columns(4)
+    for i, mod in enumerate(["Bike", "Row", "Ski", "Run"]):
+        with cols_mdc[i]:
+            fiab = "Baixa ⚠️" if mod == "Run" else "Normal"
+            st.metric(
+                f"{mod} — MDC 95%",
+                f"±{_MDC[mod]:.0f}W",
+                delta=f"SEM={_SEM[mod]:.1f}W | Fiab.:{fiab}",
+                delta_color="inverse" if mod == "Run" else "off",
+                help=(
+                    f"Mínima Diferença Detectável a 95% de confiança para {mod}.\n\n"
+                    f"Calculado empiricamente sobre {545 if mod=='Bike' else 449 if mod=='Row' else 196 if mod=='Ski' else 202} "
+                    f"observações reais (2018-2026).\n\n"
+                    f"Fórmula: MDC = 1.96 × √2 × SEM = {_MDC[mod]:.1f}W\n\n"
+                    f"Qualquer variação abaixo de {_MDC[mod]:.0f}W pode ser ruído do estimador icu_eftp."
                 )
+            )
+
+    st.markdown("---")
+
+    # ═══════════════════════════════════════════════════════════
+    # COMPONENTE A — Gráfico com banda de incerteza
+    # ═══════════════════════════════════════════════════════════
+    st.markdown("### Série histórica com banda de incerteza")
+    fig_serie = _grafico_eftp_banda(df_pivot, mods_sel)
+    st.plotly_chart(fig_serie, use_container_width=True)
+
+    # ── Download CSV eFTP completo ──
+    csv_eftp = df_pivot.to_csv(index=False, sep=";", decimal=",").encode("utf-8")
+    st.download_button(
+        "⬇️ Download eFTP completo (CSV)",
+        data=csv_eftp,
+        file_name="atheltica_eftp_completo.csv",
+        mime="text/csv",
+    )
+
+    st.markdown("---")
+
+    # ═══════════════════════════════════════════════════════════
+    # COMPONENTE B + C — Diagnóstico por modalidade
+    # ═══════════════════════════════════════════════════════════
+    st.markdown("### Diagnóstico de Resposta ao Treino")
+    st.caption(
+        "Implementa o framework de Della Mattia (ednacore AI, 2025) baseado em "
+        "Montero & Lundby (2017), Iannetta et al. (2020) e Hecksteden et al. (2015). "
+        "Cada bloco de 8 semanas é classificado como REAL (>MDC), INCERTO (50-100% MDC) "
+        "ou RUÍDO (<50% MDC). O diagnóstico diferencial integra dose (CTL), "
+        "qualidade do estímulo (κ tensor) e distribuição de domínios (Z1/Z2/Z3)."
+    )
+
+    # Selector de modalidade para diagnóstico
+    mod_diag = st.selectbox(
+        "Modalidade para diagnóstico detalhado",
+        [m for m in mods_sel if m in df_pivot.columns],
+        key="eftp_diag_mod",
+    )
+
+    if mod_diag:
+        weekly = _preparar_eftp_semanal(ac_full, mod_diag)
+
+        if weekly.empty:
+            st.info(f"Sem dados suficientes de ac_full para {mod_diag}.")
         else:
-            st.info("Coluna eFTP não disponível para exportação.")
-    except Exception as _ee:
-        st.info(f"Export eFTP não disponível: {_ee}")
+            blocos = _calcular_blocos(weekly, _MDC[mod_diag])
 
+            # Tabela de blocos
+            st.markdown(f"#### Blocos de 8 semanas — {mod_diag}")
+            df_tab = _tabela_blocos(blocos, mod_diag, ld=ld)
+            if not df_tab.empty:
+                st.dataframe(df_tab, use_container_width=True, hide_index=True)
 
-# ════════════════════════════════════════════════════════════════════════════════
-# TAB 5 — HR ZONES + RPE ZONES + CORRELAÇÃO
-# ════════════════════════════════════════════════════════════════════════════════
+                # Download tabela
+                csv_blocos = df_tab.to_csv(index=False, sep=";").encode("utf-8")
+                st.download_button(
+                    f"⬇️ Download blocos {mod_diag} (CSV)",
+                    data=csv_blocos,
+                    file_name=f"atheltica_blocos_{mod_diag.lower()}.csv",
+                    mime="text/csv",
+                    key=f"dl_blocos_{mod_diag}",
+                )
 
+            st.markdown("---")
 
+            # Painel de diagnóstico
+            st.markdown(f"#### Diagnóstico diferencial — {mod_diag} (bloco mais recente)")
+            _painel_diagnostico(mod_diag, blocos, ld=ld)
 
-# ════════════════════════════════════════════════════════════════════════════
-# MÓDULO: tabs/tab_zones.py
-# ════════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
 
-def _zonas_bp(ax_bar, ax_pie, por_tipo, total_seg, cores_zona, tit_bar, tit_pie):
-    zonas = list(cores_zona.keys()); bottom = np.zeros(len(por_tipo))
-    for zona in zonas:
-        if zona not in por_tipo.columns: continue
-        vals = por_tipo[zona].values
-        ax_bar.bar(por_tipo.index, vals, bottom=bottom, color=cores_zona[zona], label=zona, edgecolor='white', linewidth=0.5)
-        for i, (v, b) in enumerate(zip(vals, bottom)):
-            if v > 5: ax_bar.text(i, b + v / 2, f'{v:.0f}%', ha='center', va='center', fontsize=9, fontweight='bold', color='white')
-        bottom += vals
-    ax_bar.set_ylim(0, 100); ax_bar.set_ylabel('% sessões', fontweight='bold')
-    ax_bar.set_title(tit_bar, fontweight='bold'); ax_bar.legend(loc='upper right', fontsize=8); ax_bar.grid(True, alpha=0.2, axis='y')
-    lp = [l for l, v in total_seg.items() if v > 0]; sp = [v for v in total_seg.values() if v > 0]
-    if sum(sp) > 0:
-        _, _, ats = ax_pie.pie(sp, labels=lp, autopct='%1.1f%%', colors=[cores_zona[l] for l in lp], startangle=90, wedgeprops=dict(edgecolor='white', linewidth=2), pctdistance=0.75)
-        for at in ats: at.set_fontweight('bold'); at.set_fontsize(10)
-    ax_pie.set_title(tit_pie, fontweight='bold')
+    # ═══════════════════════════════════════════════════════════
+    # COMPONENTE EXTRA — Plateau interanual
+    # ═══════════════════════════════════════════════════════════
+    st.markdown("### Progressão interanual — detecção de plateau")
+    st.caption(
+        "eFTP pico por ano por modalidade. Cor verde = mudança real (>MDC). "
+        "Cor cinzenta = ruído (<MDC, variação não significativa). "
+        "Cor vermelha = queda real confirmada. "
+        "Implementa Paper §5: 'tecto da temporada anterior como piso da seguinte'."
+    )
+    fig_plateau = _grafico_plateau_interanual(df_pivot, mods_sel)
+    st.plotly_chart(fig_plateau, use_container_width=True)
+
+    # Insight automático plateau
+    st.markdown("#### Síntese de plateau por modalidade")
+    df_pivot_c = df_pivot.copy()
+    df_pivot_c["Data"] = pd.to_datetime(df_pivot_c["Data"])
+    df_pivot_c["Ano"] = df_pivot_c["Data"].dt.year
+
+    for mod in mods_sel:
+        if mod not in df_pivot_c.columns:
+            continue
+        mdc = _MDC[mod]
+        picos = df_pivot_c.groupby("Ano")[mod].max().dropna()
+        if len(picos) < 2:
+            continue
+        anos = list(picos.index)
+        vals = list(picos.values)
+        # Verificar últimos 2 anos
+        delta_recente = vals[-1] - vals[-2]
+        anos_plateau = sum(1 for i in range(1, len(vals)) if abs(vals[i] - vals[i-1]) < mdc)
+
+        if abs(delta_recente) < mdc and anos_plateau >= 2:
+            st.warning(
+                f"**{mod}:** Plateau interanual detectado. "
+                f"Pico {anos[-2]}: {vals[-2]:.0f}W → Pico {anos[-1]}: {vals[-1]:.0f}W "
+                f"(Δ={delta_recente:+.0f}W, MDC={mdc:.0f}W). "
+                f"Mudança de natureza do estímulo indicada (Paper §1 — meseta homeostática)."
+            )
+        elif delta_recente >= mdc:
+            st.success(
+                f"**{mod}:** Progressão interanual real. "
+                f"{anos[-2]}→{anos[-1]}: +{delta_recente:.0f}W (>{mdc:.0f}W MDC)."
+            )
+        elif delta_recente <= -mdc:
+            st.error(
+                f"**{mod}:** Regressão interanual real. "
+                f"{anos[-2]}→{anos[-1]}: {delta_recente:.0f}W (>{mdc:.0f}W MDC)."
+            )
+        else:
+            st.info(
+                f"**{mod}:** Variação recente dentro do ruído "
+                f"({delta_recente:+.0f}W vs MDC={mdc:.0f}W). Monitorizar."
+            )
+
+    # ═══════════════════════════════════════════════════════════
+    # NOTA METODOLÓGICA
+    # ═══════════════════════════════════════════════════════════
+    with st.expander("ℹ️ Metodologia — Como foi calculado o MDC"):
+        st.markdown(f"""
+**Erro Típico de Medição (SEM) — calculado empiricamente sobre dados reais**
+
+O SEM foi estimado a partir da variabilidade intrínseca do estimador `icu_eftp` 
+do Intervals.icu, usando a série histórica do próprio atleta (2018-2026).
+
+**Método:** desvio padrão das variações dia-a-dia (`Δ eFTP`) em janelas de ≤14 dias,
+que representam ruído puro do estimador (sem mudança fisiológica real esperada).
+
+| Modalidade | N obs | SEM (W) | MDC 95% (W) | MDC% da média |
+|---|---|---|---|---|
+| Bike | 521 | {_SEM['Bike']:.1f} | {_MDC['Bike']:.1f} | {_MDC_PCT['Bike']:.1f}% |
+| Row | 449 | {_SEM['Row']:.1f} | {_MDC['Row']:.1f} | {_MDC_PCT['Row']:.1f}% |
+| Ski | 196 | {_SEM['Ski']:.1f} | {_MDC['Ski']:.1f} | {_MDC_PCT['Ski']:.1f}% |
+| Run | 202 | {_SEM['Run']:.1f} | {_MDC['Run']:.1f} | {_MDC_PCT['Run']:.1f}% |
+
+**Fórmula MDC:** `MDC₉₅ = 1.96 × √2 × SEM`
+(Hecksteden et al., 2015; Atkinson & Batterham, 2015)
+
+**Interpretação:**
+- `|Δ| ≥ MDC` → **REAL** (95% de confiança de mudança verdadeira)
+- `|Δ| ≥ MDC/2` → **INCERTO** (sinal fraco, monitorizar)
+- `|Δ| < MDC/2` → **RUÍDO** (indistinguível de zero estatisticamente)
+
+**Nota Run:** MDC = {_MDC['Run']:.0f}W sobre média histórica ~140W ({_MDC_PCT['Run']:.0f}%).
+O eFTP estimado em Run tem muito maior variabilidade que as modalidades com potenciómetro.
+Para diagnóstico de Run, recomenda-se teste controlado (TT 20-30 min em condições fixas).
+
+**Referências:**
+- Montero D & Lundby C (2017). Refuting the myth of non-response to exercise training. *J Physiol.*
+- Hecksteden A et al. (2015). Individual response to exercise training — a statistical perspective. *J Appl Physiol.*
+- Iannetta D et al. (2020). A critical evaluation of current methods for exercise prescription. *Med Sci Sports Exerc.*
+- Della Mattia G (2025). Variabilidad Inter-Individual en el Entrenamiento de Resistencia. *ednacore AI.*
+        """)
