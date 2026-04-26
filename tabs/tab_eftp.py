@@ -188,13 +188,17 @@ def _grafico_eftp_banda(df_eftp_orig: pd.DataFrame, mods_sel: list) -> go.Figure
         sub["Data"] = pd.to_datetime(sub["Data"])
         sub = sub.sort_values("Data")
 
+        # Converter hex para rgba para a banda de incerteza
+        h = cor.lstrip("#")
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        fill_rgba = f"rgba({r},{g},{b},0.12)"
+
         # Banda de ruído (±MDC/2 em volta da série)
         fig.add_trace(go.Scatter(
             x=pd.concat([sub["Data"], sub["Data"][::-1]]),
             y=pd.concat([sub[mod] + mdc/2, (sub[mod] - mdc/2)[::-1]]),
             fill="toself",
-            fillcolor=cor.replace(")", ",0.10)").replace("rgb", "rgba") if "rgb" in cor
-                       else cor + "1A",  # hex + alpha
+            fillcolor=fill_rgba,
             line=dict(width=0),
             showlegend=False,
             hoverinfo="skip",
