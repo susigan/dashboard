@@ -99,7 +99,7 @@ def main():
     with tab1:  tab_visao_geral(dw, da_filt, di, df_, da_full=ac_full, wc_full=wc, dc=dc)
     with tab2:  tab_pmc(ac_full, wc=wc_full)        # full wellness for HRV/WEED history
     with tab3:  tab_volume(da_filt, dw)
-    with tab4:  tab_eftp(da_filt, mods_sel, ac_full)
+    with tab4:  tab_eftp(da_filt, mods_sel, ac_full, wc_full=wc_full)
     with tab5:  tab_zones(da_filt, mods_sel)
     with tab6:  tab_correlacoes(ac_full, wc)
     with tab7:  tab_recovery(dw, da, wc_full=wc_full, da_full=ac_full)
