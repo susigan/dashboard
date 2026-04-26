@@ -59,23 +59,51 @@ def _preparar_eftp_semanal(ac_full: pd.DataFrame, mod: str) -> pd.DataFrame:
     col_eftp = "icu_eftp" if "icu_eftp" in ac_full.columns else "eFTP"
     col_date = "date" if "date" in ac_full.columns else "Data"
 
-    sub = ac_full[ac_full[col_mod] == mod][[col_date, col_eftp, "ctl", "z1_kj", "z2_kj", "z3_kj"]].copy()
+    # Detectar colunas disponíveis em ac_full de forma defensiva
+    # Nomes alternativos possíveis para as colunas
+    _ctl_col  = next((c for c in ["ctl", "CTL", "ctl_end"] if c in ac_full.columns), None)
+    _z1_col   = next((c for c in ["z1_kj", "z1kj", "trimp_z1", "trimp1"] if c in ac_full.columns), None)
+    _z2_col   = next((c for c in ["z2_kj", "z2kj", "trimp_z2", "trimp2"] if c in ac_full.columns), None)
+    _z3_col   = next((c for c in ["z3_kj", "z3kj", "trimp_z3", "trimp3"] if c in ac_full.columns), None)
+
+    # Colunas base obrigatórias
+    _cols_base = [col_date, col_eftp]
+    # Colunas opcionais — só adicionar se existirem
+    _cols_opt = {
+        "ctl":   _ctl_col,
+        "z1_kj": _z1_col,
+        "z2_kj": _z2_col,
+        "z3_kj": _z3_col,
+    }
+    _col_map = {v: k for k, v in _cols_opt.items() if v is not None}
+    _cols_sel = _cols_base + [c for c in _col_map.keys()]
+
+    sub = ac_full[ac_full[col_mod] == mod][_cols_sel].copy()
     if sub.empty or sub[col_eftp].isna().all():
         return pd.DataFrame()
+
+    # Renomear colunas opcionais para nomes canónicos
+    sub = sub.rename(columns=_col_map)
 
     sub[col_date] = pd.to_datetime(sub[col_date])
     sub = sub.sort_values(col_date).set_index(col_date)
     sub[col_eftp] = pd.to_numeric(sub[col_eftp], errors="coerce")
 
-    weekly = sub.resample("W").agg({
-        col_eftp: "last",
-        "ctl": "mean",
-        "z1_kj": "sum",
-        "z2_kj": "sum",
-        "z3_kj": "sum",
-    }).dropna(subset=[col_eftp])
+    # Agregação semanal — só colunas que existem
+    _agg_dict = {col_eftp: "last"}
+    if "ctl"   in sub.columns: _agg_dict["ctl"]   = "mean"
+    if "z1_kj" in sub.columns: _agg_dict["z1_kj"] = "sum"
+    if "z2_kj" in sub.columns: _agg_dict["z2_kj"] = "sum"
+    if "z3_kj" in sub.columns: _agg_dict["z3_kj"] = "sum"
 
-    weekly.columns = ["eftp", "ctl", "z1_kj", "z2_kj", "z3_kj"]
+    weekly = sub.resample("W").agg(_agg_dict).dropna(subset=[col_eftp])
+    weekly = weekly.rename(columns={col_eftp: "eftp"})
+
+    # Garantir colunas mesmo que não existam (com NaN)
+    for _c in ["ctl", "z1_kj", "z2_kj", "z3_kj"]:
+        if _c not in weekly.columns:
+            weekly[_c] = np.nan
+
     weekly["z_total"] = weekly["z1_kj"] + weekly["z2_kj"] + weekly["z3_kj"]
     weekly["z1_pct"] = weekly["z1_kj"] / weekly["z_total"].replace(0, np.nan)
     weekly["z2_pct"] = weekly["z2_kj"] / weekly["z_total"].replace(0, np.nan)
@@ -489,9 +517,17 @@ def tab_eftp(da_filt: pd.DataFrame, mods_sel: list, ac_full: pd.DataFrame,
 
     # ── Construir DataFrame pivot eFTP a partir de ac_full ──
     # (replica o que o CSV atheltica_eftp.csv contém, mas em tempo real)
-    col_mod  = "type" if "type" in ac_full.columns else "modality"
-    col_eftp = "icu_eftp" if "icu_eftp" in ac_full.columns else "eFTP"
-    col_date = "date" if "date" in ac_full.columns else "Data"
+    col_mod  = next((c for c in ["type", "modality", "sport"] if c in ac_full.columns), None)
+    col_eftp = next((c for c in ["icu_eftp", "eFTP", "eftp", "ftp"] if c in ac_full.columns), None)
+    col_date = next((c for c in ["date", "Data", "data", "Date"] if c in ac_full.columns), None)
+
+    if col_mod is None or col_eftp is None or col_date is None:
+        st.warning(
+            f"Colunas necessárias não encontradas em ac_full. "
+            f"Disponíveis: {list(ac_full.columns[:15])}. "
+            f"Necessárias: type/modality, icu_eftp/eFTP, date/Data"
+        )
+        return
 
     pivot_rows = []
     for mod in ["Bike", "Row", "Ski", "Run"]:
@@ -506,7 +542,10 @@ def tab_eftp(da_filt: pd.DataFrame, mods_sel: list, ac_full: pd.DataFrame,
         df_pivot = pd.concat(pivot_rows, axis=1).reset_index()
         df_pivot.columns.name = None
     else:
-        st.warning("Sem dados eFTP disponíveis em ac_full.")
+        st.warning(
+            f"Sem dados eFTP em ac_full para modalidades Bike/Row/Ski/Run. "
+            f"Coluna '{col_mod}' valores únicos: {list(ac_full[col_mod].unique()[:10])}"
+        )
         return
 
     # ═══════════════════════════════════════════════════════════
