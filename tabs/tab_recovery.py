@@ -846,39 +846,77 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
     if len(dw) >= 14 and dw['hrv'].notna().sum() >= 14:
         df_hg = dw.copy().sort_values('Data')
         df_hg['Data'] = pd.to_datetime(df_hg['Data'])
-        df_hg['LnrMSSD'] = np.where(df_hg['hrv'] > 0, np.log(df_hg['hrv']), np.nan)
-        df_hg = df_hg.dropna(subset=['LnrMSSD'])
+
+        # ── MUDANÇA: reindex para calendário completo em vez de dropna ──────
+        # Mantém dias sem HRV como NaN — não os elimina
+        # Baseline rolling calcula sobre dias COM dados (min_periods)
+        # Dias sem medição aparecem no gráfico com estrela ⭐ na posição do baseline
+        df_hg = df_hg.set_index('Data')
+        date_range_hg = pd.date_range(df_hg.index.min(), df_hg.index.max(), freq='D')
+        df_hg = df_hg.reindex(date_range_hg)
+        df_hg.index.name = 'Data'
+        df_hg = df_hg.reset_index()
+
+        df_hg['LnrMSSD'] = np.where(
+            df_hg['hrv'].notna() & (df_hg['hrv'] > 0),
+            np.log(df_hg['hrv']),
+            np.nan
+        )
+        # Flag: dia sem medição de HRV
+        df_hg['sem_medicao'] = df_hg['LnrMSSD'].isna()
 
         hg_c1, hg_c2 = st.columns(2)
         dias_fam = hg_c1.slider("Dias baseline rolling", 7, 28, 14, key="hg_baseline")
+        n_hg_max = max(14, df_hg['LnrMSSD'].notna().sum())
         n_hg     = hg_c2.slider("Dias a mostrar", 14, min(len(df_hg), 180),
                                   min(60, len(df_hg)), key="hg_dias")
 
-        df_hg['bm']    = df_hg['LnrMSSD'].rolling(dias_fam, min_periods=dias_fam).mean()
-        df_hg['bs']    = df_hg['LnrMSSD'].rolling(dias_fam, min_periods=dias_fam).std()
+        # Baseline: rolling sobre dias COM dados (NaN são ignorados pelo rolling)
+        # min_periods=max(5, dias_fam//2) — permite calcular mesmo com alguns NaN
+        _mp = max(5, dias_fam // 2)
+        df_hg['bm']    = df_hg['LnrMSSD'].rolling(dias_fam, min_periods=_mp).mean()
+        df_hg['bs']    = df_hg['LnrMSSD'].rolling(dias_fam, min_periods=_mp).std()
         df_hg['linf']  = df_hg['bm'] - 0.5 * df_hg['bs']
         df_hg['lsup']  = df_hg['bm'] + 0.5 * df_hg['bs']
         df_hg['desvio_dp'] = (df_hg['LnrMSSD'] - df_hg['bm']) / df_hg['bs'].replace(0, np.nan)
-        df_hg['intens'] = df_hg.apply(
-            lambda r: 'HIIT'       if pd.notna(r['bm']) and r['linf'] <= r['LnrMSSD'] <= r['lsup']
-            else ('Recuperação'    if pd.notna(r['bm']) else 'Sem dados'), axis=1)
+
+        # Classificação:
+        # - Dia COM medição: HIIT / Recuperação / Sem dados (baseline insuf.)
+        # - Dia SEM medição: 'Sem medição' → prescrição conservadora
+        def _classif_hg(r):
+            if r['sem_medicao']:
+                return 'Sem medição ⭐'
+            if pd.isna(r['bm']):
+                return 'Sem dados'
+            if r['linf'] <= r['LnrMSSD'] <= r['lsup']:
+                return 'HIIT'
+            return 'Recuperação'
+
+        df_hg['intens'] = df_hg.apply(_classif_hg, axis=1)
 
         # Guardar para análise de correlação posterior
         df_analysis = df_hg.copy()
         df_hg_raw = dw.copy().sort_values('Data')
         df_hg_raw['Data'] = pd.to_datetime(df_hg_raw['Data'])
         df_hg_raw['RMSSD'] = df_hg_raw['hrv'].where(df_hg_raw['hrv'] > 0)
-        df_hg_raw = df_hg_raw.dropna(subset=['RMSSD'])
-        df_hg_raw['bm_raw'] = df_hg_raw['RMSSD'].rolling(dias_fam, min_periods=dias_fam).mean()
-        df_hg_raw['bs_raw'] = df_hg_raw['RMSSD'].rolling(dias_fam, min_periods=dias_fam).std()
+        # Manter calendário completo também para RMSSD bruto
+        df_hg_raw = df_hg_raw.set_index('Data')
+        _dr_raw = pd.date_range(df_hg_raw.index.min(), df_hg_raw.index.max(), freq='D')
+        df_hg_raw = df_hg_raw.reindex(_dr_raw)
+        df_hg_raw.index.name = 'Data'
+        df_hg_raw = df_hg_raw.reset_index()
+        _mp_raw = max(5, dias_fam // 2)
+        df_hg_raw['bm_raw'] = df_hg_raw['RMSSD'].rolling(dias_fam, min_periods=_mp_raw).mean()
+        df_hg_raw['bs_raw'] = df_hg_raw['RMSSD'].rolling(dias_fam, min_periods=_mp_raw).std()
         df_hg_raw['desvio_dp_raw'] = (df_hg_raw['RMSSD'] - df_hg_raw['bm_raw']) / df_hg_raw['bs_raw'].replace(0, np.nan)
         df_hg_raw['intens_raw'] = df_hg_raw.apply(
-            lambda r: 'HIIT' if pd.notna(r['bm_raw']) and (r['bm_raw'] - 0.5*r['bs_raw']) <= r['RMSSD'] <= (r['bm_raw'] + 0.5*r['bs_raw'])
-            else ('Recuperação' if pd.notna(r['bm_raw']) else 'Sem dados'), axis=1)
+            lambda r: ('Sem medição ⭐' if pd.isna(r['RMSSD'])
+                       else 'HIIT' if pd.notna(r['bm_raw']) and (r['bm_raw'] - 0.5*r['bs_raw']) <= r['RMSSD'] <= (r['bm_raw'] + 0.5*r['bs_raw'])
+                       else ('Recuperação' if pd.notna(r['bm_raw']) else 'Sem dados')), axis=1)
 
         df_p = df_hg.tail(n_hg).copy()
 
-        COR_MAP = {'HIIT': '#27ae60', 'Recuperação': '#f39c12', 'Sem dados': '#95a5a6'}
+        COR_MAP = {'HIIT': '#27ae60', 'Recuperação': '#f39c12', 'Sem dados': '#95a5a6', 'Sem medição ⭐': '#cccccc'}
 
         _fig_hg = make_subplots(
             rows=2, cols=1, shared_xaxes=True,
@@ -894,12 +932,27 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
             if len(df_i) == 0:
                 continue
             r_h2, g_h2, b_h2 = int(cor[1:3],16), int(cor[3:5],16), int(cor[5:7],16)
-            _fig_hg.add_trace(go.Scatter(
-                x=df_i['Data'], y=df_i['LnrMSSD'],
-                mode='markers', name=intensidade,
-                marker=dict(color=cor, size=10, line=dict(width=1.5, color='white')),
-                hovertemplate=f'<b>{intensidade}</b><br>%{{x|%d/%m}}: %{{y:.3f}}<extra></extra>'
-            ), row=1, col=1)
+
+            if intensidade == 'Sem medição ⭐':
+                # Dias sem HRV: estrela no valor do baseline (ou 0 se baseline tbm NaN)
+                y_vals = df_i['bm'].fillna(df_i['LnrMSSD'].mean())
+                _fig_hg.add_trace(go.Scatter(
+                    x=df_i['Data'], y=y_vals,
+                    mode='markers', name='Sem medição ⭐',
+                    marker=dict(
+                        color='#aaaaaa', size=14,
+                        symbol='star',
+                        line=dict(width=1.5, color='white')
+                    ),
+                    hovertemplate='<b>⭐ Sem medição HRV</b><br>%{x|%d/%m/%Y}<br>Prescrição: Recuperação (por precaução)<extra></extra>'
+                ), row=1, col=1)
+            else:
+                _fig_hg.add_trace(go.Scatter(
+                    x=df_i['Data'], y=df_i['LnrMSSD'],
+                    mode='markers', name=intensidade,
+                    marker=dict(color=cor, size=10, line=dict(width=1.5, color='white')),
+                    hovertemplate=f'<b>{intensidade}</b><br>%{{x|%d/%m}}: %{{y:.3f}}<extra></extra>'
+                ), row=1, col=1)
 
         _fig_hg.add_trace(go.Scatter(
             x=df_p['Data'], y=df_p['lsup'],
@@ -989,9 +1042,24 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
             m1, m2, m3 = st.columns(3)
             m1.metric("Dias HIIT",       f"{hiit_n} ({hiit_n/total_n*100:.0f}%)")
             m2.metric("Dias Recuperação", f"{rec_n} ({rec_n/total_n*100:.0f}%)")
-            m3.metric("Prescrição HOJE",
-                      '✅ HIIT' if df_val.iloc[-1]['intens'] == 'HIIT'
-                      else '🟠 Recuperação')
+            # Prescrição HOJE — verificar se hoje tem medição real
+            _ultimo_hg = df_val.iloc[-1]
+            _data_ultimo = _ultimo_hg['Data']
+            _data_hoje = pd.Timestamp('today').normalize()
+            _dias_sem = (_data_hoje - _data_ultimo).days if pd.notna(_data_ultimo) else 999
+
+            if _ultimo_hg['intens'] == 'Sem medição ⭐' or _dias_sem > 0:
+                _pres_hoje = f'⭐ Sem medição ({_dias_sem}d) — Recuperação'
+            elif _ultimo_hg['intens'] == 'HIIT':
+                _pres_hoje = '✅ HIIT'
+            else:
+                _pres_hoje = '🟠 Recuperação'
+            m3.metric("Prescrição HOJE", _pres_hoje,
+                      help=(
+                          "⭐ = sem medição de HRV hoje ou nos últimos dias. "
+                          "Sem sinal autonómico, a prescrição conservadora é Recuperação. "
+                          "O baseline não é substituto da medição real."
+                      ))
 
             # ════════════════════════════════════════════════════════════════════════
         # ANÁLISE 1: HIIT LnRMSSD vs Recovery Modes (Rolling 14d)
