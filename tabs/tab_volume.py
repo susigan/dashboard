@@ -436,3 +436,265 @@ def tab_volume(da, dw):
                          use_container_width=True, hide_index=True)
     else:
         st.info("Colunas aerobic/glycolytic/pmax não disponíveis.")
+
+    st.markdown("---")
+
+    # ════════════════════════════════════════════════════════════════════════
+    # 6. ÍNDICE DE MONOTONIA DE FRY — Análise completa
+    # Fry RW, Morton AR & Keast D (1992). Can J Sport Sci.
+    # Seiler S & Tønnessen E (2009). Sportscience 13, 32-53.
+    # IM = carga_média_7d / std_carga_7d  |  Training Strain = IM × carga_média
+    # IM <1.5 ✅ | 1.5-2.0 🟡 | >2.0 🔴
+    # ════════════════════════════════════════════════════════════════════════
+    st.subheader("🔄 Índice de Monotonia de Fry")
+    st.caption(
+        "**IM = carga_média_diária / std_carga_diária** (janela 7 dias). "
+        "Dias sem treino contam como **0 kJ** — o descanso activo reduz a monotonia. "
+        "**Training Strain = IM × carga_média** combina quantidade e uniformidade. "
+        "Referências: Fry et al. (1992); Seiler & Tønnessen (2009)."
+    )
+
+    # ── Detectar coluna kJ ─────────────────────────────────────────────────
+    _kj_fry_col = next(
+        (c for c in ['icu_joules', 'joules', 'kj_total']
+         if c in df.columns and df[c].notna().any()), None
+    )
+
+    if _kj_fry_col is None:
+        st.info("Coluna kJ (icu_joules / kj_total) não disponível.")
+    else:
+        # ── Preparar série diária — GLOBAL e POR MODALIDADE ───────────────
+        df_fry = df.copy()
+        df_fry['Data'] = pd.to_datetime(df_fry['Data']).dt.normalize()
+        df_fry['_kj'] = pd.to_numeric(df_fry[_kj_fry_col], errors='coerce').fillna(0)
+        if _kj_fry_col == 'icu_joules':
+            df_fry['_kj'] = df_fry['_kj'] / 1000  # J → kJ
+
+        # Calendário completo (dias sem treino = 0)
+        _fry_date_min = df_fry['Data'].min()
+        _fry_date_max = df_fry['Data'].max()
+        _fry_cal = pd.date_range(_fry_date_min, _fry_date_max, freq='D')
+
+        # GLOBAL — todos os cíclicos juntos
+        _gl_daily = (df_fry[df_fry['type'].isin(_CICLICOS)]
+                     .groupby('Data')['_kj'].sum()
+                     .reindex(_fry_cal, fill_value=0))
+
+        # POR MODALIDADE
+        _mod_daily = {}
+        for _mod in _CICLICOS:
+            _d = (df_fry[df_fry['type'] == _mod]
+                  .groupby('Data')['_kj'].sum()
+                  .reindex(_fry_cal, fill_value=0))
+            if _d.sum() > 0:
+                _mod_daily[_mod] = _d
+
+        def _calc_fry(series, window=7, min_p=4):
+            """Calcula IM e Training Strain para uma série diária."""
+            m = series.rolling(window, min_periods=min_p).mean()
+            s = series.rolling(window, min_periods=min_p).std()
+            im = (m / s.replace(0, np.nan)).round(3)
+            strain = (im * m).round(1)
+            return m, s, im, strain
+
+        _gl_m, _gl_s, _gl_im, _gl_strain = _calc_fry(_gl_daily)
+
+        # ── Cards actuais — GLOBAL ─────────────────────────────────────────
+        _im_now     = float(_gl_im.iloc[-1])    if _gl_im.notna().any()     else None
+        _m7_now     = float(_gl_m.iloc[-1])     if _gl_m.notna().any()      else None
+        _strain_now = float(_gl_strain.iloc[-1]) if _gl_strain.notna().any() else None
+        _im_prev7   = float(_gl_im.iloc[-8])    if len(_gl_im) > 8 and pd.notna(_gl_im.iloc[-8]) else None
+
+        if _im_now is None:
+            _im_cor = "#888"; _im_lbl = "Sem dados"
+        elif _im_now > 2.0:
+            _im_cor = "#e74c3c"; _im_lbl = "🔴 Supressão imune provável"
+        elif _im_now > 1.5:
+            _im_cor = "#f39c12"; _im_lbl = "🟡 Monitorizar"
+        else:
+            _im_cor = "#27ae60"; _im_lbl = "✅ Polarizado"
+
+        _fc1, _fc2, _fc3, _fc4 = st.columns(4)
+        _fc1.metric("IM Global (7d)",
+                    f"{_im_now:.2f}" if _im_now else "—",
+                    delta=_im_lbl, delta_color="off",
+                    help="IM = média kJ 7d / std kJ 7d (dias sem treino = 0)")
+        _fc2.metric("Carga média 7d (kJ/dia)",
+                    f"{_m7_now:.0f}" if _m7_now else "—")
+        _fc3.metric("Training Strain",
+                    f"{_strain_now:.0f}" if _strain_now else "—",
+                    help="IM × carga_média. Alto+monotonia alta = maior risco")
+        _fc4.metric("Δ IM vs semana ant.",
+                    f"{_im_now - _im_prev7:+.2f}" if (_im_now and _im_prev7) else "—",
+                    delta_color="inverse" if (_im_now and _im_now > 1.5) else "off")
+
+        # Alerta visual
+        if _im_now and _im_now > 2.0:
+            _hr2, _hg2, _hb2 = int(_im_cor[1:3],16), int(_im_cor[3:5],16), int(_im_cor[5:7],16)
+            st.markdown(
+                f'<div style="padding:12px 16px; border-radius:8px; margin:8px 0; '
+                f'background:rgba({_hr2},{_hg2},{_hb2},0.10); '
+                f'border-left:5px solid {_im_cor};">'
+                f'<b style="color:{_im_cor};">⚠️ IM={_im_now:.2f} — Monotonia elevada</b><br>'
+                f'Treino demasiado uniforme. Prescrição: introduzir 1-2 dias de carga muito baixa '
+                f'(Z1 exclusivo, &lt;50% kJ médio) entre as próximas sessões intensas.'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+
+        st.markdown("---")
+
+        # ── Gráfico série temporal IM — global + por modalidade ────────────
+        st.markdown("#### Evolução IM e Training Strain — últimos 90 dias")
+
+        _fry_plot_gl = pd.DataFrame({
+            'Data': _fry_cal,
+            'IM_global': _gl_im.values,
+            'Strain_global': _gl_strain.values,
+            'kJ_global': _gl_daily.values,
+        }).tail(90)
+
+        fig_fry = make_subplots(
+            rows=2, cols=1, shared_xaxes=True,
+            row_heights=[0.6, 0.4], vertical_spacing=0.06,
+            subplot_titles=['Índice de Monotonia (IM) — Global e por Modalidade',
+                            'Carga diária (kJ) — Global']
+        )
+
+        # Zonas IM
+        for _y0, _y1, _fc, _flbl in [
+            (0, 1.5,  'rgba(39,174,96,0.08)',  ''),
+            (1.5, 2.0,'rgba(243,156,18,0.08)', ''),
+            (2.0, 6.0,'rgba(231,76,60,0.08)',  ''),
+        ]:
+            fig_fry.add_hrect(y0=_y0, y1=_y1, fillcolor=_fc,
+                              line_width=0, row=1, col=1)
+
+        # Linhas threshold
+        for _yv, _ydash, _yc in [(1.5,'dot','#f39c12'), (2.0,'dash','#e74c3c')]:
+            fig_fry.add_hline(y=_yv, line_dash=_ydash, line_color=_yc,
+                              line_width=1.5, row=1, col=1,
+                              annotation_text=f"IM={_yv}",
+                              annotation_position="right",
+                              annotation_font_color=_yc, annotation_font_size=10)
+
+        # IM global
+        fig_fry.add_trace(go.Scatter(
+            x=_fry_plot_gl['Data'], y=_fry_plot_gl['IM_global'],
+            mode='lines', name='IM Global',
+            line=dict(color='#2c3e50', width=3),
+            hovertemplate='%{x|%d/%m/%Y}<br>IM Global: <b>%{y:.2f}</b><extra></extra>'
+        ), row=1, col=1)
+
+        # IM por modalidade
+        _fry_cores_mod = {'Bike':'#E74C3C','Row':'#3498DB','Ski':'#9B59B6','Run':'#2ECC71'}
+        for _mod, _d_mod in _mod_daily.items():
+            _, _, _im_mod, _ = _calc_fry(_d_mod)
+            _plot_mod = pd.DataFrame({'Data': _fry_cal, 'IM': _im_mod.values}).tail(90)
+            fig_fry.add_trace(go.Scatter(
+                x=_plot_mod['Data'], y=_plot_mod['IM'],
+                mode='lines', name=f'IM {_mod}',
+                line=dict(color=_fry_cores_mod.get(_mod,'#888'), width=1.5, dash='dot'),
+                hovertemplate=f'%{{x|%d/%m/%Y}}<br>IM {_mod}: <b>%{{y:.2f}}</b><extra></extra>'
+            ), row=1, col=1)
+
+        # kJ diário global (painel inferior)
+        fig_fry.add_trace(go.Bar(
+            x=_fry_plot_gl['Data'], y=_fry_plot_gl['kJ_global'],
+            name='kJ global',
+            marker_color='rgba(44,62,80,0.5)',
+            hovertemplate='%{x|%d/%m/%Y}<br>kJ: <b>%{y:.0f}</b><extra></extra>'
+        ), row=2, col=1)
+
+        fig_fry.update_layout(
+            paper_bgcolor='white', plot_bgcolor='white',
+            font=dict(color='#111', size=11),
+            height=500, hovermode='x unified',
+            margin=dict(t=60, b=60, l=60, r=60),
+            legend=dict(orientation='h', y=-0.12,
+                        font=dict(color='#111', size=10),
+                        bgcolor='rgba(255,255,255,0.9)'),
+        )
+        fig_fry.update_yaxes(showgrid=True, gridcolor='#eee',
+                              tickfont=dict(color='#111'), row=1, col=1,
+                              title_text='IM', range=[0, min(5, float(_gl_im.max()*1.2 if _gl_im.notna().any() else 4))])
+        fig_fry.update_yaxes(showgrid=True, gridcolor='#eee',
+                              tickfont=dict(color='#111'), row=2, col=1,
+                              title_text='kJ/dia')
+        fig_fry.update_xaxes(showgrid=False, tickfont=dict(color='#111'))
+
+        st.plotly_chart(fig_fry, use_container_width=True, config=MC, key="vol_fry")
+
+        # ── Tabela resumo por modalidade ────────────────────────────────────
+        st.markdown("#### Resumo actual por modalidade (últimos 7 dias)")
+        _fry_rows = []
+        # Global
+        _fry_rows.append({
+            'Modalidade': '🌐 Global',
+            'kJ/dia médio': f"{_m7_now:.0f}" if _m7_now else "—",
+            'std kJ/dia':   f"{float(_gl_s.iloc[-1]):.0f}" if _gl_s.notna().any() else "—",
+            'IM (7d)':      f"{_im_now:.2f}" if _im_now else "—",
+            'Training Strain': f"{_strain_now:.0f}" if _strain_now else "—",
+            'Status':       _im_lbl,
+        })
+        # Por modalidade
+        for _mod, _d_mod in _mod_daily.items():
+            _mm, _ms, _mim, _mst = _calc_fry(_d_mod)
+            _im_m  = float(_mim.iloc[-1])  if _mim.notna().any()  else None
+            _m7_m  = float(_mm.iloc[-1])   if _mm.notna().any()   else None
+            _s7_m  = float(_ms.iloc[-1])   if _ms.notna().any()   else None
+            _st_m  = float(_mst.iloc[-1])  if _mst.notna().any()  else None
+            if _im_m is None: _st_mod = "—"
+            elif _im_m > 2.0: _st_mod = "🔴 Alta"
+            elif _im_m > 1.5: _st_mod = "🟡 Média"
+            else:             _st_mod = "✅ Baixa"
+            _fry_rows.append({
+                'Modalidade':     _mod,
+                'kJ/dia médio':   f"{_m7_m:.0f}" if _m7_m else "—",
+                'std kJ/dia':     f"{_s7_m:.0f}"  if _s7_m else "—",
+                'IM (7d)':        f"{_im_m:.2f}"  if _im_m else "—",
+                'Training Strain':f"{_st_m:.0f}"  if _st_m else "—",
+                'Status':         _st_mod,
+            })
+
+        st.dataframe(pd.DataFrame(_fry_rows),
+                     use_container_width=True, hide_index=True)
+
+        # ── Nota metodológica ───────────────────────────────────────────────
+        with st.expander("ℹ️ Metodologia — Índice de Fry"):
+            st.markdown("""
+**Índice de Monotonia (IM)**
+
+`IM = carga_média_diária_7d / desvio_padrão_carga_diária_7d`
+
+Dias sem treino contam como **0 kJ** — não são ignorados. Um dia de repouso
+aumenta o desvio padrão e reduz o IM. Isto é o comportamento correcto: o descanso
+polariza o treino.
+
+**Training Strain**
+
+`Training Strain = IM × carga_média_7d`
+
+Combina quantidade e uniformidade. Um atleta pode ter Strain alto com IM baixo
+(muito volume mas bem polarizado) — menos risco que IM alto com Strain alto
+(volume moderado, todos os dias iguais).
+
+**Thresholds (Fry et al., 1992; Seiler & Tønnessen, 2009)**
+
+| IM | Interpretação |
+|---|---|
+| < 1.5 | ✅ Treino polarizado — padrão de atletas de elite |
+| 1.5 – 2.0 | 🟡 Zona de atenção — monitorizar resposta |
+| > 2.0 | 🔴 Supressão imune provável — risco de plateau |
+
+**Prescrição quando IM > 2.0:**
+Introduzir 1-2 dias de carga muito reduzida (Z1 exclusivo, <50% da carga média)
+entre sessões intensas. O objectivo não é reduzir o volume total, mas aumentar
+o desvio padrão da distribuição diária.
+
+**Referências**
+
+Fry RW, Morton AR & Keast D (1992). Periodisation and the Prevention of Overtraining.
+*Can J Sport Sci.* | Seiler S & Tønnessen E (2009). Intervals, Thresholds, and Long Slow
+Distance. *Sportscience 13*, 32-53.
+            """)
