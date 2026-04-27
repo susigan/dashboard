@@ -1674,87 +1674,126 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 "⚠️ Quantidade de carga: esta camada. Tipo de treino: Need Score acima. "
                 "Cap horas +12% vs " + str(ano_ant) + ".")
 
+
+    # ════════════════════════════════════════════════════════════════════════
+    # ÍNDICE DE MONOTONIA DE FRY — Card de alerta na Visão Geral
+    # Fry RW et al. (1992). Periodisation and Prevention of Overtraining.
+    # IM = carga_média_7d / std_carga_7d (dias com treino=kJ, dias sem=0)
+    # IM > 2.0 → supressão imune provável | IM > 1.5 → monitorizar
+    # ════════════════════════════════════════════════════════════════════════
     st.markdown("---")
+    st.markdown("### 🔄 Monotonia de Treino — Índice de Fry (7 dias)")
+    st.caption(
+        "Fry et al. (1992) | Seiler & Tønnessen (2009). "
+        "IM = carga média diária / desvio padrão da carga. "
+        "Dias sem treino contam como 0 kJ — o descanso reduz a monotonia."
+    )
 
-    st.markdown("---")
+    _src_fry = da_full if da_full is not None and len(da_full) > 0 else da
+    if _src_fry is not None and len(_src_fry) > 0:
+        _fry_df = _src_fry.copy()
+        _fry_df['Data'] = pd.to_datetime(_fry_df['Data']).dt.normalize()
+        _fry_df = _fry_df[_fry_df['type'].apply(norm_tipo) != 'WeightTraining']
 
-    st.markdown("---")
+        # kJ por dia (soma de todas modalidades) — dias sem treino = 0
+        _kj_col = next((c for c in ['icu_joules','joules','kj_total']
+                        if c in _fry_df.columns and _fry_df[c].notna().any()), None)
+        if _kj_col:
+            _fry_daily = (_fry_df.groupby('Data')[_kj_col]
+                          .sum()
+                          .apply(lambda x: x / 1000 if _kj_col == 'icu_joules' else x))
 
-    # ── Tabela % KM por modalidade ──
-    st.subheader("📏 Distribuição de KM por modalidade")
-    if 'distance' in da.columns and da['distance'].notna().any():
-        _agr_col, _ = st.columns([1, 3])
-        _agr = _agr_col.selectbox("Agrupar por", ["Semana", "Mês", "Ano"],
-                                   key="vg_agrup_km")
-        _code = {"Semana": "W", "Mês": "M", "Ano": "Y"}[_agr]
+            # Reindex para calendário completo — dias sem treino = 0 (não NaN)
+            _fry_idx = pd.date_range(_fry_daily.index.min(),
+                                      pd.Timestamp.now().normalize(), freq='D')
+            _fry_daily = _fry_daily.reindex(_fry_idx, fill_value=0)
 
-        df_km = da.copy()
-        df_km['_t'] = df_km['type'].apply(norm_tipo)
-        df_km = df_km[df_km['_t'] != 'WeightTraining']
-        df_km['km'] = pd.to_numeric(df_km['distance'], errors='coerce') / 1000
-        df_km = df_km[df_km['km'].notna() & (df_km['km'] > 0)]
-        df_km['Data'] = pd.to_datetime(df_km['Data'])
-        df_km['_p'] = df_km['Data'].dt.to_period(_code)
+            # IM = média 7d / std 7d
+            _fry_m7 = _fry_daily.rolling(7, min_periods=4).mean()
+            _fry_s7 = _fry_daily.rolling(7, min_periods=4).std()
+            _fry_im = (_fry_m7 / _fry_s7.replace(0, np.nan)).round(2)
 
-        tipos_km = [t for t in ['Bike', 'Row', 'Ski', 'Run']
-                    if t in df_km['_t'].unique()]
+            # Training Strain = IM × carga_média
+            _fry_strain = (_fry_im * _fry_m7).round(1)
 
-        if len(df_km) > 0 and tipos_km:
-            piv = (df_km.groupby(['_p', '_t'])['km'].sum()
-                   .unstack(fill_value=0)
-                   .reindex(columns=tipos_km, fill_value=0))
-            piv['Total'] = piv[tipos_km].sum(axis=1)
+            _im_hoje    = float(_fry_im.iloc[-1])  if _fry_im.notna().any()    else None
+            _m7_hoje    = float(_fry_m7.iloc[-1])  if _fry_m7.notna().any()    else None
+            _strain_hoje= float(_fry_strain.iloc[-1]) if _fry_strain.notna().any() else None
+            _im_7d_ant  = float(_fry_im.iloc[-8])  if len(_fry_im) > 8 and pd.notna(_fry_im.iloc[-8]) else None
 
-            rows_km = []
-            for p, r in piv.sort_index(ascending=False).iterrows():
-                if _agr == "Ano":    lbl = str(p.year)
-                elif _agr == "Semana": lbl = p.start_time.strftime('%d/%m/%y')
-                else: lbl = pd.to_datetime(str(p)).strftime('%B %Y').title()
-                row = {'Período': lbl}
-                tot = r['Total']
-                for t in tipos_km:
-                    v = r[t]
-                    pct = (v / tot * 100) if tot > 0 else 0
-                    row[t] = f"{v:.0f} km ({pct:.0f}%)" if v > 0 else '—'
-                row['Total'] = f"{tot:.0f} km"
-                rows_km.append(row)
+            # Semáforo
+            if _im_hoje is None:
+                _im_cor = "#888"; _im_emoji = "⬜"; _im_lbl = "Sem dados"
+            elif _im_hoje > 2.0:
+                _im_cor = "#e74c3c"; _im_emoji = "🔴"; _im_lbl = "Supressão imune provável"
+            elif _im_hoje > 1.5:
+                _im_cor = "#f39c12"; _im_emoji = "🟡"; _im_lbl = "Monitorizar"
+            else:
+                _im_cor = "#27ae60"; _im_emoji = "✅"; _im_lbl = "Polarizado"
 
-            if rows_km:
-                st.dataframe(pd.DataFrame(rows_km),
-                             width="stretch", hide_index=True)
+            _fi1, _fi2, _fi3, _fi4 = st.columns(4)
+            _fi1.metric(
+                "IM (Índice de Monotonia)",
+                f"{_im_hoje:.2f}" if _im_hoje is not None else "—",
+                delta=f"{_im_emoji} {_im_lbl}",
+                delta_color="off",
+                help=(
+                    "IM = carga_média_7d / std_carga_7d. "
+                    "Dias sem treino = 0 kJ. "
+                    "<1.5 ✅ | 1.5–2.0 🟡 | >2.0 🔴 supressão imune"
+                )
+            )
+            _fi2.metric(
+                "Carga média 7d (kJ/dia)",
+                f"{_m7_hoje:.0f}" if _m7_hoje is not None else "—",
+                help="Média de kJ por dia nos últimos 7 dias (dias sem treino = 0)"
+            )
+            _fi3.metric(
+                "Training Strain",
+                f"{_strain_hoje:.0f}" if _strain_hoje is not None else "—",
+                help="Training Strain = IM × carga_média_7d. Combina quantidade e monotonia."
+            )
+            _delta_im = (
+                f"{_im_hoje - _im_7d_ant:+.2f} vs semana ant."
+                if _im_hoje is not None and _im_7d_ant is not None else None
+            )
+            _fi4.metric(
+                "Δ IM vs semana anterior",
+                _delta_im or "—",
+                delta_color="inverse" if _im_hoje is not None and _im_hoje > 1.5 else "off"
+            )
 
-    st.markdown("---")
+            # Card de alerta se IM > 2.0
+            if _im_hoje is not None and _im_hoje > 2.0:
+                _h_r, _h_g, _h_b = int(_im_cor[1:3],16), int(_im_cor[3:5],16), int(_im_cor[5:7],16)
+                st.markdown(
+                    f'<div style="padding:12px 16px; border-radius:8px; margin:8px 0; '
+                    f'background:rgba({_h_r},{_h_g},{_h_b},0.10); '
+                    f'border-left:5px solid {_im_cor};">'
+                    f'<b style="color:{_im_cor};">⚠️ Monotonia elevada (IM={_im_hoje:.2f})</b> — '
+                    f'Treino demasiado uniforme nos últimos 7 dias. '
+                    f'Introduzir dias de carga muito baixa (Z1) entre sessões de alta intensidade. '
+                    f'Ver análise completa em Tab Volume.'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+            elif _im_hoje is not None and _im_hoje > 1.5:
+                st.info(
+                    f"🟡 IM={_im_hoje:.2f} — zona de atenção. "
+                    f"Verificar distribuição Z1/Z2/Z3 na Tab Volume."
+                )
 
-    # ── Atividades Recentes ──
-    st.subheader("📋 Atividades Recentes")
-    _df_fp = filtrar_principais(da)
-    df_tab = (_df_fp.sort_values('Data', ascending=False).head(10)
-              if 'Data' in _df_fp.columns and len(_df_fp) > 0
-              else _df_fp.head(10))
-    if len(df_tab) > 0:
-        cs = [c for c in ['Data', 'type', 'name', 'moving_time',
-                           'rpe', 'power_avg', 'icu_eftp'] if c in df_tab.columns]
-        ds = df_tab[cs].copy()
-        if 'moving_time' in ds.columns:
-            ds['moving_time'] = ds['moving_time'].apply(
-                lambda x: f"{int(x/3600)}h{int((x%3600)/60):02d}m"
-                if pd.notna(x) else '—')
-        ds.columns = [c.replace('_', ' ').title() for c in ds.columns]
-        st.dataframe(ds, width="stretch", hide_index=True)
+        else:
+            st.info("Coluna kJ não disponível para cálculo de monotonia.")
+    else:
+        st.info("Sem dados de actividades para cálculo.")
+
 
     st.markdown("---")
 
     # Resumo Semanal movido para cima (acima da tabela Semana actual)
 
-    # ── Top 10 por Potência ──
-    df_rank = filtrar_principais(da).copy()
-    if 'power_avg' in df_rank.columns and df_rank['power_avg'].notna().any():
-        st.subheader("🏆 Top 10 por Potência")
-        top = df_rank.nlargest(10, 'power_avg')[
-            ['Data', 'type', 'name', 'power_avg', 'rpe']].copy()
-        top['Data'] = pd.to_datetime(top['Data']).dt.strftime('%Y-%m-%d')
-        top.columns = ['Data', 'Tipo', 'Nome', 'Power (W)', 'RPE']
-        st.dataframe(top, width="stretch", hide_index=True)
+
 
 
 # ════════════════════════════════════════════════════════════════════════════════
