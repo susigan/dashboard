@@ -29,6 +29,457 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
         return
 
     # ════════════════════════════════════════════════════════════════════════
+    # MODELO β — Paper: "VFC y Sistema Nervioso Autónomo" (Della Mattia, 2025)
+    # Implementação: β (frescura actual), βAgudo (3d), βCrónico (7d)
+    # Regra: só prescrever alta intensidade quando ≥2 de 3 indicadores convergem
+    # Tratamento de NAs: dado ausente = INCERTEZA = prescrição conservadora
+    # ════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("## 🧠 Modelo β — Estado Autonómico Integrado")
+    st.caption(
+        "Baseado em Della Mattia (ednacore AI, 2025): *VFC y Sistema Nervioso Autónomo*. "
+        "O SNA responde a factores invisíveis (glucogénio, osmolaridade, microinflamação) "
+        "antes da percepção consciente. A HRV sozinha num único dia não é accionável — "
+        "a tendência de 3 e 7 dias é."
+    )
+
+    def _calcular_modelo_beta(wc_src):
+        """
+        Calcula β, βAgudo e βCrónico a partir da série de HRV.
+
+        Tratamento de NAs — regra do paper:
+        - NaN em hrv hoje → β = NaN (não temos sinal, não podemos confirmar)
+        - NaN em janela 3d → βAgudo = NaN (incerteza aguda)
+        - NaN em janela 7d com <3 valores → βCrónico = NaN
+        - NaN em qualquer componente → prescrição conservadora por defeito
+
+        β é calculado como score 0-100 baseado em:
+            - Posição do LnrMSSD vs baseline 28d (z-score normalizado)
+            - Não usa o baseline da tab principal (que elimina NAs)
+            - Usa reindex para manter dias calendário reais
+        """
+        import scipy.stats as _sst
+
+        # Usar wc_full se disponível (histórico completo sem filtro sidebar)
+        src = wc_src.copy() if wc_src is not None and len(wc_src) > 0 else dw.copy()
+        src['Data'] = pd.to_datetime(src['Data'])
+        src = src.sort_values('Data').set_index('Data')
+
+        # CRÍTICO: reindex para datas calendário contínuas — preserva NAs reais
+        # Em vez de dropna(), mantemos os NaN onde não houve medição
+        date_range = pd.date_range(src.index.min(), src.index.max(), freq='D')
+        src = src.reindex(date_range)
+
+        if 'hrv' not in src.columns:
+            return None
+
+        # LnrMSSD — preserva NaN onde hrv é NaN ou 0
+        src['LnrMSSD'] = np.where(
+            src['hrv'].notna() & (src['hrv'] > 0),
+            np.log(src['hrv']),
+            np.nan
+        )
+
+        # Baseline 28d — rolling calendário, min_periods=7
+        # NaNs são ignorados pelo rolling mas os dias calendário são preservados
+        src['bm28'] = src['LnrMSSD'].rolling(28, min_periods=7).mean()
+        src['bs28'] = src['LnrMSSD'].rolling(28, min_periods=7).std()
+
+        # β — score 0-100 baseado em z-score vs baseline 28d
+        # z = (hoje - baseline) / std_baseline → normalizado para 0-100
+        # z=0 → β=50 | z=+2 → β≈95 | z=-2 → β≈5
+        src['z28'] = (src['LnrMSSD'] - src['bm28']) / src['bs28'].replace(0, np.nan)
+        src['beta'] = src['z28'].apply(
+            lambda z: round(float(_sst.norm.cdf(z) * 100), 1) if pd.notna(z) else np.nan
+        )
+
+        # βAgudo — % mudança média 3d vs média 7d (janela calendário)
+        # min_periods=2 para 3d, min_periods=4 para 7d
+        m3  = src['LnrMSSD'].rolling(3,  min_periods=2).mean()
+        m7  = src['LnrMSSD'].rolling(7,  min_periods=4).mean()
+        src['beta_agudo'] = np.where(
+            m7.notna() & m3.notna() & (m7 != 0),
+            ((m3 - m7) / m7.abs()) * 100,
+            np.nan
+        )
+
+        # βCrónico — % mudança média 7d vs média 28d (janela calendário)
+        src['beta_cronico'] = np.where(
+            src['bm28'].notna() & m7.notna() & (src['bm28'] != 0),
+            ((m7 - src['bm28']) / src['bm28'].abs()) * 100,
+            np.nan
+        )
+
+        return src[['LnrMSSD', 'bm28', 'bs28', 'beta', 'beta_agudo', 'beta_cronico']].tail(90)
+
+    def _regra_convergencia(beta, b_agudo, b_cronico, hrv_hoje_notna):
+        """
+        Regra do paper: actuar só quando ≥2 de 3 indicadores convergem.
+        NaN em qualquer indicador = incerteza = prescrição conservadora.
+
+        Retorna: (prescricao, cor, n_sinais_pos, n_sinais_neg, n_incertos, detalhe)
+        """
+        sinais = []  # +1 positivo, -1 negativo, 0 incerto
+
+        # Sinal 1: β actual
+        if pd.isna(beta):
+            sinais.append(('β actual', 0, 'NaN — sem medição hoje', '#888'))
+        elif beta >= 60:
+            sinais.append(('β actual', +1, f'{beta:.0f} ≥ 60 ✅', '#27ae60'))
+        elif beta <= 40:
+            sinais.append(('β actual', -1, f'{beta:.0f} ≤ 40 ⚠️', '#e74c3c'))
+        else:
+            sinais.append(('β actual', 0, f'{beta:.0f} zona neutra (40-60)', '#f39c12'))
+
+        # Sinal 2: βAgudo (3d)
+        if pd.isna(b_agudo):
+            sinais.append(('βAgudo 3d', 0, 'NaN — dados insuficientes', '#888'))
+        elif b_agudo >= 1.0:
+            sinais.append(('βAgudo 3d', +1, f'{b_agudo:+.1f}% ≥ +1% ✅', '#27ae60'))
+        elif b_agudo <= -1.0:
+            sinais.append(('βAgudo 3d', -1, f'{b_agudo:+.1f}% ≤ -1% ⚠️', '#e74c3c'))
+        else:
+            sinais.append(('βAgudo 3d', 0, f'{b_agudo:+.1f}% zona neutra', '#f39c12'))
+
+        # Sinal 3: βCrónico (7d)
+        if pd.isna(b_cronico):
+            sinais.append(('βCrónico 7d', 0, 'NaN — dados insuficientes', '#888'))
+        elif b_cronico >= 1.0:
+            sinais.append(('βCrónico 7d', +1, f'{b_cronico:+.1f}% ≥ +1% ✅', '#27ae60'))
+        elif b_cronico <= -1.0:
+            sinais.append(('βCrónico 7d', -1, f'{b_cronico:+.1f}% ≤ -1% ⚠️', '#e74c3c'))
+        else:
+            sinais.append(('βCrónico 7d', 0, f'{b_cronico:+.1f}% zona neutra', '#f39c12'))
+
+        n_pos = sum(1 for _, s, _, _ in sinais if s == +1)
+        n_neg = sum(1 for _, s, _, _ in sinais if s == -1)
+        n_inc = sum(1 for _, s, _, _ in sinais if s == 0)
+
+        # REGRA CRÍTICA: dado ausente hoje = não confirmar HIIT
+        if not hrv_hoje_notna:
+            prescricao = "⚠️ SEM MEDIÇÃO HOJE — Não prescrever HIIT"
+            cor_pres   = "#e67e22"
+            return prescricao, cor_pres, n_pos, n_neg, n_inc, sinais
+
+        # Regra ≥2 convergem
+        if n_pos >= 2:
+            prescricao = "✅ HIIT / Alta intensidade — ≥2 sinais positivos"
+            cor_pres   = "#27ae60"
+        elif n_neg >= 2:
+            prescricao = "🔴 Recuperação activa — ≥2 sinais negativos"
+            cor_pres   = "#e74c3c"
+        elif n_neg >= 1 and n_inc >= 1:
+            prescricao = "🟠 Sessão moderada Z1/Z2 — 1 sinal negativo + incerteza"
+            cor_pres   = "#e67e22"
+        elif n_pos == 1 and n_inc >= 2:
+            prescricao = "🟡 Sessão moderada Z1/Z2 — sinais insuficientes para HIIT"
+            cor_pres   = "#f39c12"
+        else:
+            prescricao = "🟡 Zona neutra — manter intensidade planeada"
+            cor_pres   = "#f39c12"
+
+        return prescricao, cor_pres, n_pos, n_neg, n_inc, sinais
+
+    # ── Calcular Modelo β ──────────────────────────────────────────────────
+    beta_df = _calcular_modelo_beta(wc_full)
+
+    if beta_df is None or beta_df.empty or beta_df['beta'].isna().all():
+        st.info("Dados insuficientes para calcular Modelo β (mínimo 14 dias de HRV).")
+    else:
+        # Valores actuais (hoje = último registo calendário)
+        ult = beta_df.iloc[-1]
+        beta_hoje    = ult['beta']
+        b_agudo_hoje = ult['beta_agudo']
+        b_cron_hoje  = ult['beta_cronico']
+
+        # Verificar se hoje tem medição real
+        # "hoje" = data mais recente no índice do beta_df
+        data_ultimo_idx = beta_df.index[-1]
+        hrv_hoje_notna  = pd.notna(ult['LnrMSSD'])
+
+        # Quantos dias desde última medição
+        # Procurar último dia com LnrMSSD não-NaN
+        ultima_med = beta_df['LnrMSSD'].dropna()
+        dias_sem_medicao = 0
+        if not ultima_med.empty:
+            ultima_data_med = ultima_med.index[-1]
+            dias_sem_medicao = (data_ultimo_idx - ultima_data_med).days
+
+        # ── Aviso de dado ausente — CRÍTICO ──────────────────────────────
+        if dias_sem_medicao > 0:
+            st.error(
+                f"⚠️ **ATENÇÃO — {dias_sem_medicao} dia(s) sem medição de HRV.** "
+                f"Última medição: {ultima_data_med.strftime('%d/%m/%Y')}. "
+                f"Sem sinal autonómico actual, o sistema não pode confirmar "
+                f"estado de readiness. **Não prescrever HIIT por precaução.** "
+                f"O bug de ontem (HIIT sugerido sem medição) era exactamente este cenário: "
+                f"o sistema usou o último valor disponível ({ultima_data_med.strftime('%d/%m/%Y')}) "
+                f"como se fosse hoje."
+            )
+
+        # ── Regra de convergência ─────────────────────────────────────────
+        prescricao, cor_pres, n_pos, n_neg, n_inc, sinais_detalhe = _regra_convergencia(
+            beta_hoje, b_agudo_hoje, b_cron_hoje, hrv_hoje_notna
+        )
+
+        # ── Cards principais ──────────────────────────────────────────────
+        cb1, cb2, cb3, cb4 = st.columns(4)
+
+        # β actual
+        beta_label = f"{beta_hoje:.0f}/100" if pd.notna(beta_hoje) else "— (sem dados)"
+        beta_delta = (
+            "Alta frescura ✅" if pd.notna(beta_hoje) and beta_hoje >= 65
+            else ("Zona funcional" if pd.notna(beta_hoje) and beta_hoje >= 50
+            else ("Possível fadiga ⚠️" if pd.notna(beta_hoje) else "Sem medição hoje"))
+        )
+        cb1.metric(
+            "β Frescura actual",
+            beta_label,
+            delta=beta_delta,
+            delta_color="normal" if pd.notna(beta_hoje) and beta_hoje >= 50 else "inverse",
+            help=(
+                "Score 0-100 baseado no z-score de LnrMSSD vs baseline 28d. "
+                ">65: Alta frescura | 50-65: Zona funcional | <50: Possível fadiga. "
+                "NaN = sem medição hoje → incerteza."
+            )
+        )
+
+        # βAgudo 3d
+        ba_label = f"{b_agudo_hoje:+.1f}%" if pd.notna(b_agudo_hoje) else "— (NaN)"
+        ba_delta = (
+            "Tendência +3d ↗" if pd.notna(b_agudo_hoje) and b_agudo_hoje >= 1
+            else ("Estável" if pd.notna(b_agudo_hoje) and b_agudo_hoje >= -1
+            else ("Queda aguda ↘ ⚠️" if pd.notna(b_agudo_hoje) else "Incerto"))
+        )
+        cb2.metric(
+            "βAgudo (3d)",
+            ba_label,
+            delta=ba_delta,
+            delta_color="normal" if pd.notna(b_agudo_hoje) and b_agudo_hoje >= 0 else "inverse",
+            help=(
+                "% mudança da média LnrMSSD 3d vs 7d (janela calendário, não sessões). "
+                "Capta aceleração de fadiga antes do β diário. "
+                "NaN se <2 medições nos últimos 3 dias."
+            )
+        )
+
+        # βCrónico 7d
+        bc_label = f"{b_cron_hoje:+.1f}%" if pd.notna(b_cron_hoje) else "— (NaN)"
+        bc_delta = (
+            "Adaptação positiva ↗" if pd.notna(b_cron_hoje) and b_cron_hoje >= 1
+            else ("Estável" if pd.notna(b_cron_hoje) and b_cron_hoje >= -1
+            else ("Declínio crónico ↘ ⚠️" if pd.notna(b_cron_hoje) else "Incerto"))
+        )
+        cb3.metric(
+            "βCrónico (7d)",
+            bc_label,
+            delta=bc_delta,
+            delta_color="normal" if pd.notna(b_cron_hoje) and b_cron_hoje >= 0 else "inverse",
+            help=(
+                "% mudança da média LnrMSSD 7d vs baseline 28d (janela calendário). "
+                "Tendência de adaptação de médio prazo. "
+                "NaN se <4 medições nos últimos 7 dias."
+            )
+        )
+
+        # Sinais convergentes
+        cb4.metric(
+            "Sinais convergentes",
+            f"{max(n_pos, n_neg)}/3",
+            delta=f"+{n_pos} pos | -{n_neg} neg | ~{n_inc} inc",
+            delta_color="normal" if n_pos >= 2 else ("inverse" if n_neg >= 2 else "off"),
+            help="Número de indicadores que convergem na mesma direcção. ≥2 = sinal accionável."
+        )
+
+        # ── Prescrição — card destacado ───────────────────────────────────
+        h_r, h_g, h_b = (
+            int(cor_pres[1:3], 16), int(cor_pres[3:5], 16), int(cor_pres[5:7], 16)
+        )
+        st.markdown(
+            f'<div style="padding:16px 20px; border-radius:10px; margin:12px 0; '
+            f'background:rgba({h_r},{h_g},{h_b},0.10); '
+            f'border-left:6px solid {cor_pres};">'
+            f'<span style="font-size:1.15em; font-weight:700; color:{cor_pres};">'
+            f'Prescrição Modelo β: {prescricao}</span>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
+
+        # ── Detalhe dos sinais ────────────────────────────────────────────
+        with st.expander("🔍 Detalhe dos 3 indicadores β", expanded=False):
+            st.markdown("**Regra de decisão:** actuar apenas quando ≥2 dos 3 indicadores convergem na mesma direcção.")
+            st.markdown("**Dado ausente = incerteza = prescrição conservadora** (não prescrever HIIT)")
+            st.markdown("")
+
+            for nome, sinal, desc, cor_s in sinais_detalhe:
+                hs_r = int(cor_s[1:3], 16)
+                hs_g = int(cor_s[3:5], 16)
+                hs_b = int(cor_s[5:7], 16)
+                icone = "✅" if sinal == +1 else ("⚠️" if sinal == -1 else "⬜")
+                st.markdown(
+                    f'<div style="padding:8px 14px; margin:4px 0; border-radius:6px; '
+                    f'background:rgba({hs_r},{hs_g},{hs_b},0.10); '
+                    f'border-left:4px solid {cor_s};">'
+                    f'<b>{icone} {nome}:</b> {desc}'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+
+            st.markdown("")
+            st.caption(
+                "**Por que NaN não é zero?** Um dia sem medição de HRV não significa "
+                "que a HRV estava normal — significa que não sabemos. O SNA pode estar "
+                "a responder a factores invisíveis (glucogénio baixo, microinflamação, "
+                "deshidratação) que só a medição confirmaria. "
+                "Tratar NaN como 'baseline' foi o que causou o HIIT sugerido ontem."
+            )
+
+        # ── Gráfico β — série 90 dias ─────────────────────────────────────
+        st.markdown("#### Evolução β — últimos 90 dias")
+
+        beta_plot = beta_df.dropna(subset=['bm28']).copy()
+        beta_plot.index.name = 'Data'
+        beta_plot = beta_plot.reset_index()
+
+        fig_b = go.Figure()
+
+        # Banda: dias sem medição (LnrMSSD NaN) → fundo cinzento
+        sem_med = beta_df[beta_df['LnrMSSD'].isna()].copy()
+        sem_med = sem_med.reset_index()
+        for _, row_sm in sem_med.iterrows():
+            fig_b.add_vrect(
+                x0=row_sm['Data'] - pd.Timedelta(hours=12),
+                x1=row_sm['Data'] + pd.Timedelta(hours=12),
+                fillcolor="rgba(150,150,150,0.15)",
+                line_width=0,
+                annotation_text="sem HRV",
+                annotation_position="top left",
+                annotation_font_size=9,
+                annotation_font_color="#aaa",
+            )
+
+        # Zonas β
+        fig_b.add_hrect(y0=65, y1=100,
+            fillcolor="rgba(39,174,96,0.07)", line_width=0,
+            annotation_text="Alta frescura (>65)", annotation_position="left",
+            annotation_font_size=10, annotation_font_color="#27ae60")
+        fig_b.add_hrect(y0=40, y1=65,
+            fillcolor="rgba(243,156,18,0.05)", line_width=0,
+            annotation_text="Zona funcional", annotation_position="left",
+            annotation_font_size=10, annotation_font_color="#f39c12")
+        fig_b.add_hrect(y0=0, y1=40,
+            fillcolor="rgba(231,76,60,0.07)", line_width=0,
+            annotation_text="Fadiga possível (<40)", annotation_position="left",
+            annotation_font_size=10, annotation_font_color="#e74c3c")
+
+        # β diário
+        fig_b.add_trace(go.Scatter(
+            x=beta_plot['Data'], y=beta_plot['beta'],
+            mode='lines+markers',
+            name='β (frescura)',
+            line=dict(color='#2471A3', width=2.5),
+            marker=dict(size=6),
+            hovertemplate='%{x|%d/%m/%Y}<br>β: <b>%{y:.0f}</b><extra></extra>'
+        ))
+
+        # βAgudo (eixo y2)
+        fig_b.add_trace(go.Scatter(
+            x=beta_plot['Data'], y=beta_plot['beta_agudo'],
+            mode='lines',
+            name='βAgudo 3d (%)',
+            line=dict(color='#E74C3C', width=1.5, dash='dot'),
+            yaxis='y2',
+            hovertemplate='%{x|%d/%m/%Y}<br>βAgudo: <b>%{y:+.1f}%</b><extra></extra>'
+        ))
+
+        # βCrónico (eixo y2)
+        fig_b.add_trace(go.Scatter(
+            x=beta_plot['Data'], y=beta_plot['beta_cronico'],
+            mode='lines',
+            name='βCrónico 7d (%)',
+            line=dict(color='#9B59B6', width=1.5, dash='dash'),
+            yaxis='y2',
+            hovertemplate='%{x|%d/%m/%Y}<br>βCrónico: <b>%{y:+.1f}%</b><extra></extra>'
+        ))
+
+        # Linha y=0 no eixo y2
+        fig_b.add_hline(y=0, line_dash='solid', line_color='rgba(150,150,150,0.4)',
+                        line_width=1, yref='y2')
+
+        fig_b.update_layout(
+            paper_bgcolor='white', plot_bgcolor='white',
+            font=dict(color='#111', size=12),
+            height=420,
+            hovermode='x unified',
+            margin=dict(t=40, b=70, l=60, r=80),
+            legend=dict(orientation='h', y=-0.18,
+                        font=dict(color='#111', size=10),
+                        bgcolor='rgba(255,255,255,0.9)'),
+            yaxis=dict(
+                title='β (0–100)',
+                range=[0, 100],
+                showgrid=True, gridcolor='#eee',
+                tickfont=dict(color='#2471A3'),
+                title_font=dict(color='#2471A3'),
+            ),
+            yaxis2=dict(
+                title='βAgudo / βCrónico (%)',
+                overlaying='y', side='right',
+                showgrid=False,
+                zeroline=True, zerolinecolor='rgba(150,150,150,0.4)',
+                tickfont=dict(color='#888'),
+                title_font=dict(color='#888'),
+            ),
+            xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111'))
+        )
+
+        st.plotly_chart(fig_b, use_container_width=True,
+                        config={'displayModeBar': False, 'responsive': True,
+                                'scrollZoom': False},
+                        key="rec_beta_chart")
+
+        # ── Nota metodológica ─────────────────────────────────────────────
+        with st.expander("ℹ️ Metodologia — Modelo β e tratamento de NAs"):
+            st.markdown(f"""
+**O problema com dados ausentes na tab_recovery actual**
+
+O código actual (linha 132) faz `df = df.dropna(subset=['LnrMSSD'])` — remove todos
+os dias sem medição **antes** de qualquer cálculo. Consequência: `.iloc[-1]` (prescrição
+de hoje) usa o último dia **com dados**, que pode ser há 2-3 dias. Se esse dia estava
+dentro do baseline → sistema diz HIIT. Isto foi exactamente o que aconteceu ontem.
+
+**Como o Modelo β trata NAs**
+
+Em vez de eliminar, usa `reindex()` para manter o calendário completo com NaN onde
+não há medição. O rolling usa `min_periods` explícito (não `min_periods=1`) para
+garantir que não calcula com dados insuficientes.
+
+| Situação | β | βAgudo | βCrónico | Prescrição |
+|---|---|---|---|---|
+| Medição normal | calculado | calculado | calculado | por convergência |
+| Sem medição hoje | **NaN** | impactado | calculado | **conservadora** |
+| 2+ dias sem medição | NaN | **NaN** | calculado | **conservadora** |
+| Semana irregular (<4 medições) | parcial | NaN | **NaN** | **conservadora** |
+
+**Fórmulas**
+
+- `β = Φ(z) × 100` onde `z = (LnrMSSD_hoje - bm28) / bs28`
+- `βAgudo = (mean_3d - mean_7d) / |mean_7d| × 100`
+- `βCrónico = (mean_7d - bm28) / |bm28| × 100`
+- Thresholds: +1% / -1% (sinal detectável acima do ruído de CV 8-12%)
+
+**Referências**
+
+Della Mattia G (2025). *VFC y Sistema Nervioso Autónomo — Lo que no podemos sentir.*
+ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite endurance athletes.
+*Sports Medicine.* | Buchheit M (2014). Monitoring training status with HR measures.
+*Frontiers in Physiology.*
+            """)
+
+    st.markdown("---")
+
+
+    # ════════════════════════════════════════════════════════════════════════
     # INTEGRAR RPE DAS ATIVIDADES (padrão tab_correlacoes)
     # ════════════════════════════════════════════════════════════════════════
     
