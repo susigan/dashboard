@@ -1879,7 +1879,7 @@ def _nlss_cost_grad_vec(theta: np.ndarray,
 
 def calcular_nlss(df_act, df_wellness=None,
                   p0_frac: float = 0.5,
-                  window_l: int = 90) -> dict:
+                  window_l: int = 365) -> dict:
     """
     Estima K1, K2, T1, T2 via Hierarchical Bayesian NLSS (Algorithm 1).
     Implementação vectorizada — tipicamente <5s para histórico de 3 anos.
@@ -1967,43 +1967,32 @@ def calcular_nlss(df_act, df_wellness=None,
 
     # Primário: MMP20 de Bike — 1 ponto por ano
     _tests_mmp20 = _max_anual_mmp(_df_bike, 'mmp20_w')
+    _tests_mmp5  = _max_anual_mmp(_df_bike, 'mmp5_w')
+    _tests_mmp3  = _max_anual_mmp(_df_bike, 'mmp3_w')
 
-    if len(_tests_mmp20) >= 2:
-        tests_df      = _tests_mmp20.copy()
-        _fonte_testes = 'Bike MMP20 — maximo anual'
+    # Combinar MMP20 + MMP5 + MMP3 — máximo de CADA duração por ano
+    # Assim cada ano contribui com até 3 pontos (uma por duração)
+    # MMP20 é o mais fiável — não substituir pelo MMP5/3 do mesmo ano
+    _all_tests = pd.concat([_tests_mmp20, _tests_mmp5, _tests_mmp3], ignore_index=True)
+
+    if not _all_tests.empty:
+        _all_tests['Data'] = pd.to_datetime(_all_tests['Data'])
+        _all_tests = _all_tests.sort_values('Data').reset_index(drop=True)
+        # Remover duplicatas de datas muito próximas (mesmo dia) mantendo o maior
+        _all_tests['_date_key'] = _all_tests['Data'].dt.date
+        _all_tests = (_all_tests.sort_values('watts', ascending=False)
+                                .drop_duplicates('_date_key', keep='first')
+                                .sort_values('Data')
+                                .reset_index(drop=True)
+                                [['Data', 'watts']])
+        tests_df      = _all_tests
+        n_mmp20       = len(_tests_mmp20)
+        n_mmp5        = len(_tests_mmp5)
+        n_mmp3        = len(_tests_mmp3)
+        _fonte_testes = f'Bike MMP20({n_mmp20})+MMP5({n_mmp5})+MMP3({n_mmp3}) — maximo anual por duracao'
     else:
-        # MMP20 insuficiente -> combinar MMP20 + MMP5 + MMP3 maximos anuais
-        _t20 = _max_anual_mmp(_df_bike, 'mmp20_w')
-        _t5  = _max_anual_mmp(_df_bike, 'mmp5_w')
-        _t3  = _max_anual_mmp(_df_bike, 'mmp3_w')
-        _combined = pd.concat([_t20, _t5, _t3], ignore_index=True)
-        if not _combined.empty:
-            _combined['_ano'] = pd.to_datetime(_combined['Data']).dt.year
-            idx_max  = _combined.groupby('_ano')['watts'].idxmax()
-            tests_df = (_combined.loc[idx_max, ['Data', 'watts']]
-                                 .sort_values('Data')
-                                 .reset_index(drop=True))
-            _fonte_testes = 'Bike MMP20/5/3 — maximo anual (MMP20 insuficiente)'
-        else:
-            tests_df      = pd.DataFrame(columns=['Data', 'watts'])
-            _fonte_testes = 'Sem dados de Bike'
-
-    # Enriquecer com MMP5 e MMP3 de Bike por ano (pontos adicionais de ancoragem)
-    # Nota: misturar durações reduz precisão de K1/K2 mas melhora ancoragem de p̂(t)
-    # Só adicionar se MMP20 já existe para esse ano (para não substituir)
-    if len(tests_df) >= 1:
-        _anos_com_mmp20 = set(pd.to_datetime(tests_df['Data']).dt.year)
-        for _col_extra in ['mmp5_w', 'mmp3_w']:
-            _t_extra = _max_anual_mmp(_df_bike, _col_extra)
-            if not _t_extra.empty:
-                # Só anos SEM MMP20 (não duplicar o mesmo ano)
-                _t_extra['_ano'] = pd.to_datetime(_t_extra['Data']).dt.year
-                _t_extra = _t_extra[~_t_extra['_ano'].isin(_anos_com_mmp20)]
-                if not _t_extra.empty:
-                    tests_df = pd.concat(
-                        [tests_df, _t_extra[['Data','watts']]], ignore_index=True
-                    ).sort_values('Data').reset_index(drop=True)
-                    _fonte_testes += f' + {_col_extra.replace("_w","").upper()} anos extras'
+        tests_df      = pd.DataFrame(columns=['Data', 'watts'])
+        _fonte_testes = 'Sem dados de Bike'
 
     # Fallback: todas as modalidades se Bike insuficiente
     if len(tests_df) < 2:
