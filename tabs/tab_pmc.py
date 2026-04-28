@@ -1029,7 +1029,17 @@ def tab_pmc(da, wc=None):
             "Escala diferente: NLSS tem valores ~K₁× maiores que TP."
         )
 
-        _ph_dates = _nlss['CTL_nlss'].index
+        # Limitar gráfico CTL/ATL a partir de 2020
+        _ph_dates  = _nlss['CTL_nlss'].index
+        _ph_mask   = _ph_dates >= _nlss_date_min
+        _ph_dates  = _ph_dates[_ph_mask]
+        _ctl_nlss_plot = _nlss['CTL_nlss'].values[_ph_mask]
+        _atl_nlss_plot = _nlss['ATL_nlss'].values[_ph_mask]
+        _tsb_nlss_plot = _nlss['TSB_nlss'].values[_ph_mask]
+        _ctl_tp_plot   = _nlss['CTL_tp'].values[_ph_mask]
+        _atl_tp_plot   = _nlss['ATL_tp'].values[_ph_mask]
+        _tsb_tp_plot   = _nlss['TSB_tp'].values[_ph_mask]
+
         _fig_nlss  = make_subplots(
             rows=2, cols=1, shared_xaxes=True,
             row_heights=[0.55, 0.45], vertical_spacing=0.06,
@@ -1039,13 +1049,13 @@ def tab_pmc(da, wc=None):
 
         # CTL
         _fig_nlss.add_trace(go.Scatter(
-            x=_ph_dates, y=_nlss['CTL_nlss'].values,
+            x=_ph_dates, y=_ctl_nlss_plot,
             mode='lines', name=f'CTL NLSS (K₁={K1_nlss:.2f}, T₁={T1_nlss:.0f}d)',
             line=dict(color='#2980b9', width=2.5),
             hovertemplate='%{x|%d/%m/%Y}<br>CTL NLSS: <b>%{y:.1f}</b><extra></extra>'
         ), row=1, col=1)
         _fig_nlss.add_trace(go.Scatter(
-            x=_ph_dates, y=_nlss['CTL_tp'].values,
+            x=_ph_dates, y=_ctl_tp_plot,
             mode='lines', name='CTL TP (K₁=1, T₁=42d)',
             line=dict(color='#2980b9', width=1.5, dash='dash'),
             hovertemplate='%{x|%d/%m/%Y}<br>CTL TP: <b>%{y:.1f}</b><extra></extra>'
@@ -1053,23 +1063,22 @@ def tab_pmc(da, wc=None):
 
         # ATL
         _fig_nlss.add_trace(go.Scatter(
-            x=_ph_dates, y=_nlss['ATL_nlss'].values,
+            x=_ph_dates, y=_atl_nlss_plot,
             mode='lines', name=f'ATL NLSS (K₂={K2_nlss:.2f}, T₂={T2_nlss:.0f}d)',
             line=dict(color='#e74c3c', width=2.5),
             hovertemplate='%{x|%d/%m/%Y}<br>ATL NLSS: <b>%{y:.1f}</b><extra></extra>'
         ), row=1, col=1)
         _fig_nlss.add_trace(go.Scatter(
-            x=_ph_dates, y=_nlss['ATL_tp'].values,
+            x=_ph_dates, y=_atl_tp_plot,
             mode='lines', name='ATL TP (K₂=1, T₂=7d)',
             line=dict(color='#e74c3c', width=1.5, dash='dash'),
             hovertemplate='%{x|%d/%m/%Y}<br>ATL TP: <b>%{y:.1f}</b><extra></extra>'
         ), row=1, col=1)
 
         # TSB
-        _tsb_nlss = _nlss['TSB_nlss'].values
-        _tsb_tp   = _nlss['TSB_tp'].values
+        # TSB agora em _tsb_nlss_plot e _tsb_tp_plot (com filtro 2020)
         _fig_nlss.add_trace(go.Scatter(
-            x=_ph_dates, y=_tsb_nlss,
+            x=_ph_dates, y=_tsb_nlss_plot,
             mode='lines', name='TSB NLSS',
             line=dict(color='#27ae60', width=2.5),
             fill='tozeroy',
@@ -1077,7 +1086,7 @@ def tab_pmc(da, wc=None):
             hovertemplate='%{x|%d/%m/%Y}<br>TSB NLSS: <b>%{y:.1f}</b><extra></extra>'
         ), row=2, col=1)
         _fig_nlss.add_trace(go.Scatter(
-            x=_ph_dates, y=_tsb_tp,
+            x=_ph_dates, y=_tsb_tp_plot,
             mode='lines', name='TSB TP',
             line=dict(color='#27ae60', width=1.5, dash='dash'),
             hovertemplate='%{x|%d/%m/%Y}<br>TSB TP: <b>%{y:.1f}</b><extra></extra>'
@@ -1131,7 +1140,11 @@ def tab_pmc(da, wc=None):
             f"O pico de p̂(t) indica o dia óptimo de competição (t*)."
         )
 
+        # Limitar a 2020 em diante — dados anteriores têm menos MMP PRs
+        # e distorcem a estimativa (menos sessões rastreadas)
+        _nlss_date_min = pd.Timestamp('2020-01-01')
         _phat = _nlss['p_hat_series'].dropna()
+        _phat = _phat[_phat.index >= _nlss_date_min]
         if len(_phat) > 0:
             # Pico de forma previsto
             _tstar_idx = _phat.idxmax()
@@ -1167,15 +1180,23 @@ def tab_pmc(da, wc=None):
             ))
 
             # Pico t*
-            # Plotly add_vline requer string ISO para datas, não Timestamp
-            _tstar_str = _tstar_idx.strftime('%Y-%m-%d') if pd.notna(_tstar_idx) else None
-            if _tstar_str:
-                _fig_phat.add_vline(
-                    x=_tstar_str, line_dash='dash', line_color='#f39c12',
-                    line_width=2,
-                    annotation_text=f"t* = {_tstar_idx.strftime('%d/%m/%Y')}",
-                    annotation_font=dict(color='#f39c12', size=11),
-                    annotation_position='top left'
+            # add_vline com datas é instável em várias versões Plotly
+            # Usar add_shape + add_annotation — sempre compatível
+            if pd.notna(_tstar_idx):
+                _tstar_ms = int(_tstar_idx.timestamp() * 1000)
+                _fig_phat.add_shape(
+                    type='line',
+                    x0=_tstar_ms, x1=_tstar_ms, y0=0, y1=1,
+                    xref='x', yref='paper',
+                    line=dict(color='#f39c12', width=2, dash='dash')
+                )
+                _fig_phat.add_annotation(
+                    x=_tstar_ms, y=0.97, xref='x', yref='paper',
+                    text=f"t* = {_tstar_idx.strftime('%d/%m/%Y')}",
+                    showarrow=False,
+                    font=dict(color='#f39c12', size=11),
+                    xanchor='left', bgcolor='rgba(255,255,255,0.8)',
+                    bordercolor='#f39c12', borderwidth=1
                 )
 
             # Pontos de teste reais
@@ -1263,11 +1284,19 @@ def tab_pmc(da, wc=None):
             (_zc_prior, '#2980b9', 'Prior'),
         ]:
             if _zc is not None:
-                _fig_inf.add_vline(x=_zc, line_dash='dot', line_color=_cor,
-                                   line_width=1,
-                                   annotation_text=f"{_lbl}:{_zc}d",
-                                   annotation_font=dict(color=_cor, size=9),
-                                   annotation_position='bottom right')
+                # add_vline com valor numérico (dias) — compatível
+                _fig_inf.add_shape(
+                    type='line', x0=_zc, x1=_zc, y0=0, y1=1,
+                    xref='x', yref='paper',
+                    line=dict(color=_cor, width=1, dash='dot')
+                )
+                _fig_inf.add_annotation(
+                    x=_zc, y=0.05, xref='x', yref='paper',
+                    text=f"{_lbl}:{_zc}d",
+                    showarrow=False,
+                    font=dict(color=_cor, size=9),
+                    xanchor='left'
+                )
 
         _fig_inf.update_layout(
             paper_bgcolor='white', plot_bgcolor='white',
@@ -1312,11 +1341,74 @@ def tab_pmc(da, wc=None):
             'ATL_tp':   _nlss['ATL_tp'].round(3),
             'TSB_tp':   _nlss['TSB_tp'].round(3),
         })
+        # ── Dropdown de download ─────────────────────────────────────────────
+        st.markdown("#### 📥 Download resultados NLSS")
+        _dl_opts = {
+            "CTL/ATL/TSB/p̂ — completo (desde 2020)": "completo",
+            "Apenas K₁K₂T₁T₂ por semana (histórico de calibração)": "parametros",
+            "Testes de performance usados (MMP PRs)": "testes",
+            "Comparação NLSS vs TrainingPeaks — métricas actuais": "comparacao",
+        }
+        _dl_choice = st.selectbox(
+            "Seleccionar dados para download",
+            list(_dl_opts.keys()),
+            key="nlss_dl_choice"
+        )
+        _dl_type = _dl_opts[_dl_choice]
+
+        if _dl_type == "completo":
+            _df_export = _nlss_dl
+            _fname = "atheltica_nlss_completo.csv"
+
+        elif _dl_type == "parametros":
+            _hist = _nlss.get('history', [])
+            if _hist:
+                _hist_df = pd.DataFrame(_hist)
+                # Converter índice de dia para data
+                _date0 = pd.Timestamp(_nlss['p_hat_series'].index[0])
+                _hist_df['Data'] = _hist_df['day'].apply(
+                    lambda d: (_date0 + pd.Timedelta(days=int(d))).strftime('%Y-%m-%d'))
+                _df_export = _hist_df[['Data','K1','K2','T1','T2','lambda','n_tests']].copy()
+                _df_export.columns = ['Data','K₁','K₂','T₁(d)','T₂(d)','λ','n_testes']
+            else:
+                _df_export = pd.DataFrame({'info': ['Sem histórico de calibração disponível']})
+            _fname = "atheltica_nlss_parametros_semanais.csv"
+
+        elif _dl_type == "testes":
+            if _nlss.get('test_dates') and _nlss.get('test_watts'):
+                _df_export = pd.DataFrame({
+                    'Data':      [str(d) for d in _nlss['test_dates']],
+                    'Watts_MMP': _nlss['test_watts'],
+                })
+            else:
+                _df_export = pd.DataFrame({'info': ['Sem testes MMP PR disponíveis']})
+            _fname = "atheltica_nlss_testes_mmp.csv"
+
+        else:  # comparacao
+            _df_export = pd.DataFrame({
+                'Método':           ['TrainingPeaks (fixo)', 'Prior AGMT2', f'NLSS (n={n_tests})'],
+                'K₁':               [1.0, _NLSS_MU_POP[0], round(K1_nlss, 3)],
+                'K₂':               [1.0, _NLSS_MU_POP[1], round(K2_nlss, 3)],
+                'T₁(d)':            [42.0, _NLSS_MU_POP[2], round(T1_nlss, 1)],
+                'T₂(d)':            [7.0,  _NLSS_MU_POP[3], round(T2_nlss, 1)],
+                'CTL_actual':       [round(float(_nlss['CTL_tp'].iloc[-1]),2),
+                                     '—',
+                                     round(float(_nlss['CTL_nlss'].iloc[-1]),2)],
+                'ATL_actual':       [round(float(_nlss['ATL_tp'].iloc[-1]),2),
+                                     '—',
+                                     round(float(_nlss['ATL_nlss'].iloc[-1]),2)],
+                'TSB_actual':       [round(float(_nlss['TSB_tp'].iloc[-1]),2),
+                                     '—',
+                                     round(float(_nlss['TSB_nlss'].iloc[-1]),2)],
+                'lambda_actual':    ['N/A', f'{_NLSS_LAMBDA_MAX:.1f}', round(lam_n, 3)],
+            })
+            _fname = "atheltica_nlss_comparacao.csv"
+
         st.download_button(
-            "📥 Download NLSS — CTL/ATL/TSB/p̂ (.csv)",
-            _nlss_dl.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
-            "atheltica_nlss_banister.csv", "text/csv",
-            key="pmc_nlss_dl"
+            f"⬇️ Download: {_dl_choice[:50]}",
+            _df_export.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
+            _fname, "text/csv",
+            key="pmc_nlss_dl_btn"
         )
 
         # ── Nota metodológica ─────────────────────────────────────────────────
