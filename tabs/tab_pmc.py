@@ -1167,13 +1167,16 @@ def tab_pmc(da, wc=None):
             ))
 
             # Pico t*
-            _fig_phat.add_vline(
-                x=_tstar_idx, line_dash='dash', line_color='#f39c12',
-                line_width=2,
-                annotation_text=f"t* = {_tstar_idx.strftime('%d/%m/%Y')}",
-                annotation_font=dict(color='#f39c12', size=11),
-                annotation_position='top left'
-            )
+            # Plotly add_vline requer string ISO para datas, não Timestamp
+            _tstar_str = _tstar_idx.strftime('%Y-%m-%d') if pd.notna(_tstar_idx) else None
+            if _tstar_str:
+                _fig_phat.add_vline(
+                    x=_tstar_str, line_dash='dash', line_color='#f39c12',
+                    line_width=2,
+                    annotation_text=f"t* = {_tstar_idx.strftime('%d/%m/%Y')}",
+                    annotation_font=dict(color='#f39c12', size=11),
+                    annotation_position='top left'
+                )
 
             # Pontos de teste reais
             if _nlss['test_dates']:
