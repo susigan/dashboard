@@ -1928,74 +1928,78 @@ def calcular_nlss(df_act, df_wellness=None,
     tss_arr = ld['tss_val'].values.astype(np.float64)
     n_days  = len(tss_arr)
 
-    # ── 2. Testes de potência — Opção A: Bike MMP primário ───────────────────
+    # ── 2. Testes de potência — máximo anual de Bike (MMP20, MMP5, MMP3) ────
     #
-    # O modelo Banister requer testes NA MESMA ESCALA de performance.
-    # Misturar Bike/Row/Ski/Run em watts não é comparável → K1/K2 perdem
-    # interpretação fisiológica (1W em Bike ≠ 1W em Row).
+    # Colunas na sheet: MMP20, MMP5, MMP3, MMP1, MMP12, MMP60
+    # Mapeadas em MAPA_TRAINING: mmp20_raw → parseadas para mmp20_w (todos)
+    # Types de Bike: VirtualRide, Ride → normalizados para Bike via norm_tipo()
     #
-    # Opção A (fiel ao paper para triatlo):
-    #   Primário:  MMP20 → MMP12 → MMP5 → MMP3 de Bike
-    #   Fallback:  todas as modalidades se Bike < 5 testes na janela 90d
-    #
-    # Filtro de qualidade:
-    #   1. Top 10% dos últimos 30 dias → esforço próximo do máximo real
-    #   2. Intervalo mínimo 14 dias entre testes → sem sobreposição temporal
+    # ESTRATÉGIA: valor MÁXIMO de mmp20_w por ANO de Bike.
+    # O máximo anual é o PR real desse ano — sem depender de is_pr (que está
+    # True em quase todas as sessões no Intervals.icu).
+    # Fallback: MMP5 e MMP3 se MMP20 insuficiente.
     # ─────────────────────────────────────────────────────────────────────────
-    MMP_KEYS = ['mmp20_pr_w', 'mmp12_pr_w', 'mmp5_pr_w', 'mmp3_pr_w']
 
-    def _extrair_mmp_serie(df_mod, mmp_keys):
-        records = []
-        for _key in mmp_keys:
-            if _key not in df_mod.columns:
-                continue
-            _s = df_mod[['Data', _key]].copy()
-            _s.columns = ['Data', 'watts']
-            _s['watts'] = pd.to_numeric(_s['watts'], errors='coerce')
-            _s = _s[_s['watts'] > 50].dropna(subset=['watts'])
-            _s['priority'] = mmp_keys.index(_key)
-            records.append(_s)
-        if not records:
-            return pd.DataFrame(columns=['Data', 'watts'])
-        raw = pd.concat(records, ignore_index=True)
-        raw['Data'] = pd.to_datetime(raw['Data'])
-        return (raw.sort_values(['Data', 'priority'])
-                   .drop_duplicates('Data', keep='first')
-                   .sort_values('Data')
-                   .reset_index(drop=True)[['Data', 'watts']])
-
-    def _filtrar_testes(tests_raw, min_pct=0.90, min_gap_days=14):
-        if len(tests_raw) == 0:
-            return pd.DataFrame(columns=['Data', 'watts'])
-        tr = tests_raw.set_index('Data')
-        tr['roll_max'] = tr['watts'].rolling('30D', min_periods=2).max()
-        tr = tr.reset_index()
-        tr['pct_30d'] = tr['watts'] / tr['roll_max'].replace(0, np.nan)
-        top = tr[tr['pct_30d'] >= min_pct].sort_values('Data')
-        selected = []
-        last_date = None
-        for _, row in top.iterrows():
-            if last_date is None or (row['Data'] - last_date).days >= min_gap_days:
-                selected.append(row)
-                last_date = row['Data']
-        if not selected:
-            return pd.DataFrame(columns=['Data', 'watts'])
-        return pd.DataFrame(selected)[['Data', 'watts']].reset_index(drop=True)
-
-    # Primário: só Bike
+    # Garantir type normalizado: VirtualRide→Bike, Ride→Bike, etc.
     _tipo_col = next((c for c in ['type', 'modality'] if c in df.columns), None)
-    _df_bike  = df[df[_tipo_col] == 'Bike'].copy() if _tipo_col else df.copy()
-    _bike_raw = _extrair_mmp_serie(_df_bike, MMP_KEYS)
-    tests_df  = _filtrar_testes(_bike_raw)
-    _fonte_testes = 'Bike (MMP20/12/5/3)'
+    if _tipo_col:
+        df['_type_norm'] = df[_tipo_col].apply(norm_tipo)
+        _df_bike = df[df['_type_norm'] == 'Bike'].copy()
+    else:
+        _df_bike = df.copy()
+
+    _df_bike['Data'] = pd.to_datetime(_df_bike['Data'])
+    _df_bike['_ano'] = _df_bike['Data'].dt.year
+
+    def _max_anual_mmp(df_src, col_w):
+        """Por ano: data da sessão com o MMP máximo nessa coluna."""
+        if col_w not in df_src.columns:
+            return pd.DataFrame(columns=['Data', 'watts'])
+        sub = df_src[['Data', '_ano', col_w]].copy()
+        sub['watts'] = pd.to_numeric(sub[col_w], errors='coerce')
+        sub = sub[sub['watts'] > 50].dropna(subset=['watts'])
+        if sub.empty:
+            return pd.DataFrame(columns=['Data', 'watts'])
+        idx_max = sub.groupby('_ano')['watts'].idxmax()
+        return (sub.loc[idx_max, ['Data', 'watts']]
+                   .sort_values('Data')
+                   .reset_index(drop=True))
+
+    # Primário: MMP20 de Bike — 1 ponto por ano
+    _tests_mmp20 = _max_anual_mmp(_df_bike, 'mmp20_w')
+
+    if len(_tests_mmp20) >= 2:
+        tests_df      = _tests_mmp20.copy()
+        _fonte_testes = 'Bike MMP20 — maximo anual'
+    else:
+        # MMP20 insuficiente -> combinar MMP20 + MMP5 + MMP3 maximos anuais
+        _t20 = _max_anual_mmp(_df_bike, 'mmp20_w')
+        _t5  = _max_anual_mmp(_df_bike, 'mmp5_w')
+        _t3  = _max_anual_mmp(_df_bike, 'mmp3_w')
+        _combined = pd.concat([_t20, _t5, _t3], ignore_index=True)
+        if not _combined.empty:
+            _combined['_ano'] = pd.to_datetime(_combined['Data']).dt.year
+            idx_max  = _combined.groupby('_ano')['watts'].idxmax()
+            tests_df = (_combined.loc[idx_max, ['Data', 'watts']]
+                                 .sort_values('Data')
+                                 .reset_index(drop=True))
+            _fonte_testes = 'Bike MMP20/5/3 — maximo anual (MMP20 insuficiente)'
+        else:
+            tests_df      = pd.DataFrame(columns=['Data', 'watts'])
+            _fonte_testes = 'Sem dados de Bike'
 
     # Fallback: todas as modalidades se Bike insuficiente
-    if len(tests_df) < 5:
-        _all_raw  = _extrair_mmp_serie(df, MMP_KEYS)
-        _all_filt = _filtrar_testes(_all_raw)
-        if len(_all_filt) > len(tests_df):
-            tests_df = _all_filt
-            _fonte_testes = 'Todas modalidades (fallback — Bike insuficiente)'
+    if len(tests_df) < 2:
+        _all = df.copy()
+        _all['Data'] = pd.to_datetime(_all['Data'])
+        _all['_ano'] = _all['Data'].dt.year
+        _t20_all = _max_anual_mmp(_all, 'mmp20_w')
+        if len(_t20_all) >= 2:
+            tests_df      = _t20_all
+            _fonte_testes = 'Todas modalidades MMP20 — maximo anual (fallback)'
+        else:
+            _fonte_testes = 'Insuficiente'
+
 
     # Mapear para índices da série diária
     date_to_idx = {pd.Timestamp(d).date(): i
