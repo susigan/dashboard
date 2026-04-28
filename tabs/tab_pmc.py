@@ -1021,6 +1021,9 @@ def tab_pmc(da, wc=None):
         ]
         st.dataframe(pd.DataFrame(_comp_rows), hide_index=True, use_container_width=True)
 
+        # Data mínima para todos os gráficos NLSS — definida aqui uma vez
+        _nlss_date_min = pd.Timestamp('2020-01-01')
+
         # ── Gráfico principal — CTL/ATL comparação ─────────────────────────
         st.markdown("#### CTL / ATL — TrainingPeaks vs NLSS")
         st.caption(
@@ -1140,9 +1143,6 @@ def tab_pmc(da, wc=None):
             f"O pico de p̂(t) indica o dia óptimo de competição (t*)."
         )
 
-        # Limitar a 2020 em diante — dados anteriores têm menos MMP PRs
-        # e distorcem a estimativa (menos sessões rastreadas)
-        _nlss_date_min = pd.Timestamp('2020-01-01')
         _phat = _nlss['p_hat_series'].dropna()
         _phat = _phat[_phat.index >= _nlss_date_min]
         if len(_phat) > 0:
