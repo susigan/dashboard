@@ -180,20 +180,25 @@ def tab_pmc(da, wc=None):
     ld['TSB']  = ld['CTL'] - ld['ATL']
 
     # ── FTLM fraccionário — Della Mattia (2025) Dual-Gamma ──────────────────
-    # Usa calcular_series_carga para fitting de γ_perf (icu_pm_cp) e γ_rec (HRV)
-    # O bloco CTL/ATL/TSB acima é mantido para compatibilidade e velocidade.
-    # O FTLM fraccionário é computado separadamente e adicionado a ld.
-    @st.cache_data(show_spinner="A calcular FTLM fraccionário (γ dual)...", ttl=3600)
-    def _cached_csc(_da_hash, _wc_hash, da, wc_arg):
-        # _da_hash and _wc_hash are used only as cache keys (not computed again)
-        return calcular_series_carga(da, df_wellness=wc_arg, ate_hoje=True)
+    # CACHE via session_state — evita recalcular em cada render.
+    # O @st.cache_data dentro de funções é recriado em cada chamada → anula o cache.
+    # Solução: guardar resultado em session_state com chave baseada em hash leve.
+    _da_key = (str(da_full['Data'].max()) if 'Data' in da_full.columns else '',
+               len(da_full))
+    _wc_key = (str(wc['Data'].max()) if wc is not None and 'Data' in wc.columns else '',
+               len(wc) if wc is not None else 0)
+    _csc_key = f'csc_cache_{_da_key}_{_wc_key}'
 
-    # Cache key: tuple of (last date, n_rows) — recomputes only when data changes
-    _da_key  = (str(da_full['Data'].max()) if 'Data' in da_full.columns else '',
-                len(da_full))
-    _wc_key  = (str(wc['Data'].max())      if wc is not None and 'Data' in wc.columns else '',
-                len(wc) if wc is not None else 0)
-    _ld_frac, _info = _cached_csc(_da_key, _wc_key, da_full, wc)
+    if _csc_key not in st.session_state:
+        with st.spinner("A calcular FTLM fraccionário (γ dual)..."):
+            _ld_frac, _info = calcular_series_carga(da_full, df_wellness=wc, ate_hoje=True)
+        st.session_state[_csc_key] = (_ld_frac, _info)
+        # Limpar caches antigos para não acumular memória
+        _old_keys = [k for k in st.session_state if k.startswith('csc_cache_') and k != _csc_key]
+        for _ok in _old_keys:
+            del st.session_state[_ok]
+    else:
+        _ld_frac, _info = st.session_state[_csc_key]
 
     # Guardar no session_state para que tab_visao_geral possa ler κ sem recalcular
     if len(_ld_frac) > 0:
