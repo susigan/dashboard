@@ -33,6 +33,23 @@ def tab_cp_model(ac_full=None):
     # TCPmax = 1800s (30 min) — ponto de inflexão do OmPD (Puchowicz et al. 2020)
     TCP_MAX = 1800.0
 
+    def parse_mmp(val):
+        """
+        Extrai watts de MMP no formato real da sheet.
+        Formatos aceites:
+            "Yes - 618w"   → 618.0  (season best atingido — USAR)
+            "No (PR: 383w)" → None  (não atingido — IGNORAR)
+        Só retorna valor quando a linha começa com "Yes".
+        """
+        import re as _re
+        if not isinstance(val, str) or not val.strip():
+            return None
+        v = val.strip()
+        if not v.lower().startswith('yes'):
+            return None
+        m = _re.search(r'-\s*(\d+(?:\.\d+)?)\s*w', v, _re.IGNORECASE)
+        return float(m.group(1)) if m else None
+
     BASE = dict(
         paper_bgcolor="white", plot_bgcolor="white",
         font=dict(color="#111111", size=12),
@@ -368,25 +385,35 @@ def tab_cp_model(ac_full=None):
                         # Pmax — mais recente não-nulo
                         _pm = None
                         if 'p_max' in _sub.columns:
-                            _pm_sub = _sub['p_max'].dropna()
-                            if not _pm_sub.empty:
+                            # p_max pode também estar em formato "Yes - Xw" ou numérico puro
+                            for _pm_raw in _sub['p_max']:
+                                if _pm_raw is None or (isinstance(_pm_raw, float) and __import__('math').isnan(_pm_raw)):
+                                    continue
+                                # Tentar parse_mmp primeiro (formato "Yes - Xw")
+                                _pm_parsed = parse_mmp(str(_pm_raw))
+                                if _pm_parsed is not None:
+                                    _pm = _pm_parsed; break
+                                # Tentar numérico directo
                                 try:
-                                    _pm = float(_pm_sub.iloc[0])
+                                    _pm_f = float(_pm_raw)
+                                    if _pm_f > 0:
+                                        _pm = _pm_f; break
                                 except (ValueError, TypeError):
-                                    _pm = None  # valor não numérico
+                                    continue
 
-                        # MMP — mais recente não-nulo para cada duração
+                        # MMP — mais recente "Yes - Xw" para cada duração
+                        # Formato real da sheet: "Yes - 618w" (usar) | "No (PR: 383w)" (ignorar)
+                        # Iterar da linha mais recente para mais antiga até encontrar "Yes"
                         _mmp_tests = []
                         for _col, _dur in MMP_COLS.items():
-                            if _col in _sub.columns:
-                                _v = _sub[_col].dropna()
-                                if not _v.empty:
-                                    try:
-                                        _mmp_val = float(_v.iloc[0])
-                                        if _mmp_val > 0:
-                                            _mmp_tests.append((_mmp_val, float(_dur)))
-                                    except (ValueError, TypeError):
-                                        pass  # valor não numérico — ignorar
+                            if _col not in _sub.columns:
+                                continue
+                            # Percorrer linhas por ordem cronológica inversa
+                            for _raw_val in _sub[_col]:
+                                _mmp_val = parse_mmp(_raw_val)
+                                if _mmp_val is not None and _mmp_val > 0:
+                                    _mmp_tests.append((_mmp_val, float(_dur)))
+                                    break  # encontrou o mais recente "Yes" — parar
 
                         # Ordenar por duração
                         _mmp_tests = sorted(_mmp_tests, key=lambda x: x[1])
