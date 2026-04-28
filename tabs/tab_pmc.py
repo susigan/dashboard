@@ -1,6 +1,10 @@
 from utils.config import *
 from utils.phase_detector import detect_all_phases, phase_summary, PHASE_LABELS
 from utils.helpers import *
+from utils.helpers import (
+    _NLSS_MU_POP, _NLSS_SD_POP,
+    _NLSS_LAMBDA_MAX, _NLSS_N_HALF,
+)
 from utils.data import *
 import streamlit as st
 import pandas as pd
