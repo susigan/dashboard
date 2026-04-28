@@ -959,6 +959,17 @@ def tab_pmc(da, wc=None):
                          "≥3 testes distribuídos → melhor que TrainingPeaks. "
                          "≥6 testes → dados dominam o prior.")
 
+        # Fonte dos testes
+        _fonte = _nlss.get('fonte_testes', 'N/A')
+        if 'fallback' in _fonte.lower():
+            st.warning(
+                f"⚠️ **Fonte: {_fonte}** — Bike tem menos de 5 testes na janela de 90 dias. "
+                f"A análise usa múltiplas modalidades — K₁/K₂ têm menor precisão fisiológica. "
+                f"Para melhor calibração, realiza mais TTs de Bike."
+            )
+        else:
+            st.caption(f"📊 Fonte de testes: **{_fonte}** · top 10% dos últimos 30 dias · intervalo mínimo 14 dias")
+
         # Aviso se prior domina completamente
         if n_tests == 0:
             st.warning(
