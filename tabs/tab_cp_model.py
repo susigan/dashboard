@@ -327,6 +327,287 @@ def tab_cp_model(ac_full=None):
         p3=st.number_input("Power T3 (W)",50,2000,270,key="cp_p3",disabled=not usar3)
         t3=st.number_input("Tempo T3 (s)",10,7200,1200,key="cp_t3",disabled=not usar3)
 
+    # ════════════════════════════════════════════════════════════════════════
+    # PARTE 2 — OmPD AUTOMÁTICO POR MODALIDADE (MMP da sheet)
+    # MMP1=60s MMP3=180s MMP5=300s MMP12=720s MMP20=1200s MMP60=3600s
+    # Fonte: coluna p_max (Pmax modalidade) + colunas MMP* (season bests)
+    # ════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.subheader("🏅 OmPD Automático — MMP da Sheet por Modalidade")
+    st.caption(
+        "Fitting OmPD automático usando os season bests (MMP) disponíveis na sheet. "
+        "Não requer input manual — os pontos MMP são carregados directamente. "
+        "**MMP1**=60s · **MMP3**=180s · **MMP5**=300s · **MMP12**=720s · "
+        "**MMP20**=1200s · **MMP60**=3600s"
+    )
+
+    if ac_full is None or len(ac_full) == 0:
+        st.info("Dados de actividades não disponíveis (ac_full).")
+    else:
+        _col_mod_mmp  = next((c for c in ['type','modality'] if c in ac_full.columns), None)
+        _col_date_mmp = next((c for c in ['date','Data'] if c in ac_full.columns), None)
+
+        if _col_mod_mmp is None or _col_date_mmp is None:
+            st.warning("Colunas type/date não encontradas em ac_full.")
+        else:
+            # Tab por modalidade
+            _mods_avail = [m for m in ['Bike','Row','Ski','Run']
+                           if m in ac_full[_col_mod_mmp].values]
+            if not _mods_avail:
+                st.info("Nenhuma modalidade encontrada em ac_full.")
+            else:
+                _mod_tabs = st.tabs([f"{'🚴' if m=='Bike' else '🚣' if m=='Row' else '🎿' if m=='Ski' else '🏃'} {m}"
+                                     for m in _mods_avail])
+
+                for _ti, _mod in enumerate(_mods_avail):
+                    with _mod_tabs[_ti]:
+                        # ── Carregar MMP e Pmax para esta modalidade ──────────────
+                        _sub = (ac_full[ac_full[_col_mod_mmp] == _mod]
+                                .sort_values(_col_date_mmp, ascending=False))
+
+                        # Pmax — mais recente não-nulo
+                        _pm = None
+                        if 'p_max' in _sub.columns:
+                            _pm_sub = _sub['p_max'].dropna()
+                            if not _pm_sub.empty:
+                                try:
+                                    _pm = float(_pm_sub.iloc[0])
+                                except (ValueError, TypeError):
+                                    _pm = None  # valor não numérico
+
+                        # MMP — mais recente não-nulo para cada duração
+                        _mmp_tests = []
+                        for _col, _dur in MMP_COLS.items():
+                            if _col in _sub.columns:
+                                _v = _sub[_col].dropna()
+                                if not _v.empty:
+                                    try:
+                                        _mmp_val = float(_v.iloc[0])
+                                        if _mmp_val > 0:
+                                            _mmp_tests.append((_mmp_val, float(_dur)))
+                                    except (ValueError, TypeError):
+                                        pass  # valor não numérico — ignorar
+
+                        # Ordenar por duração
+                        _mmp_tests = sorted(_mmp_tests, key=lambda x: x[1])
+
+                        # ── Info dos pontos carregados ──────────────────────────
+                        _col_info1, _col_info2 = st.columns(2)
+                        with _col_info1:
+                            st.metric("Pmax (p_max)",
+                                      f"{_pm:.0f}W" if _pm else "—",
+                                      help="Coluna p_max — mais recente desta modalidade")
+                        with _col_info2:
+                            st.metric("Pontos MMP disponíveis",
+                                      str(len(_mmp_tests)),
+                                      help="Nº de colunas MMP com valores não-nulos")
+
+                        if len(_mmp_tests) < 2:
+                            st.warning(
+                                f"⚠️ {_mod}: menos de 2 pontos MMP disponíveis. "
+                                f"Não é possível fazer fitting. "
+                                f"Verifica as colunas MMP1/MMP3/MMP5/MMP12/MMP20/MMP60 na sheet."
+                            )
+                            continue
+
+                        # Tabela de pontos usados
+                        _pts_rows = []
+                        for _p, _t in _mmp_tests:
+                            _dur_lbl = next(
+                                (k for k, v in MMP_COLS.items() if v == int(_t)), f"{int(_t)}s"
+                            )
+                            _mins = int(_t) // 60
+                            _secs = int(_t) % 60
+                            _t_lbl = f"{_mins}min" if _secs == 0 else f"{_mins}min{_secs}s"
+                            _pts_rows.append({
+                                'Coluna': _dur_lbl,
+                                'Duração': _t_lbl,
+                                'Duração (s)': int(_t),
+                                'Potência (W)': int(_p),
+                                'Tipo': 'Longo (>30min)' if _t > TCP_MAX else 'Curto (≤30min)'
+                            })
+                        with st.expander(f"📋 Pontos MMP usados ({_mod})", expanded=False):
+                            st.dataframe(pd.DataFrame(_pts_rows),
+                                         hide_index=True, use_container_width=True)
+
+                        # ── Fitting OmPD ────────────────────────────────────────
+                        _p_obs_mmp = [p for p,_ in _mmp_tests]
+                        _t_obs_mmp = [t for _,t in _mmp_tests]
+
+                        _res = fit_ompd(_mmp_tests, pmax_ext=_pm)
+                        _cp5, _wp5, _pm5, _A5, _pp5, _r25, _weff5 = _res
+
+                        if _cp5 is None:
+                            st.error(f"❌ OmPD fitting falhou para {_mod}. "
+                                     f"Verifica se os pontos MMP são consistentes "
+                                     f"(potência deve decrescer com duração).")
+                            continue
+
+                        # ── Cards resultado ─────────────────────────────────────
+                        _mc1, _mc2, _mc3, _mc4, _mc5 = st.columns(5)
+                        _mc1.metric("CP (W)", f"{_cp5:.1f}")
+                        _mc2.metric("W′ (J)", f"{_wp5:.0f}")
+                        _mc3.metric("Pmax (W)", f"{_pm5:.0f}")
+                        _mc4.metric("A (decaimento)",
+                                    f"{_A5:.1f}" if _A5 and _A5 > 0.5 else "0 (sem longo)",
+                                    help="Parâmetro A do OmPD: taxa de decaimento log-linear após 30min")
+                        _seep5 = None
+                        if _pp5 is not None:
+                            _, _seep5 = calc_see(_p_obs_mmp, _pp5, k=2)
+                        _mc5.metric("SEE%", f"{_seep5:.1f}%" if _seep5 else "—")
+
+                        # Validação W′eff
+                        _weff_ok5 = _weff5 is not None and _weff5 > 95
+                        if _weff_ok5:
+                            st.success(
+                                f"✅ W′eff@120s = {_weff5:.1f}% — plateia atingida (~110s). "
+                                f"Consistente com interpretação de capacidade anaeróbica fixa."
+                            )
+                        else:
+                            st.warning(
+                                f"⚠️ W′eff@120s = {_weff5:.1f}% — plateia não atingida. "
+                                f"Os testes disponíveis podem ser todos de duração longa, "
+                                f"limitando a estimativa de Pmax."
+                            )
+
+                        # ── Gráfico OmPD por modalidade ─────────────────────────
+                        _t_min_plot = max(30.0, float(min(_t_obs_mmp)) * 0.3)
+                        _t_max_plot = float(max(_t_obs_mmp)) * 1.5
+                        _t_range5   = np.linspace(_t_min_plot, _t_max_plot, 800)
+
+                        def _ompd_p5(t_arr, cp, wp, pmax_v, A):
+                            tau   = wp / max(pmax_v - cp, 1.0)
+                            base  = wp / t_arr * (1 - np.exp(-t_arr / tau)) + cp
+                            if A and A > 0.5:
+                                decay = np.where(t_arr > TCP_MAX,
+                                                  A * np.log(t_arr / TCP_MAX), 0.0)
+                                return base - decay
+                            return base
+
+                        _y5 = _ompd_p5(_t_range5, _cp5, _wp5, _pm5, _A5 or 0.0)
+
+                        _fig5 = go.Figure()
+
+                        # Curva OmPD
+                        _fig5.add_trace(go.Scatter(
+                            x=_t_range5.tolist(), y=np.maximum(_y5, 0).tolist(),
+                            mode='lines', name='OmPD',
+                            line=dict(color='#8e44ad', width=3),
+                            hovertemplate='t=%{x:.0f}s  P=%{y:.0f}W<extra></extra>'
+                        ))
+
+                        # Separação curto/longo se há extensão
+                        if _A5 and _A5 > 0.5:
+                            _fig5.add_vline(x=TCP_MAX, line_dash='dot',
+                                            line_color='#8e44ad', line_width=1.5,
+                                            annotation_text='TCPmax=30min',
+                                            annotation_font=dict(color='#8e44ad', size=10),
+                                            annotation_position='top left')
+
+                        # Curva CP standard (M1) para comparação
+                        _m1_cp5, _m1_wp5, _, _m1_pp5, _, _ = fit_m1(_mmp_tests,
+                            make_w(_t_obs_mmp, 'none'))
+                        if _m1_cp5:
+                            _y_m1 = [_m1_wp5/t + _m1_cp5 for t in _t_range5]
+                            _fig5.add_trace(go.Scatter(
+                                x=_t_range5.tolist(), y=[max(0,y) for y in _y_m1],
+                                mode='lines', name=f'M1: CP standard  CP={_m1_cp5:.0f}W',
+                                line=dict(color='#e74c3c', width=1.5, dash='dash'),
+                                hovertemplate='t=%{x:.0f}s  P=%{y:.0f}W (M1)<extra></extra>'
+                            ))
+
+                        # Pontos MMP reais
+                        _hover_mmp = [
+                            f"{next((k for k,v in MMP_COLS.items() if v==int(t)), str(int(t))+'s')}: "
+                            f"{p:.0f}W × {int(t)}s"
+                            for p, t in _mmp_tests
+                        ]
+                        _fig5.add_trace(go.Scatter(
+                            x=_t_obs_mmp, y=_p_obs_mmp,
+                            mode='markers+text',
+                            text=[next((k for k,v in MMP_COLS.items() if v==int(t)), str(int(t))+'s')
+                                  for _,t in _mmp_tests],
+                            textposition='top center',
+                            textfont=dict(color='#111', size=11, family='Arial Black'),
+                            marker=dict(size=13, color='#f39c12', symbol='circle',
+                                        line=dict(width=2, color='#2c3e50')),
+                            name='MMP (season bests)',
+                            customdata=_hover_mmp,
+                            hovertemplate='%{customdata}<extra></extra>'
+                        ))
+
+                        # Linhas de referência CP e W′
+                        _fig5.add_hline(y=_cp5, line_dash='dot', line_color='#2c3e50',
+                                        line_width=1.5,
+                                        annotation_text=f'CP={_cp5:.0f}W',
+                                        annotation_font=dict(color='#2c3e50', size=11),
+                                        annotation_position='right')
+
+                        _fig5.update_layout(**BASE,
+                            title=dict(
+                                text=f"OmPD — {_mod} | CP={_cp5:.0f}W | W′={_wp5:.0f}J | "
+                                     f"Pmax={_pm5:.0f}W | A={_A5:.1f}",
+                                font=dict(size=13, color='#111')
+                            ),
+                            height=430, hovermode='closest',
+                            xaxis=dict(title='Duração (s)',
+                                       type='log' if max(_t_obs_mmp) > 1200 else 'linear',
+                                       **AX),
+                            yaxis=dict(title='Potência (W)', **AX)
+                        )
+                        st.plotly_chart(_fig5, use_container_width=True,
+                                        config={'displayModeBar': False, 'responsive': True,
+                                                'scrollZoom': False},
+                                        key=f"ompd_auto_{_mod}")
+
+                        # ── Interpretação automática ────────────────────────────
+                        st.markdown("##### Interpretação")
+                        _has_long5 = any(t > TCP_MAX for _, t in _mmp_tests)
+                        _n_pts5    = len(_mmp_tests)
+
+                        if _has_long5 and _A5 and _A5 > 0.5:
+                            st.info(
+                                f"📉 **Extensão longa activa (A={_A5:.1f}).** "
+                                f"Potência decai ~{_A5:.0f}W por cada dobro de duração após 30min. "
+                                f"Para um esforço de 60min: P ≈ {_ompd_p5(np.array([3600.0]), _cp5, _wp5, _pm5, _A5)[0]:.0f}W. "
+                                f"Para 2h: P ≈ {_ompd_p5(np.array([7200.0]), _cp5, _wp5, _pm5, _A5)[0]:.0f}W."
+                            )
+                        elif not _has_long5:
+                            st.info(
+                                f"⚠️ **Sem pontos >30min.** O OmPD reduz ao modelo de curtas durações "
+                                f"(A=0). Para activar a extensão longa, é necessário MMP60 (1h TT). "
+                                f"CP={_cp5:.0f}W é válido para esforços 2–30min."
+                            )
+
+                        if _n_pts5 < 4:
+                            st.warning(
+                                f"⚠️ Apenas {_n_pts5} pontos MMP. "
+                                f"Para fitting robusto do OmPD são necessários ≥4 pontos "
+                                f"cobrindo múltiplos domínios (sprint, severo, pesado, longo)."
+                            )
+
+                        # Export CSV por modalidade
+                        _exp5 = pd.DataFrame({
+                            'Modalidade': [_mod],
+                            'CP (W)': [round(_cp5, 1)],
+                            "W' (J)": [round(_wp5, 0)],
+                            'Pmax (W)': [round(_pm5, 0)],
+                            'A': [round(_A5, 2) if _A5 else 0],
+                            'SEE%': [round(_seep5, 2) if _seep5 else None],
+                            "W'eff@120s%": [round(_weff5, 1) if _weff5 else None],
+                            'N pontos MMP': [_n_pts5],
+                        })
+                        _csv5 = _exp5.to_csv(index=False).encode('utf-8')
+                        st.download_button(
+                            f"⬇️ Export OmPD {_mod} (CSV)",
+                            _csv5,
+                            f"ompd_{_mod.lower()}_mmp.csv",
+                            "text/csv",
+                            key=f"dl_ompd_{_mod}"
+                        )
+
+
+
     if not st.button("⚡ Calcular",type="primary"):
         st.info("Configura os testes e clica em **Calcular**.")
         return
@@ -798,279 +1079,6 @@ def tab_cp_model(ac_full=None):
     if vm_rows:
         st.dataframe(pd.DataFrame(vm_rows),hide_index=True,use_container_width=True)
 
-
-    # ════════════════════════════════════════════════════════════════════════
-    # PARTE 2 — OmPD AUTOMÁTICO POR MODALIDADE (MMP da sheet)
-    # MMP1=60s MMP3=180s MMP5=300s MMP12=720s MMP20=1200s MMP60=3600s
-    # Fonte: coluna p_max (Pmax modalidade) + colunas MMP* (season bests)
-    # ════════════════════════════════════════════════════════════════════════
-    st.markdown("---")
-    st.subheader("🏅 OmPD Automático — MMP da Sheet por Modalidade")
-    st.caption(
-        "Fitting OmPD automático usando os season bests (MMP) disponíveis na sheet. "
-        "Não requer input manual — os pontos MMP são carregados directamente. "
-        "**MMP1**=60s · **MMP3**=180s · **MMP5**=300s · **MMP12**=720s · "
-        "**MMP20**=1200s · **MMP60**=3600s"
-    )
-
-    if ac_full is None or len(ac_full) == 0:
-        st.info("Dados de actividades não disponíveis (ac_full).")
-    else:
-        _col_mod_mmp  = next((c for c in ['type','modality'] if c in ac_full.columns), None)
-        _col_date_mmp = next((c for c in ['date','Data'] if c in ac_full.columns), None)
-
-        if _col_mod_mmp is None or _col_date_mmp is None:
-            st.warning("Colunas type/date não encontradas em ac_full.")
-        else:
-            # Tab por modalidade
-            _mods_avail = [m for m in ['Bike','Row','Ski','Run']
-                           if m in ac_full[_col_mod_mmp].values]
-            if not _mods_avail:
-                st.info("Nenhuma modalidade encontrada em ac_full.")
-            else:
-                _mod_tabs = st.tabs([f"{'🚴' if m=='Bike' else '🚣' if m=='Row' else '🎿' if m=='Ski' else '🏃'} {m}"
-                                     for m in _mods_avail])
-
-                for _ti, _mod in enumerate(_mods_avail):
-                    with _mod_tabs[_ti]:
-                        # ── Carregar MMP e Pmax para esta modalidade ──────────────
-                        _sub = (ac_full[ac_full[_col_mod_mmp] == _mod]
-                                .sort_values(_col_date_mmp, ascending=False))
-
-                        # Pmax — mais recente não-nulo
-                        _pm = None
-                        if 'p_max' in _sub.columns:
-                            _pm_sub = _sub['p_max'].dropna()
-                            if not _pm_sub.empty:
-                                _pm = float(_pm_sub.iloc[0])
-
-                        # MMP — mais recente não-nulo para cada duração
-                        _mmp_tests = []
-                        for _col, _dur in MMP_COLS.items():
-                            if _col in _sub.columns:
-                                _v = _sub[_col].dropna()
-                                if not _v.empty:
-                                    _mmp_val = float(_v.iloc[0])
-                                    if _mmp_val > 0:
-                                        _mmp_tests.append((_mmp_val, float(_dur)))
-
-                        # Ordenar por duração
-                        _mmp_tests = sorted(_mmp_tests, key=lambda x: x[1])
-
-                        # ── Info dos pontos carregados ──────────────────────────
-                        _col_info1, _col_info2 = st.columns(2)
-                        with _col_info1:
-                            st.metric("Pmax (p_max)",
-                                      f"{_pm:.0f}W" if _pm else "—",
-                                      help="Coluna p_max — mais recente desta modalidade")
-                        with _col_info2:
-                            st.metric("Pontos MMP disponíveis",
-                                      str(len(_mmp_tests)),
-                                      help="Nº de colunas MMP com valores não-nulos")
-
-                        if len(_mmp_tests) < 2:
-                            st.warning(
-                                f"⚠️ {_mod}: menos de 2 pontos MMP disponíveis. "
-                                f"Não é possível fazer fitting. "
-                                f"Verifica as colunas MMP1/MMP3/MMP5/MMP12/MMP20/MMP60 na sheet."
-                            )
-                            continue
-
-                        # Tabela de pontos usados
-                        _pts_rows = []
-                        for _p, _t in _mmp_tests:
-                            _dur_lbl = next(
-                                (k for k, v in MMP_COLS.items() if v == int(_t)), f"{int(_t)}s"
-                            )
-                            _mins = int(_t) // 60
-                            _secs = int(_t) % 60
-                            _t_lbl = f"{_mins}min" if _secs == 0 else f"{_mins}min{_secs}s"
-                            _pts_rows.append({
-                                'Coluna': _dur_lbl,
-                                'Duração': _t_lbl,
-                                'Duração (s)': int(_t),
-                                'Potência (W)': int(_p),
-                                'Tipo': 'Longo (>30min)' if _t > TCP_MAX else 'Curto (≤30min)'
-                            })
-                        with st.expander(f"📋 Pontos MMP usados ({_mod})", expanded=False):
-                            st.dataframe(pd.DataFrame(_pts_rows),
-                                         hide_index=True, use_container_width=True)
-
-                        # ── Fitting OmPD ────────────────────────────────────────
-                        _p_obs_mmp = [p for p,_ in _mmp_tests]
-                        _t_obs_mmp = [t for _,t in _mmp_tests]
-
-                        _res = fit_ompd(_mmp_tests, pmax_ext=_pm)
-                        _cp5, _wp5, _pm5, _A5, _pp5, _r25, _weff5 = _res
-
-                        if _cp5 is None:
-                            st.error(f"❌ OmPD fitting falhou para {_mod}. "
-                                     f"Verifica se os pontos MMP são consistentes "
-                                     f"(potência deve decrescer com duração).")
-                            continue
-
-                        # ── Cards resultado ─────────────────────────────────────
-                        _mc1, _mc2, _mc3, _mc4, _mc5 = st.columns(5)
-                        _mc1.metric("CP (W)", f"{_cp5:.1f}")
-                        _mc2.metric("W′ (J)", f"{_wp5:.0f}")
-                        _mc3.metric("Pmax (W)", f"{_pm5:.0f}")
-                        _mc4.metric("A (decaimento)",
-                                    f"{_A5:.1f}" if _A5 and _A5 > 0.5 else "0 (sem longo)",
-                                    help="Parâmetro A do OmPD: taxa de decaimento log-linear após 30min")
-                        _seep5 = None
-                        if _pp5 is not None:
-                            _, _seep5 = calc_see(_p_obs_mmp, _pp5, k=2)
-                        _mc5.metric("SEE%", f"{_seep5:.1f}%" if _seep5 else "—")
-
-                        # Validação W′eff
-                        _weff_ok5 = _weff5 is not None and _weff5 > 95
-                        if _weff_ok5:
-                            st.success(
-                                f"✅ W′eff@120s = {_weff5:.1f}% — plateia atingida (~110s). "
-                                f"Consistente com interpretação de capacidade anaeróbica fixa."
-                            )
-                        else:
-                            st.warning(
-                                f"⚠️ W′eff@120s = {_weff5:.1f}% — plateia não atingida. "
-                                f"Os testes disponíveis podem ser todos de duração longa, "
-                                f"limitando a estimativa de Pmax."
-                            )
-
-                        # ── Gráfico OmPD por modalidade ─────────────────────────
-                        _t_min_plot = max(30.0, float(min(_t_obs_mmp)) * 0.3)
-                        _t_max_plot = float(max(_t_obs_mmp)) * 1.5
-                        _t_range5   = np.linspace(_t_min_plot, _t_max_plot, 800)
-
-                        def _ompd_p5(t_arr, cp, wp, pmax_v, A):
-                            tau   = wp / max(pmax_v - cp, 1.0)
-                            base  = wp / t_arr * (1 - np.exp(-t_arr / tau)) + cp
-                            if A and A > 0.5:
-                                decay = np.where(t_arr > TCP_MAX,
-                                                  A * np.log(t_arr / TCP_MAX), 0.0)
-                                return base - decay
-                            return base
-
-                        _y5 = _ompd_p5(_t_range5, _cp5, _wp5, _pm5, _A5 or 0.0)
-
-                        _fig5 = go.Figure()
-
-                        # Curva OmPD
-                        _fig5.add_trace(go.Scatter(
-                            x=_t_range5.tolist(), y=np.maximum(_y5, 0).tolist(),
-                            mode='lines', name='OmPD',
-                            line=dict(color='#8e44ad', width=3),
-                            hovertemplate='t=%{x:.0f}s  P=%{y:.0f}W<extra></extra>'
-                        ))
-
-                        # Separação curto/longo se há extensão
-                        if _A5 and _A5 > 0.5:
-                            _fig5.add_vline(x=TCP_MAX, line_dash='dot',
-                                            line_color='#8e44ad', line_width=1.5,
-                                            annotation_text='TCPmax=30min',
-                                            annotation_font=dict(color='#8e44ad', size=10),
-                                            annotation_position='top left')
-
-                        # Curva CP standard (M1) para comparação
-                        _m1_cp5, _m1_wp5, _, _m1_pp5, _, _ = fit_m1(_mmp_tests,
-                            make_w(_t_obs_mmp, 'none'))
-                        if _m1_cp5:
-                            _y_m1 = [_m1_wp5/t + _m1_cp5 for t in _t_range5]
-                            _fig5.add_trace(go.Scatter(
-                                x=_t_range5.tolist(), y=[max(0,y) for y in _y_m1],
-                                mode='lines', name=f'M1: CP standard  CP={_m1_cp5:.0f}W',
-                                line=dict(color='#e74c3c', width=1.5, dash='dash'),
-                                hovertemplate='t=%{x:.0f}s  P=%{y:.0f}W (M1)<extra></extra>'
-                            ))
-
-                        # Pontos MMP reais
-                        _hover_mmp = [
-                            f"{next((k for k,v in MMP_COLS.items() if v==int(t)), str(int(t))+'s')}: "
-                            f"{p:.0f}W × {int(t)}s"
-                            for p, t in _mmp_tests
-                        ]
-                        _fig5.add_trace(go.Scatter(
-                            x=_t_obs_mmp, y=_p_obs_mmp,
-                            mode='markers+text',
-                            text=[next((k for k,v in MMP_COLS.items() if v==int(t)), str(int(t))+'s')
-                                  for _,t in _mmp_tests],
-                            textposition='top center',
-                            textfont=dict(color='#111', size=11, family='Arial Black'),
-                            marker=dict(size=13, color='#f39c12', symbol='circle',
-                                        line=dict(width=2, color='#2c3e50')),
-                            name='MMP (season bests)',
-                            customdata=_hover_mmp,
-                            hovertemplate='%{customdata}<extra></extra>'
-                        ))
-
-                        # Linhas de referência CP e W′
-                        _fig5.add_hline(y=_cp5, line_dash='dot', line_color='#2c3e50',
-                                        line_width=1.5,
-                                        annotation_text=f'CP={_cp5:.0f}W',
-                                        annotation_font=dict(color='#2c3e50', size=11),
-                                        annotation_position='right')
-
-                        _fig5.update_layout(**BASE,
-                            title=dict(
-                                text=f"OmPD — {_mod} | CP={_cp5:.0f}W | W′={_wp5:.0f}J | "
-                                     f"Pmax={_pm5:.0f}W | A={_A5:.1f}",
-                                font=dict(size=13, color='#111')
-                            ),
-                            height=430, hovermode='closest',
-                            xaxis=dict(title='Duração (s)',
-                                       type='log' if max(_t_obs_mmp) > 1200 else 'linear',
-                                       **AX),
-                            yaxis=dict(title='Potência (W)', **AX)
-                        )
-                        st.plotly_chart(_fig5, use_container_width=True,
-                                        config={'displayModeBar': False, 'responsive': True,
-                                                'scrollZoom': False},
-                                        key=f"ompd_auto_{_mod}")
-
-                        # ── Interpretação automática ────────────────────────────
-                        st.markdown("##### Interpretação")
-                        _has_long5 = any(t > TCP_MAX for _, t in _mmp_tests)
-                        _n_pts5    = len(_mmp_tests)
-
-                        if _has_long5 and _A5 and _A5 > 0.5:
-                            st.info(
-                                f"📉 **Extensão longa activa (A={_A5:.1f}).** "
-                                f"Potência decai ~{_A5:.0f}W por cada dobro de duração após 30min. "
-                                f"Para um esforço de 60min: P ≈ {_ompd_p5(np.array([3600.0]), _cp5, _wp5, _pm5, _A5)[0]:.0f}W. "
-                                f"Para 2h: P ≈ {_ompd_p5(np.array([7200.0]), _cp5, _wp5, _pm5, _A5)[0]:.0f}W."
-                            )
-                        elif not _has_long5:
-                            st.info(
-                                f"⚠️ **Sem pontos >30min.** O OmPD reduz ao modelo de curtas durações "
-                                f"(A=0). Para activar a extensão longa, é necessário MMP60 (1h TT). "
-                                f"CP={_cp5:.0f}W é válido para esforços 2–30min."
-                            )
-
-                        if _n_pts5 < 4:
-                            st.warning(
-                                f"⚠️ Apenas {_n_pts5} pontos MMP. "
-                                f"Para fitting robusto do OmPD são necessários ≥4 pontos "
-                                f"cobrindo múltiplos domínios (sprint, severo, pesado, longo)."
-                            )
-
-                        # Export CSV por modalidade
-                        _exp5 = pd.DataFrame({
-                            'Modalidade': [_mod],
-                            'CP (W)': [round(_cp5, 1)],
-                            "W' (J)": [round(_wp5, 0)],
-                            'Pmax (W)': [round(_pm5, 0)],
-                            'A': [round(_A5, 2) if _A5 else 0],
-                            'SEE%': [round(_seep5, 2) if _seep5 else None],
-                            "W'eff@120s%": [round(_weff5, 1) if _weff5 else None],
-                            'N pontos MMP': [_n_pts5],
-                        })
-                        _csv5 = _exp5.to_csv(index=False).encode('utf-8')
-                        st.download_button(
-                            f"⬇️ Export OmPD {_mod} (CSV)",
-                            _csv5,
-                            f"ompd_{_mod.lower()}_mmp.csv",
-                            "text/csv",
-                            key=f"dl_ompd_{_mod}"
-                        )
 
     # Export
     st.markdown("---")
