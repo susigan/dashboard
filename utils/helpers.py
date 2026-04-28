@@ -1965,34 +1965,18 @@ def calcular_nlss(df_act, df_wellness=None,
                    .sort_values('Data')
                    .reset_index(drop=True))
 
-    # Primário: MMP20 de Bike — 1 ponto por ano
+    # Primário: MMP20 de Bike — 1 ponto por ano, escala consistente
+    # Usar APENAS MMP20 — misturar MMP3 (347W) com MMP20 (228W) cria
+    # inconsistência de escala: o optimizador interpreta a diferença como
+    # variação de performance quando são durações diferentes → fica no prior.
     _tests_mmp20 = _max_anual_mmp(_df_bike, 'mmp20_w')
-    _tests_mmp5  = _max_anual_mmp(_df_bike, 'mmp5_w')
-    _tests_mmp3  = _max_anual_mmp(_df_bike, 'mmp3_w')
 
-    # Combinar MMP20 + MMP5 + MMP3 — máximo de CADA duração por ano
-    # Assim cada ano contribui com até 3 pontos (uma por duração)
-    # MMP20 é o mais fiável — não substituir pelo MMP5/3 do mesmo ano
-    _all_tests = pd.concat([_tests_mmp20, _tests_mmp5, _tests_mmp3], ignore_index=True)
-
-    if not _all_tests.empty:
-        _all_tests['Data'] = pd.to_datetime(_all_tests['Data'])
-        _all_tests = _all_tests.sort_values('Data').reset_index(drop=True)
-        # Remover duplicatas de datas muito próximas (mesmo dia) mantendo o maior
-        _all_tests['_date_key'] = _all_tests['Data'].dt.date
-        _all_tests = (_all_tests.sort_values('watts', ascending=False)
-                                .drop_duplicates('_date_key', keep='first')
-                                .sort_values('Data')
-                                .reset_index(drop=True)
-                                [['Data', 'watts']])
-        tests_df      = _all_tests
-        n_mmp20       = len(_tests_mmp20)
-        n_mmp5        = len(_tests_mmp5)
-        n_mmp3        = len(_tests_mmp3)
-        _fonte_testes = f'Bike MMP20({n_mmp20})+MMP5({n_mmp5})+MMP3({n_mmp3}) — maximo anual por duracao'
+    if not _tests_mmp20.empty:
+        tests_df      = _tests_mmp20.copy()
+        _fonte_testes = f'Bike MMP20 — maximo anual ({len(_tests_mmp20)} pontos)'
     else:
         tests_df      = pd.DataFrame(columns=['Data', 'watts'])
-        _fonte_testes = 'Sem dados de Bike'
+        _fonte_testes = 'Sem dados de Bike MMP20'
 
     # Fallback: todas as modalidades se Bike insuficiente
     if len(tests_df) < 2:
@@ -2097,8 +2081,9 @@ def calcular_nlss(df_act, df_wellness=None,
         })
 
     K1, K2, T1, T2 = theta_current
-    n_in_window = int(np.sum((test_days_arr >= n_days - window_l) &
-                              (test_days_arr < n_days)))
+    # Contar testes na janela final correctamente
+    # Usar todos os testes disponíveis (janela alargada para ver todos)
+    n_in_window = len(test_days_arr)
     lam_final   = _nlss_lambda(n_in_window)
 
     # ── 5. p̂(t) — série completa vectorizada ─────────────────────────────────
