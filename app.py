@@ -109,7 +109,7 @@ def main():
     with tab11: tab_corporal(dc, ac_full, wc=wc)
     with tab12: tab_padrao(ac_full, wc)
     with tab13: tab_ctl_kj(ac_full)
-    with tab14: tab_cp_model()
+    with tab14: tab_cp_model(ac_full=ac_full)
     with tab15: tab_fmt_tensor(ac_full, wc=wc_full)  # FMT Tensor κ — Della Mattia 2019
 
 
