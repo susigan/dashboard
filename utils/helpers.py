@@ -1988,6 +1988,23 @@ def calcular_nlss(df_act, df_wellness=None,
             tests_df      = pd.DataFrame(columns=['Data', 'watts'])
             _fonte_testes = 'Sem dados de Bike'
 
+    # Enriquecer com MMP5 e MMP3 de Bike por ano (pontos adicionais de ancoragem)
+    # Nota: misturar durações reduz precisão de K1/K2 mas melhora ancoragem de p̂(t)
+    # Só adicionar se MMP20 já existe para esse ano (para não substituir)
+    if len(tests_df) >= 1:
+        _anos_com_mmp20 = set(pd.to_datetime(tests_df['Data']).dt.year)
+        for _col_extra in ['mmp5_w', 'mmp3_w']:
+            _t_extra = _max_anual_mmp(_df_bike, _col_extra)
+            if not _t_extra.empty:
+                # Só anos SEM MMP20 (não duplicar o mesmo ano)
+                _t_extra['_ano'] = pd.to_datetime(_t_extra['Data']).dt.year
+                _t_extra = _t_extra[~_t_extra['_ano'].isin(_anos_com_mmp20)]
+                if not _t_extra.empty:
+                    tests_df = pd.concat(
+                        [tests_df, _t_extra[['Data','watts']]], ignore_index=True
+                    ).sort_values('Data').reset_index(drop=True)
+                    _fonte_testes += f' + {_col_extra.replace("_w","").upper()} anos extras'
+
     # Fallback: todas as modalidades se Bike insuficiente
     if len(tests_df) < 2:
         _all = df.copy()
@@ -2000,8 +2017,22 @@ def calcular_nlss(df_act, df_wellness=None,
         else:
             _fonte_testes = 'Insuficiente'
 
+    # ── Limitar TSS ao período relevante ────────────────────────────────────
+    # Problema: sem testes em 2017-2023, p̂(t) extrapola sem âncora e cria
+    # picos de forma fictícios (ex: Set/2023 = 299W sem nenhum teste real).
+    # Solução: usar TSS apenas a partir de (primeiro_teste - 365 dias).
+    # Isto garante que o modelo tem contexto de treino antes do primeiro teste
+    # mas não extrapola décadas sem dados de performance.
+    if len(tests_df) >= 1:
+        _primeiro_teste = pd.to_datetime(tests_df['Data'].min())
+        _tss_inicio     = _primeiro_teste - pd.Timedelta(days=365)
+        _tss_inicio_date = _tss_inicio.date()
+        # Recortar ld e reindexar
+        ld = ld[pd.to_datetime(ld['Data']).dt.date >= _tss_inicio_date].reset_index(drop=True)
+        tss_arr = ld['tss_val'].values.astype(np.float64)
+        n_days  = len(tss_arr)
 
-    # Mapear para índices da série diária
+    # Mapear para índices da série diária (após eventual corte)
     date_to_idx = {pd.Timestamp(d).date(): i
                    for i, d in enumerate(ld['Data'])}
     test_days, test_watts, test_dates = [], [], []
@@ -2017,7 +2048,8 @@ def calcular_nlss(df_act, df_wellness=None,
     test_watts_arr = np.array(test_watts, dtype=np.float64)
 
     # ── 3. p0 baseline ────────────────────────────────────────────────────────
-    p0 = float(np.nanpercentile(test_watts_arr, 25)) if len(test_watts_arr) > 0 else 200.0
+    # p0 = mediana dos testes (não percentil 25) — mais robusto com poucos pontos
+    p0 = float(np.nanmedian(test_watts_arr)) if len(test_watts_arr) > 0 else 200.0
 
     # ── 4. Algorithm 1 — recalibração semanal vectorizada ────────────────────
     theta_current = _NLSS_MU_POP.copy()
