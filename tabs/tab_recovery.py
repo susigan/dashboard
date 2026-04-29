@@ -1452,7 +1452,8 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
                 st.metric("Dias nesta Zona", f"{dias_na_zona} dias",
                          delta=f"Seu recorde: {stats_seq.get(zona_atual, {}).get('max', 'N/A')} dias" if zona_atual in stats_seq else None)
             with col_p3:
-                st.metric("Slope Atual", f"{df_corr['slope_7'].iloc[-1]:.4f}")
+                _slope_now = df_corr['slope_7'].dropna().iloc[-1] if df_corr['slope_7'].notna().any() else 0.0
+                st.metric("Slope Atual", f"{_slope_now:.4f}")
             with col_p4:
                 media_historica = stats_seq.get(zona_atual, {}).get('media', 0)
                 if media_historica > 0:
