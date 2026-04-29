@@ -917,24 +917,39 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
     # λ₁/Σλ    → stress concentration: near 1=focal, near 1/d=multisystemic
     _fmt_w = 28
 
+    def _impute_rolling(arr, window=7, min_periods=3):
+        """
+        Imputa NaN com rolling mean dos últimos X dias.
+        Usado para dias sem wellness (ex: fim de semana sem medição HRV).
+        - window=7: janela de 7 dias para calcular o valor esperado
+        - min_periods=3: imputa se há pelo menos 3 dias recentes com dados
+        - Se não há dados suficientes nos últimos 7 dias → mantém NaN
+        Preserva valores reais — só substitui NaN.
+        """
+        s = pd.Series(arr, dtype=float)
+        fill = s.rolling(window, min_periods=min_periods).mean()
+        # Só preencher NaN (não substituir valores reais)
+        return np.where(s.isna(), fill, s).astype(float)
+
     # Overall — começa sempre com CTLγ; adiciona dimensões se disponíveis
-    _dims_overall = [ld['CTLg_perf'].values]
+    # Cada dimensão é imputada por rolling mean 7d antes de entrar no tensor
+    _dims_overall = [_impute_rolling(ld['CTLg_perf'].values)]
     _dim_names    = ['CTLγ']
 
     if 'HRV_trend' in ld.columns and ld['HRV_trend'].notna().sum() >= 20:
-        _dims_overall.append(ld['HRV_trend'].values)
+        _dims_overall.append(_impute_rolling(ld['HRV_trend'].values))
         _dim_names.append('HRV')
     if 'WEED_z' in ld.columns and ld['WEED_z'].notna().sum() >= 20:
-        _dims_overall.append(ld['WEED_z'].values)
+        _dims_overall.append(_impute_rolling(ld['WEED_z'].values))
         _dim_names.append('WEED')
     if 'sleep_z' in ld.columns and ld['sleep_z'].notna().sum() >= 20:
-        _dims_overall.append(ld['sleep_z'].values)
+        _dims_overall.append(_impute_rolling(ld['sleep_z'].values))
         _dim_names.append('Sleep')
     if 'w_stress' in ld.columns and ld['w_stress'].notna().sum() >= 20:
-        _dims_overall.append(ld['w_stress'].values)
+        _dims_overall.append(_impute_rolling(ld['w_stress'].values))
         _dim_names.append("W'")
     if 'hq_drift_z' in ld.columns and ld['hq_drift_z'].notna().sum() >= 20:
-        _dims_overall.append(ld['hq_drift_z'].values)
+        _dims_overall.append(_impute_rolling(ld['hq_drift_z'].values))
         _dim_names.append('HR_drift')
 
     _tensor_dim = len(_dims_overall)
@@ -952,25 +967,25 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
 
     # Legacy 4d kappa (backward compat — se wp_prime disponível)
     if 'wp_prime' in ld.columns and ld['wp_prime'].notna().sum() >= 20:
-        _dims_4d = [ld['CTLg_perf'].values]
+        _dims_4d = [_impute_rolling(ld['CTLg_perf'].values)]
         if 'HRV_trend' in ld.columns and ld['HRV_trend'].notna().sum() >= 20:
-            _dims_4d.append(ld['HRV_trend'].values)
+            _dims_4d.append(_impute_rolling(ld['HRV_trend'].values))
         if 'WEED_z' in ld.columns and ld['WEED_z'].notna().sum() >= 20:
-            _dims_4d.append(ld['WEED_z'].values)
-        _dims_4d.append(ld['wp_prime'].values)
+            _dims_4d.append(_impute_rolling(ld['WEED_z'].values))
+        _dims_4d.append(_impute_rolling(ld['wp_prime'].values))
         if len(_dims_4d) >= 2:
             ld['FMT_kappa_4d'] = _compute_kappa(_dims_4d, _fmt_w)
 
-    # Per-modality 3×3: [CTLγ_mod, HRV_trend, WEED_z] — não muda
+    # Per-modality 3×3: [CTLγ_mod, HRV_trend, WEED_z] — com imputação rolling
     for _mod in ['Bike', 'Row', 'Ski', 'Run']:
         _ctlg_col = f'CTLg_{_mod}'
         if _ctlg_col not in ld.columns or ld[_ctlg_col].notna().sum() < 20:
             continue
-        _dims_mod = [ld[_ctlg_col].values]
+        _dims_mod = [_impute_rolling(ld[_ctlg_col].values)]
         if 'HRV_trend' in ld.columns and ld['HRV_trend'].notna().sum() >= 20:
-            _dims_mod.append(ld['HRV_trend'].values)
+            _dims_mod.append(_impute_rolling(ld['HRV_trend'].values))
         if 'WEED_z' in ld.columns and ld['WEED_z'].notna().sum() >= 20:
-            _dims_mod.append(ld['WEED_z'].values)
+            _dims_mod.append(_impute_rolling(ld['WEED_z'].values))
         if len(_dims_mod) >= 2:
             ld[f'FMT_kappa_{_mod}'] = _compute_kappa(_dims_mod, _fmt_w)
 
