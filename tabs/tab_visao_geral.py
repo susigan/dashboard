@@ -1259,7 +1259,7 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             _KAPPA_P75 = float(_kappa_s.quantile(0.75))
             _KAPPA_P87 = float(_kappa_s.quantile(0.87))
 
-            _kappa_now = float(_kappa_s.iloc[-1])
+            _kappa_now = float(_kappa_s.dropna().iloc[-1]) if _kappa_s.notna().any() else 0.0
             _kappa_pct = float((_kappa_s < _kappa_now).mean() * 100)
 
             # Dias consecutivos acima de p87
@@ -1691,22 +1691,28 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
 
     _src_fry = da_full if da_full is not None and len(da_full) > 0 else da
     if _src_fry is not None and len(_src_fry) > 0:
-        _fry_df = _src_fry.copy()
+        # Usar mesma pipeline do tab_volume: filtrar_principais + add_tempo + norm_tipo
+        # Garante mesma lógica de filtragem e mesmos nomes de colunas
+        _fry_df = filtrar_principais(_src_fry).copy()
+        _fry_df = add_tempo(_fry_df)
         _fry_df['Data'] = pd.to_datetime(_fry_df['Data']).dt.normalize()
-        _fry_df = _fry_df[_fry_df['type'].apply(norm_tipo) != 'WeightTraining']
+        _fry_df['type'] = _fry_df['type'].apply(norm_tipo)
+        _CICLICOS_FRY = ['Bike', 'Run', 'Row', 'Ski']
+        _fry_df = _fry_df[_fry_df['type'].isin(_CICLICOS_FRY)]
 
         # kJ por dia (soma de todas modalidades) — dias sem treino = 0
         _kj_col = next((c for c in ['icu_joules','joules','kj_total']
                         if c in _fry_df.columns and _fry_df[c].notna().any()), None)
         if _kj_col:
-            _fry_daily = (_fry_df.groupby('Data')[_kj_col]
-                          .sum()
-                          .apply(lambda x: x / 1000 if _kj_col == 'icu_joules' else x))
+            _fry_daily_raw = _fry_df.groupby('Data')[_kj_col].sum()
+            # Converter J → kJ se necessário (uma vez, sobre a série inteira)
+            if _kj_col == 'icu_joules':
+                _fry_daily_raw = _fry_daily_raw / 1000
 
             # Reindex para calendário completo — dias sem treino = 0 (não NaN)
-            _fry_idx = pd.date_range(_fry_daily.index.min(),
+            _fry_idx = pd.date_range(_fry_daily_raw.index.min(),
                                       pd.Timestamp.now().normalize(), freq='D')
-            _fry_daily = _fry_daily.reindex(_fry_idx, fill_value=0)
+            _fry_daily = _fry_daily_raw.reindex(_fry_idx, fill_value=0)
 
             # IM = média 7d / std 7d
             _fry_m7 = _fry_daily.rolling(7, min_periods=4).mean()
