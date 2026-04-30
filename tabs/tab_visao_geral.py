@@ -1529,8 +1529,14 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                     st.metric("Carga actual (semana)", _lbl_kj,
                               f"{(_load_ratio-1)*100:+.0f}% vs baseline")
                 with _c_det2:
-                    st.metric("Baseline (média 3 sem)", f"{_kj_b3_mean:.0f} kJ",
-                              f"Sem.ant: {_ratio_sem_ant*100:.0f}% baseline")
+                    st.metric("Baseline global (méd. 3 sem)", f"{_kj_b3_mean:.0f} kJ",
+                              f"Sem.ant: {_ratio_sem_ant*100:.0f}% baseline",
+                              help=(
+                                  "KJ total de TODAS as modalidades (Bike+Row+Ski+Run) "
+                                  "nas últimas 3 semanas completas. "
+                                  "Serve para detectar Deload/Taper global. "
+                                  "A meta por modalidade usa baseline individual (mediana 8 semanas)."
+                              ))
                 with _c_det3:
                     if _semana_iniciando and not _sem_ant_era_taper:
                         _fase = "⏳ Início semana"
@@ -1644,12 +1650,56 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             st.markdown("**⚡ Impacto CTL estimado — semana actual**")
             st.caption(f"Métrica: **{_tl_col}** — consistente com Tab PMC")
             _cc1, _cc2, _cc3, _cc4 = st.columns(4)
-            with _cc1: st.metric("CTL actual",     f"{_ctl_hoje:.1f}")
-            with _cc2: st.metric("ΔCTL estimado",  f"{_delta_ctl_total:+.2f}",
-                                 "✅ no range 1–5" if _dentro_range else
-                                 ("⚠️ abaixo de 1" if _delta_ctl_total < 1 else "⚠️ acima de 5"))
-            with _cc3: st.metric("CTL projectado", f"{_ctl_proj:.1f}")
-            with _cc4: st.metric("TSB projectado", f"{_tsb_proj:.1f}")
+            with _cc1:
+                st.metric("CTL actual", f"{_ctl_hoje:.1f}")
+            with _cc2:
+                st.metric("ΔCTL estimado", f"{_delta_ctl_total:+.2f}",
+                          "✅ no range 1–5" if _dentro_range else
+                          ("⚠️ abaixo de 1" if _delta_ctl_total < 1 else "⚠️ acima de 5"))
+            with _cc3:
+                # CTL projectado: mostrar o valor +/- vs CTL actual
+                _ctl_delta_str = f"{_delta_ctl_total:+.2f} vs actual"
+                st.metric("CTL projectado",
+                          f"{_ctl_proj:.1f}",
+                          delta=_ctl_delta_str,
+                          delta_color="normal" if _delta_ctl_total >= 0 else "inverse",
+                          help=(
+                              f"CTL actual ({_ctl_hoje:.1f}) + ΔCTL estimado ({_delta_ctl_total:+.2f}) "
+                              f"= {_ctl_proj:.1f}. "
+                              "ΔCTL positivo = semana a construir fitness. "
+                              "ΔCTL negativo = semana a perder fitness."
+                          ))
+            with _cc4:
+                # TSB projectado com semáforo: verde/amarelo/vermelho
+                if _tsb_proj > 5:
+                    _tsb_color = "normal"
+                    _tsb_label = f"🟢 {_tsb_proj:.1f}"
+                    _tsb_delta = "Forma positiva — janela de performance"
+                elif _tsb_proj >= -10:
+                    _tsb_color = "off"
+                    _tsb_label = f"🟡 {_tsb_proj:.1f}"
+                    _tsb_delta = "Zona neutra — manutenção"
+                else:
+                    _tsb_color = "inverse"
+                    _tsb_label = f"🔴 {_tsb_proj:.1f}"
+                    _tsb_delta = "Fadiga acumulada — atenção"
+                # Cor adicional via κ FMT tensor
+                _tsb_kappa_note = ""
+                if _kappa_now is not None and _kappa_now > _KAPPA_P87:
+                    _tsb_kappa_note = " | ⚠️ κ>p87"
+                st.metric("TSB projectado",
+                          _tsb_label,
+                          delta=_tsb_delta + _tsb_kappa_note,
+                          delta_color=_tsb_color,
+                          help=(
+                              f"TSB actual ({_tsb_hoje:.1f}) - ΔCTL estimado ({_delta_ctl_total:+.2f}) "
+                              f"= {_tsb_proj:.1f}. "
+                              "🟢 >+5: boa forma para performance. "
+                              "🟡 -10 a +5: zona neutra. "
+                              "🔴 <-10: fadiga elevada. "
+                              + (f"κ={_kappa_now:.2f} (p{int(_kappa_now/_KAPPA_P87*87):.0f}) — "
+                                 "stress sistémico elevado." if _kappa_now is not None else "")
+                          ))
 
             if _delta_rows:
                 with st.expander("🔍 Detalhe ΔCTL por modalidade"):
