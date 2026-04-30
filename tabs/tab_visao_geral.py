@@ -613,7 +613,7 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
     vg_grupo_man  = {vg_p3, vg_p4}
 
     if da_full is not None and len(da_full) > 0:
-        vg_res, _ = analisar_falta_estimulo(da_full, janela_dias=7)
+        vg_res, vg_debug_df = analisar_falta_estimulo(da_full, janela_dias=7)
         if vg_res:
             rows_f, rows_m = [], []
             for mod, d in vg_res.items():
@@ -659,6 +659,29 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 if rows_m:
                     st.dataframe(pd.DataFrame([r for _,r in rows_m]),
                                  width="stretch", hide_index=True)
+
+            # ── Download Need Score debug ────────────────────────────────
+            # Exporta todos os componentes A/B/C/D/E, overload, prescrição
+            # para análise e comparação com métricas alternativas (CTLγ, FMT κ)
+            if vg_debug_df is not None and len(vg_debug_df) > 0:
+                _hoje_str = pd.Timestamp.now().strftime('%Y-%m-%d')
+                _ns_csv = vg_debug_df.to_csv(
+                    index=False, sep=';', decimal=','
+                ).encode('utf-8')
+                st.download_button(
+                    label="📥 Download Need Score — componentes A/B/C/D/E (debug)",
+                    data=_ns_csv,
+                    file_name=f"atheltica_need_score_{_hoje_str}.csv",
+                    mime="text/csv",
+                    key="vg_ns_dl",
+                    help=(
+                        "Exporta todos os componentes do Need Score v4: "
+                        "A (share FTLM deficit), B (quality deficit), "
+                        "C (load deficit), D (FTLM slope), E (interacção A×B), "
+                        "overload flags, prescrição e parâmetros de debug. "
+                        "Útil para comparar com CTLγ/FMT como base de cálculo."
+                    )
+                )
         else:
             st.info("Dados insuficientes para análise de necessidade.")
     else:
