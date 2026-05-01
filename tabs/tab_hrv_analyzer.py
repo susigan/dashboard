@@ -491,6 +491,59 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
         st.warning("Sem dados suficientes de HRV (mínimo 14 dias).")
         return
 
+    # ── Filtro de datas ───────────────────────────────────────────────────────
+    _dw_all = _dw.copy()
+    _dw_all['Data'] = pd.to_datetime(_dw_all['Data'])
+    _da_all = _da.copy() if _da is not None else None
+    if _da_all is not None:
+        _da_all['Data'] = pd.to_datetime(_da_all['Data'])
+
+    _date_min_data = _dw_all['Data'].min().date()
+    _date_max_data = _dw_all['Data'].max().date()
+
+    _fc1, _fc2 = st.columns(2)
+    with _fc1:
+        _filter_from = st.date_input(
+            "📅 Analisar a partir de",
+            value=max(_date_min_data, pd.Timestamp('2023-01-01').date()),
+            min_value=_date_min_data,
+            max_value=_date_max_data,
+            key="hrv_filter_from",
+            help="Exclui dados anteriores a esta data de TODAS as análises. "
+                 "Útil para ignorar períodos com dados incompletos ou de treino muito diferente."
+        )
+    with _fc2:
+        _filter_to = st.date_input(
+            "Até",
+            value=_date_max_data,
+            min_value=_date_min_data,
+            max_value=_date_max_data,
+            key="hrv_filter_to",
+            help="Data final da análise."
+        )
+
+    # Aplicar filtro
+    _dw = _dw_all[
+        (_dw_all['Data'].dt.date >= _filter_from) &
+        (_dw_all['Data'].dt.date <= _filter_to)
+    ].reset_index(drop=True)
+    if _da_all is not None:
+        _da = _da_all[
+            (_da_all['Data'].dt.date >= _filter_from) &
+            (_da_all['Data'].dt.date <= _filter_to)
+        ].reset_index(drop=True)
+
+    _n_hrv = _dw['hrv'].notna().sum()
+    if _n_hrv < 14:
+        st.warning(f"Apenas {_n_hrv} dias de HRV no período seleccionado (mínimo 14). "
+                   "Alarga o intervalo de datas.")
+        return
+
+    st.caption(
+        f"📅 Período de análise: **{_filter_from}** → **{_filter_to}** "
+        f"({(_filter_to - _filter_from).days} dias | {_n_hrv} medições HRV)"
+    )
+
     # ── Construir sinais ──────────────────────────────────────────────────────
     with st.spinner("A construir sinais HRV e treino..."):
         sig_hrv   = _build_hrv_signal(_dw)
@@ -772,7 +825,8 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
                             ),
                             paper_bgcolor='white', font=dict(color='#111', size=11),
                             height=380, margin=dict(t=30, b=30, l=40, r=40),
-                            legend=dict(orientation='h', y=-0.08)
+                            legend=dict(orientation='h', y=-0.08,
+                        font=dict(color='#111', size=10))
                         )
                         st.plotly_chart(_fig_r, use_container_width=True,
                                         config=MC, key='hrv_radar')
