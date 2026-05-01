@@ -891,12 +891,15 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
                 if lag_df.empty:
                     st.warning("Sem dados suficientes.")
                 else:
-                    # Melhor lag por variável
-                    best = (lag_df[lag_df['sig']]
-                            .groupby('var')
-                            .apply(lambda g: g.loc[g['r_abs'].idxmax()])
-                            .reset_index(drop=True)
-                            .sort_values('r_abs', ascending=False))
+                    # Melhor lag por variável — groupby().apply() com idxmax()
+                    # perde colunas no Pandas 2.x → usar merge explícito
+                    _sig_df = lag_df[lag_df['sig']].copy()
+                    if len(_sig_df) > 0:
+                        _best_idx = _sig_df.groupby('var')['r_abs'].idxmax()
+                        best = _sig_df.loc[_best_idx].reset_index(drop=True) \
+                                      .sort_values('r_abs', ascending=False)
+                    else:
+                        best = pd.DataFrame(columns=lag_df.columns)
 
                     if len(best) > 0:
                         st.markdown("**Top correlações significativas por variável:**")
