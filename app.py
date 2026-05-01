@@ -34,6 +34,7 @@ from tabs.tab_padrao       import tab_padrao
 from tabs.tab_ctl_kj       import tab_ctl_kj
 from tabs.tab_cp_model     import tab_cp_model
 from tabs.tab_fmt_tensor   import tab_fmt_tensor
+from tabs.tab_hrv_analyzer import tab_hrv_analyzer
 
 
 def main():
@@ -111,6 +112,7 @@ def main():
     with tab13: tab_ctl_kj(ac_full)
     with tab14: tab_cp_model(ac_full=ac_full)
     with tab15: tab_fmt_tensor(ac_full, wc=wc_full)  # FMT Tensor κ — Della Mattia 2019
+    with tab16: tab_hrv_analyzer(dw, da, wc_full=wc_full, da_full=ac_full)    
 
 
 if __name__ == "__main__":
