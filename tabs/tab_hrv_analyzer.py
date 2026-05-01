@@ -1976,6 +1976,17 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
         _today_desc  = _STATES.get(_state_df['state'].iloc[-1], {}).get('desc', '')
         st.info(f"**Estado actual:** {_today_state}\n\n{_today_desc}")
 
+        # Download estados
+        _st_dl = _state_df[['Data','state_label','state',
+                              'hrv','ln_hrv','hrv_norm','rhr',
+                              'hrv_z28','hrv_slope_7d']].copy()
+        _st_dl['Data'] = _st_dl['Data'].astype(str)
+        st.download_button(
+            "📥 Download estados fisiológicos diários",
+            _st_dl.round(3).to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
+            "atheltica_hrv_estados.csv", "text/csv", key="adv_estados_dl"
+        )
+
     # ── ELASTICIDADE ─────────────────────────────────────────────────────────
     with _adv_tabs[2]:
         st.markdown("#### ⚡ Recovery Elasticity")
@@ -2055,6 +2066,28 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                     "Este é o teu tempo típico de recuperação HRV. "
                     "Usa-o para planear o intervalo entre blocos de carga intensos."
                 )
+                # Download elasticidade
+                _el_dl = pd.DataFrame(elast['events'])
+                if not _el_dl.empty:
+                    _el_dl['date'] = _el_dl['date'].astype(str)
+                    _el_meta = pd.DataFrame([{
+                        'metrica': 'tau_mediana_dias', 'valor': elast['tau_median']},
+                        {'metrica': 'tau_media_dias',   'valor': elast['tau_mean']},
+                        {'metrica': 'n_eventos',         'valor': elast['n_events']},
+                        {'metrica': 'n_recuperados',     'valor': elast['n_recovered']},
+                        {'metrica': 'taxa_recuperacao_pct',
+                         'valor': round(elast['n_recovered']/elast['n_events']*100,1)
+                                  if elast['n_events'] > 0 else 0},
+                    ])
+                    st.download_button(
+                        "📥 Download Recovery Elasticity",
+                        (_el_dl.to_csv(index=False, sep=';', decimal=',') +
+                         '\n--- Métricas ---\n' +
+                         _el_meta.to_csv(index=False, sep=';', decimal=',')
+                        ).encode('utf-8'),
+                        "atheltica_hrv_elasticidade.csv", "text/csv",
+                        key="adv_elast_dl"
+                    )
 
     # ── LAG AVANÇADO ─────────────────────────────────────────────────────────
     with _adv_tabs[3]:
@@ -2167,6 +2200,12 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                     f"nos {_dp_lag} dias seguintes. "
                     "Confidence indica o tamanho amostral — N<10 é exploratório."
                 )
+                st.download_button(
+                    "📥 Download Directional Analysis",
+                    _dir_df.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
+                    f"atheltica_hrv_directional_lag{_dp_lag}d.csv", "text/csv",
+                    key="adv_dir_dl"
+                )
 
     # ── DOSE-RESPONSE ─────────────────────────────────────────────────────────
     with _adv_tabs[5]:
@@ -2228,6 +2267,12 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                     f"X = {_dr_xvar} no dia t. "
                     f"Y = {_dr_yvar} no dia t+{_dr_lag}. "
                     "Curva LOWESS capta relações não-lineares — pico = zona óptima."
+                )
+                st.download_button(
+                    "📥 Download Dose-Response (dados + curva LOWESS)",
+                    dr.round(3).to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
+                    f"atheltica_hrv_dose_response_{_dr_xvar}_lag{_dr_lag}d.csv",
+                    "text/csv", key="adv_dr_dl"
                 )
 
     # ── K-MEANS ───────────────────────────────────────────────────────────────
@@ -2297,6 +2342,18 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                     _clbl = _current_row['cluster_label'].values[0]
                     st.info(f"**Semana actual:** {_clbl}")
 
+                # Download K-means
+                _km_dl = wk_df[['week','cluster_label','load_total','mono_mean',
+                                  'freq','pct_z3','strain_mean',
+                                  'hrv_mean','hrv_next']].copy()
+                _km_dl['week'] = _km_dl['week'].astype(str)
+                st.download_button(
+                    "📥 Download clustering de semanas",
+                    _km_dl.round(3).to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
+                    f"atheltica_hrv_clusters_{_n_clust}k.csv", "text/csv",
+                    key="adv_km_dl"
+                )
+
     # ── TRANSIÇÕES ───────────────────────────────────────────────────────────
     with _adv_tabs[7]:
         st.markdown("#### 🔄 Probabilistic Transition Matrix")
@@ -2356,4 +2413,10 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                     "Lê-se por linha: dado que hoje estás em estado X, "
                     "qual a probabilidade de amanhã estar em Y? "
                     "Diagonal = auto-persistência do estado."
+                )
+                st.download_button(
+                    "📥 Download Transition Matrix",
+                    _tm.to_csv(sep=';', decimal=',').encode('utf-8'),
+                    "atheltica_hrv_transition_matrix.csv", "text/csv",
+                    key="adv_tm_dl"
                 )
