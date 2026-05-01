@@ -837,17 +837,23 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
             # Seleccionar um período para analisar
             st.markdown("---")
             st.markdown("**Analisar em detalhe um período detectado:**")
-            _sel_opts = [f"{p['tipo']} {p['start'].strftime('%d/%m/%Y')} → {p['end'].strftime('%d/%m/%Y')}"
-                         for p in periods[-int(_show_n):]]
+
+            # Construir lista local dos períodos a mostrar (mesmos que nas tabelas)
+            _n_show   = int(_show_n)
+            _show_list = periods[-_n_show:] if len(periods) >= _n_show else periods[:]
+            _sel_opts  = [
+                f"{p['tipo']} {p['start'].strftime('%d/%m/%Y')} → {p['end'].strftime('%d/%m/%Y')}"
+                for p in _show_list
+            ]
             _sel = st.selectbox("Seleccionar período", _sel_opts,
                                 key="hrv_auto_sel")
             if _sel and len(sig_train) > 0:
-                _idx   = _sel_opts.index(_sel)
-                _pidx  = -(int(_show_n) - _idx)
-                _per   = periods[_pidx]
-                _ts    = pd.Timestamp(_per['start'])
-                _te    = pd.Timestamp(_per['end'])
-                cmp    = _compare_periods(sig_hrv, sig_train, _ts, _te, 14)
+                _idx  = _sel_opts.index(_sel)
+                # Índice directo na lista local — sem aritmética negativa
+                _per  = _show_list[_idx]
+                _ts   = pd.Timestamp(_per['start'])
+                _te   = pd.Timestamp(_per['end'])
+                cmp   = _compare_periods(sig_hrv, sig_train, _ts, _te, 14)
                 if not cmp.empty:
                     _sig_rows = cmp[cmp['sig']].sort_values(
                         'Δ%', key=lambda x: pd.to_numeric(x, errors='coerce').abs(),
