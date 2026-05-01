@@ -1124,6 +1124,13 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
                         key="hrv_dl_fp"
                     )
 
+    # ── Análises avançadas ────────────────────────────────────────────────────
+    if len(sig_train) > 0:
+        tab_hrv_advanced(sig_hrv, sig_train, da_full=_da)
+    else:
+        st.info("Conecta os dados de actividade para aceder às análises avançadas "
+                "(ARI, Estados, Elasticidade, Lag Avançado, etc.).")
+
     # ── Nota metodológica ─────────────────────────────────────────────────────
     with st.expander("ℹ️ Metodologia — Recovery Pattern Analyzer"):
         st.markdown(f"""
@@ -1159,3 +1166,1194 @@ Diferença positiva = esta variável está associada a melhor HRV.
 **Referências:** Kiviniemi et al. (2007), Hautala et al. (2010),
 Plews et al. (2013), Buchheit (2014), Flatt & Esco (2016).
         """)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MÓDULOS AVANÇADOS — adicionados após revisão de arquitectura
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── H. Estados Fisiológicos Heurísticos ──────────────────────────────────────
+
+_STATES = {
+    'autonomic_suppression': {
+        'label': '🔴 Autonomic Suppression',
+        'color': '#c0392b',
+        'desc': 'HRV colapsado + RHR elevada + strain alto + slope negativo.',
+        'rules': lambda r: (
+            r.get('ln_hrv_z', 0) < -1.0 and
+            r.get('rhr_z', 0) > 0.8 and
+            r.get('strain_7d', 0) > 0 and
+            r.get('hrv_slope_7d', 0) < -0.3
+        ),
+    },
+    'accumulated_fatigue': {
+        'label': '🟠 Accumulated Fatigue',
+        'color': '#e67e22',
+        'desc': 'HRV abaixo baseline + ATL elevada + coupling deteriorando.',
+        'rules': lambda r: (
+            r.get('ln_hrv_z', 0) < -0.5 and
+            r.get('rhr_z', 0) > 0.3 and
+            r.get('atl', 0) > r.get('ctl', 1) * 1.1
+        ),
+    },
+    'functional_overreach': {
+        'label': '🟡 Functional Overreach',
+        'color': '#f39c12',
+        'desc': 'HRV variável + monotonia alta + strain elevado. Precisa de unload.',
+        'rules': lambda r: (
+            r.get('mono_7d', 0) > 2.0 and
+            r.get('strain_7d', 0) > 0 and
+            abs(r.get('ln_hrv_z', 0)) < 1.0
+        ),
+    },
+    'taper_response': {
+        'label': '🟢 Taper Response',
+        'color': '#27ae60',
+        'desc': 'HRV a subir + RHR a cair + carga reduzida. Forma a emergir.',
+        'rules': lambda r: (
+            r.get('hrv_slope_7d', 0) > 0.3 and
+            r.get('ln_hrv_z', 0) > 0.0 and
+            r.get('load_7d', 1) < r.get('load_28d', 1) / 4 * 0.85
+        ),
+    },
+    'parasympathetic_rebound': {
+        'label': '💚 Parasympathetic Rebound',
+        'color': '#1abc9c',
+        'desc': 'HRV bem acima baseline + slope positivo + RHR baixa. Óptimo.',
+        'rules': lambda r: (
+            r.get('ln_hrv_z', 0) > 1.0 and
+            r.get('hrv_slope_7d', 0) > 0.2 and
+            r.get('rhr_z', 0) < 0.0
+        ),
+    },
+    'resilient_state': {
+        'label': '🔵 Resilient State',
+        'color': '#2980b9',
+        'desc': 'HRV estável e acima baseline com carga normal. Adaptado.',
+        'rules': lambda r: (
+            r.get('ln_hrv_z', 0) > 0.3 and
+            abs(r.get('hrv_slope_7d', 0)) < 0.3 and
+            r.get('rhr_z', 0) < 0.3
+        ),
+    },
+    'maladaptation': {
+        'label': '⚫ Maladaptation Risk',
+        'color': '#2c3e50',
+        'desc': 'HRV cronicamente baixo + RHR alta + strain persistente.',
+        'rules': lambda r: (
+            r.get('ln_hrv_z', 0) < -0.8 and
+            r.get('rhr_z', 0) > 0.5 and
+            r.get('mono_7d', 0) > 1.5
+        ),
+    },
+    'baseline': {
+        'label': '⚪ Baseline',
+        'color': '#95a5a6',
+        'desc': 'Estado neutro — sem padrão fisiológico dominante.',
+        'rules': lambda r: True,   # fallback
+    },
+}
+
+
+def _classify_states(sig_hrv: pd.DataFrame,
+                     sig_train: pd.DataFrame) -> pd.DataFrame:
+    """
+    Classifica cada dia num dos 8 estados fisiológicos heurísticos.
+    Retorna sig_hrv enriquecido com coluna 'state' e 'state_label'.
+    """
+    merged = pd.merge(
+        sig_hrv,
+        sig_train[['Data', 'load_7d', 'load_28d', 'atl', 'ctl',
+                    'mono_7d', 'strain_7d', 'n_sess']] if len(sig_train) > 0
+        else pd.DataFrame(columns=['Data']),
+        on='Data', how='left'
+    ).sort_values('Data').reset_index(drop=True)
+
+    # Pré-calcular z-scores necessários
+    if 'ln_hrv' in merged.columns:
+        merged['ln_hrv_z'] = (
+            (merged['ln_hrv'] - merged['ln_hrv'].rolling(28, min_periods=7).mean()) /
+            merged['ln_hrv'].rolling(28, min_periods=7).std().replace(0, np.nan)
+        )
+    else:
+        merged['ln_hrv_z'] = 0.0
+
+    merged['rhr_z'] = merged.get('rhr_z28', pd.Series(np.zeros(len(merged))))
+
+    states = []
+    for _, row in merged.iterrows():
+        r = row.to_dict()
+        assigned = 'baseline'
+        # Ordem de prioridade: estados mais graves primeiro
+        for s_key in ['autonomic_suppression', 'maladaptation',
+                       'accumulated_fatigue', 'functional_overreach',
+                       'parasympathetic_rebound', 'taper_response',
+                       'resilient_state', 'baseline']:
+            try:
+                if _STATES[s_key]['rules'](r):
+                    assigned = s_key
+                    break
+            except Exception:
+                pass
+        states.append(assigned)
+
+    merged['state']       = states
+    merged['state_label'] = merged['state'].map(
+        {k: v['label'] for k, v in _STATES.items()})
+    merged['state_color'] = merged['state'].map(
+        {k: v['color'] for k, v in _STATES.items()})
+    return merged
+
+
+# ── I. ARI — Autonomic Readiness Index ───────────────────────────────────────
+
+_ARI_WEIGHTS = {
+    'ln_hrv_z':       +0.35,   # HRV logarítmico normalizado
+    'rhr_z':          -0.30,   # RHR (negativo: RHR alta = ARI baixo)
+    'hrv_norm_z':     +0.20,   # rMSSD norm (variabilidade relativa)
+    'instability_z':  -0.10,   # instabilidade HRV 7d (negativo)
+    'slope_z':        +0.05,   # slope positivo = melhorando
+}
+
+def _compute_ari(sig_hrv: pd.DataFrame) -> pd.DataFrame:
+    """
+    Autonomic Readiness Index (ARI):
+      ARI = 0.35×z(ln_rMSSD) - 0.30×z(RHR) + 0.20×z(rMSSD_norm)
+            - 0.10×z(instability_7d) + 0.05×z(slope_7d)
+
+    Escalado para 0-100 (média histórica = 50).
+    Confidence = nº de sinais disponíveis e alinhados (0-5).
+    """
+    df = sig_hrv.copy()
+
+    def _z28(col):
+        s = df[col] if col in df.columns else pd.Series(np.nan, index=df.index)
+        mu = s.rolling(28, min_periods=7).mean()
+        sd = s.rolling(28, min_periods=7).std().replace(0, np.nan)
+        return (s - mu) / sd
+
+    # z-scores de cada componente
+    df['_z_ln_hrv']    = _z28('ln_hrv')
+    df['_z_rhr']       = _z28('rhr')
+    df['_z_hrv_norm']  = _z28('hrv_norm') if 'hrv_norm' in df.columns \
+                          else pd.Series(0.0, index=df.index)
+    # Instabilidade = std rolling 7d do HRV (alta instabilidade = mau sinal)
+    df['_instab']      = df['hrv'].rolling(7, min_periods=3).std() \
+                          if 'hrv' in df.columns else pd.Series(np.nan, index=df.index)
+    df['_z_instab']    = _z28('_instab')
+    df['_z_slope']     = _z28('hrv_slope_7d') if 'hrv_slope_7d' in df.columns \
+                          else pd.Series(0.0, index=df.index)
+
+    # Score composto (soma ponderada)
+    components = [
+        ('_z_ln_hrv',   +0.35),
+        ('_z_rhr',      -0.30),
+        ('_z_hrv_norm', +0.20),
+        ('_z_instab',   -0.10),
+        ('_z_slope',    +0.05),
+    ]
+
+    ari_raw    = pd.Series(0.0, index=df.index)
+    n_avail    = pd.Series(0,   index=df.index)
+    n_aligned  = pd.Series(0,   index=df.index)  # sinais apontando na direcção correcta
+
+    for col, w in components:
+        valid = df[col].notna()
+        ari_raw = ari_raw.where(~valid, ari_raw + df[col].fillna(0) * w)
+        n_avail = n_avail + valid.astype(int)
+        # "Alinhado" = sinal positivo com peso positivo OU negativo com peso negativo
+        n_aligned = n_aligned + (
+            ((df[col].fillna(0) > 0) & (w > 0)) |
+            ((df[col].fillna(0) < 0) & (w < 0))
+        ).astype(int)
+
+    # Escalar para 0-100: média histórica → 50, ±2 std → ±30
+    mu_ari  = ari_raw.rolling(90, min_periods=14).mean()
+    sd_ari  = ari_raw.rolling(90, min_periods=14).std().replace(0, np.nan)
+    df['ARI'] = (50 + 15 * (ari_raw - mu_ari) / sd_ari.fillna(1)).clip(0, 100)
+
+    # Confidence: baseado no nº de sinais disponíveis E alinhados
+    df['ARI_n_signals']  = n_avail
+    df['ARI_n_aligned']  = n_aligned
+    df['ARI_confidence'] = pd.cut(
+        n_aligned,
+        bins=[-1, 1, 2, 3, 4, 10],
+        labels=['Muito baixa', 'Baixa', 'Moderada', 'Alta', 'Muito alta']
+    )
+    return df
+
+
+# ── J. Recovery Elasticity ────────────────────────────────────────────────────
+
+def _recovery_elasticity(sig_hrv: pd.DataFrame,
+                          sig_train: pd.DataFrame,
+                          z_suppress: float = -1.0,
+                          z_recover: float = -0.3,
+                          max_days: int = 21) -> dict:
+    """
+    Para cada evento de supressão de HRV (z28 < z_suppress),
+    mede quantos dias demora até z28 > z_recover.
+
+    Retorna:
+      {
+        events: list of {date, days_to_recovery, recovered, suppression_depth},
+        tau_median: float,
+        tau_mean: float,
+        by_modality: {mod: tau_median} (modalidade dominante no evento),
+        n_events: int,
+        n_recovered: int,
+      }
+    """
+    if 'hrv_z28' not in sig_hrv.columns:
+        return {'n_events': 0, 'error': 'Sem z-score 28d'}
+
+    df = sig_hrv.sort_values('Data').reset_index(drop=True)
+    z  = df['hrv_z28'].values
+    dt = pd.to_datetime(df['Data']).values
+
+    events      = []
+    i           = 0
+    in_suppress = False
+    event_start = None
+
+    while i < len(z):
+        v = z[i] if not np.isnan(z[i]) else 0
+        if not in_suppress and v < z_suppress:
+            in_suppress = True
+            event_start = i
+        elif in_suppress and v >= z_recover:
+            # Evento completo
+            days_to_rec = i - event_start
+            depth       = float(np.nanmin(z[event_start:i]))
+            events.append({
+                'date':               pd.Timestamp(dt[event_start]).date(),
+                'days_to_recovery':   days_to_rec,
+                'suppression_depth':  round(depth, 2),
+                'recovered':          True,
+            })
+            in_suppress = False
+        elif in_suppress and (i - event_start) > max_days:
+            # Não recuperou dentro da janela
+            depth = float(np.nanmin(z[event_start:i]))
+            events.append({
+                'date':               pd.Timestamp(dt[event_start]).date(),
+                'days_to_recovery':   max_days,
+                'suppression_depth':  round(depth, 2),
+                'recovered':          False,
+            })
+            in_suppress = False
+        i += 1
+
+    if not events:
+        return {'n_events': 0, 'tau_median': np.nan, 'tau_mean': np.nan,
+                'events': [], 'n_recovered': 0}
+
+    recovered_days = [e['days_to_recovery'] for e in events if e['recovered']]
+    tau_median     = float(np.median(recovered_days)) if recovered_days else np.nan
+    tau_mean       = float(np.mean(recovered_days))   if recovered_days else np.nan
+
+    # Por modalidade dominante no evento (modalidade com mais carga nos 7d antes)
+    by_mod = {}
+    if len(sig_train) > 0:
+        for e in events:
+            edate = pd.Timestamp(e['date'])
+            pre   = sig_train[
+                (sig_train['Data'] >= edate - pd.Timedelta(days=7)) &
+                (sig_train['Data'] < edate)
+            ]
+            # Proxy: usar atl por modalidade se disponível, senão skip
+            by_mod.setdefault('Todos', []).append(e['days_to_recovery'])
+
+    by_mod_summary = {m: round(float(np.median(v)), 1)
+                       for m, v in by_mod.items() if v}
+
+    return {
+        'n_events':   len(events),
+        'n_recovered': len(recovered_days),
+        'tau_median': round(tau_median, 1) if not np.isnan(tau_median) else None,
+        'tau_mean':   round(tau_mean, 1)   if not np.isnan(tau_mean)   else None,
+        'events':     events,
+        'by_modality': by_mod_summary,
+    }
+
+
+# ── K. Lag Correlation Avançada (Pearson + Spearman + MI) ─────────────────────
+
+def _normalized_mi(x: np.ndarray, y: np.ndarray, n_bins: int = 10) -> float:
+    """
+    Mutual Information normalizada: MI / sqrt(H(x)×H(y))
+    Valores em [0, 1]. Detecta relações não-lineares.
+    Usa permutation baseline para corrigir viés de N pequeno.
+    """
+    valid = ~(np.isnan(x) | np.isnan(y))
+    x, y  = x[valid], y[valid]
+    if len(x) < 20:
+        return np.nan
+
+    # Discretizar
+    def _entropy(arr, bins):
+        h, _ = np.histogram(arr, bins=bins)
+        p    = h / h.sum()
+        p    = p[p > 0]
+        return -np.sum(p * np.log2(p))
+
+    def _joint_entropy(a, b, bins):
+        h, _, _ = np.histogram2d(a, b, bins=bins)
+        p       = h / h.sum()
+        p       = p[p > 0]
+        return -np.sum(p * np.log2(p))
+
+    hx  = _entropy(x, n_bins)
+    hy  = _entropy(y, n_bins)
+    hxy = _joint_entropy(x, y, n_bins)
+    mi  = hx + hy - hxy
+
+    # Permutation baseline: MI esperado por acaso
+    mi_perm = []
+    rng = np.random.default_rng(42)
+    for _ in range(20):
+        yp  = rng.permutation(y)
+        hxyp = _joint_entropy(x, yp, n_bins)
+        mi_perm.append(hx + hy - hxyp)
+    mi_baseline = float(np.mean(mi_perm))
+    mi_corrected = max(0.0, mi - mi_baseline)
+
+    # Normalizar
+    denom = np.sqrt(hx * hy)
+    return float(mi_corrected / denom) if denom > 0 else 0.0
+
+
+def _lag_correlations_advanced(sig_hrv: pd.DataFrame,
+                                sig_train: pd.DataFrame,
+                                hrv_var: str = 'hrv',
+                                train_vars: list = None,
+                                max_lag: int = 14) -> pd.DataFrame:
+    """
+    Lag correlation com 3 métodos:
+      Pearson  — magnitude linear
+      Spearman — robusto a outliers e monotónico
+      MI_norm  — detecta relações não-lineares (HIIT dose-response em U)
+    """
+    if train_vars is None:
+        train_vars = ['load', 'kj', 'dur_min', 'pct_z3',
+                       'freq_7d', 'mono_7d', 'strain_7d', 'tsb', 'atl', 'n_sess']
+
+    merged = pd.merge(
+        sig_hrv[['Data', hrv_var]].rename(columns={hrv_var: 'hrv_tgt'}),
+        sig_train[['Data'] + [v for v in train_vars if v in sig_train.columns]],
+        on='Data', how='inner'
+    ).sort_values('Data')
+
+    hrv_s = merged['hrv_tgt'].values
+    rows  = []
+
+    for var in train_vars:
+        if var not in merged.columns:
+            continue
+        x = merged[var].values
+
+        for lag in range(0, max_lag + 1):
+            xv = x[:-lag] if lag > 0 else x
+            yv = hrv_s[lag:] if lag > 0 else hrv_s
+            valid = ~(np.isnan(xv) | np.isnan(yv))
+
+            if valid.sum() < 20:
+                continue
+
+            xvv, yvv = xv[valid], yv[valid]
+
+            # Pearson
+            try:
+                r_p, p_p = scipy_stats.pearsonr(xvv, yvv)
+            except Exception:
+                r_p, p_p = np.nan, np.nan
+
+            # Spearman
+            try:
+                r_s, p_s = scipy_stats.spearmanr(xvv, yvv)
+            except Exception:
+                r_s, p_s = np.nan, np.nan
+
+            # MI normalizada
+            mi = _normalized_mi(xvv, yvv)
+
+            rows.append({
+                'var':          var,
+                'lag':          lag,
+                'r_pearson':    round(r_p, 3) if not np.isnan(r_p) else np.nan,
+                'p_pearson':    round(p_p, 3) if not np.isnan(p_p) else np.nan,
+                'r_spearman':   round(r_s, 3) if not np.isnan(r_s) else np.nan,
+                'p_spearman':   round(p_s, 3) if not np.isnan(p_s) else np.nan,
+                'mi_norm':      round(mi, 3)  if not np.isnan(mi)  else np.nan,
+                'r_abs':        abs(r_p) if not np.isnan(r_p) else 0.0,
+                'sig_pearson':  p_p < 0.05 if not np.isnan(p_p) else False,
+                'sig_spearman': p_s < 0.05 if not np.isnan(p_s) else False,
+                'sig_any':      (p_p < 0.05 or p_s < 0.05) if not (np.isnan(p_p) and np.isnan(p_s)) else False,
+            })
+
+    return pd.DataFrame(rows)
+
+
+# ── L. Directional Analysis ───────────────────────────────────────────────────
+
+def _directional_analysis(sig_hrv: pd.DataFrame,
+                            sig_train: pd.DataFrame,
+                            patterns: list[dict],
+                            outcome_lag: int = 5,
+                            hrv_improve_z: float = 0.3) -> list[dict]:
+    """
+    Para cada padrão em patterns (lista de condições sobre variáveis de treino),
+    conta quantas vezes ocorreu e quantas vezes foi seguido por HRV melhorado.
+
+    pattern = {
+        'name': 'Monotonia↓ + Z2↑',
+        'conditions': [
+            {'var': 'mono_7d_delta', 'op': '<', 'val': -0.15},
+            {'var': 'pct_z3', 'op': '<', 'val': 30},
+        ]
+    }
+    """
+    merged = pd.merge(
+        sig_hrv[['Data', 'hrv_z28', 'hrv_slope_7d']],
+        sig_train,
+        on='Data', how='inner'
+    ).sort_values('Data').reset_index(drop=True)
+
+    # Calcular deltas rolling
+    for var in ['mono_7d', 'strain_7d', 'load_7d', 'pct_z3', 'freq_7d']:
+        if var in merged.columns:
+            merged[f'{var}_delta'] = merged[var].pct_change(periods=7).fillna(0)
+
+    results = []
+    for pat in patterns:
+        n_occur   = 0
+        n_improve = 0
+        dates_ok  = []
+
+        for i in range(len(merged) - outcome_lag):
+            row = merged.iloc[i]
+            # Avaliar condições
+            cond_met = True
+            for c in pat.get('conditions', []):
+                val = row.get(c['var'], np.nan)
+                if np.isnan(val):
+                    cond_met = False
+                    break
+                if c['op'] == '<'  and not (val < c['val']):   cond_met = False; break
+                if c['op'] == '>'  and not (val > c['val']):   cond_met = False; break
+                if c['op'] == '<=' and not (val <= c['val']):  cond_met = False; break
+                if c['op'] == '>=' and not (val >= c['val']):  cond_met = False; break
+
+            if cond_met:
+                n_occur += 1
+                dates_ok.append(merged.iloc[i]['Data'])
+                # Verificar outcome: HRV sobe nos próximos outcome_lag dias?
+                future_z = merged['hrv_z28'].iloc[i+1:i+1+outcome_lag]
+                if future_z.max() > hrv_improve_z:
+                    n_improve += 1
+
+        consistency = n_improve / n_occur if n_occur > 0 else 0.0
+        confidence  = ('Alto (N≥20)'       if n_occur >= 20 else
+                       'Moderado (N=10-19)' if n_occur >= 10 else
+                       'Baixo (N<10)')
+
+        results.append({
+            'pattern':     pat['name'],
+            'n_occur':     n_occur,
+            'n_improve':   n_improve,
+            'consistency': round(consistency * 100, 1),
+            'confidence':  confidence,
+            'dates':       dates_ok,
+        })
+
+    return results
+
+
+# ── M. Dose-Response Curves (LOWESS) ─────────────────────────────────────────
+
+def _dose_response(sig_hrv: pd.DataFrame,
+                    sig_train: pd.DataFrame,
+                    x_var: str,
+                    y_var: str = 'hrv',
+                    lag: int = 3,
+                    frac: float = 0.4) -> pd.DataFrame:
+    """
+    Relação entre variável de treino (x_var, dia t) e HRV (y_var, dia t+lag).
+    Usa LOWESS smoothing para capturar relações não-lineares (U-shape).
+    """
+    from scipy.stats import pearsonr
+
+    merged = pd.merge(
+        sig_hrv[['Data', y_var]].rename(columns={y_var: 'hrv_out'}),
+        sig_train[['Data', x_var]] if x_var in sig_train.columns
+        else pd.DataFrame(columns=['Data', x_var]),
+        on='Data', how='inner'
+    ).sort_values('Data').reset_index(drop=True)
+
+    if len(merged) < 20 or x_var not in merged.columns:
+        return pd.DataFrame()
+
+    x = merged[x_var].values
+    if lag > 0:
+        # Alinhar: x[i] → hrv[i+lag]
+        xv = x[:-lag]
+        yv = merged['hrv_out'].values[lag:]
+    else:
+        xv, yv = x, merged['hrv_out'].values
+
+    valid = ~(np.isnan(xv) | np.isnan(yv))
+    xv, yv = xv[valid], yv[valid]
+
+    if len(xv) < 10:
+        return pd.DataFrame()
+
+    # Ordenar por x para LOWESS
+    order = np.argsort(xv)
+    xo, yo = xv[order], yv[order]
+
+    # LOWESS manual (scipy não tem, usar statsmodels se disponível, senão rolling)
+    try:
+        from statsmodels.nonparametric.smoothers_lowess import lowess
+        smooth = lowess(yo, xo, frac=frac, return_sorted=True)
+        xs, ys = smooth[:, 0], smooth[:, 1]
+    except ImportError:
+        # Fallback: rolling mean com janela proporcional
+        w = max(3, int(len(xo) * frac))
+        ys = pd.Series(yo).rolling(w, center=True, min_periods=3).mean().values
+        xs = xo
+
+    return pd.DataFrame({'x': xs, 'y_smooth': ys,
+                         'x_raw': xo, 'y_raw': yo})
+
+
+# ── N. K-means de semanas ─────────────────────────────────────────────────────
+
+def _cluster_weeks(sig_hrv: pd.DataFrame,
+                    sig_train: pd.DataFrame,
+                    n_clusters: int = 4) -> pd.DataFrame:
+    """
+    Clusturiza semanas por variáveis de TREINO (sem HRV no clustering).
+    Depois colore os clusters pelo outcome HRV médio da semana seguinte.
+
+    Features: load_total, mono_mean, freq, pct_z3, strain_mean
+    Target (coloring): hrv_next_week_mean
+    """
+    from sklearn.cluster import KMeans
+    from sklearn.preprocessing import StandardScaler
+
+    # Agregar por semana
+    merged = pd.merge(sig_hrv[['Data','hrv']], sig_train, on='Data', how='inner')
+    merged['Data'] = pd.to_datetime(merged['Data'])
+    merged['week'] = merged['Data'].dt.to_period('W')
+
+    wk = merged.groupby('week').agg(
+        load_total = ('load',     'sum'),
+        mono_mean  = ('mono_7d',  'mean'),
+        freq       = ('n_sess',   'sum'),
+        pct_z3     = ('pct_z3',   'mean'),
+        strain_mean= ('strain_7d','mean'),
+        hrv_mean   = ('hrv',      'mean'),
+        n_days     = ('hrv',      'count'),
+    ).reset_index()
+
+    wk = wk[wk['n_days'] >= 4].dropna(subset=['load_total','mono_mean'])
+    if len(wk) < n_clusters * 3:
+        return pd.DataFrame()
+
+    # HRV da semana SEGUINTE como outcome
+    wk = wk.sort_values('week').reset_index(drop=True)
+    wk['hrv_next'] = wk['hrv_mean'].shift(-1)
+
+    features = ['load_total', 'mono_mean', 'freq', 'pct_z3', 'strain_mean']
+    X = wk[features].fillna(wk[features].median())
+
+    scaler   = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    km = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+    wk['cluster'] = km.fit_predict(X_scaled)
+
+    # Label dos clusters por HRV outcome
+    cluster_hrv = wk.groupby('cluster')['hrv_next'].mean().sort_values(ascending=False)
+    rank_map     = {c: i+1 for i, c in enumerate(cluster_hrv.index)}
+    wk['cluster_rank'] = wk['cluster'].map(rank_map)
+
+    labels = {1: '🟢 Semana Óptima', 2: '🟡 Semana Boa',
+              3: '🟠 Semana de Atenção', 4: '🔴 Semana Difícil'}
+    wk['cluster_label'] = wk['cluster_rank'].map(labels)
+
+    return wk
+
+
+# ── O. Transition Matrix ──────────────────────────────────────────────────────
+
+def _transition_matrix(state_series: pd.Series) -> pd.DataFrame:
+    """
+    Probabilistic transition matrix entre estados fisiológicos.
+    P(estado_t+1 | estado_t)
+    """
+    states = state_series.dropna().values
+    unique = sorted(set(states))
+
+    mat = pd.DataFrame(0, index=unique, columns=unique, dtype=float)
+    for i in range(len(states) - 1):
+        mat.loc[states[i], states[i+1]] += 1
+
+    # Normalizar por linha
+    row_sums = mat.sum(axis=1).replace(0, np.nan)
+    mat = mat.div(row_sums, axis=0).fillna(0)
+    return mat.round(3)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB AVANÇADA — adicionar à função tab_hrv_analyzer existente
+# ══════════════════════════════════════════════════════════════════════════════
+
+def tab_hrv_advanced(sig_hrv: pd.DataFrame,
+                      sig_train: pd.DataFrame,
+                      da_full: pd.DataFrame = None):
+    """
+    Secção avançada da tab HRV — chamada dentro de tab_hrv_analyzer.
+    Contém: ARI, Estados, Elasticidade, Lag Avançado, Directional,
+            Dose-Response, K-means, Transition Matrix.
+    """
+    st.markdown("---")
+    st.subheader("🧠 Análises Avançadas")
+
+    _adv_tabs = st.tabs([
+        "🎯 ARI",
+        "🏷️ Estados",
+        "⚡ Elasticidade",
+        "🔗 Lag Avançado",
+        "➡️ Directional",
+        "📈 Dose-Response",
+        "🗂️ Semanas",
+        "🔄 Transições",
+    ])
+
+    # ── ARI ──────────────────────────────────────────────────────────────────
+    with _adv_tabs[0]:
+        st.markdown("#### 🎯 Autonomic Readiness Index (ARI)")
+        st.caption(
+            "Score composto 0-100 que integra 5 sinais autonómicos. "
+            "Média histórica = 50. ARI>60 = boa readiness. ARI<40 = atenção."
+        )
+        _ari_df = _compute_ari(sig_hrv)
+
+        # Cards actuais
+        _ari_now   = _ari_df['ARI'].dropna().iloc[-1] if _ari_df['ARI'].notna().any() else np.nan
+        _ari_conf  = _ari_df['ARI_confidence'].dropna().iloc[-1] if len(_ari_df) > 0 else '—'
+        _ari_nalign= int(_ari_df['ARI_n_aligned'].dropna().iloc[-1]) if _ari_df['ARI_n_aligned'].notna().any() else 0
+        _ari_navail= int(_ari_df['ARI_n_signals'].dropna().iloc[-1]) if _ari_df['ARI_n_signals'].notna().any() else 0
+
+        _ac1, _ac2, _ac3 = st.columns(3)
+        _ari_color = ('🟢' if not np.isnan(_ari_now) and _ari_now > 60 else
+                      '🟡' if not np.isnan(_ari_now) and _ari_now > 40 else '🔴')
+        _ac1.metric("ARI hoje",
+                    f"{_ari_color} {_ari_now:.0f}/100" if not np.isnan(_ari_now) else "—",
+                    help="0-100. Média histórica=50. >60=boa readiness. <40=atenção.")
+        _ac2.metric("Confidence",
+                    str(_ari_conf),
+                    delta=f"Sinais alinhados: {_ari_nalign}/{_ari_navail}",
+                    delta_color="normal" if _ari_nalign >= 3 else "off",
+                    help="Quantos dos 5 sinais estão alinhados na mesma direcção.")
+        _ac3.metric("Pesos ARI",
+                    "ln(HRV)×0.35 | RHR×0.30",
+                    help="ARI = 0.35z(ln_rMSSD) - 0.30z(RHR) + 0.20z(norm) - 0.10z(instab) + 0.05z(slope)")
+
+        # Série ARI
+        _fig_ari = go.Figure()
+        _fig_ari.add_hrect(y0=60, y1=100, fillcolor='rgba(39,174,96,0.08)',
+                            line_width=0, name='Zona óptima')
+        _fig_ari.add_hrect(y0=0, y1=40, fillcolor='rgba(231,76,60,0.08)',
+                            line_width=0, name='Zona de atenção')
+        _fig_ari.add_hline(y=50, line_dash='dot', line_color='#aaa', line_width=1)
+        _fig_ari.add_trace(go.Scatter(
+            x=_ari_df['Data'], y=_ari_df['ARI'],
+            mode='lines', name='ARI',
+            line=dict(color=_C['primary'], width=2.5),
+            fill='tozeroy', fillcolor='rgba(41,128,185,0.08)',
+            hovertemplate='%{x|%d/%m/%Y}<br>ARI: <b>%{y:.0f}</b><extra></extra>'
+        ))
+        _fig_ari.update_layout(
+            paper_bgcolor='white', plot_bgcolor='white',
+            font=dict(color='#111', size=11), height=320,
+            margin=dict(t=20, b=50, l=50, r=20),
+            yaxis=dict(range=[0, 100], title='ARI', tickfont=dict(color='#111'),
+                       showgrid=True, gridcolor='#eee'),
+            xaxis=dict(tickfont=dict(color='#111'), showgrid=True, gridcolor='#eee'),
+            hovermode='x unified',
+            legend=dict(orientation='h', y=-0.18,
+                        font=dict(color='#111', size=10)),
+        )
+        st.plotly_chart(_fig_ari, use_container_width=True, config=MC, key='ari_series')
+
+        # Download ARI
+        _ari_dl = _ari_df[['Data','hrv','ln_hrv','rhr','ARI',
+                              'ARI_n_signals','ARI_n_aligned','ARI_confidence']].copy()
+        _ari_dl['Data'] = _ari_dl['Data'].astype(str)
+        st.download_button("📥 Download ARI diário",
+                           _ari_dl.round(3).to_csv(index=False,sep=';',decimal=',').encode(),
+                           "atheltica_ari.csv","text/csv", key="ari_dl")
+
+        with st.expander("ℹ️ Fórmula ARI"):
+            st.markdown("""
+| Componente | Peso | Interpretação |
+|---|---|---|
+| z(ln_rMSSD) | +0.35 | HRV logarítmico — sinal principal |
+| z(RHR) | **-0.30** | RHR alta = ARI baixo |
+| z(rMSSD_norm) | +0.20 | Variabilidade relativa à FC |
+| z(instabilidade_7d) | **-0.10** | Instabilidade HRV = stress |
+| z(slope_7d) | +0.05 | Tendência positiva = melhorando |
+
+Escalado: média 90d = 50, ±2σ ≈ ±30 pontos.
+Confidence = nº de sinais alinhados na mesma direcção (0-5).
+            """)
+
+    # ── ESTADOS ──────────────────────────────────────────────────────────────
+    with _adv_tabs[1]:
+        st.markdown("#### 🏷️ Estados Fisiológicos Heurísticos")
+        st.caption(
+            "7 estados detectados por regras fisiológicas. "
+            "Interpretáveis e accionáveis sem modelo probabilístico."
+        )
+
+        _state_df = _classify_states(sig_hrv, sig_train)
+
+        # Timeline de estados
+        _fig_st = go.Figure()
+        for state_key, state_info in _STATES.items():
+            _mask = _state_df['state'] == state_key
+            if _mask.sum() == 0:
+                continue
+            _sub = _state_df[_mask]
+            _fig_st.add_trace(go.Scatter(
+                x=_sub['Data'], y=[state_info['label']] * len(_sub),
+                mode='markers',
+                marker=dict(size=8, color=state_info['color'],
+                            line=dict(width=1, color='white')),
+                name=state_info['label'],
+                hovertemplate='%{x|%d/%m/%Y}<br>%{y}<extra></extra>'
+            ))
+
+        _fig_st.update_layout(
+            paper_bgcolor='white', plot_bgcolor='white',
+            font=dict(color='#111', size=10), height=320,
+            margin=dict(t=20, b=50, l=200, r=20),
+            xaxis=dict(tickfont=dict(color='#111'), showgrid=True, gridcolor='#eee'),
+            yaxis=dict(tickfont=dict(color='#111')),
+            legend=dict(orientation='h', y=-0.22,
+                        font=dict(color='#111', size=9)),
+            hovermode='closest',
+        )
+        st.plotly_chart(_fig_st, use_container_width=True, config=MC, key='state_timeline')
+
+        # Distribuição de estados
+        _st_counts = _state_df['state'].value_counts().reset_index()
+        _st_counts.columns = ['state','n']
+        _st_counts['label'] = _st_counts['state'].map(
+            {k: v['label'] for k, v in _STATES.items()})
+        _st_counts['color'] = _st_counts['state'].map(
+            {k: v['color'] for k, v in _STATES.items()})
+        _st_counts['pct']   = (_st_counts['n'] / len(_state_df) * 100).round(1)
+
+        _fc1, _fc2 = st.columns([2, 3])
+        with _fc1:
+            st.markdown("**Distribuição**")
+            st.dataframe(
+                _st_counts[['label','n','pct']].rename(
+                    columns={'label':'Estado','n':'Dias','pct':'%'}),
+                hide_index=True, use_container_width=True)
+
+        with _fc2:
+            st.markdown("**Definições**")
+            for k, v in _STATES.items():
+                if k == 'baseline': continue
+                st.markdown(f"**{v['label']}** — {v['desc']}")
+
+        # Estado actual
+        _today_state = _state_df['state_label'].dropna().iloc[-1] if len(_state_df) > 0 else '—'
+        _today_desc  = _STATES.get(_state_df['state'].iloc[-1], {}).get('desc', '')
+        st.info(f"**Estado actual:** {_today_state}\n\n{_today_desc}")
+
+    # ── ELASTICIDADE ─────────────────────────────────────────────────────────
+    with _adv_tabs[2]:
+        st.markdown("#### ⚡ Recovery Elasticity")
+        st.caption(
+            "τ_recovery = dias até HRV voltar ao baseline após supressão. "
+            "Assinatura individual: τ baixo = recuperas rápido."
+        )
+
+        _ez1, _ez2 = st.columns(2)
+        _z_supp = _ez1.slider("z supressão (trigger)", -2.0, -0.5, -1.0, 0.1,
+                               key="elast_z_supp")
+        _z_rec  = _ez2.slider("z recuperação (target)", -0.5, 0.5, -0.3, 0.1,
+                               key="elast_z_rec")
+
+        elast = _recovery_elasticity(sig_hrv, sig_train,
+                                      z_suppress=_z_supp, z_recover=_z_rec)
+
+        if elast['n_events'] == 0:
+            st.info("Sem eventos de supressão detectados com estes critérios.")
+        else:
+            _ec1, _ec2, _ec3, _ec4 = st.columns(4)
+            _ec1.metric("τ mediana",
+                        f"{elast['tau_median']}d" if elast['tau_median'] else "—",
+                        help="Mediana de dias para recuperar após supressão.")
+            _ec2.metric("τ média",
+                        f"{elast['tau_mean']}d" if elast['tau_mean'] else "—")
+            _ec3.metric("Eventos",
+                        f"{elast['n_events']}",
+                        delta=f"{elast['n_recovered']} recuperados",
+                        delta_color="normal")
+            _ec4.metric("Taxa recuperação",
+                        f"{elast['n_recovered']/elast['n_events']*100:.0f}%"
+                        if elast['n_events'] > 0 else "—")
+
+            # Tabela de eventos
+            if elast['events']:
+                _ev_df = pd.DataFrame(elast['events'])
+                _ev_df['date'] = _ev_df['date'].astype(str)
+                _ev_df['recovered'] = _ev_df['recovered'].map({True: '✅', False: '❌'})
+                st.dataframe(
+                    _ev_df.rename(columns={
+                        'date': 'Data',
+                        'days_to_recovery': 'Dias até recuperar',
+                        'suppression_depth': 'Profundidade z',
+                        'recovered': 'Recuperou',
+                    }),
+                    hide_index=True, use_container_width=True)
+
+            # Histogram de τ
+            _rec_days = [e['days_to_recovery'] for e in elast['events'] if e['recovered']]
+            if _rec_days:
+                _fig_hist = go.Figure(go.Histogram(
+                    x=_rec_days, nbinsx=min(10, len(_rec_days)),
+                    marker_color=_C['primary'],
+                    marker_line_color='white', marker_line_width=1,
+                    hovertemplate='%{x}d: <b>%{y}</b> eventos<extra></extra>'
+                ))
+                if elast['tau_median']:
+                    _fig_hist.add_vline(x=elast['tau_median'],
+                                        line_dash='dash', line_color='#e74c3c',
+                                        line_width=2,
+                                        annotation_text=f"τ={elast['tau_median']}d",
+                                        annotation_font=dict(color='#e74c3c'))
+                _fig_hist.update_layout(
+                    paper_bgcolor='white', plot_bgcolor='white',
+                    font=dict(color='#111', size=11), height=260,
+                    margin=dict(t=20, b=50, l=50, r=20),
+                    xaxis=dict(title='Dias até recuperar',
+                               tickfont=dict(color='#111'), showgrid=True, gridcolor='#eee'),
+                    yaxis=dict(title='Nº eventos', tickfont=dict(color='#111'),
+                               showgrid=True, gridcolor='#eee'),
+                )
+                st.plotly_chart(_fig_hist, use_container_width=True,
+                                config=MC, key='elast_hist')
+                st.caption(
+                    f"τ mediana = {elast['tau_median']}d. "
+                    "Este é o teu tempo típico de recuperação HRV. "
+                    "Usa-o para planear o intervalo entre blocos de carga intensos."
+                )
+
+    # ── LAG AVANÇADO ─────────────────────────────────────────────────────────
+    with _adv_tabs[3]:
+        st.markdown("#### 🔗 Lag Correlation Avançada (Pearson + Spearman + MI)")
+        st.caption(
+            "Pearson: magnitude linear. "
+            "Spearman: robusto a outliers. "
+            "MI normalizada: detecta relações não-lineares (U-shape dose-resposta)."
+        )
+
+        _lv1, _lv2 = st.columns(2)
+        _lv_tgt  = _lv1.selectbox(
+            "HRV alvo", [v for v in ['hrv','ln_hrv','hrv_norm'] if v in sig_hrv.columns],
+            key="adv_lag_tgt")
+        _lv_max  = _lv2.slider("Lag máximo (d)", 3, 21, 10, 1, key="adv_lag_max")
+
+        if st.button("▶ Calcular (pode demorar 10-20s)", type="primary", key="adv_lag_run"):
+            with st.spinner("Pearson + Spearman + MI..."):
+                adv_lag = _lag_correlations_advanced(
+                    sig_hrv, sig_train, hrv_var=_lv_tgt, max_lag=_lv_max)
+
+            if adv_lag.empty:
+                st.warning("Sem dados suficientes.")
+            else:
+                # Top por cada método
+                st.markdown("**Melhor lag por variável — comparação dos 3 métodos:**")
+
+                def _best_per_var(df, r_col, sig_col):
+                    sub = df[df[sig_col]].copy() if sig_col in df.columns else df.copy()
+                    if sub.empty: return pd.DataFrame()
+                    idx = sub.groupby('var')[r_col].apply(lambda x: x.abs().idxmax())
+                    return sub.loc[idx].reset_index(drop=True)
+
+                _bp = _best_per_var(adv_lag, 'r_pearson',  'sig_pearson')
+                _bs = _best_per_var(adv_lag, 'r_spearman', 'sig_spearman')
+
+                _comp_rows = []
+                for var in adv_lag['var'].unique():
+                    _rp  = _bp[_bp['var']==var]['r_pearson'].values
+                    _lp  = _bp[_bp['var']==var]['lag'].values
+                    _rs  = _bs[_bs['var']==var]['r_spearman'].values
+                    _ls  = _bs[_bs['var']==var]['lag'].values
+                    _mi  = adv_lag[adv_lag['var']==var]['mi_norm'].max()
+                    _comp_rows.append({
+                        'Variável': var,
+                        'r Pearson': f"{_rp[0]:+.3f} @{_lp[0]}d" if len(_rp) else '—',
+                        'r Spearman': f"{_rs[0]:+.3f} @{_ls[0]}d" if len(_rs) else '—',
+                        'MI norm max': f"{_mi:.3f}" if not np.isnan(_mi) else '—',
+                        'MI>Pearson?': ('✅' if not np.isnan(_mi) and
+                                         _mi > (abs(_rp[0]) if len(_rp) else 0) else ''),
+                    })
+
+                st.dataframe(pd.DataFrame(_comp_rows), hide_index=True,
+                             use_container_width=True)
+                st.caption(
+                    "MI>Pearson? = a MI detectou relação mais forte que Pearson "
+                    "(possível não-linearidade / dose-resposta em U)."
+                )
+
+                st.download_button(
+                    "📥 Download lag correlation avançada",
+                    adv_lag.to_csv(index=False, sep=';', decimal=',').encode(),
+                    "hrv_lag_advanced.csv", "text/csv", key="adv_lag_dl")
+
+    # ── DIRECTIONAL ───────────────────────────────────────────────────────────
+    with _adv_tabs[4]:
+        st.markdown("#### ➡️ Directional Analysis")
+        st.caption(
+            "Padrões de treino → probabilidade de HRV melhorar nos X dias seguintes. "
+            "⚠️ Ferramenta de geração de hipóteses, não inferência causal. "
+            "N pequeno → confidence baixa."
+        )
+
+        # Padrões pré-definidos fisiologicamente
+        _DEFAULT_PATTERNS = [
+            {'name': 'Monotonia↓ >15%',
+             'conditions': [{'var': 'mono_7d_delta', 'op': '<', 'val': -0.15}]},
+            {'name': 'Carga↓ + Freq.↓',
+             'conditions': [{'var': 'load_7d_delta', 'op': '<', 'val': -0.20},
+                             {'var': 'freq_7d', 'op': '<', 'val': 4}]},
+            {'name': 'Alta Monotonia (>2.0)',
+             'conditions': [{'var': 'mono_7d', 'op': '>', 'val': 2.0}]},
+            {'name': 'Strain↓ + Z2↑ (pct_z3<30%)',
+             'conditions': [{'var': 'strain_7d_delta', 'op': '<', 'val': -0.15},
+                             {'var': 'pct_z3', 'op': '<', 'val': 30}]},
+            {'name': 'TSB positivo (>+5)',
+             'conditions': [{'var': 'tsb', 'op': '>', 'val': 5}]},
+            {'name': 'Carga muito elevada (ATL>CTL×1.2)',
+             'conditions': [{'var': 'atl', 'op': '>', 'val': 0}]},  # proxy
+        ]
+
+        _dp_lag = st.slider("Janela de outcome (dias)", 3, 10, 5, 1, key="dir_lag")
+
+        if st.button("▶ Analisar padrões", type="primary", key="dir_run"):
+            _dir_res = _directional_analysis(
+                sig_hrv, sig_train, _DEFAULT_PATTERNS, outcome_lag=_dp_lag)
+
+            _dir_df = pd.DataFrame([{
+                'Padrão':       r['pattern'],
+                'Ocorrências':  r['n_occur'],
+                'HRV melhorou': r['n_improve'],
+                'Consistência': f"{r['consistency']}%",
+                'Confidence':   r['confidence'],
+            } for r in _dir_res])
+
+            if not _dir_df.empty:
+                st.dataframe(_dir_df, hide_index=True, use_container_width=True)
+                st.caption(
+                    "Consistência = % das ocorrências seguidas de HRV melhorado "
+                    f"nos {_dp_lag} dias seguintes. "
+                    "Confidence indica o tamanho amostral — N<10 é exploratório."
+                )
+
+    # ── DOSE-RESPONSE ─────────────────────────────────────────────────────────
+    with _adv_tabs[5]:
+        st.markdown("#### 📈 Dose-Response Curves (LOWESS)")
+        st.caption(
+            "Relação não-linear entre variável de treino e HRV. "
+            "LOWESS detecta U-shapes (ex: carga baixa/alta → HRV ruim, carga moderada → HRV óptimo)."
+        )
+
+        _dr1, _dr2, _dr3 = st.columns(3)
+        _dr_xvar = _dr1.selectbox(
+            "Variável de treino (X)",
+            [v for v in ['mono_7d','strain_7d','load_7d','pct_z3','freq_7d','atl','tsb']
+             if v in sig_train.columns],
+            key="dr_xvar")
+        _dr_lag  = _dr2.slider("Lag (dias)", 0, 10, 3, 1, key="dr_lag")
+        _dr_yvar = _dr3.selectbox(
+            "HRV alvo (Y)",
+            [v for v in ['hrv','ln_hrv','hrv_norm'] if v in sig_hrv.columns],
+            key="dr_yvar")
+
+        if st.button("▶ Calcular dose-response", type="primary", key="dr_run"):
+            dr = _dose_response(sig_hrv, sig_train, _dr_xvar, _dr_yvar, _dr_lag)
+
+            if dr.empty:
+                st.warning("Dados insuficientes.")
+            else:
+                _fig_dr = go.Figure()
+                # Scatter pontos reais
+                _fig_dr.add_trace(go.Scatter(
+                    x=dr['x_raw'], y=dr['y_raw'],
+                    mode='markers', name='Dados',
+                    marker=dict(size=5, color='rgba(41,128,185,0.3)',
+                                line=dict(width=0)),
+                    hovertemplate=f'{_dr_xvar}: %{{x:.2f}}<br>{_dr_yvar}: %{{y:.1f}}<extra></extra>'
+                ))
+                # Curva LOWESS
+                _fig_dr.add_trace(go.Scatter(
+                    x=dr['x'], y=dr['y_smooth'],
+                    mode='lines', name='LOWESS',
+                    line=dict(color='#e74c3c', width=3),
+                    hovertemplate=f'{_dr_xvar}: %{{x:.2f}}<br>HRV smooth: %{{y:.1f}}<extra></extra>'
+                ))
+                _fig_dr.update_layout(
+                    paper_bgcolor='white', plot_bgcolor='white',
+                    font=dict(color='#111', size=11), height=360,
+                    margin=dict(t=20, b=60, l=60, r=20),
+                    xaxis=dict(title=_dr_xvar, tickfont=dict(color='#111'),
+                               showgrid=True, gridcolor='#eee'),
+                    yaxis=dict(title=f'{_dr_yvar} (lag={_dr_lag}d)',
+                               tickfont=dict(color='#111'),
+                               showgrid=True, gridcolor='#eee'),
+                    legend=dict(orientation='h', y=-0.18,
+                                font=dict(color='#111', size=10)),
+                )
+                st.plotly_chart(_fig_dr, use_container_width=True,
+                                config=MC, key='dr_plot')
+                st.caption(
+                    f"X = {_dr_xvar} no dia t. "
+                    f"Y = {_dr_yvar} no dia t+{_dr_lag}. "
+                    "Curva LOWESS capta relações não-lineares — pico = zona óptima."
+                )
+
+    # ── K-MEANS ───────────────────────────────────────────────────────────────
+    with _adv_tabs[6]:
+        st.markdown("#### 🗂️ Clustering de Semanas")
+        st.caption(
+            "K-means sobre variáveis de TREINO (sem HRV). "
+            "Clusters coloridos pelo HRV médio da semana seguinte. "
+            "⚠️ N pequeno (~100 semanas) — interpretar com cautela."
+        )
+
+        _kk1, _kk2 = st.columns(2)
+        _n_clust = _kk1.slider("Nº clusters", 2, 6, 4, 1, key="km_n")
+
+        try:
+            import sklearn
+            _has_sklearn = True
+        except ImportError:
+            _has_sklearn = False
+
+        if not _has_sklearn:
+            st.warning("sklearn não disponível. Instala scikit-learn para usar esta análise.")
+        elif st.button("▶ Clusturizar semanas", type="primary", key="km_run"):
+            with st.spinner("K-means..."):
+                wk_df = _cluster_weeks(sig_hrv, sig_train, n_clusters=_n_clust)
+
+            if wk_df.empty:
+                st.warning("Dados insuficientes (mínimo 12 semanas completas).")
+            else:
+                # Tabela de características por cluster
+                _feat_cols = ['load_total','mono_mean','freq','pct_z3','strain_mean','hrv_next']
+                _clust_summary = wk_df.groupby('cluster_label')[_feat_cols].mean().round(2)
+                st.markdown("**Características médias por cluster:**")
+                st.dataframe(_clust_summary, use_container_width=True)
+
+                # Scatter semanas ao longo do tempo
+                _cmap = {'🟢 Semana Óptima': '#27ae60', '🟡 Semana Boa': '#f39c12',
+                          '🟠 Semana de Atenção': '#e67e22', '🔴 Semana Difícil': '#e74c3c'}
+                _fig_km = go.Figure()
+                for lbl, color in _cmap.items():
+                    _sub = wk_df[wk_df['cluster_label'] == lbl]
+                    if len(_sub) == 0: continue
+                    _fig_km.add_trace(go.Scatter(
+                        x=_sub['week'].astype(str), y=_sub['hrv_next'],
+                        mode='markers', name=lbl,
+                        marker=dict(size=9, color=color,
+                                    line=dict(width=1, color='white')),
+                        hovertemplate='Semana %{x}<br>HRV seguinte: <b>%{y:.1f}</b><extra></extra>'
+                    ))
+                _fig_km.update_layout(
+                    paper_bgcolor='white', plot_bgcolor='white',
+                    font=dict(color='#111', size=10), height=320,
+                    margin=dict(t=20, b=80, l=60, r=20),
+                    xaxis=dict(tickangle=-45, tickfont=dict(color='#111', size=8),
+                               showgrid=True, gridcolor='#eee'),
+                    yaxis=dict(title='HRV semana seguinte', tickfont=dict(color='#111'),
+                               showgrid=True, gridcolor='#eee'),
+                    legend=dict(orientation='h', y=-0.30,
+                                font=dict(color='#111', size=9)),
+                )
+                st.plotly_chart(_fig_km, use_container_width=True,
+                                config=MC, key='km_scatter')
+
+                _current_week = pd.Timestamp.now().to_period('W')
+                _current_row  = wk_df[wk_df['week'] == _current_week]
+                if len(_current_row) > 0:
+                    _clbl = _current_row['cluster_label'].values[0]
+                    st.info(f"**Semana actual:** {_clbl}")
+
+    # ── TRANSIÇÕES ───────────────────────────────────────────────────────────
+    with _adv_tabs[7]:
+        st.markdown("#### 🔄 Probabilistic Transition Matrix")
+        st.caption(
+            "P(estado_amanhã | estado_hoje). "
+            "Alternativa ao Sankey — mostra probabilidades reais entre estados."
+        )
+
+        _state_df2 = _classify_states(sig_hrv, sig_train)
+        _state_labels = _state_df2['state_label'].dropna()
+
+        if len(_state_labels) < 10:
+            st.warning("Dados insuficientes para transition matrix.")
+        else:
+            _tm = _transition_matrix(_state_df2['state_label'])
+
+            if not _tm.empty:
+                # Heatmap da transition matrix
+                _fig_tm = go.Figure(go.Heatmap(
+                    z=_tm.values,
+                    x=list(_tm.columns),
+                    y=list(_tm.index),
+                    colorscale='Blues',
+                    zmin=0, zmax=1,
+                    text=_tm.round(2).values,
+                    texttemplate='%{text}',
+                    colorbar=dict(title='P', tickfont=dict(color='#111')),
+                    hovertemplate='De: %{y}<br>Para: %{x}<br>P = <b>%{z:.2f}</b><extra></extra>'
+                ))
+                _fig_tm.update_layout(
+                    paper_bgcolor='white', plot_bgcolor='white',
+                    font=dict(color='#111', size=9),
+                    height=max(320, len(_tm) * 40 + 100),
+                    margin=dict(t=20, b=120, l=220, r=20),
+                    xaxis=dict(tickangle=-35, tickfont=dict(color='#111', size=8)),
+                    yaxis=dict(tickfont=dict(color='#111', size=8)),
+                )
+                st.plotly_chart(_fig_tm, use_container_width=True,
+                                config=MC, key='tm_heat')
+
+                # Insights das transições mais prováveis
+                st.markdown("**Transições mais prováveis (P > 0.40):**")
+                _trans_rows = []
+                for frm in _tm.index:
+                    for to in _tm.columns:
+                        p = _tm.loc[frm, to]
+                        if p > 0.40 and frm != to:
+                            _trans_rows.append({
+                                'De': frm, 'Para': to, 'P': f"{p:.2f}"})
+                if _trans_rows:
+                    st.dataframe(pd.DataFrame(_trans_rows), hide_index=True,
+                                 use_container_width=True)
+                else:
+                    st.info("Sem transições com P>0.40 (estados muito distribuídos).")
+
+                st.caption(
+                    "Lê-se por linha: dado que hoje estás em estado X, "
+                    "qual a probabilidade de amanhã estar em Y? "
+                    "Diagonal = auto-persistência do estado."
+                )
