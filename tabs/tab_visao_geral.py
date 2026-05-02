@@ -2302,13 +2302,13 @@ Estes valores são específicos deste atleta. Recalibrar anualmente com novos da
                     if intensidade_final == 'descanso' or kj == 0:
                         tipo = '🔵 Descanso'; dur = '—'; rpe = '—'; kj = 0.0
                     elif intensidade_final == 'z3':
-                        tipo = '🔴 HIIT / Z3'; rpe_n = min(9, round(_rpe_tipico_treino + 1.5))
+                        tipo = '🔴 HIIT / Z3'; rpe_n = 8   # Z3 = RPE≥7 — usar 8 como centro da zona
                         dur = _kj_to_hms(kj, _kj_z3); rpe = str(rpe_n)
                     elif intensidade_final == 'z2':
-                        tipo = '🟡 Moderado Z2'; rpe_n = round(_rpe_tipico_treino)
+                        tipo = '🟡 Moderado Z2'; rpe_n = 5  # Z2 = RPE 5-6
                         dur = _kj_to_hms(kj, _kj_z2); rpe = str(rpe_n)
                     else:
-                        tipo = '🟢 Leve Z1'; rpe_n = max(3, round(_rpe_tipico_treino - 2))
+                        tipo = '🟢 Leve Z1'; rpe_n = 3      # Z1 = RPE 3-4
                         dur = _kj_to_hms(kj, _kj_z1); rpe = str(rpe_n)
 
                     # IM acumulado — usar simulação pré-calculada
