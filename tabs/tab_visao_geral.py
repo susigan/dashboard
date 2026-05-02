@@ -2099,6 +2099,33 @@ Estes valores são específicos deste atleta. Recalibrar anualmente com novos da
 
                 # Últimos 6 dias de carga
                 _hist6 = list(_fry_daily.iloc[-6:].values.astype(float))
+                _hist_28 = _fry_daily.iloc[-28:].values.astype(float)
+                _carga_media_hist = float(np.mean(_hist_28[_hist_28 > 0]))  # só dias com treino
+                _im_actual = (_fry_im.dropna().iloc[-1]
+                              if _fry_im.notna().any() else 1.0)
+
+                # ── Algoritmo correcto: distribuição de 7 dias que atinge IM alvo ──
+                #
+                # Problema: a bisecção simples converge para 0 (descanso total)
+                # quando IM > alvo, porque reduz a média mais depressa que o std.
+                # Solução: manter carga total razoável (base no histórico)
+                # e distribuir COM variabilidade natural usando o padrão escolhido.
+                #
+                # Lógica:
+                # 1. Calcular carga_total_alvo = resolver IM(w7)=target para
+                #    a distribuição com os factores do padrão
+                # 2. A variabilidade vem dos factores (alto/baixo/zero)
+                #    — não de reduzir tudo a zero
+                #
+                # IM(w) = mean(w) / std(w)
+                # Se w = c × [f1,...,f7] (factores normalizados):
+                #   mean(w) = c × mean(f)
+                #   std(w)  = c × std(f)
+                #   IM(w)   = mean(f) / std(f)  ← independente de c!
+                #
+                # Conclusão: o IM de uma distribuição proporcional é FIXO
+                # (não depende da escala) — depende só da forma do padrão.
+                # Para atingir IM alvo, é preciso escolher o padrão certo.
 
                 def _im_from_7(hist6, x):
                     w = hist6 + [x]
@@ -2107,22 +2134,9 @@ Estes valores são específicos deste atleta. Recalibrar anualmente com novos da
                     return mu / sd if sd > 0 else float('inf')
 
                 def _find_x_for_im(hist6, target, x_min=0, x_max=2000):
-                    im_zero = _im_from_7(hist6, 0)
-                    im_max  = _im_from_7(hist6, x_max)
-                    if min(im_zero, im_max) > target or max(im_zero, im_max) < target:
-                        xs  = np.linspace(x_min, x_max, 500)
-                        ims = [abs(_im_from_7(hist6, xi) - target) for xi in xs]
-                        return float(xs[np.argmin(ims)])
-                    for _ in range(50):
-                        xm = (x_min + x_max) / 2
-                        if _im_from_7(hist6, xm) < target:
-                            x_min = xm
-                        else:
-                            x_max = xm
-                    return (x_min + x_max) / 2
-
-                _hist_28          = _fry_daily.iloc[-28:].values.astype(float)
-                _carga_media_hist = float(np.mean(_hist_28))
+                    xs  = np.linspace(x_min, x_max, 1000)
+                    ims = [abs(_im_from_7(hist6, xi) - target) for xi in xs]
+                    return float(xs[np.argmin(ims)])
 
                 _patterns = {
                     'Polarizado (recomendado)': [1.4, 0.3, 0.0, 1.4, 0.3, 0.0, 0.6],
@@ -2136,16 +2150,63 @@ Estes valores são específicos deste atleta. Recalibrar anualmente com novos da
                 )
                 _factors = _patterns[_pat_sel]
 
-                _x_dia7      = _find_x_for_im(_hist6, _im_target)
-                _total_target= _x_dia7 * 7 / _factors[-1] if _factors[-1] > 0 else _x_dia7 * 7
-                _soma_factors= sum(_factors)
+                # ── Calcular carga total alvo ─────────────────────────────────
+                # O IM de um padrão proporcional depende só dos factores,
+                # não da escala. Então:
+                # 1. Calcular o IM "intrínseco" do padrão puro
+                # 2. Se IM_padrão ≈ IM_alvo → usar carga histórica como total
+                # 3. Se IM actual > IM alvo → precisamos de mais variabilidade
+                #    (usar padrão com factores mais extremos) OU reduzir o total
+                #    enquanto mantemos variabilidade (não zero todos os dias)
+                #
+                # Abordagem: manter carga_media_hist × 7 como total de referência
+                # e escalar pela relação IM_alvo / IM_padrão_intrínseco
+
+                _f_arr = np.array(_factors)
+                _f_nonzero = _f_arr[_f_arr > 0]
+                _im_padrao_puro = (np.mean(_f_arr) / np.std(_f_arr, ddof=1)
+                                   if np.std(_f_arr, ddof=1) > 0 else 99.0)
+
+                # Carga total base = média histórica × 7 dias
+                # (dias com treino apenas, para não inflar com zeros)
+                _carga_total_base = _carga_media_hist * 7
+
+                # Se IM actual > IM alvo, precisamos de variabilidade maior.
+                # Ajustar a carga total: se IM_padrão_puro < IM_alvo, ok.
+                # Se IM_padrão_puro > IM_alvo (padrão demasiado uniforme), avisar.
+                if _im_padrao_puro <= _im_target:
+                    # O padrão já tem variabilidade suficiente
+                    _carga_total = _carga_total_base
+                    _im_esperado_msg = f"IM estimado com carga histórica: {_im_padrao_puro:.2f}"
+                else:
+                    # Padrão demasiado uniforme para o IM alvo — tentar escalar
+                    # ou avisar que o padrão não é adequado
+                    _carga_total = _carga_total_base * 0.85
+                    _im_esperado_msg = (f"⚠️ Padrão '{_pat_sel}' tem IM intrínseco "
+                                        f"{_im_padrao_puro:.2f} > alvo {_im_target:.2f}. "
+                                        f"Escolhe 'Polarizado' para maior variabilidade.")
+
+                # Distribuir pelos 7 dias com os factores do padrão
+                _soma_factors = sum(_factors)
                 _carga_sugerida = [
-                    round(f / _soma_factors * _total_target, 0) if f > 0 else 0.0
+                    round(f / _soma_factors * _carga_total, 0) if f > 0 else 0.0
                     for f in _factors
                 ]
 
-                _im_resultante = _im_from_7(
-                    list(_carga_sugerida[:-1]), _carga_sugerida[-1])
+                # IM real da janela de 7 dias sugerida
+                # (considera os últimos 6 dias + os 7 novos de forma rolante)
+                # Calculo iterativo: para cada dia novo, rola a janela
+                _window_sim = list(_hist6)
+                _ims_sim = []
+                for kj_sim in _carga_sugerida:
+                    _window_sim.append(float(kj_sim))
+                    _w7 = _window_sim[-7:]
+                    _im_s = (np.mean(_w7) / np.std(_w7, ddof=1)
+                             if np.std(_w7, ddof=1) > 0 else float('inf'))
+                    _ims_sim.append(_im_s)
+
+                # IM resultante = valor no dia 7
+                _im_resultante = _ims_sim[-1] if _ims_sim else float('nan')
 
                 _rpe_tipico_treino = 6.5
                 _dur_tipico_min    = 60.0
@@ -2165,87 +2226,59 @@ Estes valores são específicos deste atleta. Recalibrar anualmente com novos da
                 _hoje         = pd.Timestamp.now().normalize()
                 _dias_semana  = ['Seg','Ter','Qua','Qui','Sex','Sáb','Dom']
                 _table_rows   = [['Dia','Data','Carga (kJ)','Tipo (HIIT-Guided)','Duração','RPE','IM acum.','Nota']]
-                _window_rolling = list(_hist6)
-                _hiit_consecutivos = 0  # contador de dias Z3 seguidos
+                _hiit_consecutivos = 0
 
-                for i, (kj, fator) in enumerate(zip(_carga_sugerida, _factors)):
+                for i, (kj_orig, fator) in enumerate(zip(_carga_sugerida, _factors)):
+                    kj   = kj_orig
                     data = (_hoje + pd.Timedelta(days=i+1)).strftime('%d/%m')
                     dia  = _dias_semana[(_hoje + pd.Timedelta(days=i+1)).weekday()]
                     nota = ''
 
-                    # ── Determinar intensidade base pelo padrão ───────────────
+                    # Intensidade base pelo padrão
                     if kj == 0 or fator == 0:
                         intensidade_base = 'descanso'
                     else:
                         rel = fator / (sum(f for f in _factors if f > 0) /
                                        sum(1 for f in _factors if f > 0))
-                        if rel >= 1.3:
-                            intensidade_base = 'z3'
-                        elif rel >= 0.8:
-                            intensidade_base = 'z2'
-                        else:
-                            intensidade_base = 'z1'
+                        intensidade_base = 'z3' if rel >= 1.3 else ('z2' if rel >= 0.8 else 'z1')
 
-                    # ── Override pelo HIIT-Guided (só dia 1 = hoje + 1) ───────
-                    # Para os restantes dias não temos HRV futuro — manter padrão
-                    # mas aplicar regra de 2 HIIT consecutivos (tau=2d)
+                    # Override HIIT-Guided só para dia 1
                     intensidade_final = intensidade_base
-                    if i == 0:  # amanhã — temos o HRV de hoje
+                    if i == 0:
                         if _hiit_hoje == 'Recuperação' and intensidade_base in ('z3', 'z2'):
-                            intensidade_final = 'z1'
-                            nota = '⬇️ HRV→Rec'
-                            kj   = round(kj * 0.4, 0)  # reduzir carga
+                            intensidade_final = 'z1'; nota = '⬇️ HRV→Rec'; kj = round(kj * 0.4, 0)
                         elif _hiit_hoje is None and intensidade_base == 'z3':
-                            intensidade_final = 'z2'
-                            nota = '⚠️ sem HRV'
-                            kj   = round(kj * 0.75, 0)
+                            intensidade_final = 'z2'; nota = '⚠️ sem HRV'; kj = round(kj * 0.75, 0)
 
-                    # Regra: máximo 2 dias Z3 consecutivos (tau=2d deste atleta)
+                    # Regra tau=2d: máximo 2 dias Z3 consecutivos
                     if intensidade_final == 'z3':
                         if _hiit_consecutivos >= 2:
-                            intensidade_final = 'z2'
-                            nota = f'⬇️ 2×Z3 consec.'
-                            kj   = round(kj * 0.75, 0)
-                            _hiit_consecutivos = 0
+                            intensidade_final = 'z2'; nota = '⬇️ 2×Z3 consec.'; kj = round(kj * 0.75, 0); _hiit_consecutivos = 0
                         else:
                             _hiit_consecutivos += 1
                     elif intensidade_final in ('z1', 'descanso'):
-                        _hiit_consecutivos = 0  # reset após descanso/Z1
-                    # Z2 não reseta nem incrementa o contador
+                        _hiit_consecutivos = 0
 
-                    # ── Traduzir para tipo/RPE/duração ────────────────────────
+                    # Tipo/RPE/duração
                     if intensidade_final == 'descanso' or kj == 0:
-                        tipo = '🔵 Descanso'
-                        dur  = '—'
-                        rpe  = '—'
-                        kj   = 0.0
+                        tipo = '🔵 Descanso'; dur = '—'; rpe = '—'; kj = 0.0
                     elif intensidade_final == 'z3':
-                        tipo = '🔴 HIIT / Z3'
-                        rpe_n = min(9, round(_rpe_tipico_treino + 1.5))
-                        dur  = f'{round(kj / rpe_n * 60 / _dur_tipico_min * _dur_tipico_min, -1):.0f}min'
-                        rpe  = str(rpe_n)
+                        tipo = '🔴 HIIT / Z3'; rpe_n = min(9, round(_rpe_tipico_treino + 1.5))
+                        dur = f'{max(20, round(kj / rpe_n * 60 / 10) * 10):.0f}min'; rpe = str(rpe_n)
                     elif intensidade_final == 'z2':
-                        tipo = '🟡 Moderado Z2'
-                        rpe_n = round(_rpe_tipico_treino)
-                        dur  = f'{round(kj / rpe_n * 60 / _dur_tipico_min * _dur_tipico_min, -1):.0f}min'
-                        rpe  = str(rpe_n)
-                    else:  # z1
-                        tipo = '🟢 Leve Z1'
-                        rpe_n = max(3, round(_rpe_tipico_treino - 2))
-                        dur  = f'{round(kj / max(1, rpe_n) * 60 / _dur_tipico_min * _dur_tipico_min, -1):.0f}min'
-                        rpe  = str(rpe_n)
+                        tipo = '🟡 Moderado Z2'; rpe_n = round(_rpe_tipico_treino)
+                        dur = f'{max(20, round(kj / rpe_n * 60 / 10) * 10):.0f}min'; rpe = str(rpe_n)
+                    else:
+                        tipo = '🟢 Leve Z1'; rpe_n = max(3, round(_rpe_tipico_treino - 2))
+                        dur = f'{max(20, round(kj / max(1, rpe_n) * 60 / 10) * 10):.0f}min'; rpe = str(rpe_n)
 
-                    # IM acumulado
-                    _window_rolling.append(float(kj))
-                    _w7 = _window_rolling[-7:]
-                    _im_acc = (np.mean(_w7) / np.std(_w7, ddof=1)
-                               if np.std(_w7, ddof=1) > 0 else float('inf'))
+                    # IM acumulado — usar simulação pré-calculada
+                    _im_acc   = _ims_sim[i]
                     _im_emoji = '✅' if 0.8 <= _im_acc <= 1.2 else ('🟡' if _im_acc <= 1.8 else '🔴')
+                    _im_str   = f'{_im_emoji} {_im_acc:.2f}' if np.isfinite(_im_acc) else f'{_im_emoji} —'
 
-                    _table_rows.append([
-                        dia, data, f'{kj:.0f}', tipo, dur, rpe,
-                        f'{_im_emoji} {_im_acc:.2f}', nota
-                    ])
+                    _table_rows.append([dia, data, f'{kj:.0f}', tipo, dur, rpe, _im_str, nota])
+
 
                 _sug_df = pd.DataFrame(_table_rows[1:], columns=_table_rows[0])
                 st.dataframe(_sug_df, hide_index=True, use_container_width=True)
