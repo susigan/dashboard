@@ -2070,6 +2070,220 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
 Estes valores são específicos deste atleta. Recalibrar anualmente com novos dados do HRV Analyzer.
                 """)
 
+            # ── Sugestão de distribuição de carga para próximos 7 dias ───────
+            with st.expander("🗓️ Sugestão de carga — próximos 7 dias para IM óptimo"):
+                st.caption(
+                    "Distribui a carga dos próximos 7 dias para manter IM na zona óptima (0.8–1.2). "
+                    "**Intensidade máxima limitada pelo HIIT-Guided** — "
+                    "se HRV indica Recuperação, o dia é automaticamente rebaixado para Z1/Descanso."
+                )
+
+                # ── HIIT-Guided actual (já calculado acima) ───────────────────
+                # hrv_class = 'HIIT' | 'Recuperação' | None
+                _hiit_hoje = hrv_class if 'hrv_class' in dir() else None
+
+                # Indicador do estado HRV actual
+                if _hiit_hoje == 'HIIT':
+                    st.success(f"🟢 HRV-Guided hoje: **HIIT permitido** — dia 1 pode ser Z3")
+                elif _hiit_hoje == 'Recuperação':
+                    st.warning(f"🔴 HRV-Guided hoje: **Recuperação** — dia 1 limitado a Z1/Descanso")
+                else:
+                    st.info("⬜ HRV-Guided: sem dados de HRV hoje — assumindo neutro (Z2 máx.)")
+
+                # Target IM configurável
+                _im_target = st.slider(
+                    "IM alvo", 0.7, 1.5, 1.0, 0.05,
+                    key="vg_im_target",
+                    help="Zona óptima HRV: 0.8–1.2. Default: 1.0."
+                )
+
+                # Últimos 6 dias de carga
+                _hist6 = list(_fry_daily.iloc[-6:].values.astype(float))
+
+                def _im_from_7(hist6, x):
+                    w = hist6 + [x]
+                    mu = np.mean(w)
+                    sd = np.std(w, ddof=1)
+                    return mu / sd if sd > 0 else float('inf')
+
+                def _find_x_for_im(hist6, target, x_min=0, x_max=2000):
+                    im_zero = _im_from_7(hist6, 0)
+                    im_max  = _im_from_7(hist6, x_max)
+                    if min(im_zero, im_max) > target or max(im_zero, im_max) < target:
+                        xs  = np.linspace(x_min, x_max, 500)
+                        ims = [abs(_im_from_7(hist6, xi) - target) for xi in xs]
+                        return float(xs[np.argmin(ims)])
+                    for _ in range(50):
+                        xm = (x_min + x_max) / 2
+                        if _im_from_7(hist6, xm) < target:
+                            x_min = xm
+                        else:
+                            x_max = xm
+                    return (x_min + x_max) / 2
+
+                _hist_28          = _fry_daily.iloc[-28:].values.astype(float)
+                _carga_media_hist = float(np.mean(_hist_28))
+
+                _patterns = {
+                    'Polarizado (recomendado)': [1.4, 0.3, 0.0, 1.4, 0.3, 0.0, 0.6],
+                    'Progressivo':             [0.5, 0.7, 0.9, 0.0, 1.1, 1.3, 0.5],
+                    'Bloco + recuperação':     [1.2, 1.2, 1.2, 0.0, 0.7, 0.7, 0.0],
+                    'Unload':                  [0.5, 0.0, 0.5, 0.0, 0.5, 0.0, 0.5],
+                }
+                _pat_sel = st.selectbox(
+                    "Padrão de distribuição",
+                    list(_patterns.keys()), key="vg_im_pattern"
+                )
+                _factors = _patterns[_pat_sel]
+
+                _x_dia7      = _find_x_for_im(_hist6, _im_target)
+                _total_target= _x_dia7 * 7 / _factors[-1] if _factors[-1] > 0 else _x_dia7 * 7
+                _soma_factors= sum(_factors)
+                _carga_sugerida = [
+                    round(f / _soma_factors * _total_target, 0) if f > 0 else 0.0
+                    for f in _factors
+                ]
+
+                _im_resultante = _im_from_7(
+                    list(_carga_sugerida[:-1]), _carga_sugerida[-1])
+
+                _rpe_tipico_treino = 6.5
+                _dur_tipico_min    = 60.0
+                try:
+                    if da_full is not None:
+                        _da_hist = filtrar_principais(da_full).copy()
+                        _da_hist['rpe'] = pd.to_numeric(
+                            _da_hist.get('rpe', pd.Series()), errors='coerce')
+                        _da_hist['dur'] = pd.to_numeric(
+                            _da_hist.get('moving_time', pd.Series()), errors='coerce') / 60
+                        _rpe_tipico_treino = float(_da_hist['rpe'].dropna().median())
+                        _dur_tipico_min    = float(_da_hist['dur'].dropna().median())
+                except Exception:
+                    pass
+
+                # ── Geração da tabela com override HIIT-Guided ───────────────
+                _hoje         = pd.Timestamp.now().normalize()
+                _dias_semana  = ['Seg','Ter','Qua','Qui','Sex','Sáb','Dom']
+                _table_rows   = [['Dia','Data','Carga (kJ)','Tipo (HIIT-Guided)','Duração','RPE','IM acum.','Nota']]
+                _window_rolling = list(_hist6)
+                _hiit_consecutivos = 0  # contador de dias Z3 seguidos
+
+                for i, (kj, fator) in enumerate(zip(_carga_sugerida, _factors)):
+                    data = (_hoje + pd.Timedelta(days=i+1)).strftime('%d/%m')
+                    dia  = _dias_semana[(_hoje + pd.Timedelta(days=i+1)).weekday()]
+                    nota = ''
+
+                    # ── Determinar intensidade base pelo padrão ───────────────
+                    if kj == 0 or fator == 0:
+                        intensidade_base = 'descanso'
+                    else:
+                        rel = fator / (sum(f for f in _factors if f > 0) /
+                                       sum(1 for f in _factors if f > 0))
+                        if rel >= 1.3:
+                            intensidade_base = 'z3'
+                        elif rel >= 0.8:
+                            intensidade_base = 'z2'
+                        else:
+                            intensidade_base = 'z1'
+
+                    # ── Override pelo HIIT-Guided (só dia 1 = hoje + 1) ───────
+                    # Para os restantes dias não temos HRV futuro — manter padrão
+                    # mas aplicar regra de 2 HIIT consecutivos (tau=2d)
+                    intensidade_final = intensidade_base
+                    if i == 0:  # amanhã — temos o HRV de hoje
+                        if _hiit_hoje == 'Recuperação' and intensidade_base in ('z3', 'z2'):
+                            intensidade_final = 'z1'
+                            nota = '⬇️ HRV→Rec'
+                            kj   = round(kj * 0.4, 0)  # reduzir carga
+                        elif _hiit_hoje is None and intensidade_base == 'z3':
+                            intensidade_final = 'z2'
+                            nota = '⚠️ sem HRV'
+                            kj   = round(kj * 0.75, 0)
+
+                    # Regra: máximo 2 dias Z3 consecutivos (tau=2d deste atleta)
+                    if intensidade_final == 'z3':
+                        if _hiit_consecutivos >= 2:
+                            intensidade_final = 'z2'
+                            nota = f'⬇️ 2×Z3 consec.'
+                            kj   = round(kj * 0.75, 0)
+                            _hiit_consecutivos = 0
+                        else:
+                            _hiit_consecutivos += 1
+                    elif intensidade_final in ('z1', 'descanso'):
+                        _hiit_consecutivos = 0  # reset após descanso/Z1
+                    # Z2 não reseta nem incrementa o contador
+
+                    # ── Traduzir para tipo/RPE/duração ────────────────────────
+                    if intensidade_final == 'descanso' or kj == 0:
+                        tipo = '🔵 Descanso'
+                        dur  = '—'
+                        rpe  = '—'
+                        kj   = 0.0
+                    elif intensidade_final == 'z3':
+                        tipo = '🔴 HIIT / Z3'
+                        rpe_n = min(9, round(_rpe_tipico_treino + 1.5))
+                        dur  = f'{round(kj / rpe_n * 60 / _dur_tipico_min * _dur_tipico_min, -1):.0f}min'
+                        rpe  = str(rpe_n)
+                    elif intensidade_final == 'z2':
+                        tipo = '🟡 Moderado Z2'
+                        rpe_n = round(_rpe_tipico_treino)
+                        dur  = f'{round(kj / rpe_n * 60 / _dur_tipico_min * _dur_tipico_min, -1):.0f}min'
+                        rpe  = str(rpe_n)
+                    else:  # z1
+                        tipo = '🟢 Leve Z1'
+                        rpe_n = max(3, round(_rpe_tipico_treino - 2))
+                        dur  = f'{round(kj / max(1, rpe_n) * 60 / _dur_tipico_min * _dur_tipico_min, -1):.0f}min'
+                        rpe  = str(rpe_n)
+
+                    # IM acumulado
+                    _window_rolling.append(float(kj))
+                    _w7 = _window_rolling[-7:]
+                    _im_acc = (np.mean(_w7) / np.std(_w7, ddof=1)
+                               if np.std(_w7, ddof=1) > 0 else float('inf'))
+                    _im_emoji = '✅' if 0.8 <= _im_acc <= 1.2 else ('🟡' if _im_acc <= 1.8 else '🔴')
+
+                    _table_rows.append([
+                        dia, data, f'{kj:.0f}', tipo, dur, rpe,
+                        f'{_im_emoji} {_im_acc:.2f}', nota
+                    ])
+
+                _sug_df = pd.DataFrame(_table_rows[1:], columns=_table_rows[0])
+                st.dataframe(_sug_df, hide_index=True, use_container_width=True)
+
+                st.caption(
+                    f"IM alvo: **{_im_target}** → IM estimado: **{_im_resultante:.2f}** | "
+                    f"Carga total 7d: **{sum(_carga_sugerida):.0f} kJ** | "
+                    f"HRV-Guided hoje: **{_hiit_hoje or 'sem dados'}** | "
+                    f"Tau recuperação: **2d** (máx. 2×Z3 consecutivos)"
+                )
+                with st.expander("ℹ️ Lógica de integração HIIT-Guided"):
+                    st.markdown(f"""
+**Hierarquia de decisão por dia:**
+
+1. **HIIT-Guided** (HRV) define a intensidade máxima permitida hoje (dia 1):
+   - HRV → HIIT: intensidade máxima = Z3 ✅
+   - HRV → Recuperação: intensidade máxima = Z1 🔴 (carga reduzida 60%)
+   - Sem HRV: intensidade máxima = Z2 ⚠️
+
+2. **Padrão de monotonia** distribui os 7 dias para atingir IM={_im_target:.1f}
+
+3. **Regra tau=2d** (específica deste atleta): máximo 2 dias Z3 consecutivos.
+   Se o 3.º dia seguido for Z3, é automaticamente rebaixado para Z2.
+
+4. **Dias 2-7**: sem HRV futuro conhecido — apenas o padrão e a regra tau.
+   Para os dias seguintes, o HRV-Guided real do dia deve confirmar a sugestão.
+
+**Legenda coluna "Nota":**
+- ⬇️ HRV→Rec: rebaixado por HRV-Guided indicar recuperação
+- ⬇️ 2×Z3 consec.: rebaixado por tau de recuperação (2d máx. de Z3 seguidos)
+- ⚠️ sem HRV: sem medição hoje, Z3 preventivamente rebaixado para Z2
+                    """)
+                st.info(
+                    "💡 Esta tabela é uma **sugestão de pré-planeamento**. "
+                    "Confirma o HRV-Guided na Tab Recovery antes de cada sessão intensa. "
+                    "ARI > 65 na Tab HRV Analyzer confirma janela de qualidade."
+                )
+
     else:
         st.info("Sem dados de actividades para cálculo.")
 
