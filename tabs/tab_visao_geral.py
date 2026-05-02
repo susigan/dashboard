@@ -2274,15 +2274,28 @@ Estes valores são específicos deste atleta. Recalibrar anualmente com novos da
                             _da_hist_treino['kj_min'] = (_da_hist_treino['kj'] /
                                                           _da_hist_treino['dur_min'])
                             _kj_por_min = float(_da_hist_treino['kj_min'].median())
-                            # Z3 (RPE>=7) tem taxa mais alta
+                            # Taxa por zona — usar só sessões dessa zona
+                            # Z3: RPE>=7
                             _z3_mask = _da_hist_treino['rpe'] >= 7
-                            _kj_z3   = float(_da_hist_treino[_z3_mask]['kj_min'].median())                                        if _z3_mask.sum() >= 3 else _kj_por_min * 1.3
-                            _kj_z2   = float(_da_hist_treino[
-                                (_da_hist_treino['rpe'] >= 5) & (_da_hist_treino['rpe'] < 7)
-                            ]['kj_min'].median()) if ((_da_hist_treino['rpe'] >= 5) & (_da_hist_treino['rpe'] < 7)).sum() >= 3 else _kj_por_min
-                            _kj_z1   = float(_da_hist_treino[
-                                _da_hist_treino['rpe'] < 5
-                            ]['kj_min'].median()) if (_da_hist_treino['rpe'] < 5).sum() >= 3 else _kj_por_min * 0.7
+                            _kj_z3 = float(_da_hist_treino[_z3_mask]['kj_min'].median()) \
+                                     if _z3_mask.sum() >= 3 else _kj_por_min * 1.2
+                            # Z2: RPE 5-6
+                            _z2_mask = (_da_hist_treino['rpe'] >= 5) & (_da_hist_treino['rpe'] < 7)
+                            _kj_z2 = float(_da_hist_treino[_z2_mask]['kj_min'].median()) \
+                                     if _z2_mask.sum() >= 3 else _kj_por_min * 0.85
+                            # Z1: RPE < 5 — se poucos dados Z1, usar metade do Z2
+                            _z1_mask = _da_hist_treino['rpe'] < 5
+                            if _z1_mask.sum() >= 3:
+                                _kj_z1 = float(_da_hist_treino[_z1_mask]['kj_min'].median())
+                            else:
+                                # Sem dados Z1 suficientes: estimar como 55-65% da taxa geral
+                                # Z1 = esforço leve, 55-65% da potência média
+                                _kj_z1 = _kj_por_min * 0.60
+                            # Sanity checks: Z1 < Z2 < Z3 e valores plausíveis
+                            _kj_z1 = min(_kj_z1, _kj_z2 * 0.80)   # Z1 sempre < 80% do Z2
+                            _kj_z1 = max(_kj_z1, 2.0)              # mínimo 2 kJ/min
+                            _kj_z2 = max(_kj_z2, _kj_z1 * 1.20)   # Z2 sempre > Z1
+                            _kj_z3 = max(_kj_z3, _kj_z2 * 1.15)   # Z3 sempre > Z2
                         else:
                             _kj_z3 = _kj_por_min * 1.3
                             _kj_z2 = _kj_por_min
@@ -2320,7 +2333,18 @@ Estes valores são específicos deste atleta. Recalibrar anualmente com novos da
                     else:
                         rel = fator / (sum(f for f in _factors if f > 0) /
                                        sum(1 for f in _factors if f > 0))
-                        intensidade_base = 'z3' if rel >= 1.3 else ('z2' if rel >= 0.8 else 'z1')
+                        # Threshold primário por factor relativo
+                        # Threshold secundário por kJ absoluto:
+                        # se kJ > p75 das sessões históricas → no mínimo Z2
+                        if rel >= 1.3:
+                            intensidade_base = 'z3'
+                        elif rel >= 0.6:  # baixado de 0.8 para 0.6
+                            intensidade_base = 'z2'
+                        else:
+                            intensidade_base = 'z1'
+                        # Override por kJ absoluto — sessões pesadas não são Z1
+                        if intensidade_base == 'z1' and kj > _kj_sessao_max * 0.50:
+                            intensidade_base = 'z2'  # 50% do p90 → pelo menos Z2
 
                     # Override HIIT-Guided só para dia 1
                     intensidade_final = intensidade_base
