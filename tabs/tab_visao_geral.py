@@ -1800,70 +1800,276 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             _strain_hoje= float(_fry_strain.iloc[-1]) if _fry_strain.notna().any() else None
             _im_7d_ant  = float(_fry_im.iloc[-8])  if len(_fry_im) > 8 and pd.notna(_fry_im.iloc[-8]) else None
 
-            # Semáforo
+            # ── Thresholds calibrados pelos achados do HRV Analyzer ──────────
+            # Fonte: análise N=1 longitudinal 2023-2026 (172 semanas)
+            # IM: degradação HRV começa em >1.2 (r=-0.218, p=0.004)
+            # Strain: queda de 7ms em HRV quando >400 (r=-0.270, p<0.001)
+            # Load: zona óptima 150-300 TSS/sem; >300 degradação clara
+            # pct_Z3: óptimo 20-30%; >30% HRV começa a cair
+
+            # Semáforo IM — calibrado por HRV
             if _im_hoje is None:
                 _im_cor = "#888"; _im_emoji = "⬜"; _im_lbl = "Sem dados"
-            elif _im_hoje > 2.0:
-                _im_cor = "#e74c3c"; _im_emoji = "🔴"; _im_lbl = "Supressão imune provável"
-            elif _im_hoje > 1.5:
-                _im_cor = "#f39c12"; _im_emoji = "🟡"; _im_lbl = "Monitorizar"
+            elif _im_hoje > 1.8:
+                _im_cor = "#e74c3c"; _im_emoji = "🔴"; _im_lbl = "HRV suprimido (dados)"
+            elif _im_hoje > 1.2:
+                _im_cor = "#f39c12"; _im_emoji = "🟡"; _im_lbl = "Zona de atenção HRV"
+            elif _im_hoje >= 0.8:
+                _im_cor = "#27ae60"; _im_emoji = "✅"; _im_lbl = "Zona óptima HRV"
             else:
-                _im_cor = "#27ae60"; _im_emoji = "✅"; _im_lbl = "Polarizado"
+                _im_cor = "#2980b9"; _im_emoji = "🔵"; _im_lbl = "Variabilidade muito alta"
+
+            # Semáforo Strain — calibrado por HRV
+            if _strain_hoje is None:
+                _strain_cor = "#888"; _strain_emoji = "⬜"; _strain_lbl = "Sem dados"
+            elif _strain_hoje > 600:
+                _strain_cor = "#e74c3c"; _strain_emoji = "🔴"; _strain_lbl = "HRV suprimido (>600)"
+            elif _strain_hoje > 400:
+                _strain_cor = "#f39c12"; _strain_emoji = "🟡"; _strain_lbl = "Atenção (>400)"
+            elif _strain_hoje >= 100:
+                _strain_cor = "#27ae60"; _strain_emoji = "✅"; _strain_lbl = "Zona óptima (100-400)"
+            else:
+                _strain_cor = "#2980b9"; _strain_emoji = "🔵"; _strain_lbl = "Muito baixo"
+
+            # Calcular load_7d TSS e pct_Z3 se disponíveis
+            _load_7d_tss = None
+            _pct_z3_7d   = None
+            _atl_val     = None
+            try:
+                if da_full is not None and len(da_full) > 0:
+                    _da_rec = filtrar_principais(da_full).copy()
+                    _da_rec['Data'] = pd.to_datetime(_da_rec['Data'])
+                    _ini7 = pd.Timestamp.now().normalize() - pd.Timedelta(days=7)
+                    _da7  = _da_rec[_da_rec['Data'] >= _ini7]
+                    if 'icu_training_load' in _da7.columns:
+                        _load_7d_tss = float(pd.to_numeric(
+                            _da7['icu_training_load'], errors='coerce').sum())
+                    if 'rpe' in _da7.columns and 'moving_time' in _da7.columns:
+                        _dur = pd.to_numeric(_da7['moving_time'], errors='coerce') / 60
+                        _rpe = pd.to_numeric(_da7['rpe'], errors='coerce')
+                        _load_rpe = (_dur * _rpe).fillna(0)
+                        _load_z3  = (_dur * _rpe).where(_rpe >= 7, 0).fillna(0)
+                        if _load_rpe.sum() > 0:
+                            _pct_z3_7d = float(_load_z3.sum() / _load_rpe.sum() * 100)
+            except Exception:
+                pass
+
+            # ATL do PMC
+            try:
+                _csc_key_vg = f'csc_cache_{(str(da_full["Data"].max()) if da_full is not None and "Data" in da_full.columns else "")}_{len(da_full) if da_full is not None else 0}'
+                if _csc_key_vg in st.session_state:
+                    _ld_vg, _ = st.session_state[_csc_key_vg]
+                    if 'ATL' in _ld_vg.columns and len(_ld_vg) > 0:
+                        _atl_val = float(_ld_vg['ATL'].dropna().iloc[-1])
+            except Exception:
+                pass
 
             _fi1, _fi2, _fi3, _fi4 = st.columns(4)
             _fi1.metric(
-                "IM (Índice de Monotonia)",
+                "IM (Monotonia)",
                 f"{_im_hoje:.2f}" if _im_hoje is not None else "—",
                 delta=f"{_im_emoji} {_im_lbl}",
                 delta_color="off",
                 help=(
                     "IM = carga_média_7d / std_carga_7d. "
-                    "Dias sem treino = 0 kJ. "
-                    "<1.5 ✅ | 1.5–2.0 🟡 | >2.0 🔴 supressão imune"
+                    "Thresholds calibrados por HRV (172 semanas N=1): "
+                    "0.8–1.2 ✅ zona óptima (HRV ~50ms) | "
+                    "1.2–1.8 🟡 atenção (HRV começa a cair) | "
+                    ">1.8 🔴 supressão HRV (-8ms por +1 unidade)"
                 )
             )
             _fi2.metric(
-                "Carga média 7d (kJ/dia)",
-                f"{_m7_hoje:.0f}" if _m7_hoje is not None else "—",
-                help="Média de kJ por dia nos últimos 7 dias (dias sem treino = 0)"
+                "Training Strain",
+                f"{_strain_emoji} {_strain_hoje:.0f}" if _strain_hoje is not None else "—",
+                delta=_strain_lbl,
+                delta_color="off",
+                help=(
+                    "Strain = IM × carga_média_7d (kJ). "
+                    "Thresholds calibrados por HRV: "
+                    "100–400 ✅ zona óptima (HRV ~50ms) | "
+                    "400–600 🟡 atenção (HRV -3ms) | "
+                    ">600 🔴 supressão (HRV -7ms vs zona óptima)"
+                )
             )
             _fi3.metric(
-                "Training Strain",
-                f"{_strain_hoje:.0f}" if _strain_hoje is not None else "—",
-                help="Training Strain = IM × carga_média_7d. Combina quantidade e monotonia."
+                "Load 7d (TSS)",
+                f"{_load_7d_tss:.0f}" if _load_7d_tss is not None else f"{_m7_hoje*7:.0f} kJ" if _m7_hoje else "—",
+                delta=(
+                    "✅ zona óptima" if _load_7d_tss and 150 <= _load_7d_tss <= 300 else
+                    "🟡 acima óptimo" if _load_7d_tss and 300 < _load_7d_tss <= 400 else
+                    "🔴 degradação HRV" if _load_7d_tss and _load_7d_tss > 400 else
+                    "🔵 volume baixo" if _load_7d_tss else None
+                ),
+                delta_color="off",
+                help=(
+                    "Load semanal em TSS (icu_training_load). "
+                    "Zonas óptimas por HRV (r=-0.228, p=0.003): "
+                    "150–300 ✅ | 300–400 🟡 | >400 🔴 (-3.3ms HRV por +100 TSS)"
+                )
             )
+            _fi4.metric(
+                "% Z3 (7d)",
+                f"{_pct_z3_7d:.0f}%" if _pct_z3_7d is not None else "—",
+                delta=(
+                    "✅ óptimo (20-30%)" if _pct_z3_7d and 20 <= _pct_z3_7d <= 30 else
+                    "🟡 acima óptimo" if _pct_z3_7d and 30 < _pct_z3_7d <= 50 else
+                    "🔴 muito alto (>50%)" if _pct_z3_7d and _pct_z3_7d > 50 else
+                    "🔵 baixo (<20%)" if _pct_z3_7d else None
+                ),
+                delta_color="off",
+                help=(
+                    "Proporção de carga em Z3 (RPE≥7) nos últimos 7 dias. "
+                    "Zona óptima por HRV (bins k-means 172 semanas): "
+                    "20–30% ✅ pico HRV | >30% começa a cair | >50% risco"
+                )
+            )
+
+            # Linha 2: Δ IM e ATL
+            _fj1, _fj2, _fj3, _fj4 = st.columns(4)
             _delta_im = (
                 f"{_im_hoje - _im_7d_ant:+.2f} vs semana ant."
                 if _im_hoje is not None and _im_7d_ant is not None else None
             )
-            _fi4.metric(
+            _fj1.metric(
                 "Δ IM vs semana anterior",
                 _delta_im or "—",
-                delta_color="inverse" if _im_hoje is not None and _im_hoje > 1.5 else "off"
+                delta_color="inverse" if _im_hoje is not None and _im_hoje > 1.2 else "off"
+            )
+            _fj2.metric(
+                "ATL actual",
+                f"{_atl_val:.1f}" if _atl_val is not None else "—",
+                delta=(
+                    "✅ zona óptima (<30)" if _atl_val and _atl_val < 30 else
+                    "🟡 atenção (30-38)" if _atl_val and 30 <= _atl_val < 38 else
+                    "🔴 supressão lag 13d (>38)" if _atl_val and _atl_val >= 38 else None
+                ),
+                delta_color="off",
+                help=(
+                    "ATL = fadiga aguda (EWM span=7). "
+                    "Preditor mais forte de HRV: r=-0.507 @ lag 13d. "
+                    "ATL>38 → HRV 40% mais baixo nos dias de pico. "
+                    "<30 ✅ | 30–38 🟡 | >38 🔴"
+                )
+            )
+            _fj3.metric(
+                "Carga média 7d (kJ/dia)",
+                f"{_m7_hoje:.0f}" if _m7_hoje is not None else "—",
+                help="Média de kJ por dia nos últimos 7 dias (dias sem treino = 0)"
+            )
+            _fj4.metric(
+                "Sessões Z3/sem",
+                f"{(_pct_z3_7d/100 * len([r for _, r in filtrar_principais(da_full).assign(Data=pd.to_datetime(filtrar_principais(da_full)['Data'])).iterrows() if r['Data'] >= pd.Timestamp.now().normalize() - pd.Timedelta(days=7)]))::.1f}" if _pct_z3_7d is not None and da_full is not None else "—",
+                delta="1–2 sess Z3/sem = óptimo",
+                delta_color="off",
+                help="Sessões com RPE≥7 na última semana. Óptimo: 1-2/semana (20-30% da carga)."
+            ) if False else _fj4.metric(  # simplificado
+                "Freq. semanal",
+                f"{len(filtrar_principais(da_full)[pd.to_datetime(filtrar_principais(da_full)['Data']) >= pd.Timestamp.now().normalize() - pd.Timedelta(days=7)])}" if da_full is not None else "—",
+                delta="4–8 sess/sem sem impacto HRV",
+                delta_color="off",
+                help="Frequência semanal. r=-0.016 — frequência NÃO prediz HRV. Foco na qualidade."
             )
 
-            # Card de alerta se IM > 2.0
-            if _im_hoje is not None and _im_hoje > 2.0:
-                _h_r, _h_g, _h_b = int(_im_cor[1:3],16), int(_im_cor[3:5],16), int(_im_cor[5:7],16)
+            # ── Alertas combinados ────────────────────────────────────────────
+            _alertas = []
+
+            # Alerta IM
+            if _im_hoje is not None and _im_hoje > 1.8:
+                _alertas.append(("🔴", "MONOTONIA CRÍTICA",
+                    f"IM={_im_hoje:.2f} (>1.8) — HRV suprimido empiricamente. "
+                    f"Introduzir sessões Z1 variadas. Cada +1 unidade de IM = -8ms HRV.",
+                    "#e74c3c"))
+            elif _im_hoje is not None and _im_hoje > 1.2:
+                _alertas.append(("🟡", "Monotonia em atenção",
+                    f"IM={_im_hoje:.2f} (zona 1.2-1.8). HRV começa a degradar. "
+                    f"Variar estímulos — zona óptima: 0.8-1.2.",
+                    "#f39c12"))
+
+            # Alerta Strain
+            if _strain_hoje is not None and _strain_hoje > 600:
+                _alertas.append(("🔴", "STRAIN CRÍTICO",
+                    f"Strain={_strain_hoje:.0f} (>600) — queda de 7ms HRV esperada. "
+                    f"Reduzir volume ou variabilidade urgente. Zona óptima: 100-400.",
+                    "#e74c3c"))
+            elif _strain_hoje is not None and _strain_hoje > 400:
+                _alertas.append(("🟡", "Strain elevado",
+                    f"Strain={_strain_hoje:.0f} (400-600). HRV -3ms esperado. "
+                    f"Monitorizar ARI na Tab HRV Analyzer.",
+                    "#f39c12"))
+
+            # Alerta Load
+            if _load_7d_tss is not None and _load_7d_tss > 400:
+                _alertas.append(("🔴", "LOAD SEMANAL CRÍTICO",
+                    f"Load={_load_7d_tss:.0f} TSS (>400) — degradação HRV confirmada pelos dados. "
+                    f"+100 TSS = -3.3ms HRV. Zona óptima: 150-300/sem.",
+                    "#e74c3c"))
+            elif _load_7d_tss is not None and _load_7d_tss > 300:
+                _alertas.append(("🟡", "Load acima da zona óptima",
+                    f"Load={_load_7d_tss:.0f} TSS (300-400). Zona óptima HRV: 150-300/sem.",
+                    "#f39c12"))
+
+            # Alerta ATL
+            if _atl_val is not None and _atl_val >= 38:
+                _alertas.append(("🔴", "ATL CRÍTICA — risco de supressão HRV",
+                    f"ATL={_atl_val:.1f} (≥38) — preditor mais forte de HRV (r=-0.507). "
+                    f"HRV suprimido esperado nos próximos 13 dias. "
+                    f"Reduzir carga aguda. Ver Tab HRV Analyzer → ARI.",
+                    "#c0392b"))
+            elif _atl_val is not None and _atl_val >= 30:
+                _alertas.append(("🟡", "ATL na zona de atenção",
+                    f"ATL={_atl_val:.1f} (30-38). Monitorizar. "
+                    f"ATL>38 associada a -40% nos dias de melhor HRV.",
+                    "#f39c12"))
+
+            # Alerta Z3
+            if _pct_z3_7d is not None and _pct_z3_7d > 50:
+                _alertas.append(("🔴", "Z3 muito elevado",
+                    f"%Z3={_pct_z3_7d:.0f}% (>50%) — risco de supressão HRV. "
+                    f"Zona óptima: 20-30%. Máximo recomendado: 2 sessões Z3/semana.",
+                    "#e74c3c"))
+            elif _pct_z3_7d is not None and _pct_z3_7d > 30:
+                _alertas.append(("🟡", "Z3 acima do óptimo",
+                    f"%Z3={_pct_z3_7d:.0f}% (>30%) — HRV começa a degradar. "
+                    f"Óptimo HRV: 20-30% (1-2 sess Z3/sem).",
+                    "#f39c12"))
+
+            # Renderizar alertas
+            for emoji, titulo, msg, cor in _alertas:
+                hr, hg, hb = int(cor[1:3],16), int(cor[3:5],16), int(cor[5:7],16)
                 st.markdown(
-                    f'<div style="padding:12px 16px; border-radius:8px; margin:8px 0; '
-                    f'background:rgba({_h_r},{_h_g},{_h_b},0.10); '
-                    f'border-left:5px solid {_im_cor};">'
-                    f'<b style="color:{_im_cor};">⚠️ Monotonia elevada (IM={_im_hoje:.2f})</b> — '
-                    f'Treino demasiado uniforme nos últimos 7 dias. '
-                    f'Introduzir dias de carga muito baixa (Z1) entre sessões de alta intensidade. '
-                    f'Ver análise completa em Tab Volume.'
+                    f'<div style="padding:10px 14px; border-radius:8px; margin:6px 0; '
+                    f'background:rgba({hr},{hg},{hb},0.10); '
+                    f'border-left:5px solid {cor};">'
+                    f'<b style="color:{cor};">{emoji} {titulo}</b><br/>'
+                    f'<span style="font-size:0.9em;">{msg}</span>'
                     f'</div>',
                     unsafe_allow_html=True
                 )
-            elif _im_hoje is not None and _im_hoje > 1.5:
-                st.info(
-                    f"🟡 IM={_im_hoje:.2f} — zona de atenção. "
-                    f"Verificar distribuição Z1/Z2/Z3 na Tab Volume."
+
+            if not _alertas:
+                st.success(
+                    f"✅ Todas as métricas dentro das zonas óptimas HRV. "
+                    f"{'IM=' + str(round(_im_hoje,2)) + ' ' if _im_hoje else ''}"
+                    f"{'Strain=' + str(round(_strain_hoje,0)) + ' ' if _strain_hoje else ''}"
+                    f"{'Load=' + str(round(_load_7d_tss,0)) + ' TSS' if _load_7d_tss else ''}"
                 )
 
-        else:
-            st.info("Coluna kJ não disponível para cálculo de monotonia.")
+            # Nota metodológica
+            with st.expander("ℹ️ Origem dos thresholds"):
+                st.markdown("""
+**Thresholds calibrados empiricamente — análise HRV N=1 (172 semanas, 2023-2026)**
+
+| Métrica | Zona óptima | Atenção | Crítico | Fonte |
+|---|---|---|---|---|
+| Monotonia (IM) | 0.8–1.2 | 1.2–1.8 | >1.8 | r=-0.218, p=0.004 |
+| Strain | 100–400 | 400–600 | >600 | r=-0.270, p<0.001 |
+| Load (TSS/sem) | 150–300 | 300–400 | >400 | r=-0.228, p=0.003 |
+| % Z3 | 20–30% | 30–50% | >50% | bins k-means |
+| ATL | <30 | 30–38 | ≥38 | r=-0.507 @ 13d |
+
+Estes valores são específicos deste atleta. Recalibrar anualmente com novos dados do HRV Analyzer.
+                """)
+
     else:
         st.info("Sem dados de actividades para cálculo.")
 
