@@ -2210,17 +2210,56 @@ Estes valores são específicos deste atleta. Recalibrar anualmente com novos da
 
                 _rpe_tipico_treino = 6.5
                 _dur_tipico_min    = 60.0
+                _kj_por_min        = 5.0   # default: 5 kJ/min
                 try:
                     if da_full is not None:
                         _da_hist = filtrar_principais(da_full).copy()
                         _da_hist['rpe'] = pd.to_numeric(
                             _da_hist.get('rpe', pd.Series()), errors='coerce')
-                        _da_hist['dur'] = pd.to_numeric(
+                        _da_hist['dur_min'] = pd.to_numeric(
                             _da_hist.get('moving_time', pd.Series()), errors='coerce') / 60
+                        _da_hist['kj'] = pd.to_numeric(
+                            _da_hist.get('icu_joules', pd.Series()), errors='coerce') / 1000
                         _rpe_tipico_treino = float(_da_hist['rpe'].dropna().median())
-                        _dur_tipico_min    = float(_da_hist['dur'].dropna().median())
+                        _dur_tipico_min    = float(_da_hist['dur_min'].dropna().median())
+                        # Taxa kJ/min por zona — separa Z3 de Z1
+                        _da_hist_treino = _da_hist[
+                            _da_hist['dur_min'].notna() &
+                            _da_hist['kj'].notna() &
+                            (_da_hist['dur_min'] > 5) &
+                            (_da_hist['kj'] > 0)
+                        ].copy()
+                        if len(_da_hist_treino) >= 5:
+                            _da_hist_treino['kj_min'] = (_da_hist_treino['kj'] /
+                                                          _da_hist_treino['dur_min'])
+                            _kj_por_min = float(_da_hist_treino['kj_min'].median())
+                            # Z3 (RPE>=7) tem taxa mais alta
+                            _z3_mask = _da_hist_treino['rpe'] >= 7
+                            _kj_z3   = float(_da_hist_treino[_z3_mask]['kj_min'].median())                                        if _z3_mask.sum() >= 3 else _kj_por_min * 1.3
+                            _kj_z2   = float(_da_hist_treino[
+                                (_da_hist_treino['rpe'] >= 5) & (_da_hist_treino['rpe'] < 7)
+                            ]['kj_min'].median()) if ((_da_hist_treino['rpe'] >= 5) & (_da_hist_treino['rpe'] < 7)).sum() >= 3 else _kj_por_min
+                            _kj_z1   = float(_da_hist_treino[
+                                _da_hist_treino['rpe'] < 5
+                            ]['kj_min'].median()) if (_da_hist_treino['rpe'] < 5).sum() >= 3 else _kj_por_min * 0.7
+                        else:
+                            _kj_z3 = _kj_por_min * 1.3
+                            _kj_z2 = _kj_por_min
+                            _kj_z1 = _kj_por_min * 0.7
                 except Exception:
-                    pass
+                    _kj_z3 = 6.5; _kj_z2 = 5.0; _kj_z1 = 3.5
+
+                def _kj_to_hms(kj_val, taxa_kj_min):
+                    """Converte kJ para HH:MM formato legível."""
+                    if kj_val <= 0 or taxa_kj_min <= 0:
+                        return '—'
+                    min_total = kj_val / taxa_kj_min
+                    min_total = max(10, min(360, min_total))  # clamp 10min-6h
+                    horas = int(min_total // 60)
+                    mins  = int(round(min_total % 60 / 5) * 5)  # arredondar 5min
+                    if mins == 60:
+                        horas += 1; mins = 0
+                    return f'{horas:01d}h{mins:02d}' if horas > 0 else f'{mins}min' 
 
                 # ── Geração da tabela com override HIIT-Guided ───────────────
                 _hoje         = pd.Timestamp.now().normalize()
@@ -2264,13 +2303,13 @@ Estes valores são específicos deste atleta. Recalibrar anualmente com novos da
                         tipo = '🔵 Descanso'; dur = '—'; rpe = '—'; kj = 0.0
                     elif intensidade_final == 'z3':
                         tipo = '🔴 HIIT / Z3'; rpe_n = min(9, round(_rpe_tipico_treino + 1.5))
-                        dur = f'{max(20, round(kj / rpe_n * 60 / 10) * 10):.0f}min'; rpe = str(rpe_n)
+                        dur = _kj_to_hms(kj, _kj_z3); rpe = str(rpe_n)
                     elif intensidade_final == 'z2':
                         tipo = '🟡 Moderado Z2'; rpe_n = round(_rpe_tipico_treino)
-                        dur = f'{max(20, round(kj / rpe_n * 60 / 10) * 10):.0f}min'; rpe = str(rpe_n)
+                        dur = _kj_to_hms(kj, _kj_z2); rpe = str(rpe_n)
                     else:
                         tipo = '🟢 Leve Z1'; rpe_n = max(3, round(_rpe_tipico_treino - 2))
-                        dur = f'{max(20, round(kj / max(1, rpe_n) * 60 / 10) * 10):.0f}min'; rpe = str(rpe_n)
+                        dur = _kj_to_hms(kj, _kj_z1); rpe = str(rpe_n)
 
                     # IM acumulado — usar simulação pré-calculada
                     _im_acc   = _ims_sim[i]
