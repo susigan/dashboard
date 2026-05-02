@@ -2100,10 +2100,35 @@ Estes valores são específicos deste atleta. Recalibrar anualmente com novos da
                 # Últimos 6 dias de carga
                 _hist6 = list(_fry_daily.iloc[-6:].values.astype(float))
                 _hist_28 = _fry_daily.iloc[-28:].values.astype(float)
-                # Média INCLUINDO zeros — reflecte a carga semanal real
-                # (excluir zeros super-estima: 250kJ×5dias / 7 dias = 178kJ/dia real,
-                #  mas np.mean([250]*5) = 250kJ → ×7 = 1750 vs 875 correcto)
-                _carga_media_hist = float(np.mean(_hist_28))  # todos os dias incluindo descanso
+
+                # ── Carga de referência: mediana das semanas reais (não média diária×7) ──
+                # Problema anterior: mean(dias_com_treino)*7 sobreestimava 1.8×
+                # Problema com zeros: mean(todos_os_dias)*7 dá a semana média correcta
+                # MAS para um atleta multi-modal que soma Bike+Row+Ski+Run no mesmo dia,
+                # o total pode ser 4000+ kJ/semana — real, mas 1 sessão de 1481 kJ é impossível.
+                #
+                # Solução: usar a carga da semana anterior completa como referência base,
+                # com fallback para media 4 semanas. Mais estável e representa intenção real.
+                _semanas_historico = []
+                _fry_diario_df = _fry_daily.to_frame(name='kj')
+                _fry_diario_df['semana'] = _fry_diario_df.index.to_period('W')
+                _sem_actual_p = pd.Timestamp.now().to_period('W')
+                _sems = (_fry_diario_df[_fry_diario_df['semana'] < _sem_actual_p]
+                         .groupby('semana')['kj'].sum())
+                _sems_com_treino = _sems[_sems > 0].tail(8)
+                if len(_sems_com_treino) >= 2:
+                    _carga_sem_ref = float(_sems_com_treino.median())
+                else:
+                    _carga_sem_ref = float(np.mean(_hist_28)) * 7
+
+                # Limitar a carga total ao mínimo entre:
+                #   (a) carga semanal de referência (mediana 8 semanas)
+                #   (b) 1.1× a semana anterior (anti-salto agressivo)
+                _sem_ant_kj = float(_sems.iloc[-1]) if len(_sems) >= 1 else _carga_sem_ref
+                _carga_total_max = min(_carga_sem_ref * 1.05,      # máximo +5% vs histórico
+                                       _sem_ant_kj * 1.10,          # máximo +10% vs semana ant.
+                                       _carga_sem_ref * 1.10)        # cap absoluto
+                _carga_media_hist = _carga_sem_ref / 7               # para compatibilidade
                 _im_actual = (_fry_im.dropna().iloc[-1]
                               if _fry_im.notna().any() else 1.0)
 
@@ -2166,35 +2191,48 @@ Estes valores são específicos deste atleta. Recalibrar anualmente com novos da
                 # e escalar pela relação IM_alvo / IM_padrão_intrínseco
 
                 _f_arr = np.array(_factors)
-                _f_nonzero = _f_arr[_f_arr > 0]
                 _im_padrao_puro = (np.mean(_f_arr) / np.std(_f_arr, ddof=1)
                                    if np.std(_f_arr, ddof=1) > 0 else 99.0)
 
-                # Carga total base = média histórica × 7 dias
-                # (dias com treino apenas, para não inflar com zeros)
-                _carga_total_base = _carga_media_hist * 7
-
-                # Se IM actual > IM alvo, precisamos de variabilidade maior.
-                # Ajustar a carga total: se IM_padrão_puro < IM_alvo, ok.
-                # Se IM_padrão_puro > IM_alvo (padrão demasiado uniforme), avisar.
+                # Carga total: usar mediana semanal histórica (mais estável)
                 if _im_padrao_puro <= _im_target:
-                    # O padrão já tem variabilidade suficiente
-                    _carga_total = _carga_total_base
-                    _im_esperado_msg = f"IM estimado com carga histórica: {_im_padrao_puro:.2f}"
+                    _carga_total = _carga_total_max
+                    _im_esperado_msg = f"IM estimado: {_im_padrao_puro:.2f}"
                 else:
-                    # Padrão demasiado uniforme para o IM alvo — tentar escalar
-                    # ou avisar que o padrão não é adequado
-                    _carga_total = _carga_total_base * 0.85
+                    _carga_total = _carga_total_max * 0.85
                     _im_esperado_msg = (f"⚠️ Padrão '{_pat_sel}' tem IM intrínseco "
                                         f"{_im_padrao_puro:.2f} > alvo {_im_target:.2f}. "
                                         f"Escolhe 'Polarizado' para maior variabilidade.")
 
-                # Distribuir pelos 7 dias com os factores do padrão
                 _soma_factors = sum(_factors)
-                _carga_sugerida = [
-                    round(f / _soma_factors * _carga_total, 0) if f > 0 else 0.0
+                _carga_sugerida_raw = [
+                    f / _soma_factors * _carga_total if f > 0 else 0.0
                     for f in _factors
                 ]
+
+                # ── Clamp por sessão: máximo histórico de UMA sessão individual ──
+                # Evita distribuir 1500 kJ num único dia (impossível para 1 sessão)
+                # Usar p90 das sessões individuais como tecto
+                _kj_sessao_max = 600.0  # default conservador
+                try:
+                    _kj_sess_hist = pd.to_numeric(
+                        filtrar_principais(da_full).get('icu_joules', pd.Series()),
+                        errors='coerce').dropna() / 1000
+                    _kj_sess_hist = _kj_sess_hist[_kj_sess_hist > 10]
+                    if len(_kj_sess_hist) >= 5:
+                        _kj_sessao_max = float(_kj_sess_hist.quantile(0.90))
+                except Exception:
+                    pass
+
+                # Aplicar clamp e arredondar
+                _carga_sugerida = []
+                _excesso_total = 0.0
+                for kj_raw in _carga_sugerida_raw:
+                    if kj_raw > _kj_sessao_max:
+                        _excesso_total += kj_raw - _kj_sessao_max
+                        _carga_sugerida.append(round(_kj_sessao_max, 0))
+                    else:
+                        _carga_sugerida.append(round(kj_raw, 0))
 
                 # IM real da janela de 7 dias sugerida
                 # (considera os últimos 6 dias + os 7 novos de forma rolante)
