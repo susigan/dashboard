@@ -2100,7 +2100,10 @@ Estes valores são específicos deste atleta. Recalibrar anualmente com novos da
                 # Últimos 6 dias de carga
                 _hist6 = list(_fry_daily.iloc[-6:].values.astype(float))
                 _hist_28 = _fry_daily.iloc[-28:].values.astype(float)
-                _carga_media_hist = float(np.mean(_hist_28[_hist_28 > 0]))  # só dias com treino
+                # Média INCLUINDO zeros — reflecte a carga semanal real
+                # (excluir zeros super-estima: 250kJ×5dias / 7 dias = 178kJ/dia real,
+                #  mas np.mean([250]*5) = 250kJ → ×7 = 1750 vs 875 correcto)
+                _carga_media_hist = float(np.mean(_hist_28))  # todos os dias incluindo descanso
                 _im_actual = (_fry_im.dropna().iloc[-1]
                               if _fry_im.notna().any() else 1.0)
 
@@ -2324,7 +2327,7 @@ Estes valores são específicos deste atleta. Recalibrar anualmente com novos da
 
                 st.caption(
                     f"IM alvo: **{_im_target}** → IM estimado: **{_im_resultante:.2f}** | "
-                    f"Carga total 7d: **{sum(_carga_sugerida):.0f} kJ** | "
+                    f"Carga total sugerida: **{sum(float(r[2]) for r in _table_rows[1:] if r[2] not in ('—','0')):.0f} kJ** | "
                     f"HRV-Guided hoje: **{_hiit_hoje or 'sem dados'}** | "
                     f"Tau recuperação: **2d** (máx. 2×Z3 consecutivos)"
                 )
