@@ -2293,6 +2293,9 @@ Estes valores são específicos deste atleta. Recalibrar anualmente com novos da
                                 _kj_z1 = _kj_por_min * 0.60
                             # Sanity checks: Z1 < Z2 < Z3 e valores plausíveis
                             _kj_z1 = min(_kj_z1, _kj_z2 * 0.80)   # Z1 sempre < 80% do Z2
+                            _kj_z1 = min(_kj_z1, 4.5)              # tecto absoluto Z1: 4.5 kJ/min
+                            # Fisiológico: Z1 (RPE 3-4) nunca passa 4.5 kJ/min
+                            # mesmo para atletas de alta potência
                             _kj_z1 = max(_kj_z1, 2.0)              # mínimo 2 kJ/min
                             _kj_z2 = max(_kj_z2, _kj_z1 * 1.20)   # Z2 sempre > Z1
                             _kj_z3 = max(_kj_z3, _kj_z2 * 1.15)   # Z3 sempre > Z2
