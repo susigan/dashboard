@@ -1393,7 +1393,8 @@ def tab_correlacoes(da, dw):
                 _diverg.append("⚠️ **kJ→HRV**: sinal muda de direcção entre períodos — "
                                "relação não-linear ou fase de adaptação em curso.")
             else:
-                _diverg.append(f"✅ **kJ→HRV**: sinal consistente ({['↘','↗'][list(signs)[0]>0]}) em todos os períodos")
+                _sinal_str = '↗' if float(list(signs)[0]) > 0 else '↘'
+                _diverg.append(f"✅ **kJ→HRV**: sinal consistente ({_sinal_str}) em todos os períodos")
 
         # Modalidade com maior variação
         for mod in CICLICOS_T:
