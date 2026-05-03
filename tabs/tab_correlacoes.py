@@ -65,49 +65,34 @@ def tab_correlacoes(da, dw):
         d_ativ = d[d['_tipo'].isin(CICLICOS_T + ['WeightTraining'])]
         return set(d_ativ['Data'].unique())
 
-    def _prep_merged_rpe(da_in, data_min='2020-01-01'):
+    def _prep_merged_rpe(da_in, data_min='2020-01-01', dw_in=None):
         """
         Cruza RPE diário (só cíclicas, com RPE válido) com HRV/RHR dia seguinte.
-
-        REGRA REST (uniforme):
-          Rest = dia de wellness onde NÃO houve NENHUMA actividade
-                 (nem cíclica, nem WeightTraining).
-          Dias com actividade mas sem RPE → ficam como Rest para o scatter
-          mas são excluídos da análise RPE (não têm categoria Leve/Mod/Pesado).
         """
         da2 = da_in.copy()
         da2['_tipo'] = da2['type'].apply(norm_tipo)
         da2['Data'] = pd.to_datetime(da2['Data']).dt.normalize()
         da2 = da2[da2['Data'] >= pd.Timestamp(data_min)]
-
-        # Dias com QUALQUER actividade (para definir Rest)
         _todos_ativ = _dias_com_atividade(da_in, data_min)
-
-        # Só cíclicas COM RPE válido → para classificar zona
         da_cicl = da2[da2['_tipo'].isin(CICLICOS_T)].copy()
         if not rpe_col:
             return pd.DataFrame()
         da_cicl = da_cicl.dropna(subset=[rpe_col])
         da_cicl[rpe_col] = pd.to_numeric(da_cicl[rpe_col], errors='coerce')
         da_cicl = da_cicl.dropna(subset=[rpe_col])
-
         rpe_d = da_cicl.groupby('Data')[rpe_col].mean().reset_index()
         rpe_d.columns = ['Data', 'rpe_avg']
         rpe_d['rpe_cat'] = rpe_d['rpe_avg'].apply(classificar_rpe)
         rpe_d = rpe_d.dropna(subset=['rpe_cat'])
-
-        dw_clean = _prep_dw_clean(dw, data_min)
+        _dw_src = dw_in if dw_in is not None else dw
+        dw_clean = _prep_dw_clean(_dw_src, data_min)
         all_days = dw_clean[['Data']].copy()
         all_days = all_days.merge(rpe_d[['Data','rpe_cat','rpe_avg']], on='Data', how='left')
-
-        # Rest = sem NENHUMA actividade nesse dia (cíclica OU WT)
         all_days['rpe_cat'] = all_days.apply(
             lambda r: r['rpe_cat'] if pd.notna(r['rpe_cat'])
             else ('Rest' if r['Data'] not in _todos_ativ else None),
             axis=1)
-        # Dias com actividade mas sem RPE válido → excluir (None → drop)
         all_days = all_days.dropna(subset=['rpe_cat'])
-
         cols_dw = ['Data','hrv'] + (['rhr'] if 'rhr' in dw_clean.columns else [])
         dw_shift = dw_clean[cols_dw].copy()
         dw_shift['Data'] = dw_shift['Data'] - pd.Timedelta(days=1)
@@ -159,7 +144,7 @@ def tab_correlacoes(da, dw):
         merged = all_days.merge(dw_shift, on='Data', how='inner')
         return merged.dropna(subset=['hrv'])
 
-    def _prep_merged_rpe_modal(da_in, data_min='2020-01-01'):
+    def _prep_merged_rpe_modal(da_in, data_min='2020-01-01', dw_in=None):
         """
         Cruza RPE por modalidade × dia com HRV/RHR do dia seguinte.
         Para cada dia: modalidade dominante + RPE médio desse dia.
@@ -184,7 +169,9 @@ def tab_correlacoes(da, dw):
         grp['rpe_cat'] = grp['rpe_avg'].apply(classificar_rpe)
         grp = grp.dropna(subset=['rpe_cat'])
 
-        dw_clean = _prep_dw_clean(dw, data_min)
+        # Usar dw_in (período específico) se fornecido, senão dw global
+        _dw_src = dw_in if dw_in is not None else dw
+        dw_clean = _prep_dw_clean(_dw_src, data_min)
         cols_dw = ['Data','hrv'] + (['rhr'] if 'rhr' in dw_clean.columns else [])
         dw_shift = dw_clean[cols_dw].copy()
         dw_shift['Data'] = dw_shift['Data'] - pd.Timedelta(days=1)
@@ -1274,7 +1261,7 @@ def tab_correlacoes(da, dw):
         """Retorna dict com métricas chave para o período."""
         out = {'periodo': label, 'n_dias': len(da_src)}
         # RPE → HRV+1
-        mr = _prep_merged_rpe(da_src)
+        mr = _prep_merged_rpe(da_src, dw_in=dw_src)
         if len(mr) >= 5:
             base = mr['hrv'].mean()
             for cat in ['Leve','Moderado','Pesado','Rest']:
@@ -1285,12 +1272,12 @@ def tab_correlacoes(da, dw):
             out['eta2_rpe'] = kw.get('hrv',{}).get('eta2', np.nan)
             out['sig_rpe']  = kw.get('hrv',{}).get('sig', '—')
         # Modalidade pesada → HRV+1
-        mm = _prep_merged_rpe_modal(da_src)
+        mm = _prep_merged_rpe_modal(da_src, dw_in=dw_src)
         if len(mm) >= 5:
             base_m = mm['hrv'].mean()
             for mod in CICLICOS_T:
                 sub_m = mm[(mm['modalidade']==mod)&(mm['rpe_cat']=='Pesado')]
-                if len(sub_m) >= 3:
+                if len(sub_m) >= 2:  # threshold 2 (Bike/Ski têm N pequeno)
                     out[f'mod_{mod}_dhrv'] = round((sub_m['hrv'].mean()-base_m)/base_m*100, 1)
         # KJ → HRV (Pearson)
         da_kj_p = da_src[da_src['type'].apply(norm_tipo).isin(CICLICOS_T)].copy()
