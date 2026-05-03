@@ -688,20 +688,10 @@ def tab_correlacoes(da, dw):
 
         tipos_disp = [t for t in CICLICOS_T + ['WeightTraining','Rest']
                       if (merged_tipo['_tipo']==t).sum() >= 2]
-        deltas_hrv_t = [(merged_tipo[merged_tipo['_tipo']==g]['hrv'].mean()-base_hrv_t)/base_hrv_t*100
-                        for g in tipos_disp]
-        deltas_rhr_t = [(merged_tipo[merged_tipo['_tipo']==g]['rhr'].mean()-base_rhr_t)
-                        if base_rhr_t else None
-                        for g in tipos_disp]
-
-        _bar_chart(tipos_disp, deltas_hrv_t, deltas_rhr_t, CORES_T,
-                   "Δ HRV% — dia seguinte (por Modalidade)",
-                   "Δ RHR bpm — dia seguinte (por Modalidade)")
-
+        _d_hrv_t = [(merged_tipo[merged_tipo['_tipo']==g]['hrv'].mean()-base_hrv_t)/base_hrv_t*100
+                    for g in tipos_disp]
         _c1t, _c2t = st.columns([3, 2])
         with _c1t:
-            _d_hrv_t = [(merged_tipo[merged_tipo['_tipo']==g]['hrv'].mean()-base_hrv_t)/base_hrv_t*100
-                        for g in tipos_disp]
             st.plotly_chart(_bar_impacto(tipos_disp, _d_hrv_t, CORES_T,
                                           "Δ HRV% — dia seguinte por Modalidade"),
                             use_container_width=True, config=MC_LOC)
@@ -711,6 +701,28 @@ def tab_correlacoes(da, dw):
             kw_t = _stat_kruskal(merged_tipo, '_tipo', tipos_disp)
             if 'hrv' in kw_t:
                 st.caption(f"KW: H={kw_t['hrv']['H']}  {kw_t['hrv']['sig']}  η²={kw_t['hrv']['eta2']}")
+
+        # Tabela de quartis — relação kJ/RPE com HRV por modalidade
+        st.markdown("**Relação por quartil de HRV — interpretação fácil:**")
+        _qt_rows = []
+        for _tp in tipos_disp:
+            sub_qt = merged_tipo[merged_tipo['_tipo'] == _tp]['hrv'].dropna()
+            if len(sub_qt) < 8: continue
+            q25, q50, q75 = sub_qt.quantile([0.25, 0.5, 0.75]).values
+            _qt_rows.append({
+                'Modalidade': _tp,
+                'Q1 (25% piores HRV)': f"{sub_qt[sub_qt<=q25].mean():.0f} ms",
+                'Q2 (medianos)': f"{sub_qt[(sub_qt>q25)&(sub_qt<=q75)].mean():.0f} ms",
+                'Q3 (25% melhores HRV)': f"{sub_qt[sub_qt>q75].mean():.0f} ms",
+                'Δ Q3-Q1': f"{sub_qt[sub_qt>q75].mean()-sub_qt[sub_qt<=q25].mean():+.0f} ms",
+                'Interpretação': (
+                    'Alta variabilidade' if sub_qt[sub_qt>q75].mean()-sub_qt[sub_qt<=q25].mean() > 15
+                    else 'Estável'
+                )
+            })
+        if _qt_rows:
+            st.dataframe(pd.DataFrame(_qt_rows), hide_index=True, use_container_width=True)
+            st.caption("Q1=dias após piores HRV | Q3=dias após melhores HRV | Δ=diferença de adaptação")
     else:
         st.info("Dados insuficientes.")
 
@@ -875,45 +887,19 @@ def tab_correlacoes(da, dw):
         if r2: _rows_b1.append(r2)
 
     if _rows_b1:
-        st.dataframe(pd.DataFrame(_rows_b1), hide_index=True, use_container_width=True)
-
-    # Scatter com LOWESS para dias isolados
-    _sc1 = _isolated[['log_kj','hrv_t1_rel']].dropna()
-    if len(_sc1) >= 8:
-        from scipy.stats import pearsonr as _pr1
-        _r1, _ = _pr1(_sc1['log_kj'].astype(float), _sc1['hrv_t1_rel'].astype(float))
-        _z1 = np.polyfit(_sc1['log_kj'].astype(float), _sc1['hrv_t1_rel'].astype(float), 1)
-        _xr1 = np.linspace(float(_sc1['log_kj'].min()), float(_sc1['log_kj'].max()), 50)
-        # LOWESS via pandas rolling (simples)
-        _sc1_s = _sc1.sort_values('log_kj').copy()
-        _sc1_s['_roll'] = _sc1_s['hrv_t1_rel'].rolling(max(3, len(_sc1_s)//8),
-                                                         min_periods=2, center=True).mean()
-        fig_b1 = go.Figure()
-        fig_b1.add_trace(go.Scatter(
-            x=_sc1_s['log_kj'].tolist(), y=_sc1_s['hrv_t1_rel'].tolist(),
-            mode='markers', name='Pontos',
-            marker=dict(color='#2980b9', size=6, opacity=0.45),
-            hovertemplate='log(KJ): %{x:.2f}<br>HRV_rel(t+1): <b>%{y:.3f}</b><extra></extra>'))
-        fig_b1.add_trace(go.Scatter(
-            x=_sc1_s['log_kj'].tolist(), y=np.poly1d(_z1)(_sc1_s['log_kj'].values).tolist(),
-            mode='lines', name='Regressão linear',
-            line=dict(color='#e74c3c', width=2)))
-        fig_b1.add_trace(go.Scatter(
-            x=_sc1_s['log_kj'].tolist(), y=_sc1_s['_roll'].tolist(),
-            mode='lines', name='Tendência (rolling)',
-            line=dict(color='#27ae60', width=2, dash='dash')))
-        fig_b1.update_layout(**LAYOUT_BASE,
-            title=dict(text=f'log(KJ) vs HRV_rel(t+1) — Dias Isolados (r={_r1:.2f})',
-                       font=dict(size=13, color='#111')),
-            height=310, showlegend=True,
-            legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),
-            xaxis=dict(title='log(KJ+1)', tickfont=dict(color='#111'),
-                       showgrid=True, gridcolor='#ddd'),
-            yaxis=dict(title='HRV relativo dia seguinte', tickfont=dict(color='#111'),
-                       showgrid=True, gridcolor='#ddd'))
-        st.plotly_chart(fig_b1, use_container_width=True, config=MC_LOC)
-        st.caption("HRV_rel = HRV / média_7d (remove tendência individual). "
-                   "log(KJ) = escala logarítmica (captura não-linearidade).")
+        # Tabela interpretativa compacta
+        _b1_interp = []
+        for r in _rows_b1:
+            rs = r['r Spearman']
+            forca = '🔴 forte' if abs(rs)>=0.5 else '🟡 moderada' if abs(rs)>=0.3 else '🟢 fraca' if abs(rs)>=0.1 else '⚪ negligenciável'
+            direcao = '↘ mais carga → HRV↓' if rs < 0 else '↗ mais carga → HRV↑'
+            _b1_interp.append({
+                'Grupo': r['Grupo'], 'Predictor': r['X'], 'N': r['N'],
+                'r Spearman': f"{rs:+.3f}", 'Sig': r['Sig'],
+                'Força': forca, 'Direcção': direcao,
+            })
+        st.dataframe(pd.DataFrame(_b1_interp), hide_index=True, use_container_width=True)
+        st.caption("HRV_rel(t+1) = HRV amanhã / média 7d. log(KJ) = escala log para capturar não-linearidade.")
 
     # ════════════════════════════════════════════════════════════════════
     # BLOCO 2 — Fadiga Acumulada: HRV(t) ~ ATL_lag
@@ -932,41 +918,18 @@ def tab_correlacoes(da, dw):
         if r2: _rows_b2.append(r2)
 
     if _rows_b2:
-        st.dataframe(pd.DataFrame(_rows_b2), hide_index=True, use_container_width=True)
-
-    # Scatter ATL_lag vs HRV_rel
-    _sc2 = _daily[['ATL_lag','hrv_rel']].dropna()
-    if len(_sc2) >= 8:
-        from scipy.stats import pearsonr as _pr2
-        _r2, _ = _pr2(_sc2['ATL_lag'].astype(float), _sc2['hrv_rel'].astype(float))
-        _z2 = np.polyfit(_sc2['ATL_lag'].astype(float), _sc2['hrv_rel'].astype(float), 1)
-        _sc2_s = _sc2.sort_values('ATL_lag').copy()
-        _sc2_s['_roll'] = _sc2_s['hrv_rel'].rolling(max(3, len(_sc2_s)//8),
-                                                      min_periods=2, center=True).mean()
-        fig_b2 = go.Figure()
-        fig_b2.add_trace(go.Scatter(
-            x=_sc2_s['ATL_lag'].tolist(), y=_sc2_s['hrv_rel'].tolist(),
-            mode='markers', name='Pontos',
-            marker=dict(color='#e74c3c', size=6, opacity=0.4),
-            hovertemplate='ATL(t-1): %{x:.1f}<br>HRV_rel: <b>%{y:.3f}</b><extra></extra>'))
-        fig_b2.add_trace(go.Scatter(
-            x=_sc2_s['ATL_lag'].tolist(), y=np.poly1d(_z2)(_sc2_s['ATL_lag'].values).tolist(),
-            mode='lines', name='Regressão linear', line=dict(color='#2c3e50', width=2)))
-        fig_b2.add_trace(go.Scatter(
-            x=_sc2_s['ATL_lag'].tolist(), y=_sc2_s['_roll'].tolist(),
-            mode='lines', name='Tendência (rolling)',
-            line=dict(color='#f39c12', width=2, dash='dash')))
-        fig_b2.update_layout(**LAYOUT_BASE,
-            title=dict(text=f'ATL(t-1) vs HRV_rel(t) (r={_r2:.2f})',
-                       font=dict(size=13, color='#111')),
-            height=310, showlegend=True,
-            legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),
-            xaxis=dict(title=f'ATL(t-1) [{_load_src}]', tickfont=dict(color='#111'),
-                       showgrid=True, gridcolor='#ddd'),
-            yaxis=dict(title='HRV relativo (t)', tickfont=dict(color='#111'),
-                       showgrid=True, gridcolor='#ddd'))
-        st.plotly_chart(fig_b2, use_container_width=True, config=MC_LOC)
-        st.caption("ATL↑ → HRV_rel↓ esperado. Se r < -0.2 com p<0.05 = fadiga detectável.")
+        _b2_interp = []
+        for r in _rows_b2:
+            rs = r['r Spearman']
+            forca = '🔴 forte' if abs(rs)>=0.5 else '🟡 moderada' if abs(rs)>=0.3 else '🟢 fraca' if abs(rs)>=0.1 else '⚪ negligenciável'
+            direcao = '↘ ATL↑ → HRV↓ (fadiga)' if rs < 0 else '↗ inesperado'
+            _b2_interp.append({
+                'Grupo': r['Grupo'], 'Predictor': r['X'], 'N': r['N'],
+                'r Spearman': f"{rs:+.3f}", 'Sig': r['Sig'],
+                'Força': forca, 'Direcção': direcao,
+            })
+        st.dataframe(pd.DataFrame(_b2_interp), hide_index=True, use_container_width=True)
+        st.caption("ATL(t-1) = fadiga acumulada até ontem. ATL/CTL > 1.3 = risco de overreach.")
 
     # ════════════════════════════════════════════════════════════════════
     # BLOCO 3 — Robustez: modelo combinado + interação
@@ -1298,90 +1261,287 @@ def tab_correlacoes(da, dw):
     st.markdown("---")
 
     # ════════════════════════════════════════════════════════════════════════
-    # PERFIL DE RESPOSTA DO ATLETA (síntese final)
+    # PERFIL DE RESPOSTA DO ATLETA — síntese multi-período
     # ════════════════════════════════════════════════════════════════════════
     st.subheader("🏅 Perfil de Resposta do Atleta")
     st.caption(
-        "Síntese automática de todas as análises: impacto RPE, impacto por modalidade, "
-        "análise de carga e fadiga, multi-lag e load ecology."
+        "Síntese de TODAS as análises desta tab por período: 90d, 180d, 1ano, 2anos, 3anos. "
+        "Divergências entre períodos são assinaladas — indicam que a resposta mudou ao longo do tempo."
     )
 
-    _perfil = []
+    # ── Helper: calcular perfil para um período ───────────────────────────
+    def _perfil_periodo(da_src, dw_src, label):
+        """Retorna dict com métricas chave para o período."""
+        out = {'periodo': label, 'n_dias': len(da_src)}
+        # RPE → HRV+1
+        mr = _prep_merged_rpe(da_src)
+        if len(mr) >= 5:
+            base = mr['hrv'].mean()
+            for cat in ['Leve','Moderado','Pesado','Rest']:
+                sub = mr[mr['rpe_cat']==cat]
+                if len(sub) >= 3:
+                    out[f'rpe_{cat}_dhrv'] = round((sub['hrv'].mean()-base)/base*100, 1)
+            kw = _stat_kruskal(mr, 'rpe_cat', ['Leve','Moderado','Pesado','Rest'])
+            out['eta2_rpe'] = kw.get('hrv',{}).get('eta2', np.nan)
+            out['sig_rpe']  = kw.get('hrv',{}).get('sig', '—')
+        # Modalidade pesada → HRV+1
+        mm = _prep_merged_rpe_modal(da_src)
+        if len(mm) >= 5:
+            base_m = mm['hrv'].mean()
+            for mod in CICLICOS_T:
+                sub_m = mm[(mm['modalidade']==mod)&(mm['rpe_cat']=='Pesado')]
+                if len(sub_m) >= 3:
+                    out[f'mod_{mod}_dhrv'] = round((sub_m['hrv'].mean()-base_m)/base_m*100, 1)
+        # KJ → HRV (Pearson)
+        da_kj_p = da_src[da_src['type'].apply(norm_tipo).isin(CICLICOS_T)].copy()
+        if 'icu_joules' in da_kj_p.columns:
+            da_kj_p['_kj'] = pd.to_numeric(da_kj_p['icu_joules'], errors='coerce') / 1000
+            kj_d = da_kj_p.groupby('Data')['_kj'].sum().reset_index()
+            kj_d.columns = ['Data','kj']
+            dw2 = _prep_dw_clean(dw_src)[['Data','hrv']].copy()
+            kjh = kj_d.merge(dw2, on='Data', how='inner').dropna(subset=['hrv','kj'])
+            if len(kjh) >= 8:
+                from scipy.stats import pearsonr as _prkj
+                r, _ = _prkj(kjh['kj'].astype(float), kjh['hrv'].astype(float))
+                out['r_kj_hrv'] = round(r, 3)
+        return out
 
-    # A — Impacto RPE
-    if len(merged_rpe) >= 5:
-        base_p = merged_rpe['hrv'].mean()
-        _perfil.append("**Impacto RPE → HRV (dia seguinte):**")
-        for cat, emoji in [('Pesado','🔴'),('Moderado','🟡'),('Leve','🟢'),('Rest','🔵')]:
-            sub_p = merged_rpe[merged_rpe['rpe_cat']==cat]
-            if len(sub_p) < 2: continue
-            d = (sub_p['hrv'].mean() - base_p) / base_p * 100
-            interp = 'stress' if d<-3 else ('recuperação' if d>3 else 'neutro')
-            _perfil.append(f"  {emoji} **{cat}**: {d:+.1f}% → {interp}")
-        kw_pf = _stat_kruskal(merged_rpe, 'rpe_cat', ['Leve','Moderado','Pesado','Rest'])
-        if 'hrv' in kw_pf:
-            eta2 = kw_pf['hrv']['eta2']
-            lbl_e = "forte ✅" if eta2>=0.14 else "médio ✅" if eta2>=0.06 else "pequeno ⚠️" if eta2>=0.01 else "negligenciável ❌"
-            _perfil.append(f"  📊 Força do sinal: η²={eta2:.3f} ({lbl_e})")
+    # ── Calcular para cada período ────────────────────────────────────────
+    _periodos = []
+    _hoje_pf = pd.Timestamp.now().normalize()
+    _da_full_pf = filtrar_principais(da).copy()
+    _da_full_pf['Data'] = pd.to_datetime(_da_full_pf['Data'])
+    _dw_full_pf = dw.copy()
+    _dw_full_pf['Data'] = pd.to_datetime(_dw_full_pf['Data'])
 
-    # B — Por modalidade
-    if len(merged_modal) >= 5:
-        _perfil.append("")
-        _perfil.append("**Por modalidade (sessões pesadas):**")
-        base_pm = merged_modal['hrv'].mean()
-        for mod in CICLICOS_T:
-            sub_pm = merged_modal[(merged_modal['modalidade']==mod)&(merged_modal['rpe_cat']=='Pesado')]
-            if len(sub_pm) < 2: continue
-            d = (sub_pm['hrv'].mean() - base_pm) / base_pm * 100
-            _perfil.append(f"  → **{mod} Pesado**: {d:+.1f}% HRV")
+    for dias, lbl in [(90,'90 dias'),(180,'180 dias'),(365,'1 ano'),(730,'2 anos'),(1095,'3 anos')]:
+        cutoff = _hoje_pf - pd.Timedelta(days=dias)
+        da_p = _da_full_pf[_da_full_pf['Data'] >= cutoff]
+        dw_p = _dw_full_pf[_dw_full_pf['Data'] >= cutoff]
+        if len(da_p) < 20 or len(dw_p) < 20:
+            continue
+        try:
+            _periodos.append(_perfil_periodo(da_p, dw_p, lbl))
+        except Exception:
+            pass
 
-    # C — Multi-lag
-    if '_ml_rows' in dir() and _ml_rows:
-        _perfil.append("")
-        _perfil.append("**Duração do efeito (multi-lag):**")
-        df_ml_pf = pd.DataFrame(_ml_rows)
-        for cat in ['Pesado','Leve']:
-            row_ml = df_ml_pf[df_ml_pf['Categoria']==cat]
-            if len(row_ml)==0: continue
-            row_ml = row_ml.iloc[0]
-            crossings = []
-            for k in [1,2,3,5,7]:
-                try:
-                    v = float(str(row_ml.get(f't+{k}d','—')).replace('%','').replace('+',''))
-                    if abs(v) < 2.0: crossings.append(k)
-                except: pass
-            if crossings:
-                _perfil.append(f"  → **{cat}**: efeito aproxima-se de neutro em t+{crossings[0]}d")
-            else:
-                _perfil.append(f"  → **{cat}**: efeito persiste até t+7d")
-
-    # D — Load Ecology
-    if '_eco_pairs' in dir() and _eco_pairs:
-        df_eco_pf = pd.DataFrame(_eco_pairs).sort_values('_r_abs', ascending=False)
-        best = df_eco_pf.iloc[0]
-        _perfil.append("")
-        _perfil.append("**Carga acumulada (Load Ecology):**")
-        _perfil.append(f"  → Melhor preditor: **{best['Variável']}** r={best['r Spearman']:+.3f} {best['Sig']}")
-
-    if _perfil:
-        for ln in _perfil:
-            st.markdown(ln if ln else "---")
+    if not _periodos:
+        st.info("Dados insuficientes para análise multi-período.")
     else:
-        st.info("Dados insuficientes para gerar perfil automático.")
+        # ── Tabela de impacto RPE por período ─────────────────────────────
+        st.markdown("**Impacto RPE → HRV por período** — Pesado em cada janela temporal:")
+        _rpe_rows = []
+        for p in _periodos:
+            row = {'Período': p['periodo'], 'N sessões': p['n_dias']}
+            for cat, emoji in [('Leve','🟢'),('Moderado','🟡'),('Pesado','🔴'),('Rest','🔵')]:
+                val = p.get(f'rpe_{cat}_dhrv')
+                if val is not None:
+                    interp = '↘' if val < -3 else ('↗' if val > 3 else '→')
+                    row[f'{emoji} {cat}'] = f"{val:+.1f}% {interp}"
+                else:
+                    row[f'{emoji} {cat}'] = '—'
+            row['η²'] = f"{p['eta2_rpe']:.3f}" if not np.isnan(p.get('eta2_rpe', np.nan)) else '—'
+            row['Sig'] = p.get('sig_rpe', '—')
+            _rpe_rows.append(row)
+        if _rpe_rows:
+            st.dataframe(pd.DataFrame(_rpe_rows), hide_index=True, use_container_width=True)
+
+        # ── Tabela de impacto por modalidade por período ───────────────────
+        st.markdown("**Sessões Pesadas por Modalidade — Δ HRV% por período:**")
+        _mod_rows = []
+        for p in _periodos:
+            row = {'Período': p['periodo']}
+            for mod in CICLICOS_T:
+                val = p.get(f'mod_{mod}_dhrv')
+                row[mod] = f"{val:+.1f}%" if val is not None else '—'
+            _mod_rows.append(row)
+        if _mod_rows:
+            st.dataframe(pd.DataFrame(_mod_rows), hide_index=True, use_container_width=True)
+
+        # ── Tabela KJ→HRV por período ──────────────────────────────────────
+        _kj_rows = [{'Período': p['periodo'],
+                      'r(kJ→HRV)': f"{p['r_kj_hrv']:+.3f}" if 'r_kj_hrv' in p else '—',
+                      'Direcção': '↘ mais kJ → HRV↓' if p.get('r_kj_hrv',0) < 0 else '↗'}
+                    for p in _periodos]
+        if _kj_rows:
+            st.markdown("**kJ global → HRV por período:**")
+            st.dataframe(pd.DataFrame(_kj_rows), hide_index=True, use_container_width=True)
+
+        # ── Análise de divergências ────────────────────────────────────────
+        st.markdown("**Divergências entre períodos:**")
+        _diverg = []
+
+        # Pesado: sinal de Pesado consistente?
+        _pesado_vals = [(p['periodo'], p.get('rpe_Pesado_dhrv'))
+                         for p in _periodos if 'rpe_Pesado_dhrv' in p]
+        if len(_pesado_vals) >= 2:
+            vals_num = [v for _, v in _pesado_vals if v is not None]
+            spread = max(vals_num) - min(vals_num) if vals_num else 0
+            if spread > 10:
+                _diverg.append(f"⚠️ **RPE Pesado**: Δ HRV varia {spread:.0f}pp entre períodos "
+                                f"({_pesado_vals[0][0]}: {_pesado_vals[0][1]:+.1f}% vs "
+                                f"{_pesado_vals[-1][0]}: {_pesado_vals[-1][1]:+.1f}%). "
+                                "Sugere adaptação ao longo do tempo.")
+            else:
+                _diverg.append(f"✅ **RPE Pesado**: consistente entre períodos (spread={spread:.0f}pp)")
+
+        # KJ→HRV: sinal consistente?
+        _kj_vals = [p.get('r_kj_hrv') for p in _periodos if 'r_kj_hrv' in p]
+        if len(_kj_vals) >= 2:
+            signs = set(np.sign(v) for v in _kj_vals if v is not None)
+            if len(signs) > 1:
+                _diverg.append("⚠️ **kJ→HRV**: sinal muda de direcção entre períodos — "
+                               "relação não-linear ou fase de adaptação em curso.")
+            else:
+                _diverg.append(f"✅ **kJ→HRV**: sinal consistente ({['↘','↗'][list(signs)[0]>0]}) em todos os períodos")
+
+        # Modalidade com maior variação
+        for mod in CICLICOS_T:
+            mod_vals = [p.get(f'mod_{mod}_dhrv') for p in _periodos
+                        if f'mod_{mod}_dhrv' in p]
+            mod_vals = [v for v in mod_vals if v is not None]
+            if len(mod_vals) >= 2:
+                spread_m = max(mod_vals) - min(mod_vals)
+                if spread_m > 15:
+                    _diverg.append(f"⚠️ **{mod} Pesado**: alta variação entre períodos ({spread_m:.0f}pp) — "
+                                   "verificar se houve mudança de protocolo/volume.")
+
+        for d in _diverg:
+            st.markdown(d)
+
+        # ── Síntese combinada (conjunto de todos os períodos) ──────────────
+        st.markdown("**Síntese do conjunto — padrões consistentes:**")
+        _sintese = []
+
+        # Melhor zona RPE para HRV
+        _zona_hrv = {}
+        for cat in ['Leve','Moderado','Pesado','Rest']:
+            vals = [p.get(f'rpe_{cat}_dhrv') for p in _periodos if f'rpe_{cat}_dhrv' in p]
+            vals = [v for v in vals if v is not None]
+            if vals:
+                _zona_hrv[cat] = round(np.mean(vals), 1)
+        if _zona_hrv:
+            melhor_zona = max(_zona_hrv, key=_zona_hrv.get)
+            pior_zona   = min(_zona_hrv, key=_zona_hrv.get)
+            _sintese.append(f"🟢 **Zona com melhor HRV**: {melhor_zona} "
+                            f"(média {_zona_hrv[melhor_zona]:+.1f}% em todos os períodos)")
+            _sintese.append(f"🔴 **Zona com pior HRV**: {pior_zona} "
+                            f"(média {_zona_hrv[pior_zona]:+.1f}%)")
+
+        # Melhor modalidade para HRV
+        _mod_hrv = {}
+        for mod in CICLICOS_T:
+            vals_m = [p.get(f'mod_{mod}_dhrv') for p in _periodos if f'mod_{mod}_dhrv' in p]
+            vals_m = [v for v in vals_m if v is not None]
+            if vals_m:
+                _mod_hrv[mod] = round(np.mean(vals_m), 1)
+        if _mod_hrv:
+            melhor_mod = max(_mod_hrv, key=_mod_hrv.get)
+            pior_mod   = min(_mod_hrv, key=_mod_hrv.get)
+            _sintese.append(f"🏆 **Modalidade pesada mais tolerada**: {melhor_mod} "
+                            f"({_mod_hrv[melhor_mod]:+.1f}% HRV médio)")
+            _sintese.append(f"⚠️ **Modalidade pesada mais impactante**: {pior_mod} "
+                            f"({_mod_hrv[pior_mod]:+.1f}% HRV médio)")
+
+        # Multi-lag
+        if '_ml_rows' in dir() and _ml_rows:
+            df_ml_s = pd.DataFrame(_ml_rows)
+            for cat in ['Pesado','Leve']:
+                row_s = df_ml_s[df_ml_s['Categoria']==cat]
+                if len(row_s)==0: continue
+                row_s = row_s.iloc[0]
+                cross = []
+                for k in [1,2,3,5,7]:
+                    try:
+                        v = float(str(row_s.get(f't+{k}d','—')).replace('%','').replace('+','').replace('—','nan'))
+                        if abs(v) < 2.0: cross.append(k)
+                    except: pass
+                if cross:
+                    _sintese.append(f"⏱️ **{cat}**: efeito neutrailzado em ~t+{cross[0]}d")
+                else:
+                    _sintese.append(f"⏱️ **{cat}**: efeito persiste além de t+7d")
+
+        # Load Ecology
+        if '_eco_pairs' in dir() and _eco_pairs:
+            df_eco_s = pd.DataFrame(_eco_pairs).sort_values('_r_abs', ascending=False)
+            best_s = df_eco_s.iloc[0]
+            _sintese.append(f"🌊 **Carga acumulada**: melhor preditor = {best_s['Variável']} "
+                            f"r={best_s['r Spearman']:+.3f} {best_s['Sig']}")
+
+        # Blocos B1/B2
+        if '_rows_b1' in dir() and _rows_b1:
+            b1_todos = [r for r in _rows_b1 if r['Grupo']=='Todos' and r['Sig'].startswith('✅')]
+            for r in b1_todos:
+                _sintese.append(f"⚡ **Impacto agudo**: {r['X']} r={r['r Spearman']:+.3f} ({r['Forca']}) {r['Sig']}")
+        if '_rows_b2' in dir() and _rows_b2:
+            b2_todos = [r for r in _rows_b2 if r['Grupo']=='Todos' and r['Sig'].startswith('✅')]
+            for r in b2_todos:
+                _sintese.append(f"😴 **Fadiga acumulada**: {r['X']} r={r['r Spearman']:+.3f} ({r['Forca']}) {r['Sig']}")
+
+        for s in _sintese:
+            st.markdown(s)
 
     st.info(
         "Δ HRV% negativo = HRV mais baixo = stress/fadiga. "
         "η² > 0.06 = sinal real. "
-        "r Spearman: |r|>0.5 forte | |r|>0.3 moderado."
+        "r Spearman: |r|>0.5 forte | |r|>0.3 moderado. "
+        "Divergência entre períodos pode indicar adaptação, mudança de volume ou fase de preparação diferente."
     )
 
-    # Download consolidado
-    _all_dl = []
-    if len(merged_rpe) > 0: _all_dl.append(merged_rpe.assign(tabela='RPE'))
-    if len(merged_tipo) > 0: _all_dl.append(merged_tipo.assign(tabela='Tipo'))
-    if _all_dl:
+    # ── Download consolidado de TODAS as análises ─────────────────────────
+    _all_dl_final = []
+    # 1. RPE
+    if len(merged_rpe) > 0:
+        _all_dl_final.append(merged_rpe[['Data','rpe_cat','rpe_avg','hrv']
+                                        + (['rhr'] if 'rhr' in merged_rpe.columns else [])
+                                        ].assign(analise='1-RPE_impacto'))
+    # 2. Tipo
+    if len(merged_tipo) > 0:
+        _all_dl_final.append(merged_tipo[['Data','_tipo','hrv']
+                                         + (['rhr'] if 'rhr' in merged_tipo.columns else [])
+                                         ].rename(columns={'_tipo':'tipo'}).assign(analise='2-Tipo_impacto'))
+    # 3. Modal
+    if len(merged_modal) > 0:
+        _all_dl_final.append(merged_modal[['Data','modalidade','rpe_cat','hrv']
+                                          + (['rhr'] if 'rhr' in merged_modal.columns else [])
+                                          ].assign(analise='3-Modal_RPE'))
+    # 4. Análise avançada
+    if '_rows_b1' in dir() and _rows_b1:
+        _all_dl_final.append(pd.DataFrame(_rows_b1).assign(analise='4-Impacto_agudo'))
+    if '_rows_b2' in dir() and _rows_b2:
+        _all_dl_final.append(pd.DataFrame(_rows_b2).assign(analise='5-Fadiga_acumulada'))
+    if '_rows_b3' in dir() and _rows_b3:
+        _all_dl_final.append(pd.DataFrame(_rows_b3).assign(analise='6-OLS_modelo'))
+    # 5. Análises avançadas
+    if '_ml_rows' in dir() and _ml_rows:
+        _all_dl_final.append(pd.DataFrame(_ml_rows).assign(analise='7-Acute_multilag'))
+    if '_er_rows' in dir() and _er_rows:
+        _all_dl_final.append(pd.DataFrame(_er_rows).assign(analise='8-Event_response'))
+    if '_eco_pairs' in dir() and _eco_pairs:
+        _all_dl_final.append(pd.DataFrame(_eco_pairs).assign(analise='9-Load_ecology'))
+    # 6. Perfil multi-período
+    if _periodos:
+        _all_dl_final.append(pd.DataFrame(_periodos).assign(analise='10-Perfil_multiperiodo'))
+
+    if _all_dl_final:
+        import io
+        _buf = io.BytesIO()
+        with pd.ExcelWriter(_buf, engine='openpyxl') as _xw:
+            for _df_dl in _all_dl_final:
+                _sheet = str(_df_dl['analise'].iloc[0])[:31]
+                _df_dl.to_excel(_xw, sheet_name=_sheet, index=False)
         st.download_button(
-            "📥 Download consolidado completo",
-            pd.concat(_all_dl, ignore_index=True)
-            .to_csv(index=False, sep=';', decimal=',').encode(),
-            "atheltica_correlacoes_completo.csv", "text/csv", key="dl_corr_all")
+            "📥 Download consolidado completo (Excel — todas as análises)",
+            _buf.getvalue(),
+            "atheltica_correlacoes_completo.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_corr_all"
+        )
+    else:
+        # Fallback CSV
+        if len(merged_rpe) > 0:
+            st.download_button(
+                "📥 Download consolidado (CSV)",
+                merged_rpe.to_csv(index=False, sep=';', decimal=',').encode(),
+                "atheltica_correlacoes.csv", "text/csv", key="dl_corr_all"
+            )
