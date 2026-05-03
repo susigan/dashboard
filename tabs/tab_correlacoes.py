@@ -411,7 +411,7 @@ def tab_correlacoes(da, dw):
         with _c1:
             st.plotly_chart(_bar_impacto(grupos_r, d_hrv_r, CORES_CAT,
                                           "Δ HRV% — dia seguinte por RPE"),
-                            use_container_width=True, config=MC)
+                            use_container_width=True, config=MC_LOC)
         with _c2:
             df_r = _tabela_impacto(merged_rpe, 'rpe_cat', grupos_r)
             if len(df_r): st.dataframe(df_r, hide_index=True, use_container_width=True)
@@ -465,7 +465,7 @@ def tab_correlacoes(da, dw):
             with _c1m:
                 st.plotly_chart(_bar_impacto(_grupos_modal, _dhrv_modal, CORES_MODAL_RPE,
                                               "Δ HRV% por Modalidade × RPE"),
-                                use_container_width=True, config=MC)
+                                use_container_width=True, config=MC_LOC)
 
             # Tabela compacta
             rows_modal = []
@@ -704,7 +704,7 @@ def tab_correlacoes(da, dw):
                         for g in tipos_disp]
             st.plotly_chart(_bar_impacto(tipos_disp, _d_hrv_t, CORES_T,
                                           "Δ HRV% — dia seguinte por Modalidade"),
-                            use_container_width=True, config=MC)
+                            use_container_width=True, config=MC_LOC)
         with _c2t:
             df_t_comp = _tabela_impacto(merged_tipo, '_tipo', tipos_disp)
             if len(df_t_comp): st.dataframe(df_t_comp, hide_index=True, use_container_width=True)
