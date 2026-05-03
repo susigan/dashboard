@@ -1062,20 +1062,6 @@ def tab_correlacoes(da, dw):
         st.info(f"Dados insuficientes (N={len(_dm3_base)} < 10).")
 
     st.markdown("---")
-    _all_e2 = []
-    for _dfe3, _lbl3 in [(df_tr,'RPE'), (df_tt,'Tipo'), (df_tm,'Modal')]:
-        if len(_dfe3) > 0:
-            _dfe3c = _dfe3.copy()
-            _dfe3c.insert(0, 'Tabela', _lbl3)
-            _all_e2.append(_dfe3c)
-    if _all_e2:
-        _df_all2 = pd.concat(_all_e2, ignore_index=True)
-        _csv2 = _df_all2.to_csv(index=False).encode('utf-8')
-        st.download_button("Baixar CSV -- Correlacoes completo",
-                           _csv2, "atheltica_correlacoes.csv",
-                           "text/csv", key="dl_corr_all2")
-
-    st.markdown("---")
 
     # ════════════════════════════════════════════════════════════════════════
     # ANÁLISES AVANÇADAS DE RESPOSTA AO TREINO
