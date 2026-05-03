@@ -1170,3 +1170,475 @@ def tab_correlacoes(da, dw):
         st.download_button("Baixar CSV -- Correlacoes completo",
                            _csv2, "atheltica_correlacoes.csv",
                            "text/csv", key="dl_corr_all2")
+
+    # ════════════════════════════════════════════════════════════════════════
+    # ESTRUTURAS AVANÇADAS: Acute Multi-lag | Event Response | Load Ecology
+    # ════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.subheader("🔬 Análises Avançadas de Resposta ao Treino")
+    st.caption(
+        "Três lentes complementares: como a resposta ao treino evolui ao longo de dias, "
+        "qual o efeito limpo de estímulos específicos, e como a acumulação de carga afecta o HRV."
+    )
+
+    _adv_tabs = st.tabs([
+        "⏱️ Acute Multi-lag",
+        "🧪 Event Response",
+        "🌊 Load Ecology",
+    ])
+
+    # ── Dados comuns ─────────────────────────────────────────────────────────
+    # Usar _daily já construído acima (load, kj, ATL, HRV)
+    # Adicionar HRV para lags 0-7
+    _dw_idx = _adv_dw.set_index('Data')['hrv']
+    for _lag_k in range(0, 8):
+        _col_k = f'hrv_t{_lag_k}'
+        _shifted = _dw_idx.copy()
+        _shifted.index = _shifted.index - pd.Timedelta(days=_lag_k)
+        _shifted_df = pd.DataFrame({'Data': _shifted.index, _col_k: _shifted.values})
+        _shifted_df['Data'] = pd.to_datetime(_shifted_df['Data'])
+        if _col_k not in _daily.columns:
+            _daily = _daily.merge(_shifted_df, on='Data', how='left')
+
+    # ════════════════════════════════════════════════════════════════════════
+    # TAB A — ACUTE MULTI-LAG
+    # Pergunta: o efeito de treinar pesado/leve quanto tempo dura?
+    # Para cada categoria RPE, mostrar HRV médio em t+1, t+2, t+3, t+5, t+7
+    # ════════════════════════════════════════════════════════════════════════
+    with _adv_tabs[0]:
+        st.markdown("**⏱️ Resposta aguda multi-lag: como evolui o HRV após diferentes estímulos**")
+        st.caption(
+            "Para cada categoria de RPE (Leve/Moderado/Pesado/Rest), "
+            "mostra o HRV médio nos dias t+1, t+2, t+3, t+5, t+7 após o estímulo. "
+            "Responde: 'o efeito de treinar pesado dura quantos dias?'"
+        )
+
+        if len(merged_rpe) < 10:
+            st.info("Dados insuficientes para análise multi-lag.")
+        else:
+            _lag_days = [1, 2, 3, 5, 7]
+            _cats_ml   = ['Leve', 'Moderado', 'Pesado', 'Rest']
+            _cores_ml  = {'Leve': '#27ae60', 'Moderado': '#e67e22',
+                           'Pesado': '#c0392b', 'Rest': '#7f8c8d'}
+
+            # Construir: para cada dia com RPE conhecido, buscar HRV nos lags seguintes
+            _mr_ml = merged_rpe.copy()
+            _mr_ml['Data'] = pd.to_datetime(_mr_ml['Data'])
+            _dw_clean_ml   = _prep_dw_clean(dw).copy()
+            _dw_clean_ml['Data'] = pd.to_datetime(_dw_clean_ml['Data'])
+            _dw_idx_ml     = _dw_clean_ml.set_index('Data')['hrv']
+
+            for _k in _lag_days:
+                _mr_ml[f'hrv_lag{_k}'] = _mr_ml['Data'].map(
+                    lambda d, k=_k: _dw_idx_ml.get(d + pd.Timedelta(days=k), np.nan))
+
+            # Tabela: média por categoria × lag
+            _ml_rows = []
+            _base_hrv_ml = float(_dw_clean_ml['hrv'].mean())
+            for cat in _cats_ml:
+                sub_c = _mr_ml[_mr_ml['rpe_cat'] == cat]
+                if len(sub_c) < 3:
+                    continue
+                row_ml = {'Categoria': cat, 'N': len(sub_c)}
+                for _k in _lag_days:
+                    vals_k = sub_c[f'hrv_lag{_k}'].dropna()
+                    if len(vals_k) >= 3:
+                        delta_pct = (vals_k.mean() - _base_hrv_ml) / _base_hrv_ml * 100
+                        row_ml[f't+{_k}d (Δ%)'] = f"{delta_pct:+.1f}%"
+                        row_ml[f'_d{_k}'] = delta_pct
+                    else:
+                        row_ml[f't+{_k}d (Δ%)'] = '—'
+                        row_ml[f'_d{_k}'] = np.nan
+                _ml_rows.append(row_ml)
+
+            if _ml_rows:
+                df_ml = pd.DataFrame(_ml_rows)
+                # Mostrar tabela sem colunas internas
+                _cols_show = ['Categoria', 'N'] + [f't+{k}d (Δ%)' for k in _lag_days]
+                st.dataframe(df_ml[_cols_show], hide_index=True, use_container_width=True)
+
+                # Gráfico de linhas: cada categoria = uma linha ao longo dos lags
+                _fig_ml = go.Figure()
+                for cat in _cats_ml:
+                    _row_cat = df_ml[df_ml['Categoria'] == cat]
+                    if len(_row_cat) == 0:
+                        continue
+                    _ys = [float(_row_cat[f'_d{k}'].values[0])
+                           if not np.isnan(_row_cat[f'_d{k}'].values[0]) else None
+                           for k in _lag_days]
+                    _fig_ml.add_trace(go.Scatter(
+                        x=[f't+{k}d' for k in _lag_days],
+                        y=_ys,
+                        mode='lines+markers',
+                        name=cat,
+                        line=dict(color=_cores_ml.get(cat, '#555'), width=2.5),
+                        marker=dict(size=8),
+                        connectgaps=True,
+                        hovertemplate=f'{cat}<br>%{{x}}: <b>%{{y:+.1f}}%</b><extra></extra>'
+                    ))
+                _fig_ml.add_hline(y=0, line_dash='dash', line_color='#888', line_width=1)
+                _fig_ml.update_layout(
+                    **LAYOUT_BASE,
+                    title=dict(text='Δ HRV% após estímulo — evolução por lag',
+                               font=dict(size=13, color='#111')),
+                    height=340,
+                    xaxis=dict(title='Dias após o estímulo',
+                               tickfont=dict(color='#111'), showgrid=True, gridcolor='#ddd'),
+                    yaxis=dict(title='Δ HRV% vs baseline',
+                               tickfont=dict(color='#111'), showgrid=True, gridcolor='#ddd',
+                               zeroline=True, zerolinecolor='#888'),
+                    legend=dict(orientation='h', y=-0.20, font=dict(color='#111', size=11)),
+                    hovermode='x unified'
+                )
+                st.plotly_chart(_fig_ml, use_container_width=True,
+                                config={'displayModeBar': False, 'responsive': True})
+
+                st.caption(
+                    "Δ HRV% = desvio de cada categoria em relação à média global de HRV. "
+                    "Linhas descendentes = supressão persistente. "
+                    "Cruzamento da linha zero = recuperação. "
+                    f"N base: {sum(r['N'] for r in _ml_rows)} eventos analisados."
+                )
+
+                # Download
+                st.download_button(
+                    "📥 Download Acute Multi-lag",
+                    df_ml[_cols_show + [f'_d{k}' for k in _lag_days]].round(2)
+                    .to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
+                    "atheltica_acute_multilag.csv", "text/csv", key="dl_ml"
+                )
+
+    # ════════════════════════════════════════════════════════════════════════
+    # TAB B — EVENT RESPONSE (JANELAS LIMPAS)
+    # Pergunta: qual o efeito REAL de cada zona quando não há confounding?
+    # Critério: sessão Z3 seguida de 2+ dias leves/descanso → medir HRV t+1..t+5
+    # ════════════════════════════════════════════════════════════════════════
+    with _adv_tabs[1]:
+        st.markdown("**🧪 Resposta a eventos limpos — efeito isolado de cada zona**")
+        st.caption(
+            "Para eliminar confounding temporal, selecciona apenas eventos onde "
+            "os X dias seguintes foram todos leves/descanso. "
+            "Responde: 'qual o efeito REAL de uma sessão pesada quando bem recuperada?'"
+        )
+
+        _er_window = st.slider(
+            "Dias seguintes que devem ser leves/descanso (janela limpa)",
+            1, 4, 2, 1, key="er_clean_window",
+            help="2 = os 2 dias após o evento devem ter RPE≤4 ou descanso (tau=2d deste atleta)"
+        )
+        _er_lags = [1, 2, 3, 4, 5]
+
+        if len(merged_rpe) < 10:
+            st.info("Dados insuficientes.")
+        else:
+            _mr_er = merged_rpe.copy()
+            _mr_er['Data'] = pd.to_datetime(_mr_er['Data'])
+            _dw_idx_er = _dw_clean_ml.set_index('Data')['hrv']
+
+            # Adicionar HRV lags ao merged_rpe
+            for _k in _er_lags:
+                _mr_er[f'hrv_lag{_k}'] = _mr_er['Data'].map(
+                    lambda d, k=_k: _dw_idx_er.get(d + pd.Timedelta(days=k), np.nan))
+
+            # Verificar se os próximos N dias são "limpos" (RPE≤4 ou descanso)
+            # Construir dicionário data → rpe_cat para verificação rápida
+            _rpe_by_date = dict(zip(
+                pd.to_datetime(merged_rpe['Data']),
+                merged_rpe['rpe_cat']
+            ))
+
+            def _is_clean_window(date, n_days):
+                """True se todos os N dias após 'date' são Leve ou Rest."""
+                for k in range(1, n_days + 1):
+                    cat = _rpe_by_date.get(date + pd.Timedelta(days=k))
+                    if cat in ('Moderado', 'Pesado'):
+                        return False
+                return True
+
+            _mr_er['clean'] = _mr_er['Data'].apply(
+                lambda d: _is_clean_window(d, _er_window))
+
+            _er_rows = []
+            _base_hrv_er = float(_dw_clean_ml['hrv'].mean())
+
+            for cat in ['Leve', 'Moderado', 'Pesado', 'Rest']:
+                for clean_flag, lbl_clean in [(True, f'✅ Janela limpa ({_er_window}d)'),
+                                               (False, '❌ Com confounding')]:
+                    sub_er = _mr_er[(_mr_er['rpe_cat'] == cat) &
+                                     (_mr_er['clean'] == clean_flag)]
+                    if len(sub_er) < 3:
+                        continue
+                    row_er = {
+                        'Categoria': cat,
+                        'Janela': lbl_clean,
+                        'N eventos': len(sub_er),
+                    }
+                    for _k in _er_lags:
+                        vals_k = sub_er[f'hrv_lag{_k}'].dropna()
+                        if len(vals_k) >= 3:
+                            delta = (vals_k.mean() - _base_hrv_er) / _base_hrv_er * 100
+                            row_er[f't+{_k}d'] = f"{delta:+.1f}%"
+                            row_er[f'_d{_k}']  = delta
+                        else:
+                            row_er[f't+{_k}d'] = '—'
+                            row_er[f'_d{_k}']  = np.nan
+                    _er_rows.append(row_er)
+
+            if _er_rows:
+                df_er = pd.DataFrame(_er_rows)
+                _cols_er = ['Categoria', 'Janela', 'N eventos'] + [f't+{k}d' for k in _er_lags]
+                st.dataframe(df_er[_cols_er], hide_index=True, use_container_width=True)
+
+                # Gráfico comparativo: Pesado limpo vs Pesado com confounding
+                _fig_er = go.Figure()
+                _er_cores = {
+                    ('Pesado', True):   ('#c0392b', 'solid'),
+                    ('Pesado', False):  ('#c0392b', 'dot'),
+                    ('Leve', True):     ('#27ae60', 'solid'),
+                    ('Leve', False):    ('#27ae60', 'dot'),
+                    ('Rest', True):     ('#7f8c8d', 'solid'),
+                }
+                for _, row_er in df_er.iterrows():
+                    cat = row_er['Categoria']
+                    is_clean = '✅' in str(row_er['Janela'])
+                    clr, dash = _er_cores.get((cat, is_clean), ('#555', 'solid'))
+                    _ys = [float(row_er[f'_d{k}']) if not np.isnan(float(row_er[f'_d{k}']))
+                           else None for k in _er_lags]
+                    _fig_er.add_trace(go.Scatter(
+                        x=[f't+{k}d' for k in _er_lags],
+                        y=_ys,
+                        mode='lines+markers',
+                        name=f"{cat} {'limpo' if is_clean else 'confounding'}",
+                        line=dict(color=clr, dash=dash, width=2),
+                        marker=dict(size=7),
+                        connectgaps=True,
+                        hovertemplate=f'{cat}<br>%{{x}}: <b>%{{y:+.1f}}%</b><extra></extra>'
+                    ))
+
+                _fig_er.add_hline(y=0, line_dash='dash', line_color='#888', line_width=1)
+                _fig_er.update_layout(
+                    **LAYOUT_BASE,
+                    title=dict(text='Efeito limpo vs com confounding por zona',
+                               font=dict(size=13, color='#111')),
+                    height=360,
+                    xaxis=dict(title='Dias após o evento', tickfont=dict(color='#111'),
+                               showgrid=True, gridcolor='#ddd'),
+                    yaxis=dict(title='Δ HRV% vs baseline', tickfont=dict(color='#111'),
+                               showgrid=True, gridcolor='#ddd', zeroline=True,
+                               zerolinecolor='#888'),
+                    legend=dict(orientation='h', y=-0.25, font=dict(color='#111', size=10)),
+                    hovermode='x unified'
+                )
+                st.plotly_chart(_fig_er, use_container_width=True,
+                                config={'displayModeBar': False, 'responsive': True})
+
+                st.caption(
+                    f"Linha sólida = eventos com {_er_window} dias seguintes leves/descanso (janela limpa). "
+                    "Linha tracejada = eventos com treino moderado/pesado nos dias seguintes. "
+                    "A diferença entre sólida e tracejada mostra o confounding temporal."
+                )
+                st.download_button(
+                    "📥 Download Event Response",
+                    df_er[_cols_er].to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
+                    f"atheltica_event_response_clean{_er_window}d.csv",
+                    "text/csv", key="dl_er"
+                )
+
+    # ════════════════════════════════════════════════════════════════════════
+    # TAB C — LOAD ECOLOGY
+    # Pergunta: como a acumulação e densidade de carga afectam o HRV?
+    # Rolling RPE 3d/5d/7d, rolling monotonia, rolling density, cumulative kJ
+    # ════════════════════════════════════════════════════════════════════════
+    with _adv_tabs[2]:
+        st.markdown("**🌊 Load Ecology — como a acumulação de carga afecta o HRV**")
+        st.caption(
+            "Em vez de correlacionar a sessão individual, correlaciona a carga "
+            "acumulada nos últimos 3d/5d/7d com o HRV actual. "
+            "Elimina o problema dos dias intermédios porque o predictor já os inclui."
+        )
+
+        # Construir série rolling sobre dados de actividades
+        _da_eco  = _da_use.copy()
+        _da_eco['Data'] = pd.to_datetime(_da_eco['Data'])
+        _da_eco  = _da_eco[_da_eco['type'].apply(norm_tipo) != 'WeightTraining']
+        if rpe_col:
+            _da_eco[rpe_col] = pd.to_numeric(_da_eco[rpe_col], errors='coerce')
+
+        # Agregar por dia
+        _agg_dict = {'n_sess': ('type', 'count')}
+        if '_load' in _daily.columns:
+            pass  # usar _daily que já tem load
+        if rpe_col and rpe_col in _da_eco.columns:
+            _eco_rpe = (_da_eco.dropna(subset=[rpe_col])
+                        .groupby('Data')[rpe_col].mean()
+                        .reset_index()
+                        .rename(columns={rpe_col: 'rpe_day'}))
+        else:
+            _eco_rpe = pd.DataFrame(columns=['Data', 'rpe_day'])
+
+        _eco_kj = (_da_eco.groupby('Data')
+                   .agg(kj_day=('_kj' if '_kj' in _da_eco.columns
+                                 else '_kj', 'sum'),
+                        n_sess=('type', 'count'))
+                   .reset_index()) if '_kj' in _da_eco.columns else pd.DataFrame(columns=['Data','kj_day','n_sess'])
+
+        # Série diária completa desde 2020
+        _eco_dates = pd.date_range('2020-01-01', pd.Timestamp.now().normalize(), freq='D')
+        _eco_ser   = pd.DataFrame({'Data': _eco_dates})
+        if len(_eco_rpe) > 0:
+            _eco_ser = _eco_ser.merge(_eco_rpe, on='Data', how='left')
+        if len(_eco_kj) > 0:
+            _eco_ser = _eco_ser.merge(_eco_kj, on='Data', how='left')
+
+        # Preencher zeros nos dias sem treino
+        for col in ['rpe_day', 'kj_day', 'n_sess']:
+            if col in _eco_ser.columns:
+                _eco_ser[col] = _eco_ser[col].fillna(0)
+
+        # Rolling windows
+        for _w in [3, 5, 7]:
+            if 'rpe_day' in _eco_ser.columns:
+                _eco_ser[f'rpe_roll{_w}d']  = _eco_ser['rpe_day'].rolling(_w, min_periods=1).mean()
+            if 'kj_day' in _eco_ser.columns:
+                _eco_ser[f'kj_roll{_w}d']   = _eco_ser['kj_day'].rolling(_w, min_periods=1).sum()
+            if 'n_sess' in _eco_ser.columns:
+                _eco_ser[f'freq_roll{_w}d'] = _eco_ser['n_sess'].rolling(_w, min_periods=1).sum()
+
+        # Monotonia rolling (Fry): mean/std dos últimos 7d de RPE
+        if 'rpe_day' in _eco_ser.columns:
+            _rpe_m7 = _eco_ser['rpe_day'].rolling(7, min_periods=4).mean()
+            _rpe_s7 = _eco_ser['rpe_day'].rolling(7, min_periods=4).std()
+            _eco_ser['monotonia_rpe'] = (_rpe_m7 / _rpe_s7.replace(0, np.nan)).round(3)
+
+        # Cruzar com HRV (sem lag — HRV do mesmo dia)
+        _dw_eco = _prep_dw_clean(dw).copy()
+        _dw_eco['Data'] = pd.to_datetime(_dw_eco['Data'])
+        _eco_ser = _eco_ser.merge(
+            _dw_eco[['Data','hrv']].rename(columns={'hrv':'hrv_hoje'}),
+            on='Data', how='inner'
+        )
+        _eco_ser = _eco_ser.dropna(subset=['hrv_hoje'])
+
+        if len(_eco_ser) < 20:
+            st.info("Dados insuficientes para Load Ecology (mínimo 20 dias com HRV).")
+        else:
+            # Correlações rolling load → HRV
+            _eco_pairs = []
+            _eco_vars = {
+                'rpe_roll3d':   'RPE médio 3d',
+                'rpe_roll5d':   'RPE médio 5d',
+                'rpe_roll7d':   'RPE médio 7d',
+                'kj_roll3d':    'kJ acum. 3d',
+                'kj_roll5d':    'kJ acum. 5d',
+                'kj_roll7d':    'kJ acum. 7d',
+                'freq_roll7d':  'Freq. semanal (7d)',
+                'monotonia_rpe':'Monotonia RPE (7d)',
+            }
+            from scipy.stats import pearsonr as _eco_pr, spearmanr as _eco_sr
+
+            for var, lbl in _eco_vars.items():
+                if var not in _eco_ser.columns:
+                    continue
+                _d = _eco_ser[[var, 'hrv_hoje']].dropna()
+                if len(_d) < 15:
+                    continue
+                x = _d[var].values.astype(float)
+                y = _d['hrv_hoje'].values.astype(float)
+                try:
+                    r_p, p_p = _eco_pr(x, y)
+                    r_s, p_s = _eco_sr(x, y)
+                    sig = ('✅ p<0.05' if min(p_p, p_s) < 0.05 else
+                           '~ p<0.10' if min(p_p, p_s) < 0.10 else '✗ ns')
+                    _eco_pairs.append({
+                        'Variável':    lbl,
+                        'N':           len(_d),
+                        'r Pearson':   round(r_p, 3),
+                        'r Spearman':  round(r_s, 3),
+                        'p':           round(min(p_p, p_s), 4),
+                        'Sig':         sig,
+                        'Direcção':    '↘ mais carga → HRV↓' if r_s < 0 else '↗',
+                        '_r_abs':      abs(r_s),
+                    })
+                except Exception:
+                    pass
+
+            if _eco_pairs:
+                df_eco = (pd.DataFrame(_eco_pairs)
+                          .sort_values('_r_abs', ascending=False)
+                          .drop(columns=['_r_abs']))
+                st.dataframe(df_eco, hide_index=True, use_container_width=True)
+
+                # Heatmap: r Spearman por variável
+                _fig_eco = go.Figure(go.Bar(
+                    y=df_eco['Variável'].tolist(),
+                    x=df_eco['r Spearman'].tolist(),
+                    orientation='h',
+                    marker_color=[('#c0392b' if r < 0 else '#27ae60')
+                                   for r in df_eco['r Spearman']],
+                    text=[f"{r:+.3f}" for r in df_eco['r Spearman']],
+                    textposition='outside',
+                    hovertemplate='%{y}<br>r Spearman: <b>%{x:+.3f}</b><extra></extra>'
+                ))
+                _fig_eco.add_vline(x=0, line_color='#888', line_width=1)
+                _fig_eco.update_layout(
+                    **LAYOUT_BASE,
+                    title=dict(text='r Spearman: carga acumulada → HRV',
+                               font=dict(size=13, color='#111')),
+                    height=max(280, len(df_eco) * 36 + 80),
+                    xaxis=dict(title='r Spearman', tickfont=dict(color='#111'),
+                               showgrid=True, gridcolor='#ddd',
+                               range=[-0.6, 0.6]),
+                    yaxis=dict(tickfont=dict(color='#111', size=10)),
+                    showlegend=False
+                )
+                st.plotly_chart(_fig_eco, use_container_width=True,
+                                config={'displayModeBar': False, 'responsive': True})
+
+                # Scatter da variável mais forte
+                _best_var = df_eco.iloc[0]
+                _best_key = [k for k, v in _eco_vars.items() if v == _best_var['Variável']]
+                if _best_key and _best_key[0] in _eco_ser.columns:
+                    _sc_eco = _eco_ser[[_best_key[0], 'hrv_hoje']].dropna()
+                    _sc_eco_s = _sc_eco.sort_values(_best_key[0]).copy()
+                    _sc_eco_s['_roll'] = (_sc_eco_s['hrv_hoje']
+                                          .rolling(max(3, len(_sc_eco_s) // 8),
+                                                   min_periods=2, center=True).mean())
+                    _fig_sc_eco = go.Figure()
+                    _fig_sc_eco.add_trace(go.Scatter(
+                        x=_sc_eco_s[_best_key[0]].tolist(),
+                        y=_sc_eco_s['hrv_hoje'].tolist(),
+                        mode='markers', name='Pontos',
+                        marker=dict(color='#2980b9', size=5, opacity=0.4),
+                        hovertemplate=f'{_best_var["Variável"]}: %{{x:.1f}}<br>HRV: <b>%{{y:.0f}} ms</b><extra></extra>'
+                    ))
+                    _fig_sc_eco.add_trace(go.Scatter(
+                        x=_sc_eco_s[_best_key[0]].tolist(),
+                        y=_sc_eco_s['_roll'].tolist(),
+                        mode='lines', name='Tendência',
+                        line=dict(color='#e74c3c', width=2)
+                    ))
+                    _fig_sc_eco.update_layout(
+                        **LAYOUT_BASE,
+                        title=dict(text=f'{_best_var["Variável"]} vs HRV (r={_best_var["r Spearman"]:+.3f})',
+                                   font=dict(size=12, color='#111')),
+                        height=280,
+                        xaxis=dict(title=_best_var['Variável'],
+                                   tickfont=dict(color='#111'), showgrid=True, gridcolor='#ddd'),
+                        yaxis=dict(title='HRV (ms)', tickfont=dict(color='#111'),
+                                   showgrid=True, gridcolor='#ddd'),
+                        showlegend=True,
+                        legend=dict(orientation='h', y=-0.25, font=dict(color='#111', size=10))
+                    )
+                    st.plotly_chart(_fig_sc_eco, use_container_width=True,
+                                    config={'displayModeBar': False, 'responsive': True})
+
+                st.caption(
+                    "Valores negativos = mais carga acumulada → HRV mais baixo. "
+                    "Comparar 3d vs 5d vs 7d mostra em que janela temporal a carga tem mais impacto. "
+                    "Monotonia RPE captura não só a quantidade mas a uniformidade do estímulo."
+                )
+                st.download_button(
+                    "📥 Download Load Ecology",
+                    df_eco.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
+                    "atheltica_load_ecology.csv", "text/csv", key="dl_eco"
+                )
