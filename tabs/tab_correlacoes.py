@@ -1526,20 +1526,20 @@ def tab_correlacoes(da, dw):
 
     if _all_dl_final:
         import io
-        _buf = io.BytesIO()
-        with pd.ExcelWriter(_buf, engine='openpyxl') as _xw:
-            for _df_dl in _all_dl_final:
-                _sheet = str(_df_dl['analise'].iloc[0])[:31]
-                _df_dl.to_excel(_xw, sheet_name=_sheet, index=False)
+        # Concatenar todas as análises num único CSV com coluna 'analise'
+        _df_consolidado = pd.concat(
+            [df.assign(analise=df['analise'].iloc[0]) if 'analise' in df.columns else df
+             for df in _all_dl_final],
+            ignore_index=True
+        )
         st.download_button(
-            "📥 Download consolidado completo (Excel — todas as análises)",
-            _buf.getvalue(),
-            "atheltica_correlacoes_completo.xlsx",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "📥 Download consolidado completo (CSV — todas as análises)",
+            _df_consolidado.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
+            "atheltica_correlacoes_completo.csv",
+            "text/csv",
             key="dl_corr_all"
         )
     else:
-        # Fallback CSV
         if len(merged_rpe) > 0:
             st.download_button(
                 "📥 Download consolidado (CSV)",
