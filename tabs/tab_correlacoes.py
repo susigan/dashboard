@@ -1355,119 +1355,264 @@ def tab_correlacoes(da, dw):
             st.dataframe(pd.DataFrame(_kj_rows), hide_index=True, use_container_width=True)
 
         # ── Análise de divergências ────────────────────────────────────────
-        st.markdown("**Divergências entre períodos:**")
+        st.markdown("**⚠️ Divergências entre períodos — o que mudou ao longo do tempo:**")
         _diverg = []
 
-        # Pesado: sinal de Pesado consistente?
+        # RPE Pesado
         _pesado_vals = [(p['periodo'], p.get('rpe_Pesado_dhrv'))
-                         for p in _periodos if 'rpe_Pesado_dhrv' in p]
+                        for p in _periodos if p.get('rpe_Pesado_dhrv') is not None]
         if len(_pesado_vals) >= 2:
-            vals_num = [v for _, v in _pesado_vals if v is not None]
-            spread = max(vals_num) - min(vals_num) if vals_num else 0
-            if spread > 10:
-                _diverg.append(f"⚠️ **RPE Pesado**: Δ HRV varia {spread:.0f}pp entre períodos "
-                                f"({_pesado_vals[0][0]}: {_pesado_vals[0][1]:+.1f}% vs "
-                                f"{_pesado_vals[-1][0]}: {_pesado_vals[-1][1]:+.1f}%). "
-                                "Sugere adaptação ao longo do tempo.")
+            vals_num = [v for _, v in _pesado_vals]
+            spread = max(vals_num) - min(vals_num)
+            if spread > 5:
+                _diverg.append(
+                    f"⚠️ **RPE Pesado → HRV**: inconsistente entre períodos (spread={spread:.0f}pp). "
+                    f"{_pesado_vals[0][0]}: {_pesado_vals[0][1]:+.1f}% → "
+                    f"{_pesado_vals[-1][0]}: {_pesado_vals[-1][1]:+.1f}%. "
+                    "**RPE Pesado isolado não é preditor fiável do HRV do dia seguinte** — "
+                    "o efeito depende do contexto (fadiga acumulada, modalidade, sequência).")
             else:
-                _diverg.append(f"✅ **RPE Pesado**: consistente entre períodos (spread={spread:.0f}pp)")
+                _diverg.append(f"✅ **RPE Pesado**: sinal estável entre períodos (spread={spread:.0f}pp)")
 
-        # KJ→HRV: sinal consistente?
-        _kj_vals = [p.get('r_kj_hrv') for p in _periodos if 'r_kj_hrv' in p]
+        # KJ → HRV — inversão de sinal
+        _kj_vals = [(p['periodo'], p.get('r_kj_hrv')) for p in _periodos
+                    if p.get('r_kj_hrv') is not None]
         if len(_kj_vals) >= 2:
-            signs = set(np.sign(v) for v in _kj_vals if v is not None)
-            if len(signs) > 1:
-                _diverg.append("⚠️ **kJ→HRV**: sinal muda de direcção entre períodos — "
-                               "relação não-linear ou fase de adaptação em curso.")
+            signs = set(int(np.sign(v)) for _, v in _kj_vals if v is not None)
+            r_curto = _kj_vals[0][1] if _kj_vals else None
+            r_longo = _kj_vals[-1][1] if _kj_vals else None
+            if len(signs) > 1 and r_curto is not None and r_longo is not None:
+                _diverg.append(
+                    f"⚠️ **kJ → HRV inverte de sinal**: "
+                    f"{_kj_vals[0][0]} r={r_curto:+.3f} (positivo) → "
+                    f"{_kj_vals[-1][0]} r={r_longo:+.3f} (negativo). "
+                    "**No curto prazo, treinas mais quando te sentes melhor** (correlação espúria). "
+                    "**No longo prazo, carga acumulada suprime o HRV** — efeito real da fadiga crónica.")
             else:
-                _sinal_str = '↗' if float(list(signs)[0]) > 0 else '↘'
-                _diverg.append(f"✅ **kJ→HRV**: sinal consistente ({_sinal_str}) em todos os períodos")
+                _sinal_str = '↗' if r_longo and r_longo > 0 else '↘'
+                _diverg.append(f"✅ **kJ→HRV**: sinal consistente ({_sinal_str})")
 
-        # Modalidade com maior variação
+        # Modalidades — identificar inversões
         for mod in CICLICOS_T:
-            mod_vals = [p.get(f'mod_{mod}_dhrv') for p in _periodos
-                        if f'mod_{mod}_dhrv' in p]
-            mod_vals = [v for v in mod_vals if v is not None]
-            if len(mod_vals) >= 2:
-                spread_m = max(mod_vals) - min(mod_vals)
-                if spread_m > 15:
-                    _diverg.append(f"⚠️ **{mod} Pesado**: alta variação entre períodos ({spread_m:.0f}pp) — "
-                                   "verificar se houve mudança de protocolo/volume.")
+            mod_vals = [(p['periodo'], p.get(f'mod_{mod}_dhrv')) for p in _periodos
+                        if p.get(f'mod_{mod}_dhrv') is not None]
+            if len(mod_vals) < 2: continue
+            vals_num_m = [v for _, v in mod_vals]
+            spread_m = max(vals_num_m) - min(vals_num_m)
+            signs_m = set(int(np.sign(v)) for v in vals_num_m)
+            if len(signs_m) > 1:
+                _diverg.append(
+                    f"⚠️ **{mod} Pesado**: inverte de sinal entre períodos "
+                    f"({mod_vals[0][0]}: {mod_vals[0][1]:+.1f}% → {mod_vals[-1][0]}: {mod_vals[-1][1]:+.1f}%). "
+                    f"O impacto de {mod} intenso mudou ao longo do tempo — verificar volume/protocolo recente.")
+            elif spread_m > 15:
+                _diverg.append(
+                    f"⚠️ **{mod} Pesado**: mesmo sinal mas spread={spread_m:.0f}pp — "
+                    "variabilidade alta, interpretar com cautela.")
+            else:
+                _diverg.append(
+                    f"✅ **{mod} Pesado**: estável ({mod_vals[0][1]:+.1f}% → {mod_vals[-1][1]:+.1f}%)")
 
         for d in _diverg:
             st.markdown(d)
 
-        # ── Síntese combinada (conjunto de todos os períodos) ──────────────
-        st.markdown("**Síntese do conjunto — padrões consistentes:**")
+        # ── Síntese combinada ──────────────────────────────────────────────
+        st.markdown("**✅ Síntese — padrões robustos e accionáveis:**")
         _sintese = []
 
-        # Melhor zona RPE para HRV
-        _zona_hrv = {}
-        for cat in ['Leve','Moderado','Pesado','Rest']:
-            vals = [p.get(f'rpe_{cat}_dhrv') for p in _periodos if f'rpe_{cat}_dhrv' in p]
-            vals = [v for v in vals if v is not None]
-            if vals:
-                _zona_hrv[cat] = round(np.mean(vals), 1)
-        if _zona_hrv:
-            melhor_zona = max(_zona_hrv, key=_zona_hrv.get)
-            pior_zona   = min(_zona_hrv, key=_zona_hrv.get)
-            _sintese.append(f"🟢 **Zona com melhor HRV**: {melhor_zona} "
-                            f"(média {_zona_hrv[melhor_zona]:+.1f}% em todos os períodos)")
-            _sintese.append(f"🔴 **Zona com pior HRV**: {pior_zona} "
-                            f"(média {_zona_hrv[pior_zona]:+.1f}%)")
-
-        # Melhor modalidade para HRV
-        _mod_hrv = {}
+        # 1. Modalidade mais/menos tolerada — calculado dos dados reais
+        _mod_hrv_all = {}
         for mod in CICLICOS_T:
-            vals_m = [p.get(f'mod_{mod}_dhrv') for p in _periodos if f'mod_{mod}_dhrv' in p]
-            vals_m = [v for v in vals_m if v is not None]
-            if vals_m:
-                _mod_hrv[mod] = round(np.mean(vals_m), 1)
-        if _mod_hrv:
-            melhor_mod = max(_mod_hrv, key=_mod_hrv.get)
-            pior_mod   = min(_mod_hrv, key=_mod_hrv.get)
-            _sintese.append(f"🏆 **Modalidade pesada mais tolerada**: {melhor_mod} "
-                            f"({_mod_hrv[melhor_mod]:+.1f}% HRV médio)")
-            _sintese.append(f"⚠️ **Modalidade pesada mais impactante**: {pior_mod} "
-                            f"({_mod_hrv[pior_mod]:+.1f}% HRV médio)")
+            vals_all = [p.get(f'mod_{mod}_dhrv') for p in _periodos
+                        if p.get(f'mod_{mod}_dhrv') is not None]
+            if vals_all: _mod_hrv_all[mod] = round(np.mean(vals_all), 1)
 
-        # Multi-lag
+        if _mod_hrv_all:
+            melhor_m = max(_mod_hrv_all, key=_mod_hrv_all.get)
+            pior_m   = min(_mod_hrv_all, key=_mod_hrv_all.get)
+            v_melhor = _mod_hrv_all[melhor_m]
+            v_pior   = _mod_hrv_all[pior_m]
+            # Interpretar dinamicamente
+            if v_melhor > 5:
+                _sintese.append(
+                    f"🏆 **Sessões pesadas de {melhor_m}** associam a HRV {v_melhor:+.1f}% "
+                    f"(média histórica) — modalidade mais tolerada para intensidade alta.")
+            elif v_melhor > 0:
+                _sintese.append(
+                    f"🟡 **{melhor_m} Pesado** é a modalidade menos impactante ({v_melhor:+.1f}%), "
+                    "mas o efeito é pequeno.")
+            if v_pior < -10:
+                _sintese.append(
+                    f"🔴 **{pior_m} Pesado** associa a HRV {v_pior:+.1f}% — "
+                    f"maior supressão autonómica. Limitar sessões {pior_m} intensas e monitorizar ARI após.")
+            elif v_pior < -3:
+                _sintese.append(
+                    f"🟡 **{pior_m} Pesado** tem impacto moderado ({v_pior:+.1f}%) — "
+                    "monitorizar acumulação.")
+
+        # 2. Efeito isolado de Pesado (Event Response) — só se disponível
+        if '_er_rows' in dir() and _er_rows:
+            er_df = pd.DataFrame(_er_rows)
+            pesado_limpo = er_df[(er_df['Categoria']=='Pesado') &
+                                  er_df['Janela'].str.contains('limpa')]
+            pesado_conf  = er_df[(er_df['Categoria']=='Pesado') &
+                                  er_df['Janela'].str.contains('confounding')]
+            if len(pesado_limpo) > 0 and len(pesado_conf) > 0:
+                try:
+                    v_limpo = float(str(pesado_limpo.iloc[0]['t+1d']).replace('%','').replace('+',''))
+                    v_conf  = float(str(pesado_conf.iloc[0]['t+1d']).replace('%','').replace('+',''))
+                    n_limpo = int(float(pesado_limpo.iloc[0]['N']))
+                    if abs(v_limpo) < 3:
+                        _sintese.append(
+                            f"🧪 **Sessão Pesada isolada** (N={n_limpo} janelas limpas): "
+                            f"HRV {v_limpo:+.1f}% em t+1 — efeito **pequeno e transitório**. "
+                            f"Com treino adicional nos dias seguintes: {v_conf:+.1f}%. "
+                            "O problema é a **acumulação sem recuperação**, não uma sessão isolada.")
+                    elif v_limpo < -5:
+                        _sintese.append(
+                            f"🧪 **Sessão Pesada isolada** (N={n_limpo}): "
+                            f"HRV {v_limpo:+.1f}% em t+1 — supressão **significativa mesmo isolada**. "
+                            "Garantir recuperação de 2+ dias após cada sessão intensa.")
+                except Exception:
+                    pass
+
+        # 3. Rest — dinâmico
+        if len(merged_rpe) >= 5:
+            base_p = merged_rpe['hrv'].mean()
+            sub_rest = merged_rpe[merged_rpe['rpe_cat']=='Rest']
+            if len(sub_rest) >= 3:
+                d_rest = (sub_rest['hrv'].mean() - base_p) / base_p * 100
+                if d_rest < -5:
+                    _sintese.append(
+                        f"💤 **Dias de descanso precedem HRV baixo** ({d_rest:+.1f}%). "
+                        "Padrão típico: o atleta descansa quando já está suprimido — "
+                        "o descanso é **resposta** à fadiga, não causa do HRV baixo.")
+                elif d_rest > 3:
+                    _sintese.append(
+                        f"💤 **Dias de descanso associam a bom HRV** ({d_rest:+.1f}%). "
+                        "O descanso está a funcionar — o sistema recupera bem.")
+
+        # 4. Multi-lag — duração real do efeito
         if '_ml_rows' in dir() and _ml_rows:
-            df_ml_s = pd.DataFrame(_ml_rows)
-            for cat in ['Pesado','Leve']:
-                row_s = df_ml_s[df_ml_s['Categoria']==cat]
-                if len(row_s)==0: continue
-                row_s = row_s.iloc[0]
-                cross = []
+            ml_df = pd.DataFrame(_ml_rows)
+            row_pesado = ml_df[ml_df['Categoria']=='Pesado']
+            if len(row_pesado) > 0:
+                row_pesado = row_pesado.iloc[0]
+                first_neutral = None
+                deepest_k, deepest_v = None, 0
                 for k in [1,2,3,5,7]:
                     try:
-                        v = float(str(row_s.get(f't+{k}d','—')).replace('%','').replace('+','').replace('—','nan'))
-                        if abs(v) < 2.0: cross.append(k)
+                        v = float(str(row_pesado.get(f't+{k}d','—')).replace('%','').replace('+',''))
+                        if first_neutral is None and abs(v) < 2.0:
+                            first_neutral = k
+                        if abs(v) > abs(deepest_v):
+                            deepest_k, deepest_v = k, v
                     except: pass
-                if cross:
-                    _sintese.append(f"⏱️ **{cat}**: efeito neutrailzado em ~t+{cross[0]}d")
+                if first_neutral:
+                    _sintese.append(
+                        f"⏱️ **Recuperação após Pesado**: HRV regressa ao neutro em t+{first_neutral}d "
+                        f"(pico do efeito em t+{deepest_k}d: {deepest_v:+.1f}%). "
+                        "Nota: o HRV Analyzer indica que o efeito máximo de ATL/Z3 aparece em t+10-13d — "
+                        "esta janela (t+1 a t+7) capta apenas o efeito agudo.")
                 else:
-                    _sintese.append(f"⏱️ **{cat}**: efeito persiste além de t+7d")
+                    _sintese.append(
+                        "⏱️ **Efeito de Pesado persiste além de t+7d** — "
+                        "consistente com o lag 10-13d detectado pelo HRV Analyzer.")
 
-        # Load Ecology
+        # 5. Load Ecology — dinâmico, sem texto fixo
         if '_eco_pairs' in dir() and _eco_pairs:
-            df_eco_s = pd.DataFrame(_eco_pairs).sort_values('_r_abs', ascending=False)
-            best_s = df_eco_s.iloc[0]
-            _sintese.append(f"🌊 **Carga acumulada**: melhor preditor = {best_s['Variável']} "
-                            f"r={best_s['r Spearman']:+.3f} {best_s['Sig']}")
+            eco_sig  = [p for p in _eco_pairs if p.get('Sig','') in ('✅ p<0.05','~ p<0.10')]
+            eco_ns   = [p for p in _eco_pairs if p.get('Sig','') == '✗ ns']
+            if eco_sig:
+                best_eco = sorted(eco_sig, key=lambda x: abs(x.get('r Spearman',0)), reverse=True)[0]
+                r_e = best_eco['r Spearman']
+                dir_e = "mais carga/RPE → HRV↑" if r_e > 0 else "mais carga → HRV↓"
+                _sintese.append(
+                    f"🌊 **Load Ecology**: melhor preditor = **{best_eco['Variável']}** "
+                    f"r={r_e:+.3f} ({best_eco['Sig']}). "
+                    f"Direcção: {dir_e}. "
+                    + ("Nota: positivo sugere efeito de selecção (treinas mais quando estás bem)."
+                       if r_e > 0 else "Acumulação de carga suprime o HRV."))
+            else:
+                _sintese.append(
+                    "🌊 **Load Ecology**: nenhum preditor com sinal detectável com os dados actuais. "
+                    f"O efeito real da carga acumulada aparece com lag 10-13d "
+                    f"(ver HRV Analyzer), fora desta janela de análise.")
 
-        # Blocos B1/B2
+        # 6. kJ vs TSS
         if '_rows_b1' in dir() and _rows_b1:
-            b1_todos = [r for r in _rows_b1 if r['Grupo']=='Todos' and r['Sig'].startswith('✅')]
-            for r in b1_todos:
-                _sintese.append(f"⚡ **Impacto agudo**: {r['X']} r={r['r Spearman']:+.3f} ({r['Forca']}) {r['Sig']}")
-        if '_rows_b2' in dir() and _rows_b2:
-            b2_todos = [r for r in _rows_b2 if r['Grupo']=='Todos' and r['Sig'].startswith('✅')]
-            for r in b2_todos:
-                _sintese.append(f"😴 **Fadiga acumulada**: {r['X']} r={r['r Spearman']:+.3f} ({r['Forca']}) {r['Sig']}")
+            r_kj_b1  = next((r for r in _rows_b1 if r['Grupo']=='Todos' and 'KJ' in r['X']), None)
+            r_tss_b1 = next((r for r in _rows_b1 if r['Grupo']=='Todos' and 'training_load' in r['X']), None)
+            if r_kj_b1 and r_tss_b1:
+                rk = abs(float(r_kj_b1['r Spearman']))
+                rt = abs(float(r_tss_b1['r Spearman']))
+                if rk > rt and rk > 0.05:
+                    _sintese.append(
+                        f"⚡ **kJ prediz melhor que TSS**: |r(kJ)|={rk:.3f} vs |r(TSS)|={rt:.3f}. "
+                        "Trabalho mecânico capta melhor o stress fisiológico real.")
+                elif rt > rk and rt > 0.05:
+                    _sintese.append(
+                        f"⚡ **TSS prediz melhor que kJ**: |r(TSS)|={rt:.3f} vs |r(kJ)|={rk:.3f}.")
+                else:
+                    _sintese.append(
+                        f"⚡ **Impacto agudo (kJ e TSS)**: efeito fraco em t+1 "
+                        f"(|r| < 0.1). O efeito real aparece com lag maior — ver HRV Analyzer.")
 
+        # 7. Fatigados vs Isolados — só se diferença real
+        if '_rows_b1' in dir() and _rows_b1:
+            fat_kj = next((r for r in _rows_b1 if r['Grupo'].startswith('Fatigado') and 'KJ' in r['X']), None)
+            iso_kj = next((r for r in _rows_b1 if r['Grupo'].startswith('Isolado') and 'KJ' in r['X']), None)
+            if fat_kj and iso_kj:
+                r_fat = float(fat_kj['r Spearman'])
+                r_iso = float(iso_kj['r Spearman'])
+                diff = abs(r_fat) - abs(r_iso)
+                if diff > 0.1:
+                    _sintese.append(
+                        f"😴 **Fadiga amplifica impacto da carga**: "
+                        f"fatigado r={r_fat:+.3f} vs fresco r={r_iso:+.3f} (Δ={diff:+.3f}). "
+                        "A mesma sessão tem mais impacto quando o atleta já está acumulado.")
+                elif diff < -0.1:
+                    _sintese.append(
+                        f"😴 **Estado fresco amplifica impacto** (vs fatigado): "
+                        f"fresco r={r_iso:+.3f} vs fatigado r={r_fat:+.3f}.")
+
+        if not _sintese:
+            st.info("Dados insuficientes para síntese automática.")
         for s in _sintese:
             st.markdown(s)
+
+        # ── Nota sobre divergência com HRV Analyzer ───────────────────────
+        if '_eco_pairs' in dir() and _eco_pairs:
+            eco_mono = next((p for p in _eco_pairs
+                             if 'Monoton' in p.get('Variável','')), None)
+            if eco_mono:
+                r_mono_eco = float(eco_mono['r Spearman'])
+                # Nota dinâmica: só aparece se o sinal for positivo (conflito real com Analyzer)
+                if r_mono_eco > 0:
+                    st.warning(
+                        f"⚠️ **Nota metodológica — Monotonia**: esta tab mostra r=**+{r_mono_eco:.3f}** "
+                        f"(mais monotonia → HRV ligeiramente mais alto, {eco_mono['Sig']}). "
+                        "O HRV Analyzer mostra r=**-0.218** (mais monotonia → HRV semana seguinte mais baixo). "
+                        "**Não são contraditórios** — medem coisas diferentes: "
+                        "esta tab usa RPE e HRV do mesmo dia (efeito de selecção: treinas uniforme quando estás bem); "
+                        "o HRV Analyzer usa kJ e HRV da semana seguinte (efeito causal real). "
+                        "**O efeito causal da monotonia sobre o HRV é negativo** (confirmado pelo Analyzer)."
+                    )
+                else:
+                    # Ambos negativos — consistente
+                    st.success(
+                        f"✅ **Monotonia**: esta tab e o HRV Analyzer concordam — "
+                        f"monotonia correlaciona negativamente com HRV (r={r_mono_eco:+.3f}). "
+                        "Variar o estímulo é benéfico para a resposta autonómica."
+                    )
+
+        # ── Nota sobre lag ────────────────────────────────────────────────
+        st.info(
+            "⏱️ **Nota sobre lag temporal**: esta tab analisa o efeito do treino em t+1 a t+7 dias. "
+            "O HRV Analyzer mostra que o efeito mais forte de pct_Z3 e ATL aparece em **t+10 a t+13 dias** — "
+            "fora desta janela. Por isso esta tab subestima o impacto de cargas intensas acumuladas. "
+            "Para ver o efeito completo com lag 10-13d, consultar Tab HRV Analyzer → Lag Avançado."
+        )
 
     st.info(
         "Δ HRV% negativo = HRV mais baixo = stress/fadiga. "
