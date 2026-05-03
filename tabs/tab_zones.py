@@ -65,9 +65,29 @@ def tab_zones(da, mods_sel):
     PW = dict(paper_bgcolor='white', plot_bgcolor='white',
               font=dict(color='#222222', family='Arial'))
 
-    # ── Dropdown ano (só para gráficos) ──────────────────────────────────
+    # ── Botões de ano (substituem dropdown) ──────────────────────────────
     anos = sorted(df['ano'].unique())
-    ano_sel = st.selectbox("📅 Ano (gráficos)", anos, index=len(anos)-1)
+    # Estado persistente
+    if 'zones_ano_sel' not in st.session_state or st.session_state['zones_ano_sel'] not in anos:
+        st.session_state['zones_ano_sel'] = anos[-1]
+
+    st.markdown("**📅 Seleccionar ano:**")
+    _btn_cols = st.columns(len(anos))
+    for _i, _ano in enumerate(anos):
+        _is_active = (st.session_state['zones_ano_sel'] == _ano)
+        _bg  = "#1a73e8" if _is_active else "#f0f2f6"
+        _clr = "white"   if _is_active else "#333"
+        if _btn_cols[_i].button(
+            str(_ano),
+            key=f"zones_btn_{_ano}",
+            help=f"Ver dados de {_ano}",
+            use_container_width=True,
+            type="primary" if _is_active else "secondary"
+        ):
+            st.session_state['zones_ano_sel'] = _ano
+            st.rerun()
+
+    ano_sel = st.session_state['zones_ano_sel']
     df_ano  = df[df['ano'] == ano_sel].copy()
 
     # ════════════════════════════════════════════════════════════════════
@@ -174,7 +194,11 @@ def tab_zones(da, mods_sel):
     # TABELA ANUAL — separada por ano, linha Geral em cinza
     # ════════════════════════════════════════════════════════════════════
     st.subheader("📊 HR Zones & RPE Zones — todos os anos")
-    st.caption("% média por modalidade cíclica. Linha 'Geral' em cinza claro.")
+    st.caption(
+        "% média por modalidade. "
+        "🟢 Verde = maioria Z1 (polarizado) | 🟡 Amarelo = Z2 | 🔴 Vermelho = Z3 dominante. "
+        "Linha 'Geral' em cinza claro."
+    )
 
     rows_anual = []
     for ano in sorted(df['ano'].unique(), reverse=True):
@@ -213,36 +237,57 @@ def tab_zones(da, mods_sel):
             rows_anual.append(row)
 
     if rows_anual:
-        # 1. Combinar HR|RPE ANTES de criar DataFrame
+        # Combinar HR|RPE
         for row in rows_anual:
             for z_hr, z_rpe, z_lbl in [
-                ('HR Z1+Z2%','RPE Z1%','Z1 (HR|RPE)'),
-                ('HR Z3+Z4%','RPE Z2%','Z2 (HR|RPE)'),
-                ('HR Z5+%',  'RPE Z3%','Z3 (HR|RPE)'),
+                ('HR Z1+Z2%','RPE Z1%','Z1 HR|RPE'),
+                ('HR Z3+Z4%','RPE Z2%','Z2 HR|RPE'),
+                ('HR Z5+%',  'RPE Z3%','Z3 HR|RPE'),
             ]:
                 row[z_lbl] = f"{row.get(z_hr,'—')} | {row.get(z_rpe,'—')}"
 
-        # 2. Criar DataFrame depois da combinação
-        df_anual     = pd.DataFrame(rows_anual)
-        display_cols = ['Ano','Modalidade',
-                        'Z1 (HR|RPE)','Z2 (HR|RPE)','Z3 (HR|RPE)']
+        def _pct_to_int(s):
+            m = re.search(r'(\d+)%', str(s))
+            return int(m.group(1)) if m else 0
 
-        # 3. Render HTML com linha Geral em cinza
-        html  = ('<table style="border-collapse:collapse;width:100%;'
-                 'font-size:12px;background:#fff;color:#222">')
-        html += '<tr style="background:#e0e0e0">'
+        def _zone_cell_color(pct_val, zone_idx):
+            """Cor de fundo baseada na % da zona."""
+            if pct_val == 0: return '#ffffff'
+            if zone_idx == 0:   # Z1: mais verde = mais polarizado
+                i = min(pct_val, 80) / 80
+                return f'rgb({int(255-i*80)},{int(240-i*30)},{int(210-i*90)})'
+            elif zone_idx == 1: # Z2: amarelo suave
+                i = min(pct_val, 50) / 50
+                return f'rgb(255,{int(248-i*50)},{int(205-i*100)})'
+            else:               # Z3: vermelho quanto mais alto
+                i = min(pct_val, 40) / 40
+                return f'rgb(255,{int(240-i*130)},{int(240-i*130)})'
+
+        df_anual     = pd.DataFrame(rows_anual)
+        display_cols = ['Ano','Modalidade','Z1 HR|RPE','Z2 HR|RPE','Z3 HR|RPE']
+        zone_cols    = ['Z1 HR|RPE','Z2 HR|RPE','Z3 HR|RPE']
+
+        html  = '<table style="border-collapse:collapse;width:100%;font-size:12px">'
+        html += '<tr style="background:#2c3e50;color:#fff">'
         for c in display_cols:
-            html += (f'<th style="border:1px solid #ccc;padding:6px 10px;'
-                     f'text-align:center;color:#111;font-weight:bold">{c}</th>')
+            html += (f'<th style="border:1px solid #444;padding:7px 12px;'
+                     f'text-align:center;font-weight:600">{c}</th>')
         html += '</tr>'
         for _, row in df_anual.iterrows():
-            bg = '#f0f0f0' if row.get('_geral', False) else '#ffffff'
-            fw = 'bold'    if row.get('_geral', False) else 'normal'
-            html += f'<tr style="background:{bg}">'
+            is_geral = row.get('_geral', False)
+            row_bg   = '#ecf0f1' if is_geral else '#fff'
+            fw       = '700'    if is_geral else '400'
+            html += '<tr>'
             for c in display_cols:
-                html += (f'<td style="border:1px solid #ddd;padding:5px 10px;'
-                         f'text-align:center;color:#222;font-weight:{fw}">'
-                         f'{row.get(c,"—")}</td>')
+                val = row.get(c, '—')
+                if c in zone_cols and not is_geral:
+                    zi  = zone_cols.index(c)
+                    bg  = _zone_cell_color(_pct_to_int(val), zi)
+                    html += (f'<td style="border:1px solid #ddd;padding:5px 10px;'
+                             f'text-align:center;background:{bg};font-weight:{fw}">{val}</td>')
+                else:
+                    html += (f'<td style="border:1px solid #ddd;padding:5px 10px;'
+                             f'text-align:center;background:{row_bg};color:#222;font-weight:{fw}">{val}</td>')
             html += '</tr>'
         html += '</table>'
         st.markdown(html, unsafe_allow_html=True)
@@ -252,11 +297,7 @@ def tab_zones(da, mods_sel):
     # ════════════════════════════════════════════════════════════════════
     # CORRELAÇÃO HR Zone × RPE Zone — tabela simplificada
     # ════════════════════════════════════════════════════════════════════
-    st.subheader("🔗 Correlação HR Zone × RPE Zone")
-    st.caption(
-        "Pearson r entre % de tempo em cada HR Zone e RPE numérico. "
-        "**Força Forte/Muito Forte = HR Zone e RPE altamente alinhados** "
-        "(quando RPE sobe, tempo nessa HR Zone sobe ou desce consistentemente).")
+    st.subheader("🔗 HR Zone × RPE — Distribuição e Correlação")
 
     if zonas_hr and rpe_col:
         dh_ok = _prep_hr(df.copy())
@@ -264,45 +305,136 @@ def tab_zones(da, mods_sel):
             dh_ok[rpe_col] = pd.to_numeric(dh_ok[rpe_col], errors='coerce')
             dh_ok = dh_ok.dropna(subset=[rpe_col,'pb','pm','pa'])
             dh_ok = dh_ok[dh_ok['zt'] > 0]
+            dh_ok['rpe_int'] = dh_ok[rpe_col].round(0).astype(int).clip(1, 10)
 
-            HR_VARS   = [('pb','Baixa (Z1+Z2)', 'Leve (1–4)'),
-                         ('pm','Moderada (Z3+Z4)', 'Moderado (5–7)'),
-                         ('pa','Alta (Z5+Z6+Z7)', 'Forte (7–10)')]
-            forca_fn  = lambda r: ('Muito Forte' if abs(r) >= 0.7 else
-                                   'Forte'       if abs(r) >= 0.5 else
-                                   'Moderada'    if abs(r) >= 0.3 else 'Fraca')
+            HR_VARS  = [('pb','Z1+Z2','#2ECC71'), ('pm','Z3+Z4','#F39C12'), ('pa','Z5+','#E74C3C')]
+            forca_fn = lambda r: ('Muito Forte' if abs(r) >= 0.7 else
+                                   'Forte'      if abs(r) >= 0.5 else
+                                   'Moderada'   if abs(r) >= 0.3 else 'Fraca')
 
-            mods_corr = sorted(dh_ok['type'].unique().tolist())  # todos os tipos com dados
-            rows_corr = []
-            for mod in mods_corr:
+            mods_disp = sorted(dh_ok['type'].unique().tolist())
+
+            # ── Gráfico compacto: boxplot HR Zone por RPE inteiro × modalidade ──
+            st.caption(
+                "**Range de HR Zone (%) por nível de RPE** — "
+                "boxplot por modalidade. Cada cor = zona HR.")
+
+            _n_mods = len(mods_disp)
+            _fig_box = make_subplots(
+                rows=1, cols=_n_mods,
+                subplot_titles=[f"<b>{m}</b>" for m in mods_disp],
+                horizontal_spacing=0.06
+            )
+            _rpe_levels = sorted(dh_ok['rpe_int'].unique())
+
+            for _ci, mod in enumerate(mods_disp, 1):
                 dm = dh_ok[dh_ok['type'] == mod]
                 if len(dm) < 3: continue
-                for hv, hr_lbl, rpe_lbl in HR_VARS:
-                    x = dm[rpe_col].values
-                    y = dm[hv].values
-                    mask = ~(np.isnan(x) | np.isnan(y))
-                    if mask.sum() < 5 or np.std(y[mask]) == 0:
-                        continue
-                    r, p = pearsonr(x[mask], y[mask])
-                    sig  = ('***' if p<0.001 else '**' if p<0.01
-                            else '*' if p<0.05 else 'ns')
-                    # Ranges observados
-                    hr_v  = dm[hv].dropna()
-                    rpe_v = dm[rpe_col].dropna()
-                    hr_rng  = (f"{hr_v.min():.0f}–{hr_v.max():.0f}%"
-                               if len(hr_v) > 0 else '—')
-                    rpe_rng = (f"{rpe_v.min():.1f}–{rpe_v.max():.1f}"
-                               if len(rpe_v) > 0 else '—')
-                    rows_corr.append({
-                        'Modalidade': mod,
-                        'HR Zone':    f"{hr_lbl} [{hr_rng}]",
-                        'RPE Zone':   f"{rpe_lbl} [{rpe_rng}]",
-                        'r':          f"{r:+.3f}",
-                        'p':          f"{p:.4f}",
-                        'Sig.':       sig,
-                        'n':          int(mask.sum()),
-                        'Força':      forca_fn(r),
-                    })
+                for hv, lbl, cor in HR_VARS:
+                    y_vals, x_vals = [], []
+                    for rpe_v in _rpe_levels:
+                        vals = dm[dm['rpe_int'] == rpe_v][hv].dropna().values
+                        if len(vals) >= 2:
+                            y_vals.extend(vals.tolist())
+                            x_vals.extend([f"RPE {rpe_v}"] * len(vals))
+                    if y_vals:
+                        _fig_box.add_trace(go.Box(
+                            x=x_vals, y=y_vals,
+                            name=lbl, legendgroup=lbl,
+                            marker_color=cor, line_color=cor,
+                            showlegend=(_ci == 1),
+                            boxmean=False,
+                            hovertemplate=f'{lbl}<br>RPE: %{{x}}<br>HR%: <b>%{{y:.0f}}%</b><extra></extra>'
+                        ), row=1, col=_ci)
 
-            if rows_corr:
-                st.dataframe(pd.DataFrame(rows_corr), width="stretch", hide_index=True)
+            _fig_box.update_layout(
+                paper_bgcolor='white', plot_bgcolor='white',
+                font=dict(color='#111', size=10),
+                height=320,
+                boxmode='group',
+                margin=dict(l=30, r=10, t=40, b=40),
+                legend=dict(orientation='h', y=-0.18,
+                            font=dict(color='#111', size=10)),
+                showlegend=True
+            )
+            _fig_box.update_yaxes(title_text='HR Zone %', tickfont=dict(size=9, color='#333'),
+                                   showgrid=True, gridcolor='#eee', range=[0, 105])
+            _fig_box.update_xaxes(tickfont=dict(size=8, color='#333'), showgrid=False)
+            st.plotly_chart(_fig_box, use_container_width=True,
+                            config={'displayModeBar': False, 'responsive': True})
+
+            st.markdown("---")
+
+            # ── Tabs por modalidade: correlação por ano ────────────────────────
+            st.caption(
+                "**Correlação HR Zone × RPE Zone por modalidade e ano.** "
+                "Força: Muito Forte ≥0.7 | Forte ≥0.5 | Moderada ≥0.3 | Fraca <0.3")
+
+            _mod_tabs = st.tabs([f"🚴 {m}" if m=='Bike' else
+                                  f"🚣 {m}" if m=='Row'  else
+                                  f"🎿 {m}" if m=='Ski'  else
+                                  f"🏃 {m}" if m=='Run'  else m
+                                  for m in mods_disp])
+
+            _rpe_zone_labels = [
+                ('pb', 'Z1+Z2 (baixa)',  'Leve (RPE 1–4)'),
+                ('pm', 'Z3+Z4 (média)',  'Moderado (RPE 5–6)'),
+                ('pa', 'Z5+ (alta)',     'Forte (RPE 7–10)'),
+            ]
+
+            for _ti, mod in enumerate(mods_disp):
+                with _mod_tabs[_ti]:
+                    dm_all = dh_ok[dh_ok['type'] == mod]
+                    if len(dm_all) < 5:
+                        st.info(f"Poucos dados para {mod}.")
+                        continue
+
+                    _anos_mod = sorted(dm_all['ano'].dropna().unique().astype(int).tolist())
+                    _corr_rows = []
+                    for _ano_c in _anos_mod + ['Total']:
+                        dm_c = dm_all if _ano_c == 'Total' else dm_all[dm_all['ano'] == _ano_c]
+                        if len(dm_c) < 5: continue
+                        for hv, hr_lbl, rpe_lbl in _rpe_zone_labels:
+                            x = dm_c[rpe_col].dropna().values.astype(float)
+                            y = dm_c[hv].dropna().values.astype(float)
+                            # alinhar índices
+                            _df_xy = pd.DataFrame({'x': dm_c[rpe_col], 'y': dm_c[hv]}).dropna()
+                            if len(_df_xy) < 5: continue
+                            from scipy.stats import pearsonr as _pr_zn
+                            r_v, _ = _pr_zn(_df_xy['x'].astype(float), _df_xy['y'].astype(float))
+                            forca_v = forca_fn(r_v)
+                            # Emoji força
+                            emoji_f = ('🔴' if forca_v == 'Muito Forte' else
+                                       '🟠' if forca_v == 'Forte' else
+                                       '🟡' if forca_v == 'Moderada' else '🟢')
+                            # Direcção
+                            dir_v = '↗ RPE↑ → mais HR nesta zona' if r_v > 0 else '↘ RPE↑ → menos HR nesta zona'
+                            _corr_rows.append({
+                                'Ano': str(_ano_c),
+                                'HR Zone': hr_lbl,
+                                'RPE Zone': rpe_lbl,
+                                'Força': f"{emoji_f} {forca_v}",
+                                'Direcção': dir_v,
+                            })
+
+                    if _corr_rows:
+                        _df_corr = pd.DataFrame(_corr_rows)
+                        # Pivotar: HR Zone como linhas, Anos como colunas
+                        try:
+                            _pivot = _df_corr.pivot_table(
+                                index=['HR Zone','RPE Zone'],
+                                columns='Ano',
+                                values='Força',
+                                aggfunc='first'
+                            ).reset_index()
+                            _pivot.columns.name = None
+                            st.dataframe(_pivot, hide_index=True, use_container_width=True)
+                        except Exception:
+                            # Fallback: tabela plana
+                            st.dataframe(_df_corr, hide_index=True, use_container_width=True)
+
+                        st.caption(
+                            "🔴 Muito Forte (r≥0.7) | 🟠 Forte (r≥0.5) | "
+                            "🟡 Moderada (r≥0.3) | 🟢 Fraca (r<0.3). "
+                            "↗ = RPE alto correlaciona com mais tempo nesta HR zone. "
+                            "↘ = RPE alto correlaciona com menos tempo nesta HR zone.")
