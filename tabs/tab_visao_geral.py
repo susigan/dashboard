@@ -2430,6 +2430,265 @@ Estes valores são específicos deste atleta. Recalibrar anualmente com novos da
 
     st.markdown("---")
 
+    # ════════════════════════════════════════════════════════════════════════
+    # MARKOV CHAIN — Sugestão de sessão para hoje e amanhã
+    # ════════════════════════════════════════════════════════════════════════
+    st.subheader("🔗 Markov Chain — Próximas sessões sugeridas")
+    st.caption(
+        "Baseado no padrão histórico de transições (modalidade × zona) e no outcome HRV. "
+        "Estado actual = última sessão registada. "
+        "Mostra as transições mais prováveis e as que produziram melhor HRV."
+    )
+
+    if da_full is not None and len(da_full) > 0 and wc_full is not None and len(wc_full) > 0:
+        try:
+            import warnings as _warn_mk
+            _warn_mk.filterwarnings('ignore')
+
+            # ── Preparar dados ───────────────────────────────────────────────
+            _mk_da = filtrar_principais(da_full).copy()
+            _mk_da['Data'] = pd.to_datetime(_mk_da['Data']).dt.normalize()
+            _mk_da['_tipo'] = _mk_da['type'].apply(norm_tipo)
+            _mk_da = _mk_da[_mk_da['_tipo'].isin(['Bike','Row','Ski','Run'])]
+
+            _mk_rpe_col = next((c for c in ['rpe','RPE','icu_rpe'] if c in _mk_da.columns), None)
+            if _mk_rpe_col:
+                _mk_da[_mk_rpe_col] = pd.to_numeric(_mk_da[_mk_rpe_col], errors='coerce')
+
+            def _mk_zona(rpe):
+                """Converte RPE em zona Z1/Z2/Z3."""
+                try:
+                    v = float(rpe)
+                    if v >= 7: return 'Z3'
+                    if v >= 5: return 'Z2'
+                    return 'Z1'
+                except: return 'Z2'
+
+            # Estado = "Modalidade_Zona" ex: "Bike_Z2", "Row_Z3", "Descanso"
+            _mk_da['_zona'] = (_mk_da[_mk_rpe_col].apply(_mk_zona)
+                               if _mk_rpe_col else 'Z2')
+            _mk_da['_estado'] = _mk_da['_tipo'] + '_' + _mk_da['_zona']
+
+            # Agregar por dia: estado dominante (maior kJ ou primeiro)
+            if 'icu_joules' in _mk_da.columns:
+                _mk_da['_kj'] = pd.to_numeric(_mk_da['icu_joules'], errors='coerce').fillna(0) / 1000
+                _mk_dia = (_mk_da.sort_values('_kj', ascending=False)
+                           .groupby('Data')['_estado'].first()
+                           .reset_index())
+            else:
+                _mk_dia = (_mk_da.groupby('Data')['_estado'].first().reset_index())
+
+            # Adicionar dias de descanso (dias sem actividade no calendário)
+            _mk_datas = pd.date_range(_mk_dia['Data'].min(), pd.Timestamp.now().normalize(), freq='D')
+            _mk_full  = pd.DataFrame({'Data': _mk_datas})
+            _mk_full  = _mk_full.merge(_mk_dia, on='Data', how='left')
+            _mk_full['_estado'] = _mk_full['_estado'].fillna('Descanso')
+            _mk_full  = _mk_full.sort_values('Data').reset_index(drop=True)
+
+            # HRV do dia seguinte
+            _mk_wc = wc_full.copy()
+            _mk_wc['Data'] = pd.to_datetime(_mk_wc['Data']).dt.normalize()
+            _mk_wc['hrv']  = pd.to_numeric(_mk_wc['hrv'], errors='coerce')
+            _mk_wc_idx = _mk_wc.set_index('Data')['hrv']
+            _mk_full['hrv_t1'] = _mk_full['Data'].map(
+                lambda d: _mk_wc_idx.get(d + pd.Timedelta(days=1), np.nan))
+            _mk_full['hrv_t2'] = _mk_full['Data'].map(
+                lambda d: _mk_wc_idx.get(d + pd.Timedelta(days=2), np.nan))
+
+            # ── Construir matriz de transição ────────────────────────────────
+            _estados = sorted(_mk_full['_estado'].unique().tolist())
+            _n = len(_mk_full)
+            _trans = {}   # (estado_i, estado_j) → count
+            _hrv_t1 = {}  # (estado_i, estado_j) → lista HRV t+1
+            _hrv_t2 = {}  # (estado_i, estado_j) → lista HRV t+2
+
+            for _i in range(_n - 1):
+                _ei = _mk_full.iloc[_i]['_estado']
+                _ej = _mk_full.iloc[_i + 1]['_estado']
+                _h1 = _mk_full.iloc[_i]['hrv_t1']
+                _h2 = _mk_full.iloc[_i]['hrv_t2']
+                _trans[(_ei, _ej)] = _trans.get((_ei, _ej), 0) + 1
+                if np.isfinite(_h1):
+                    _hrv_t1.setdefault((_ei, _ej), []).append(_h1)
+                if np.isfinite(_h2):
+                    _hrv_t2.setdefault((_ei, _ej), []).append(_h2)
+
+            # Normalizar: probabilidade de transição dado estado_i
+            _prob = {}
+            for (_ei, _ej), cnt in _trans.items():
+                total_ei = sum(v for (a, _), v in _trans.items() if a == _ei)
+                _prob[(_ei, _ej)] = cnt / total_ei if total_ei > 0 else 0
+
+            # ── Estado actual = última sessão ─────────────────────────────────
+            _estado_hoje = _mk_full.iloc[-1]['_estado']
+            _data_ultima = _mk_full[_mk_full['_estado'] != 'Descanso']['Data'].max()
+            _dias_desde  = (pd.Timestamp.now().normalize() - _data_ultima).days
+
+            # ── Calcular top transições a partir do estado actual ─────────────
+            _transicoes = []
+            for _ej in _estados:
+                _p = _prob.get((_estado_hoje, _ej), 0)
+                if _p == 0: continue
+                _h1_vals = _hrv_t1.get((_estado_hoje, _ej), [])
+                _h2_vals = _hrv_t2.get((_estado_hoje, _ej), [])
+                _n_obs   = _trans.get((_estado_hoje, _ej), 0)
+                _transicoes.append({
+                    'proximo': _ej,
+                    'prob': _p,
+                    'n': _n_obs,
+                    'hrv_t1_med': float(np.mean(_h1_vals)) if len(_h1_vals) >= 3 else None,
+                    'hrv_t2_med': float(np.mean(_h2_vals)) if len(_h2_vals) >= 3 else None,
+                })
+
+            _transicoes.sort(key=lambda x: x['prob'], reverse=True)
+
+            # ── Calcular transições de 2.ª ordem (amanhã → depois de amanhã) ──
+            _trans2 = {}  # estado_hoje → estado_amanha → {proximo: melhor HRV}
+            for _i in range(_n - 2):
+                _ei  = _mk_full.iloc[_i]['_estado']
+                _ej  = _mk_full.iloc[_i + 1]['_estado']
+                _ek  = _mk_full.iloc[_i + 2]['_estado']
+                _h2  = _mk_full.iloc[_i]['hrv_t2']
+                if np.isfinite(_h2):
+                    _trans2.setdefault(_ei, {}).setdefault(_ej, {}).setdefault(_ek, []).append(_h2)
+
+            # ── HRV base (média geral) ──────────────────────────────────────
+            _hrv_base = float(_mk_wc['hrv'].dropna().mean())
+
+            # ── Emojis e cores por modalidade/zona ───────────────────────────
+            _emojis = {'Bike': '🚴', 'Row': '🚣', 'Ski': '🎿', 'Run': '🏃',
+                       'Descanso': '🔵'}
+            _cores_zona = {'Z1': '#27ae60', 'Z2': '#e67e22', 'Z3': '#e74c3c',
+                           'Descanso': '#7f8c8d'}
+
+            def _fmt_estado(s):
+                """Formata 'Bike_Z2' → '🚴 Bike Z2'."""
+                if s == 'Descanso': return '🔵 Descanso'
+                parts = s.split('_')
+                mod   = parts[0] if parts else s
+                zona  = parts[1] if len(parts) > 1 else ''
+                emoji = _emojis.get(mod, '🏋️')
+                return f"{emoji} {mod} {zona}"
+
+            def _cor_zona(s):
+                if 'Z3' in s: return '#e74c3c'
+                if 'Z2' in s: return '#e67e22'
+                if 'Z1' in s: return '#27ae60'
+                return '#7f8c8d'
+
+            def _hrv_delta_str(hrv_val):
+                if hrv_val is None: return '—'
+                d = (hrv_val - _hrv_base) / _hrv_base * 100
+                return f"{d:+.1f}%"
+
+            # ── Display ───────────────────────────────────────────────────────
+            # Estado actual
+            _mk_c1, _mk_c2 = st.columns([1, 3])
+            with _mk_c1:
+                st.metric(
+                    "Estado actual",
+                    _fmt_estado(_estado_hoje),
+                    f"{_dias_desde}d atrás" if _dias_desde > 0 else "hoje"
+                )
+                st.caption(f"HRV hoje: {_mk_wc_idx.get(pd.Timestamp.now().normalize(), np.nan):.0f} ms"
+                           if np.isfinite(_mk_wc_idx.get(pd.Timestamp.now().normalize(), np.nan))
+                           else "HRV hoje: —")
+                st.caption(f"HRV base histórico: {_hrv_base:.0f} ms")
+
+            with _mk_c2:
+                # Filtrar: top 5 transições com N >= 3
+                _top5 = [t for t in _transicoes if t['n'] >= 3][:5]
+                if not _top5:
+                    _top5 = _transicoes[:5]
+
+                # Ordenar por HRV t+1 (melhor outcome) para destacar
+                _top5_hrv = sorted(_top5,
+                                   key=lambda x: x['hrv_t1_med'] if x['hrv_t1_med'] else 0,
+                                   reverse=True)
+                _melhor_hrv = _top5_hrv[0] if _top5_hrv else None
+
+                # Tabela de transições
+                _mk_rows = []
+                for t in _top5:
+                    _is_best = (_melhor_hrv and t['proximo'] == _melhor_hrv['proximo'])
+                    _mk_rows.append({
+                        'Próxima sessão': ('⭐ ' if _is_best else '') + _fmt_estado(t['proximo']),
+                        'Probabilidade': f"{t['prob']*100:.0f}%",
+                        'N observado': t['n'],
+                        'HRV t+1 (Δ%)': _hrv_delta_str(t['hrv_t1_med']),
+                        'HRV t+2 (Δ%)': _hrv_delta_str(t['hrv_t2_med']),
+                    })
+                if _mk_rows:
+                    st.dataframe(pd.DataFrame(_mk_rows), hide_index=True,
+                                 use_container_width=True)
+                    if _melhor_hrv:
+                        _best_str = _fmt_estado(_melhor_hrv['proximo'])
+                        _best_hrv = _hrv_delta_str(_melhor_hrv['hrv_t1_med'])
+                        st.success(
+                            f"⭐ Melhor outcome HRV: **{_best_str}** "
+                            f"→ HRV amanhã {_best_hrv} vs baseline"
+                        )
+
+            # ── Dia seguinte (2.ª ordem) ──────────────────────────────────────
+            st.markdown("**📅 Sugestão para amanhã e depois de amanhã**")
+            st.caption(
+                "Para cada escolha de hoje, qual é a melhor sessão para depois de amanhã "
+                "em termos de HRV? Markov de 2ª ordem: estado_hoje → amanhã → depois.")
+
+            _d2_rows = []
+            if _estado_hoje in _trans2:
+                for _ej_opt in sorted(_trans2[_estado_hoje].keys()):
+                    _ek_opts = _trans2[_estado_hoje][_ej_opt]
+                    _best_ek = None; _best_hrv2 = -999
+                    for _ek, hrv_list in _ek_opts.items():
+                        if len(hrv_list) < 2: continue
+                        _m = float(np.mean(hrv_list))
+                        if _m > _best_hrv2:
+                            _best_hrv2 = _m; _best_ek = _ek
+                    if _best_ek:
+                        _prob_ej = _prob.get((_estado_hoje, _ej_opt), 0)
+                        if _prob_ej < 0.03: continue  # ignorar transições muito raras
+                        _d2_rows.append({
+                            'Hoje (escolha)': _fmt_estado(_ej_opt),
+                            'P(hoje→amanhã)': f"{_prob_ej*100:.0f}%",
+                            'Melhor depois de amanhã': _fmt_estado(_best_ek),
+                            'HRV t+2 (Δ%)': _hrv_delta_str(_best_hrv2),
+                        })
+                if _d2_rows:
+                    _d2_rows.sort(key=lambda x: float(
+                        x['HRV t+2 (Δ%)'].replace('%','').replace('+','')
+                        if x['HRV t+2 (Δ%)'] != '—' else '-99'), reverse=True)
+                    st.dataframe(pd.DataFrame(_d2_rows), hide_index=True,
+                                 use_container_width=True)
+                else:
+                    st.info("Dados insuficientes para sugestão de 2.ª ordem.")
+            else:
+                st.info("Sem histórico de transições a partir deste estado.")
+
+            # ── Nota de limitação ─────────────────────────────────────────────
+            _n_total_trans = sum(_trans.values())
+            _n_estados_ativos = len(set(e for (e, _) in _trans.keys()))
+            with st.expander("ℹ️ Sobre este modelo"):
+                st.markdown(f"""
+**Markov Chain de 1ª e 2ª ordem — treino deste atleta**
+
+- **Transições analisadas**: {_n_total_trans} pares de dias consecutivos
+- **Estados distintos**: {_n_estados_ativos} (modalidade × zona RPE + Descanso)
+- **HRV outcome**: média do HRV do dia seguinte (t+1) e dois dias depois (t+2) para cada par de transição
+- **⭐ Melhor outcome**: a transição que historicamente produziu maior Δ HRV% vs baseline
+- **Limitações**: N por célula da matriz pode ser pequeno; probabilidades são estimativas com incerteza alta
+- **Não considera**: fadiga acumulada (ATL), sequências de 3+ dias, variação sazonal
+- Para planeamento de carga completo: combinar com Need Score e sugestão de monotonia acima
+                """)
+
+        except Exception as _mk_err:
+            st.info(f"Markov Chain: dados insuficientes ({_mk_err})")
+
+    else:
+        st.info("Markov Chain requer dados de actividades e HRV (da_full + wc_full).")
+
+    st.markdown("---")
+
     # Resumo Semanal movido para cima (acima da tabela Semana actual)
 
 
