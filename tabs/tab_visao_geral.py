@@ -1494,6 +1494,20 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             # Mediana (mais robusta que média para N=3)
             _kj_b3_mean = float(np.median(_kj_total_b3)) if _kj_total_b3 else 0.0
 
+            # ── DEBUG temporário ──────────────────────────────────────────
+            with st.expander("🔍 Debug baseline (temporário)"):
+                st.write("_kj_por_semana (todas modalidades):")
+                for _s, _v in sorted(_kj_por_semana.items())[-6:]:
+                    st.write(f"  {_s}: {_v:.0f} kJ")
+                st.write(f"Semanas seleccionadas: {[str(s) for s in _sems_completas]}")
+                st.write(f"Valores: {[f'{v:.0f}' for v in _kj_total_b3]}")
+                st.write(f"Mediana: {_kj_b3_mean:.0f} kJ")
+                st.write(f"_sem_atual_p: {_sem_atual_p}")
+                # Ver kJ por modalidade separado
+                for _m3d in ['Bike','Row','Ski','Run']:
+                    _s3d = _pf[_pf['type'].apply(norm_tipo)==_m3d]
+                    st.write(f"  {_m3d}: {len(_s3d)} sessões, {_s3d['_kj'].sum():.0f} kJ total")
+
             # ── Semana anterior KJ (para guard início de semana) ──────────
             _sem_ant_ini_det = sem_ini_pf - pd.Timedelta(weeks=1)
             _sem_ant_fim_det = sem_ini_pf - pd.Timedelta(days=1)
