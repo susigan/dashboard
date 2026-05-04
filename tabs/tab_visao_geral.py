@@ -1468,23 +1468,31 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             df_prog = pd.DataFrame(_rows_prog_display)
 
             # ── Deload / Taper detector ───────────────────────────────────
-            # baseline = mediana últimas 3 semanas com dados (KJ ou Horas)
-            _sem_ini_det  = hoje_pf - pd.Timedelta(weeks=1)
-            _sem3_ini_det = hoje_pf - pd.Timedelta(weeks=4)
+            # baseline = mediana das últimas 3 semanas completas (soma de TODAS as modalidades)
             _kj_total_cur = 0.0
-            _kj_total_b3  = []
+            _kj_por_semana = {}   # período → kJ total (todas as modalidades)
+
             for _m3 in ['Bike','Row','Ski','Run']:
                 _s3 = _pf[_pf['type'].apply(norm_tipo)==_m3].copy()
                 if len(_s3) == 0: continue
                 _s3['_ksem'] = _s3['Data'].dt.to_period('W')
                 _agg3 = _s3.groupby('_ksem')['_kj'].sum()
-                # Últimas 3 semanas completas (antes da actual)
-                _prev3 = _agg3[_agg3.index < _s3['Data'].max().to_period('W')].tail(3)
-                _kj_total_b3.extend(_prev3.values)
+                # Acumular por semana (soma de modalidades)
+                for _sem_p, _kj_v in _agg3.items():
+                    _kj_por_semana[_sem_p] = _kj_por_semana.get(_sem_p, 0.0) + float(_kj_v)
                 # Semana actual desta modalidade
                 _kj_total_cur += float(_s3[_s3['Data'] >= sem_ini_pf]['_kj'].sum())
 
-            _kj_b3_mean = float(np.mean(_kj_total_b3)) if _kj_total_b3 else 0.0
+            # Últimas 3 semanas completas (antes da actual) — soma de TODAS as modalidades
+            _sem_atual_p = pd.Timestamp.now().to_period('W')
+            _sems_completas = sorted(
+                [s for s in _kj_por_semana.keys() if s < _sem_atual_p],
+                reverse=True
+            )[:3]
+            _kj_total_b3 = [_kj_por_semana[s] for s in _sems_completas]
+
+            # Mediana (mais robusta que média para N=3)
+            _kj_b3_mean = float(np.median(_kj_total_b3)) if _kj_total_b3 else 0.0
 
             # ── Semana anterior KJ (para guard início de semana) ──────────
             _sem_ant_ini_det = sem_ini_pf - pd.Timedelta(weeks=1)
