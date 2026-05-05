@@ -231,10 +231,13 @@ def tab_fmt_tensor(da, wc=None):
     ctl_s    = pd.to_numeric(ld['CTL'], errors='coerce')
     dates    = pd.to_datetime(ld['Data'])
 
-    # Percentile thresholds from full history
-    q25 = float(kappa_s.quantile(0.25))
-    q50 = float(kappa_s.quantile(0.50))
-    q75 = float(kappa_s.quantile(0.75))
+    # Percentile thresholds — últimos 2 anos (mais representativo do atleta actual)
+    # Fallback para todo o histórico se N < 50
+    _kappa_2anos = kappa_s.iloc[max(0, len(kappa_s)-730):]
+    _kappa_ref   = _kappa_2anos if _kappa_2anos.notna().sum() >= 50 else kappa_s
+    q25 = float(_kappa_ref.quantile(0.25))
+    q50 = float(_kappa_ref.quantile(0.50))
+    q75 = float(_kappa_ref.quantile(0.75))
 
     # Last values
     kappa_now = float(kappa_s.dropna().iloc[-1])
