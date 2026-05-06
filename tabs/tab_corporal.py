@@ -88,14 +88,44 @@ def tab_corporal(dc, da_full, wc=None):
         _wk.index = _wk.index.to_timestamp()
         _wk = _wk.sort_index()
 
-        _peso_atual = (float(_wk['Peso'].dropna().tail(4).median())
-                       if 'Peso' in _wk.columns and _wk['Peso'].notna().any() else None)
-        _bf_atual   = (float(_wk['BF'].dropna().tail(4).median())
-                       if 'BF'   in _wk.columns and _wk['BF'].notna().any()   else None)
+        # ── Rolling 7 dias para suavizar flutuações diárias ───────────────
+        _peso_r7 = (_dc_all.set_index('Data')['Peso'].resample('D').mean()
+                    .rolling(7, min_periods=3).mean() if 'Peso' in _dc_all.columns else pd.Series())
+        _bf_r7   = (_dc_all.set_index('Data')['BF'].resample('D').mean()
+                    .rolling(7, min_periods=3).mean() if 'BF' in _dc_all.columns else pd.Series())
+
+        # Peso/BF actual = mediana das últimas 2 semanas com rolling 7d
+        _peso_atual = float(_peso_r7.dropna().tail(14).median()) if len(_peso_r7.dropna()) >= 3 else None
+        _bf_atual   = float(_bf_r7.dropna().tail(14).median())   if len(_bf_r7.dropna()) >= 3 else None
+
+        # ── Calcular lag óptimo kcal → Peso/BF ────────────────────────────
+        # Usa calorias rolling 7d com lag de 0 a 21 dias vs peso rolling 7d
+        # O lag com r Spearman mais forte é o lag real de resposta metabólica
+        def _calc_lag_optimo(var_col):
+            """Retorna lag_dias óptimo e o r Spearman correspondente."""
+            from scipy.stats import spearmanr as _sr
+            if 'Calorias' not in _dc_all.columns or var_col not in _dc_all.columns:
+                return 7, None
+            _d = _dc_all.set_index('Data')
+            _cal_d = _d['Calorias'].resample('D').mean().rolling(7, min_periods=3).mean()
+            _var_d = _d[var_col].resample('D').mean().rolling(7, min_periods=3).mean()
+            best_lag, best_r, best_p = 7, 0, 1.0
+            for lag in [0, 3, 5, 7, 10, 14, 21]:
+                cal_lagged = _cal_d.shift(lag)
+                pair = pd.DataFrame({'cal': cal_lagged, 'var': _var_d}).dropna()
+                if len(pair) < 15: continue
+                r, p = _sr(pair['cal'].values, pair['var'].values)
+                if p < 0.10 and abs(r) > abs(best_r):
+                    best_lag, best_r, best_p = lag, r, p
+            return best_lag, best_r if best_r != 0 else None
+
+        _lag_peso, _r_lag_peso = _calc_lag_optimo('Peso')
+        _lag_bf,   _r_lag_bf   = _calc_lag_optimo('BF')
 
         st.caption(
-            "Valores actuais = **mediana das últimas 4 semanas** com dados disponíveis. "
-            "Calorias estimadas pela relação histórica real Calorias ↔ Peso/BF.")
+            "Valores actuais = **mediana rolling 7d das últimas 2 semanas** (remove flutuações de água/glicogénio). "
+            f"Lag calórico detectado: Peso={_lag_peso}d | BF={_lag_bf}d. "
+            "Calorias estimadas pela relação histórica real com lag aplicado.")
 
         _ci1, _ci2, _ci3 = st.columns(3)
         _peso_alvo = _ci1.number_input(
@@ -114,36 +144,33 @@ def tab_corporal(dc, da_full, wc=None):
         if not _usar_peso and not _usar_bf:
             st.info("Selecciona pelo menos uma meta (Peso ou BF).")
         else:
-            def _cal_historicas(target_col):
-                df_p = _wk[[target_col, 'Calorias']].dropna()
-                if len(df_p) < 8: return None
-                sl, ic, rv, pv, _ = linregress(df_p[target_col].values,
-                                                df_p['Calorias'].values)
-                try:
-                    df_p = df_p.copy()
-                    df_p['_q'] = pd.qcut(df_p[target_col], q=4,
-                                         labels=['Q1','Q2','Q3','Q4'],
-                                         duplicates='drop')
-                    qcal = df_p.groupby('_q', observed=True)['Calorias'].agg(
-                        ['median','mean','count']).reset_index()
-                    qtgt = df_p.groupby('_q', observed=True)[target_col].median()
-                except Exception:
-                    qcal, qtgt = None, None
+            def _cal_historicas_lag(target_col, lag_dias):
+                """Regressão Calorias ~ target usando lag correcto."""
+                from scipy.stats import linregress as _lr
+                _d = _dc_all.set_index('Data')
+                _cal_d = _d['Calorias'].resample('D').mean().rolling(7, min_periods=3).mean()
+                _var_d = _d[target_col].resample('D').mean().rolling(7, min_periods=3).mean()
+                # Calorias com lag: cal(t-lag) vs var(t)
+                cal_lagged = _cal_d.shift(lag_dias)
+                pair = pd.DataFrame({'cal': cal_lagged, 'var': _var_d}).dropna()
+                if len(pair) < 15: return None
+                # Regressão: cal ~ var (estimamos calorias dado o valor alvo)
+                sl, ic, rv, pv, _ = _lr(pair['var'].values, pair['cal'].values)
                 return {
                     'slope': sl, 'intercept': ic,
                     'r2': rv**2, 'pv': pv,
-                    'cal_std': df_p['Calorias'].std(),
-                    'cal_media': df_p['Calorias'].mean(),
-                    'n': len(df_p),
-                    'qcal': qcal, 'qtgt': qtgt,
+                    'cal_std': pair['cal'].std(),
+                    'cal_media': pair['cal'].mean(),
+                    'n': len(pair), 'lag': lag_dias,
+                    'pair': pair,
                 }
 
-            for _var, _alvo, _atual, _usar in [
-                ('Peso', _peso_alvo, _peso_atual, _usar_peso),
-                ('BF',   _bf_alvo,   _bf_atual,   _usar_bf),
+            for _var, _alvo, _atual, _usar, _lag in [
+                ('Peso', _peso_alvo, _peso_atual, _usar_peso, _lag_peso),
+                ('BF',   _bf_alvo,   _bf_atual,   _usar_bf,   _lag_bf),
             ]:
                 if not _usar or _atual is None: continue
-                if _var not in _wk.columns: continue
+                if _var not in _dc_all.columns: continue
 
                 diff_val = round(_alvo - _atual, 2)
                 if diff_val == 0:
@@ -155,23 +182,46 @@ def tab_corporal(dc, da_full, wc=None):
 
                 st.markdown(f"#### {_var} — actual: **{_atual:.1f}** → alvo: **{_alvo:.1f}** ({dir_lbl})")
 
-                c_rel = _cal_historicas(_var)
+                c_rel = _cal_historicas_lag(_var, _lag)
                 if c_rel:
                     qual = ("✅ Confiável" if c_rel['r2'] > 0.10 and c_rel['pv'] < 0.10
-                            else "⚠️ Tendência fraca" if c_rel['n'] >= 8
+                            else "⚠️ Tendência fraca" if c_rel['n'] >= 15
                             else "⛔ Dados insuficientes")
                     st.caption(f"{qual} — R²={c_rel['r2']:.2f} | p={c_rel['pv']:.3f} | "
-                               f"N={c_rel['n']} semanas | "
+                               f"N={c_rel['n']} dias | Lag={_lag}d | "
                                f"Relação: cada 1 {unid} de {_var} ↔ "
-                               f"{c_rel['slope']:+.0f} kcal (histórico)")
+                               f"{c_rel['slope']:+.0f} kcal (histórico com lag={_lag}d)")
 
                     cal_atual = c_rel['intercept'] + c_rel['slope'] * _atual
                     cal_alvo  = c_rel['intercept'] + c_rel['slope'] * _alvo
                     ajuste    = cal_alvo - cal_atual
                     dir_lbl2  = "défice" if diff_val < 0 else "superávit"
 
-                    st.dataframe(pd.DataFrame([
-                        {'Métrica': '📊 Cal. históricas associadas ao estado actual',
+                    # Tempo estimado baseado no ritmo real de mudança observado
+                    _par = c_rel['pair']
+                    _var_changes = _par['var'].diff().dropna()
+                    _cal_changes = _par['cal'].diff().dropna()
+                    _change_mask = _cal_changes.abs() > 50  # só quando houve mudança calórica real
+                    _ritmo_real  = None
+                    if _change_mask.sum() >= 5:
+                        # Ritmo: mudança de var por 100kcal de ajuste
+                        from scipy.stats import spearmanr as _sr2
+                        _rc = pd.DataFrame({'dc': _cal_changes[_change_mask],
+                                            'dv': _var_changes[_change_mask]}).dropna()
+                        if len(_rc) >= 5:
+                            # g / dia por 100kcal de deficit estimado
+                            _ritmo_real = float(np.polyfit(_rc['dc'], _rc['dv'], 1)[0])
+
+                    tempo_semanas = None
+                    if _ritmo_real and abs(_ritmo_real) > 1e-6:
+                        # Semanas para atingir alvo com ajuste de 'ajuste' kcal/dia
+                        delta_por_dia = _ritmo_real * ajuste
+                        if abs(delta_por_dia) > 0.001:
+                            tempo_dias = abs(diff_val / delta_por_dia)
+                            tempo_semanas = tempo_dias / 7
+
+                    rows_calc = [
+                        {'Métrica': '📊 Cal. associadas ao estado actual (lag corrigido)',
                          'Valor': f"{cal_atual:.0f} kcal"},
                         {'Métrica': f'{"➕" if diff_val > 0 else "➖"} Ajuste necessário ({dir_lbl2})',
                          'Valor': f"{ajuste:+.0f} kcal/dia"},
@@ -181,31 +231,29 @@ def tab_corporal(dc, da_full, wc=None):
                          'Valor': f"{cal_alvo - c_rel['cal_std']:.0f} kcal"},
                         {'Métrica': '📈 Cal. alvo — máximo (+1σ histórico)',
                          'Valor': f"{cal_alvo + c_rel['cal_std']:.0f} kcal"},
-                    ]), width="stretch", hide_index=True)
+                    ]
+                    if tempo_semanas:
+                        rows_calc.append({
+                            'Métrica': f'⏱️ Tempo estimado (ritmo histórico real deste atleta)',
+                            'Valor': f"~{tempo_semanas:.0f} semanas (~{tempo_semanas*7:.0f} dias)"
+                        })
+                    else:
+                        rows_calc.append({
+                            'Métrica': '⏱️ Tempo estimado (referência genérica ±0.5kg/sem)',
+                            'Valor': f"~{abs(diff_val)/0.5:.0f} semanas"
+                        })
 
-                    if c_rel['qcal'] is not None:
-                        with st.expander(f"📊 Calorias históricas por quartil de {_var}"):
-                            qrows = []
-                            for _, qr in c_rel['qcal'].iterrows():
-                                tgt_v = (c_rel['qtgt'].get(qr['_q'], float('nan'))
-                                         if c_rel['qtgt'] is not None else float('nan'))
-                                qrows.append({
-                                    f'Quartil {_var}': str(qr['_q']),
-                                    f'{_var} mediana': f"{tgt_v:.1f} {unid}" if not np.isnan(tgt_v) else '—',
-                                    'Cal. mediana': f"{qr['median']:.0f} kcal",
-                                    'Cal. média':   f"{qr['mean']:.0f} kcal",
-                                    'N semanas':    int(qr['count']),
-                                })
-                            st.dataframe(pd.DataFrame(qrows),
-                                         width="stretch", hide_index=True)
+                    st.dataframe(pd.DataFrame(rows_calc), width="stretch", hide_index=True)
                 else:
-                    st.info(f"Sem dados suficientes de Calorias para estimar ({_var}).")
+                    st.info(f"Sem dados suficientes (mín. 15 dias com lag={_lag}d) para estimar ({_var}).")
 
                 st.markdown("---")
 
             st.caption(
-                "⚠️ Calorias estimadas por regressão linear Calorias ~ Peso/BF sobre "
-                "o histórico real. Não usa regras genéricas externas.")
+                f"⚠️ Lag calórico: calorias de hoje afectam o peso em {_lag_peso}d (Peso) e {_lag_bf}d (BF). "
+                "Semanas com treino intenso podem ter peso transitoriamente alto por retenção de água/glicogénio — "
+                "não confundir com ganho de massa gorda. "
+                "Calorias estimadas por regressão linear Calorias ~ Peso/BF com lag real detectado nos dados.")
 
     st.markdown("---")
 
@@ -602,34 +650,158 @@ def tab_corporal(dc, da_full, wc=None):
 
     # ── TABELAS: base calórica por quartil de Peso e BF ───────────────────────
     st.subheader("📊 Base calórica por quartil de Peso e BF")
-    st.caption("Semanas com dados simultâneos (todo o histórico). "
-               "MDC± indica o erro mínimo detectável nas Calorias.")
+    st.caption(
+        "Calorias com **lag aplicado** (calorias de N dias antes correspondem ao peso actual). "
+        "Estratificado por carga de treino (kJ baixo vs alto) para remover confounding. "
+        "Semanas com kJ alto têm peso transitoriamente mais alto por retenção de glicogénio/água."
+    )
 
-    for alvo_q, alvo_lbl, unid in [('Peso','Peso','kg'), ('BF','BF','%')]:
-        if alvo_q not in combined.columns or 'Calorias' not in combined.columns: continue
-        pair_q = combined[[alvo_q,'Calorias']].dropna()
-        if len(pair_q) < 8:
-            st.caption(f"Poucos dados para quartis de {alvo_lbl} ({len(pair_q)} semanas).")
+    # Lag já calculado acima (_lag_peso, _lag_bf)
+    _d_idx = _dc_all.set_index('Data')
+
+    # Calorias rolling 7d
+    _cal_r7 = _d_idx['Calorias'].resample('D').mean().rolling(7, min_periods=3).mean() \
+              if 'Calorias' in _dc_all.columns else pd.Series()
+    # Peso/BF rolling 7d já calculados (_peso_r7, _bf_r7)
+
+    # kJ semanal para estratificação
+    _kj_semanal = None
+    if da_full is not None and len(da_full) > 0:
+        _daf = da_full.copy()
+        _daf['Data'] = pd.to_datetime(_daf['Data'])
+        if 'icu_joules' in _daf.columns:
+            _daf['_kj'] = pd.to_numeric(_daf['icu_joules'], errors='coerce') / 1000
+        else:
+            _daf['_kj'] = np.nan
+        _daf['_w'] = _daf['Data'].dt.to_period('W')
+        _kj_semanal = _daf.groupby('_w')['_kj'].sum()
+        _kj_semanal.index = _kj_semanal.index.to_timestamp()
+        # Normalizar: baixo = Q1+Q2, alto = Q3+Q4
+        _kj_median = float(_kj_semanal.median()) if len(_kj_semanal) > 0 else None
+
+    for alvo_q, alvo_lbl, unid, lag_d, var_r7 in [
+        ('Peso', 'Peso', 'kg', _lag_peso, _peso_r7),
+        ('BF',   'BF',   '%',  _lag_bf,   _bf_r7),
+    ]:
+        if alvo_q not in _dc_all.columns or 'Calorias' not in _dc_all.columns: continue
+        if len(var_r7.dropna()) < 15 or len(_cal_r7.dropna()) < 15: continue
+
+        # Calorias lagged
+        cal_lagged = _cal_r7.shift(lag_d)
+
+        # Construir dataframe diário para análise
+        _df_lag = pd.DataFrame({
+            'var': var_r7,
+            'cal_lag': cal_lagged,
+        }).dropna()
+        if len(_df_lag) < 20:
+            st.caption(f"Poucos dados para quartis de {alvo_lbl} com lag={lag_d}d ({len(_df_lag)} dias).")
             continue
-        pair_q = pair_q.copy()
-        pair_q['_q'] = pd.qcut(pair_q[alvo_q], q=4,
-                                labels=['Q1 (baixo)','Q2','Q3','Q4 (alto)'])
+
+        # Adicionar kJ semanal para estratificação
+        if _kj_semanal is not None:
+            _df_lag['_w'] = _df_lag.index.to_period('W').to_timestamp()
+            _df_lag = _df_lag.merge(_kj_semanal.rename('kj_sem').reset_index()
+                                    .rename(columns={'index':'_w'}),
+                                    on='_w', how='left')
+        else:
+            _df_lag['kj_sem'] = np.nan
+
+        # Quartis de var
+        try:
+            _df_lag['_q'], _bins = pd.qcut(
+                _df_lag['var'], q=4,
+                labels=['Q1 (baixo)','Q2','Q3','Q4 (alto)'],
+                retbins=True, duplicates='drop')
+        except Exception:
+            continue
+
+        # Tabela principal (todos os dados com lag)
         rows_q = []
         for ql in ['Q1 (baixo)','Q2','Q3','Q4 (alto)']:
-            g = pair_q[pair_q['_q'] == ql]
-            if len(g) < 2: continue
-            cv = g['Calorias']; av = g[alvo_q]
-            _, mdc_c = _sem_mdc(cv)
-            rows_q.append({
+            g = _df_lag[_df_lag['_q'] == ql]
+            if len(g) < 3: continue
+            cv = g['cal_lag']; av = g['var']
+            _, mdc_c = _sem_mdc(cv) if len(cv) >= 5 else (None, None)
+
+            row = {
                 f'Quartil {alvo_lbl}':        ql,
                 f'Range {alvo_lbl} ({unid})': f"{av.min():.1f}–{av.max():.1f}",
                 f'Média {alvo_lbl}':          f"{av.mean():.1f} {unid}",
-                'N semanas':                  len(g),
-                'Cal média':                  f"{cv.mean():.0f} kcal",
-                'Cal mediana':                f"{cv.median():.0f} kcal",
+                'N dias':                     len(g),
+                'Cal média (lag)':            f"{cv.mean():.0f} kcal",
+                'Cal mediana (lag)':          f"{cv.median():.0f} kcal",
                 'Cal Q1–Q3':                  f"{cv.quantile(0.25):.0f}–{cv.quantile(0.75):.0f} kcal",
                 'MDC Cal':                    f"±{mdc_c:.0f} kcal" if mdc_c else '—',
-            })
+            }
+            rows_q.append(row)
+
         if rows_q:
-            st.markdown(f"**Quartis de {alvo_lbl} — base calórica**")
+            st.markdown(f"**Quartis de {alvo_lbl} — base calórica (lag={lag_d}d)**")
             st.dataframe(pd.DataFrame(rows_q), width="stretch", hide_index=True)
+
+        # Tabela estratificada por kJ (se disponível)
+        if _kj_semanal is not None and _kj_median is not None and 'kj_sem' in _df_lag.columns:
+            _df_lag['_treino'] = np.where(_df_lag['kj_sem'] > _kj_median, 'Alto treino', 'Baixo treino')
+            rows_strat = []
+            for treino_g in ['Baixo treino', 'Alto treino']:
+                for ql in ['Q1 (baixo)', 'Q2', 'Q3', 'Q4 (alto)']:
+                    g2 = _df_lag[(_df_lag['_q'] == ql) & (_df_lag['_treino'] == treino_g)]
+                    if len(g2) < 3: continue
+                    cv2 = g2['cal_lag']
+                    rows_strat.append({
+                        'Treino': treino_g,
+                        f'Quartil {alvo_lbl}': ql,
+                        f'Média {alvo_lbl}': f"{g2['var'].mean():.1f} {unid}",
+                        'N': len(g2),
+                        'Cal média (lag)': f"{cv2.mean():.0f} kcal",
+                        'Cal mediana': f"{cv2.median():.0f} kcal",
+                    })
+            if rows_strat:
+                with st.expander(f"📊 Estratificado por carga de treino — {alvo_lbl}"):
+                    st.caption(
+                        "Baixo treino = kJ semanal abaixo da mediana histórica. "
+                        "Alto treino = acima. Peso alto em semanas de alto treino pode ser "
+                        "retenção de água/glicogénio — não indica que calorias são incorrectas.")
+                    st.dataframe(pd.DataFrame(rows_strat), width="stretch", hide_index=True)
+
+        st.markdown("")
+
+    # ── Análise de lag calórico ────────────────────────────────────────────────
+    st.subheader("⏱️ Análise de Lag Calórico")
+    st.caption(
+        "r Spearman entre calorias rolling 7d (com lag de 0 a 21 dias) e Peso/BF rolling 7d. "
+        "O lag óptimo é onde a correlação é mais forte — mostra com quantos dias o teu peso "
+        "responde a mudanças calóricas.")
+
+    from scipy.stats import spearmanr as _sr_lag
+
+    if len(_cal_r7.dropna()) >= 20:
+        _lag_rows = []
+        for lag in [0, 3, 5, 7, 10, 14, 21]:
+            cal_lagged = _cal_r7.shift(lag)
+            for var_col, var_r, var_lbl in [('Peso', _peso_r7, 'Peso'), ('BF', _bf_r7, 'BF')]:
+                pair = pd.DataFrame({'cal': cal_lagged, 'var': var_r}).dropna()
+                if len(pair) < 15: continue
+                r, p = _sr_lag(pair['cal'].values, pair['var'].values)
+                sig = '✅ p<0.05' if p < 0.05 else '~ p<0.10' if p < 0.10 else '✗ ns'
+                _lag_rows.append({
+                    'Lag (dias)': lag,
+                    'Variável': var_lbl,
+                    'N': len(pair),
+                    'r Spearman': f"{r:+.3f}",
+                    'Sig': sig,
+                    'Força': '🔴 forte' if abs(r)>=0.5 else '🟡 moderada' if abs(r)>=0.3 else '🟢 fraca',
+                    '★ Óptimo': '⭐' if (
+                        (var_lbl == 'Peso' and lag == _lag_peso) or
+                        (var_lbl == 'BF'   and lag == _lag_bf)
+                    ) else '',
+                })
+        if _lag_rows:
+            st.dataframe(pd.DataFrame(_lag_rows), hide_index=True, use_container_width=True)
+            st.info(
+                f"⭐ Lag óptimo detectado: **Peso = {_lag_peso} dias** | **BF = {_lag_bf} dias**. "
+                "Isto significa que uma mudança calórica hoje só aparece de forma consistente "
+                f"no peso após {_lag_peso} dias. Semanas com alto kJ podem ter lag diferente por "
+                "retenção de água/glicogénio."
+            )
