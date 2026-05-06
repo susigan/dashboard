@@ -115,142 +115,355 @@ def tab_corporal(dc, da_full, wc=None):
     _lag_bf,   _r_lag_bf   = _calc_lag_optimo(_bf_r7)
 
     # ════════════════════════════════════════════════════════════════════════
-    # 🎯 MINI-CALCULADORA — usa TODO o histórico independente de filtros
+    # 🎯 CALCULADORA INTEGRADA — Peso + BF + Calorias + Macros
     # ════════════════════════════════════════════════════════════════════════
-    with st.expander("🎯 Calculadora de Metas — Peso, BF e Calorias", expanded=True):
+    with st.expander("🎯 Calculadora de Metas — Peso, BF, Calorias e Macros", expanded=True):
 
         st.caption(
-            "Valores actuais = **mediana rolling 7d das últimas 2 semanas** (remove flutuações de água/glicogénio). "
-            f"Lag calórico detectado: Peso={_lag_peso}d | BF={_lag_bf}d. "
-            "Calorias estimadas pela relação histórica real com lag aplicado.")
+            "Valores actuais = **mediana rolling 7d das últimas 2 semanas** "
+            "(remove flutuações de água/glicogénio). "
+            f"Lag calórico detectado: Peso={_lag_peso}d | BF={_lag_bf}d.")
 
-        _ci1, _ci2, _ci3 = st.columns(3)
-        _peso_alvo = _ci1.number_input(
-            f"⚖️ Peso-alvo (kg)  {'[actual: ' + str(round(_peso_atual,1)) + ' kg]' if _peso_atual else ''}",
-            min_value=30.0, max_value=200.0,
-            value=float(round(_peso_atual,1)) if _peso_atual else 75.0,
-            step=0.1, key="calc_peso_alvo")
-        _bf_alvo = _ci2.number_input(
-            f"🫁 BF-alvo (%)  {'[actual: ' + str(round(_bf_atual,1)) + '%]' if _bf_atual else ''}",
-            min_value=3.0, max_value=50.0,
-            value=float(round(_bf_atual,1)) if _bf_atual else 15.0,
-            step=0.1, key="calc_bf_alvo")
-        _usar_peso = _ci3.checkbox("Calcular meta Peso", value=True,  key="calc_use_peso")
-        _usar_bf   = _ci3.checkbox("Calcular meta BF",   value=False, key="calc_use_bf")
+        # ── Inputs ────────────────────────────────────────────────────────
+        _ci1, _ci2 = st.columns(2)
+        with _ci1:
+            st.markdown("**Estado actual (calculado dos dados)**")
+            _lbm_atual = (_peso_atual * (1 - _bf_atual/100)
+                          if _peso_atual and _bf_atual else None)
+            _fm_atual  = (_peso_atual * (_bf_atual/100)
+                          if _peso_atual and _bf_atual else None)
+            if _peso_atual:
+                st.metric("⚖️ Peso actual", f"{_peso_atual:.1f} kg")
+            if _bf_atual:
+                st.metric("🫁 BF actual", f"{_bf_atual:.1f}%")
+            if _lbm_atual:
+                st.metric("💪 Massa magra (LBM)", f"{_lbm_atual:.1f} kg")
+            if _fm_atual:
+                st.metric("🔴 Massa gorda", f"{_fm_atual:.1f} kg")
 
-        if not _usar_peso and not _usar_bf:
-            st.info("Selecciona pelo menos uma meta (Peso ou BF).")
+        with _ci2:
+            st.markdown("**Definir alvos**")
+            _peso_alvo = st.number_input(
+                f"⚖️ Peso-alvo (kg)",
+                min_value=30.0, max_value=200.0,
+                value=float(round(_peso_atual, 1)) if _peso_atual else 75.0,
+                step=0.1, key="calc_peso_alvo")
+            _bf_alvo = st.number_input(
+                "🫁 BF-alvo (%)",
+                min_value=3.0, max_value=50.0,
+                value=float(round(_bf_atual, 1)) if _bf_atual else 15.0,
+                step=0.1, key="calc_bf_alvo")
+            _kj_semana = st.number_input(
+                "🚴 KJ semanal planeado (cíclico, 0 = ignorar)",
+                min_value=0, max_value=20000, value=0, step=100,
+                key="calc_kj_sem",
+                help="Se introduzires o KJ semanal de treino, o TDEE é ajustado.")
+            _horas_total = st.number_input(
+                "⏱️ Horas totais de treino/semana (0 = ignorar)",
+                min_value=0.0, max_value=40.0, value=0.0, step=0.5,
+                key="calc_horas",
+                help="Horas cíclico + musculação. Usado para ajustar necessidade proteica.")
+
+        # ── Cálculo de composição corporal alvo ───────────────────────────
+        _lbm_alvo = _peso_alvo * (1 - _bf_alvo/100)
+        _fm_alvo  = _peso_alvo * (_bf_alvo/100)
+
+        _d_peso    = _peso_alvo - (_peso_atual or _peso_alvo)
+        _d_bf_pp   = _bf_alvo  - (_bf_atual  or _bf_alvo)
+        _d_lbm     = _lbm_alvo - (_lbm_atual or _lbm_alvo)
+        _d_fm      = _fm_alvo  - (_fm_atual  or _fm_alvo)
+
+        # Verificação de consistência
+        _consistente = True
+        _aviso_consistencia = ""
+        if _peso_atual and _bf_atual:
+            if _d_peso < 0 and _d_lbm > 0.5:
+                _aviso_consistencia = (
+                    f"⚠️ Meta implica perder {abs(_d_peso):.1f}kg de peso total "
+                    f"mas GANHAR {_d_lbm:.1f}kg de massa magra — "
+                    "requer perder {:.1f}kg de gordura. Possível mas exige periodização precisa.".format(
+                        abs(_d_fm)))
+            elif _d_peso > 0 and _d_fm < -0.5:
+                _aviso_consistencia = (
+                    f"⚠️ Meta implica ganhar {_d_peso:.1f}kg de peso "
+                    f"mas PERDER {abs(_d_fm):.1f}kg de gordura — recomposição corporal. "
+                    "Requer défice calórico moderado + alto treino de força.")
+
+        st.markdown("---")
+        st.markdown("**Composição corporal — actual vs alvo:**")
+        _comp_rows = []
+        for lbl, atual, alvo, delta, unid in [
+            ("⚖️ Peso",       _peso_atual, _peso_alvo, _d_peso,  "kg"),
+            ("🫁 BF",          _bf_atual,   _bf_alvo,   _d_bf_pp, "%"),
+            ("💪 Massa magra", _lbm_atual,  _lbm_alvo,  _d_lbm,  "kg"),
+            ("🔴 Massa gorda", _fm_atual,   _fm_alvo,   _d_fm,   "kg"),
+        ]:
+            if atual is None: continue
+            emoji = "↗" if delta > 0.05 else ("↘" if delta < -0.05 else "→")
+            _comp_rows.append({
+                "": lbl,
+                "Actual": f"{atual:.1f} {unid}",
+                "Alvo":   f"{alvo:.1f} {unid}",
+                "Δ":      f"{delta:+.1f} {unid} {emoji}",
+            })
+        if _comp_rows:
+            st.dataframe(pd.DataFrame(_comp_rows), hide_index=True, use_container_width=True)
+        if _aviso_consistencia:
+            st.warning(_aviso_consistencia)
+
+        # ── Estimativa calórica ────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("**Estimativa calórica alvo:**")
+
+        def _cal_historicas_lag(target_col, lag_dias):
+            from scipy.stats import linregress as _lr
+            _d = _dc_all.set_index('Data')
+            _cal_d = _d['Calorias'].resample('D').mean().rolling(7, min_periods=3).mean()
+            _var_d = _d[target_col].resample('D').mean().rolling(7, min_periods=3).mean()
+            cal_lagged = _cal_d.shift(lag_dias)
+            pair = pd.DataFrame({'cal': cal_lagged, 'var': _var_d}).dropna()
+            if len(pair) < 15: return None
+            sl, ic, rv, pv, _ = _lr(pair['var'].values, pair['cal'].values)
+            return {
+                'slope': sl, 'intercept': ic, 'r2': rv**2, 'pv': pv,
+                'cal_std': pair['cal'].std(), 'n': len(pair), 'lag': lag_dias,
+                'pair': pair,
+            }
+
+        _rel_peso = _cal_historicas_lag('Peso', _lag_peso) if 'Peso' in _dc_all.columns else None
+        _rel_bf   = _cal_historicas_lag('BF',   _lag_bf)   if 'BF'   in _dc_all.columns else None
+
+        # Cal base estimada pelos dois modelos (média ponderada pelo R²)
+        _cal_base_peso = None
+        _cal_base_bf   = None
+        if _rel_peso:
+            _cal_base_peso = _rel_peso['intercept'] + _rel_peso['slope'] * _peso_alvo
+        if _rel_bf:
+            _cal_base_bf   = _rel_bf['intercept']   + _rel_bf['slope']   * _bf_alvo
+
+        # Combinar os dois modelos ponderados por R²
+        if _cal_base_peso is not None and _cal_base_bf is not None:
+            r2_p = _rel_peso['r2']; r2_b = _rel_bf['r2']
+            soma_r2 = r2_p + r2_b if (r2_p + r2_b) > 0 else 1
+            _cal_central = ((_cal_base_peso * r2_p + _cal_base_bf * r2_b) / soma_r2)
+            _cal_std     = float(np.mean([_rel_peso['cal_std'], _rel_bf['cal_std']]))
+            _fonte_cal   = f"Média ponderada Peso (R²={r2_p:.2f}) + BF (R²={r2_b:.2f})"
+        elif _cal_base_peso is not None:
+            _cal_central = _cal_base_peso
+            _cal_std     = _rel_peso['cal_std']
+            _fonte_cal   = f"Modelo Peso (R²={_rel_peso['r2']:.2f})"
+        elif _cal_base_bf is not None:
+            _cal_central = _cal_base_bf
+            _cal_std     = _rel_bf['cal_std']
+            _fonte_cal   = f"Modelo BF (R²={_rel_bf['r2']:.2f})"
         else:
-            def _cal_historicas_lag(target_col, lag_dias):
-                """Regressão Calorias ~ target usando lag correcto."""
-                from scipy.stats import linregress as _lr
-                _d = _dc_all.set_index('Data')
-                _cal_d = _d['Calorias'].resample('D').mean().rolling(7, min_periods=3).mean()
-                _var_d = _d[target_col].resample('D').mean().rolling(7, min_periods=3).mean()
-                # Calorias com lag: cal(t-lag) vs var(t)
-                cal_lagged = _cal_d.shift(lag_dias)
-                pair = pd.DataFrame({'cal': cal_lagged, 'var': _var_d}).dropna()
-                if len(pair) < 15: return None
-                # Regressão: cal ~ var (estimamos calorias dado o valor alvo)
-                sl, ic, rv, pv, _ = _lr(pair['var'].values, pair['cal'].values)
-                return {
-                    'slope': sl, 'intercept': ic,
-                    'r2': rv**2, 'pv': pv,
-                    'cal_std': pair['cal'].std(),
-                    'cal_media': pair['cal'].mean(),
-                    'n': len(pair), 'lag': lag_dias,
-                    'pair': pair,
-                }
+            _cal_central = None
+            _cal_std     = 300.0
+            _fonte_cal   = "Sem dados suficientes"
 
-            for _var, _alvo, _atual, _usar, _lag in [
-                ('Peso', _peso_alvo, _peso_atual, _usar_peso, _lag_peso),
-                ('BF',   _bf_alvo,   _bf_atual,   _usar_bf,   _lag_bf),
-            ]:
-                if not _usar or _atual is None: continue
-                if _var not in _dc_all.columns: continue
+        # Ajuste por treino: kJ → kcal (1 kJ = 0.239 kcal, eficiência ~25%)
+        # Gasto real = kJ_mecanico / eficiencia_metabolica (~0.22-0.27)
+        _ajuste_treino = 0.0
+        _ajuste_treino_lbl = ""
+        if _kj_semana > 0:
+            _eficiencia = 0.25  # eficiência metabólica típica
+            _gasto_semanal_kcal = _kj_semana / _eficiencia * 0.239
+            _ajuste_treino = _gasto_semanal_kcal / 7  # por dia
+            _ajuste_treino_lbl = f"+{_ajuste_treino:.0f} kcal/dia de treino ({_kj_semana} kJ/sem)"
 
-                diff_val = round(_alvo - _atual, 2)
-                if diff_val == 0:
-                    st.success(f"✅ {_var}: já está no alvo ({_atual:.1f})!")
-                    continue
+        if _cal_central:
+            _cal_com_treino = _cal_central + _ajuste_treino
+            _cal_min = _cal_com_treino - _cal_std
+            _cal_max = _cal_com_treino + _cal_std
 
-                unid    = 'kg' if _var == 'Peso' else '%'
-                dir_lbl = ('⬆️ ganhar ' if diff_val > 0 else '⬇️ perder ') + f"{abs(diff_val):.1f} {unid}"
+            # Tempo estimado — usando ritmo real observado nos dados
+            _ritmo_peso_real = None
+            _ritmo_bf_real   = None
+            if _rel_peso:
+                _p = _rel_peso['pair']
+                _rc = pd.DataFrame({
+                    'dc': _p['cal'].diff(), 'dv': _p['var'].diff()
+                }).dropna()
+                _rc = _rc[_rc['dc'].abs() > 50]
+                if len(_rc) >= 5:
+                    _ritmo_peso_real = float(np.polyfit(_rc['dc'], _rc['dv'], 1)[0])
+            if _rel_bf:
+                _p = _rel_bf['pair']
+                _rc = pd.DataFrame({
+                    'dc': _p['cal'].diff(), 'dv': _p['var'].diff()
+                }).dropna()
+                _rc = _rc[_rc['dc'].abs() > 50]
+                if len(_rc) >= 5:
+                    _ritmo_bf_real = float(np.polyfit(_rc['dc'], _rc['dv'], 1)[0])
 
-                st.markdown(f"#### {_var} — actual: **{_atual:.1f}** → alvo: **{_alvo:.1f}** ({dir_lbl})")
+            _ajuste_cal = _cal_com_treino - (
+                _rel_peso['intercept'] + _rel_peso['slope'] * (_peso_atual or _peso_alvo)
+                if _rel_peso else _cal_com_treino)
 
-                c_rel = _cal_historicas_lag(_var, _lag)
-                if c_rel:
-                    qual = ("✅ Confiável" if c_rel['r2'] > 0.10 and c_rel['pv'] < 0.10
-                            else "⚠️ Tendência fraca" if c_rel['n'] >= 15
-                            else "⛔ Dados insuficientes")
-                    st.caption(f"{qual} — R²={c_rel['r2']:.2f} | p={c_rel['pv']:.3f} | "
-                               f"N={c_rel['n']} dias | Lag={_lag}d | "
-                               f"Relação: cada 1 {unid} de {_var} ↔ "
-                               f"{c_rel['slope']:+.0f} kcal (histórico com lag={_lag}d)")
+            _tempo_peso_sem = None
+            _tempo_bf_sem   = None
+            if _ritmo_peso_real and abs(_ritmo_peso_real) > 1e-6 and _d_peso != 0:
+                delta_dia = _ritmo_peso_real * _ajuste_cal
+                if abs(delta_dia) > 0.001:
+                    _tempo_peso_sem = abs(_d_peso / delta_dia) / 7
+            if _ritmo_bf_real and abs(_ritmo_bf_real) > 1e-6 and _d_bf_pp != 0:
+                delta_dia = _ritmo_bf_real * _ajuste_cal
+                if abs(delta_dia) > 0.001:
+                    _tempo_bf_sem = abs(_d_bf_pp / delta_dia) / 7
 
-                    cal_atual = c_rel['intercept'] + c_rel['slope'] * _atual
-                    cal_alvo  = c_rel['intercept'] + c_rel['slope'] * _alvo
-                    ajuste    = cal_alvo - cal_atual
-                    dir_lbl2  = "défice" if diff_val < 0 else "superávit"
+            _tempo_lbl = "—"
+            if _tempo_peso_sem and _tempo_bf_sem:
+                _tempo_max = max(_tempo_peso_sem, _tempo_bf_sem)
+                _tempo_lbl = (f"~{_tempo_max:.0f} sem (Peso: {_tempo_peso_sem:.0f}sem | "
+                              f"BF: {_tempo_bf_sem:.0f}sem — limitante: "
+                              f"{'BF' if _tempo_bf_sem > _tempo_peso_sem else 'Peso'})")
+            elif _tempo_peso_sem:
+                _tempo_lbl = f"~{_tempo_peso_sem:.0f} semanas (pelo modelo Peso)"
+            elif _tempo_bf_sem:
+                _tempo_lbl = f"~{_tempo_bf_sem:.0f} semanas (pelo modelo BF)"
+            else:
+                # Fallback: energia por composição corporal
+                _kcal_gordura = _d_fm * 7700  # kcal por kg de gordura
+                _kcal_magra   = _d_lbm * 3000  # kcal por kg LBM (médio)
+                _kcal_total   = _kcal_gordura + _kcal_magra
+                if abs(_ajuste_cal) > 50:
+                    _tempo_lbl = f"~{abs(_kcal_total / _ajuste_cal / 7):.0f} semanas (estimativa energética)"
 
-                    # Tempo estimado baseado no ritmo real de mudança observado
-                    _par = c_rel['pair']
-                    _var_changes = _par['var'].diff().dropna()
-                    _cal_changes = _par['cal'].diff().dropna()
-                    _change_mask = _cal_changes.abs() > 50  # só quando houve mudança calórica real
-                    _ritmo_real  = None
-                    if _change_mask.sum() >= 5:
-                        # Ritmo: mudança de var por 100kcal de ajuste
-                        from scipy.stats import spearmanr as _sr2
-                        _rc = pd.DataFrame({'dc': _cal_changes[_change_mask],
-                                            'dv': _var_changes[_change_mask]}).dropna()
-                        if len(_rc) >= 5:
-                            # g / dia por 100kcal de deficit estimado
-                            _ritmo_real = float(np.polyfit(_rc['dc'], _rc['dv'], 1)[0])
+            _rows_cal = [
+                {'Métrica': f'🎯 Cal. alvo central ({_fonte_cal})',
+                 'Valor': f"{_cal_com_treino:.0f} kcal/dia"},
+                {'Métrica': '📊 Range (±1σ histórico)',
+                 'Valor': f"{_cal_min:.0f} – {_cal_max:.0f} kcal/dia"},
+                {'Métrica': '⏱️ Tempo estimado para atingir alvo',
+                 'Valor': _tempo_lbl},
+            ]
+            if _ajuste_treino > 0:
+                _rows_cal.insert(1, {
+                    'Métrica': f'🚴 Ajuste por treino ({_kj_semana} kJ/sem)',
+                    'Valor': f"+{_ajuste_treino:.0f} kcal/dia"
+                })
+            st.dataframe(pd.DataFrame(_rows_cal), hide_index=True, use_container_width=True)
+        else:
+            st.info("Sem dados suficientes para estimar calorias (mín. 15 dias com lag aplicado).")
+            _cal_com_treino = 2000.0
+            _cal_min = 1700.0
+            _cal_max = 2300.0
 
-                    tempo_semanas = None
-                    if _ritmo_real and abs(_ritmo_real) > 1e-6:
-                        # Semanas para atingir alvo com ajuste de 'ajuste' kcal/dia
-                        delta_por_dia = _ritmo_real * ajuste
-                        if abs(delta_por_dia) > 0.001:
-                            tempo_dias = abs(diff_val / delta_por_dia)
-                            tempo_semanas = tempo_dias / 7
+        # ── Distribuição de macros recomendada ────────────────────────────
+        st.markdown("---")
+        st.markdown("**Distribuição de macros recomendada:**")
+        st.caption(
+            "Baseada nas % de macros encontradas nas semanas históricas com BF mais baixo (Q1). "
+            "Proteína ajustada por peso corporal e horas de treino.")
 
-                    rows_calc = [
-                        {'Métrica': '📊 Cal. associadas ao estado actual (lag corrigido)',
-                         'Valor': f"{cal_atual:.0f} kcal"},
-                        {'Métrica': f'{"➕" if diff_val > 0 else "➖"} Ajuste necessário ({dir_lbl2})',
-                         'Valor': f"{ajuste:+.0f} kcal/dia"},
-                        {'Métrica': '🎯 Cal. alvo — central (dos dados)',
-                         'Valor': f"{cal_alvo:.0f} kcal"},
-                        {'Métrica': '📉 Cal. alvo — mínimo (–1σ histórico)',
-                         'Valor': f"{cal_alvo - c_rel['cal_std']:.0f} kcal"},
-                        {'Métrica': '📈 Cal. alvo — máximo (+1σ histórico)',
-                         'Valor': f"{cal_alvo + c_rel['cal_std']:.0f} kcal"},
-                    ]
-                    if tempo_semanas:
-                        rows_calc.append({
-                            'Métrica': f'⏱️ Tempo estimado (ritmo histórico real deste atleta)',
-                            'Valor': f"~{tempo_semanas:.0f} semanas (~{tempo_semanas*7:.0f} dias)"
-                        })
-                    else:
-                        rows_calc.append({
-                            'Métrica': '⏱️ Tempo estimado (referência genérica ±0.5kg/sem)',
-                            'Valor': f"~{abs(diff_val)/0.5:.0f} semanas"
-                        })
+        # % macros das semanas Q1 de BF (melhor composição observada)
+        _pct_carb_hist = _pct_fat_hist = _pct_ptn_hist = None
+        if _has_macros and 'pct_Carb' in combined.columns:
+            _bf_col_c = 'BF' if 'BF' in combined.columns else None
+            if _bf_col_c:
+                _data_macros_hist = combined[
+                    ['pct_Carb','pct_Fat','pct_Ptn','BF']].dropna()
+                if len(_data_macros_hist) >= 12:
+                    try:
+                        _q1_bf_thresh = _data_macros_hist['BF'].quantile(0.25)
+                        _q1_weeks = _data_macros_hist[
+                            _data_macros_hist['BF'] <= _q1_bf_thresh]
+                        if len(_q1_weeks) >= 3:
+                            _pct_carb_hist = float(_q1_weeks['pct_Carb'].mean())
+                            _pct_fat_hist  = float(_q1_weeks['pct_Fat'].mean())
+                            _pct_ptn_hist  = float(_q1_weeks['pct_Ptn'].mean())
+                    except Exception:
+                        pass
 
-                    st.dataframe(pd.DataFrame(rows_calc), width="stretch", hide_index=True)
-                else:
-                    st.info(f"Sem dados suficientes (mín. 15 dias com lag={_lag}d) para estimar ({_var}).")
+        # Proteína: ajustada por LBM e treino
+        # Base: 1.6g/kg LBM (sedentário) → 2.2g/kg LBM (alto volume treino)
+        _ptn_por_kg = 1.6
+        if _horas_total >= 10:
+            _ptn_por_kg = 2.2
+        elif _horas_total >= 6:
+            _ptn_por_kg = 2.0
+        elif _horas_total >= 3:
+            _ptn_por_kg = 1.8
 
-                st.markdown("---")
+        _lbm_ref  = _lbm_alvo  # usar LBM alvo para proteína
+        _ptn_g    = _lbm_ref * _ptn_por_kg
+        _ptn_kcal = _ptn_g * 4
 
-            st.caption(
-                f"⚠️ Lag calórico: calorias de hoje afectam o peso em {_lag_peso}d (Peso) e {_lag_bf}d (BF). "
-                "Semanas com treino intenso podem ter peso transitoriamente alto por retenção de água/glicogénio — "
-                "não confundir com ganho de massa gorda. "
-                "Calorias estimadas por regressão linear Calorias ~ Peso/BF com lag real detectado nos dados.")
+        # Se temos histórico Q1, usar % históricas como ponto de partida
+        if _pct_ptn_hist is not None:
+            # Balancear: 50% peso das % históricas + 50% do ajuste por treino
+            _ptn_kcal_hist = (_pct_ptn_hist/100) * _cal_com_treino
+            _ptn_kcal = (_ptn_kcal + _ptn_kcal_hist) / 2
+            _ptn_g    = _ptn_kcal / 4
+
+        _ptn_kcal = min(_ptn_kcal, _cal_com_treino * 0.40)  # cap 40% das calorias
+        _ptn_g    = _ptn_kcal / 4
+
+        # Gordura: mínimo fisiológico + histórico Q1
+        _fat_kcal_min  = _peso_alvo * 0.8 * 9  # 0.8g/kg mínimo
+        if _pct_fat_hist is not None:
+            _fat_kcal = max(_fat_kcal_min, (_pct_fat_hist/100) * _cal_com_treino)
+        else:
+            _fat_kcal = max(_fat_kcal_min, _cal_com_treino * 0.25)
+        _fat_g = _fat_kcal / 9
+
+        # Carb: restante
+        _carb_kcal = _cal_com_treino - _ptn_kcal - _fat_kcal
+        _carb_kcal = max(_carb_kcal, 0)
+        _carb_g    = _carb_kcal / 4
+
+        # % reais
+        _total_kcal_macros = _ptn_kcal + _fat_kcal + _carb_kcal
+        _pct_ptn_calc  = _ptn_kcal  / _total_kcal_macros * 100 if _total_kcal_macros > 0 else 0
+        _pct_fat_calc  = _fat_kcal  / _total_kcal_macros * 100 if _total_kcal_macros > 0 else 0
+        _pct_carb_calc = _carb_kcal / _total_kcal_macros * 100 if _total_kcal_macros > 0 else 0
+
+        _rows_macros = [
+            {'Macro': '🥩 Proteína',
+             'g/dia': f"{_ptn_g:.0f}g",
+             'g/kg LBM': f"{_ptn_g/_lbm_ref:.1f} g/kg",
+             'kcal': f"{_ptn_kcal:.0f} kcal",
+             '% calorias': f"{_pct_ptn_calc:.0f}%",
+             'Fonte': f"Ajustado por LBM ({_lbm_ref:.1f}kg) e treino ({_horas_total:.0f}h/sem)"},
+            {'Macro': '🧈 Gordura',
+             'g/dia': f"{_fat_g:.0f}g",
+             'g/kg LBM': f"{_fat_g/_lbm_ref:.1f} g/kg",
+             'kcal': f"{_fat_kcal:.0f} kcal",
+             '% calorias': f"{_pct_fat_calc:.0f}%",
+             'Fonte': ("Q1 BF histórico" if _pct_fat_hist else "25% calorias + mínimo fisiológico")},
+            {'Macro': '🌾 Hidratos',
+             'g/dia': f"{_carb_g:.0f}g",
+             'g/kg LBM': f"{_carb_g/_lbm_ref:.1f} g/kg",
+             'kcal': f"{_carb_kcal:.0f} kcal",
+             '% calorias': f"{_pct_carb_calc:.0f}%",
+             'Fonte': ("Q1 BF histórico (restante)" if _pct_carb_hist else "Restante das calorias")},
+        ]
+        st.dataframe(pd.DataFrame(_rows_macros), hide_index=True, use_container_width=True)
+
+        # Range de macros (±15% de cada)
+        st.caption(
+            f"**Range sugerido (±1σ calórico → {_cal_min:.0f}–{_cal_max:.0f} kcal):** "
+            f"Ptn {_ptn_g*(_cal_min/_cal_com_treino):.0f}–{_ptn_g*(_cal_max/_cal_com_treino):.0f}g | "
+            f"Gordura {_fat_g*(_cal_min/_cal_com_treino):.0f}–{_fat_g*(_cal_max/_cal_com_treino):.0f}g | "
+            f"Carb {_carb_g*(_cal_min/_cal_com_treino):.0f}–{_carb_g*(_cal_max/_cal_com_treino):.0f}g. "
+            + (f"% históricas das semanas de BF baixo (Q1): "
+               f"Carb {_pct_carb_hist:.0f}% | Gord {_pct_fat_hist:.0f}% | Ptn {_pct_ptn_hist:.0f}%."
+               if _pct_carb_hist else
+               "Histórico de macros insuficiente — usando referências fisiológicas."))
+
+        if _pct_carb_hist:
+            st.info(
+                f"📊 Nas semanas em que tiveste BF mais baixo (Q1 histórico), a distribuição típica foi: "
+                f"**{_pct_carb_hist:.0f}% Carb | {_pct_fat_hist:.0f}% Gordura | {_pct_ptn_hist:.0f}% Proteína**. "
+                "Estes valores foram incorporados no cálculo acima."
+            )
+
+        st.caption(
+            f"⚠️ Lag calórico: Peso={_lag_peso}d | BF={_lag_bf}d. "
+            "Proteína: 1.6–2.2g/kg LBM consoante volume de treino. "
+            "Gordura: mínimo fisiológico 0.8g/kg. "
+            "Calorias: média ponderada dos dois modelos (Peso e BF) pelo R² de cada um."
+        )
 
     st.markdown("---")
 
