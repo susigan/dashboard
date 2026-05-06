@@ -152,7 +152,78 @@ def tab_corporal(dc, da_full, wc=None):
         except Exception:
             pass
 
-    # ════════════════════════════════════════════════════════════════════════
+    # ── Construir combined semanal (necessário para calculadora + correlações) ─
+    _dc_all2 = dc.copy()
+    _dc_all2['_w'] = _dc_all2['Data'].dt.to_period('W')
+    corp_agg = _dc_all2.groupby('_w')[
+        [c for c in ['Peso','BF','Calorias','Net','Carb','Fat','Ptn']
+         if c in _dc_all2.columns]].mean()
+
+    _macro_g  = ['Carb','Fat','Ptn']
+    _kcal_map = {'Carb':4,'Fat':9,'Ptn':4}
+    _has_macros = all(c in corp_agg.columns for c in _macro_g)
+    if _has_macros:
+        _kcal_tot = sum(corp_agg[m].fillna(0) * _kcal_map[m] for m in _macro_g)
+        _kcal_tot = _kcal_tot.replace(0, np.nan)
+        for m in _macro_g:
+            corp_agg[f'pct_{m}'] = corp_agg[m] * _kcal_map[m] / _kcal_tot * 100
+
+    train_agg = pd.DataFrame()
+    if da_full is not None and len(da_full) > 0:
+        _daf2 = da_full.copy()
+        _daf2['Data'] = pd.to_datetime(_daf2['Data'])
+        _daf2['_w']   = _daf2['Data'].dt.to_period('W')
+        _daf2['_mt']  = pd.to_numeric(_daf2['moving_time'], errors='coerce') / 3600
+        _df_cicl2 = _daf2[_daf2['type'].apply(norm_tipo) != 'WeightTraining'].copy()
+        if 'icu_joules' in _df_cicl2.columns:
+            _df_cicl2['_kj'] = pd.to_numeric(_df_cicl2['icu_joules'], errors='coerce') / 1000
+        elif 'power_avg' in _df_cicl2.columns:
+            _df_cicl2['_kj'] = (pd.to_numeric(_df_cicl2['power_avg'], errors='coerce') *
+                                 pd.to_numeric(_df_cicl2['moving_time'], errors='coerce') / 1000)
+        else:
+            _df_cicl2['_kj'] = np.nan
+        _df_cicl2['_km'] = pd.to_numeric(
+            _df_cicl2.get('distance', pd.Series(dtype=float)), errors='coerce') / 1000
+        _df_wt2 = _daf2[_daf2['type'].apply(norm_tipo) == 'WeightTraining'].copy()
+        train_agg = _df_cicl2.groupby('_w').agg(
+            Horas_cicl=('_mt','sum'), KJ_sem=('_kj','sum'), KM_sem=('_km','sum'))
+        if len(_df_wt2) > 0:
+            train_agg = train_agg.join(
+                _df_wt2.groupby('_w').agg(Horas_WT=('_mt','sum')), how='outer')
+        else:
+            train_agg['Horas_WT'] = np.nan
+        train_agg['Horas_total'] = (train_agg['Horas_cicl'].fillna(0) +
+                                     train_agg['Horas_WT'].fillna(0))
+        train_agg[train_agg == 0] = np.nan
+
+    combined = (corp_agg.join(train_agg, how='outer')
+                if len(train_agg) > 0 else corp_agg.copy())
+    combined.index = combined.index.to_timestamp()
+    combined = combined.sort_index()
+
+    # Lag de treino (semanas)
+    _lag_treino_semanas = max(1, round((_lag_peso + _lag_bf) / 2 / 7))
+    for _ct in ['KJ_sem','Horas_cicl','Horas_total','Horas_WT','KM_sem']:
+        if _ct in combined.columns:
+            combined[f'{_ct}_lag'] = combined[_ct].shift(_lag_treino_semanas)
+
+    # ── Lookup histórico: semanas próximas dos alvos ──────────────────────
+    # Encontra semanas onde Peso e BF estiveram próximos de qualquer alvo definido
+    # Serve como estimativa directa N=1 sem necessidade de regressão separada
+    def _lookup_historico(combined_df, peso_alvo, bf_alvo,
+                          tol_peso=1.5, tol_bf=1.5):
+        """Retorna semanas históricas onde Peso≈alvo E BF≈alvo."""
+        if 'Peso' not in combined_df.columns or 'BF' not in combined_df.columns:
+            return pd.DataFrame()
+        d = combined_df[['Peso','BF','Calorias'] +
+                         [c for c in ['Net','pct_Carb','pct_Fat','pct_Ptn',
+                                       'KJ_sem','Horas_total','Horas_cicl']
+                          if c in combined_df.columns]].dropna(subset=['Peso','BF'])
+        mask = ((d['Peso'] - peso_alvo).abs() <= tol_peso) & \
+               ((d['BF']   - bf_alvo).abs()   <= tol_bf)
+        return d[mask]
+
+    # (o lookup é chamado dentro da calculadora com os alvos definidos pelo user)
     # 🎯 CALCULADORA INTEGRADA — Peso + BF + Calorias + Macros
     # ════════════════════════════════════════════════════════════════════════
     with st.expander("🎯 Calculadora de Metas — Peso, BF, Calorias e Macros", expanded=True):
@@ -265,9 +336,15 @@ def tab_corporal(dc, da_full, wc=None):
         if _aviso_consistencia:
             st.warning(_aviso_consistencia)
 
-        # ── Estimativa calórica ────────────────────────────────────────────
+        # ── Estimativa calórica — Lookup histórico + Regressão ───────────────
         st.markdown("---")
         st.markdown("**Estimativa calórica alvo:**")
+        st.caption(
+            "**Método 1 (prioritário):** lookup das semanas históricas onde "
+            "Peso e BF estiveram próximos dos alvos (±1.5kg / ±1.5pp). "
+            "**Método 2 (fallback):** regressão Calorias~Peso e Calorias~BF com lag, "
+            "combinados por R²."
+        )
 
         def _cal_historicas_lag(target_col, lag_dias):
             from scipy.stats import linregress as _lr
@@ -284,36 +361,75 @@ def tab_corporal(dc, da_full, wc=None):
                 'pair': pair,
             }
 
+        # ── Lookup histórico ──────────────────────────────────────────────
+        _lookup = _lookup_historico(combined, _peso_alvo, _bf_alvo,
+                                     tol_peso=1.5, tol_bf=1.5)
+        # Alargar tolerância se poucos registos
+        if len(_lookup) < 3:
+            _lookup = _lookup_historico(combined, _peso_alvo, _bf_alvo,
+                                         tol_peso=2.5, tol_bf=2.5)
+            _tol_usada = "±2.5"
+        else:
+            _tol_usada = "±1.5"
+
+        _cal_lookup = None
+        _lookup_info = ""
+        if len(_lookup) >= 3 and 'Calorias' in _lookup.columns:
+            _cal_lookup     = float(_lookup['Calorias'].median())
+            _cal_lookup_std = float(_lookup['Calorias'].std())
+            _kj_lookup      = float(_lookup['KJ_sem'].median())  if 'KJ_sem'      in _lookup.columns else None
+            _h_lookup       = float(_lookup['Horas_total'].median()) if 'Horas_total' in _lookup.columns else None
+            _pct_c_lookup   = float(_lookup['pct_Carb'].median()) if 'pct_Carb' in _lookup.columns else None
+            _pct_f_lookup   = float(_lookup['pct_Fat'].median())  if 'pct_Fat'  in _lookup.columns else None
+            _pct_p_lookup   = float(_lookup['pct_Ptn'].median())  if 'pct_Ptn'  in _lookup.columns else None
+            _lookup_info = (
+                f"✅ **Lookup histórico**: {len(_lookup)} semanas com "
+                f"Peso {_peso_alvo:.1f}±{_tol_usada}kg e BF {_bf_alvo:.1f}±{_tol_usada}%")
+        else:
+            _lookup_info = (
+                f"⚠️ **Sem semanas históricas** com Peso≈{_peso_alvo:.1f}kg e BF≈{_bf_alvo:.1f}% "
+                f"(tolerância ±2.5). A usar regressão como estimativa.")
+
+        st.caption(_lookup_info)
+
+        # ── Regressão (fallback ou complemento) ───────────────────────────
         _rel_peso = _cal_historicas_lag('Peso', _lag_peso) if 'Peso' in _dc_all.columns else None
         _rel_bf   = _cal_historicas_lag('BF',   _lag_bf)   if 'BF'   in _dc_all.columns else None
 
-        # Cal base estimada pelos dois modelos (média ponderada pelo R²)
-        _cal_base_peso = None
-        _cal_base_bf   = None
-        if _rel_peso:
-            _cal_base_peso = _rel_peso['intercept'] + _rel_peso['slope'] * _peso_alvo
-        if _rel_bf:
-            _cal_base_bf   = _rel_bf['intercept']   + _rel_bf['slope']   * _bf_alvo
+        _cal_base_peso = (_rel_peso['intercept'] + _rel_peso['slope'] * _peso_alvo
+                          if _rel_peso else None)
+        _cal_base_bf   = (_rel_bf['intercept']   + _rel_bf['slope']   * _bf_alvo
+                          if _rel_bf   else None)
 
-        # Combinar os dois modelos ponderados por R²
         if _cal_base_peso is not None and _cal_base_bf is not None:
             r2_p = _rel_peso['r2']; r2_b = _rel_bf['r2']
             soma_r2 = r2_p + r2_b if (r2_p + r2_b) > 0 else 1
-            _cal_central = ((_cal_base_peso * r2_p + _cal_base_bf * r2_b) / soma_r2)
-            _cal_std     = float(np.mean([_rel_peso['cal_std'], _rel_bf['cal_std']]))
-            _fonte_cal   = f"Média ponderada Peso (R²={r2_p:.2f}) + BF (R²={r2_b:.2f})"
+            _cal_reg = (_cal_base_peso * r2_p + _cal_base_bf * r2_b) / soma_r2
+            _cal_reg_std = float(np.mean([_rel_peso['cal_std'], _rel_bf['cal_std']]))
+            _fonte_reg = f"Regressão ponderada R² (Peso={r2_p:.2f}, BF={r2_b:.2f})"
         elif _cal_base_peso is not None:
-            _cal_central = _cal_base_peso
-            _cal_std     = _rel_peso['cal_std']
-            _fonte_cal   = f"Modelo Peso (R²={_rel_peso['r2']:.2f})"
+            _cal_reg = _cal_base_peso; _cal_reg_std = _rel_peso['cal_std']
+            _fonte_reg = f"Regressão Peso (R²={_rel_peso['r2']:.2f})"
         elif _cal_base_bf is not None:
-            _cal_central = _cal_base_bf
-            _cal_std     = _rel_bf['cal_std']
-            _fonte_cal   = f"Modelo BF (R²={_rel_bf['r2']:.2f})"
+            _cal_reg = _cal_base_bf; _cal_reg_std = _rel_bf['cal_std']
+            _fonte_reg = f"Regressão BF (R²={_rel_bf['r2']:.2f})"
         else:
-            _cal_central = None
-            _cal_std     = 300.0
-            _fonte_cal   = "Sem dados suficientes"
+            _cal_reg = None; _cal_reg_std = 300.0; _fonte_reg = "Sem dados"
+
+        # ── Combinação final: lookup prioritário, regressão como âncora ──
+        if _cal_lookup is not None and _cal_reg is not None:
+            # Média ponderada: lookup (peso 2/3) + regressão (peso 1/3)
+            _cal_central = (_cal_lookup * 2 + _cal_reg * 1) / 3
+            _cal_std     = float(np.mean([_cal_lookup_std, _cal_reg_std]))
+            _fonte_cal   = f"Lookup ({len(_lookup)} sem.) + {_fonte_reg}"
+        elif _cal_lookup is not None:
+            _cal_central = _cal_lookup; _cal_std = _cal_lookup_std
+            _fonte_cal   = f"Lookup histórico ({len(_lookup)} semanas)"
+        elif _cal_reg is not None:
+            _cal_central = _cal_reg; _cal_std = _cal_reg_std
+            _fonte_cal   = _fonte_reg
+        else:
+            _cal_central = None; _cal_std = 300.0; _fonte_cal = "Sem dados suficientes"
 
         # ── Ajuste calórico por treino — baseado nos dados reais N=1 ─────
         _ajuste_treino = 0.0
@@ -534,7 +650,14 @@ def tab_corporal(dc, da_full, wc=None):
                if _pct_carb_hist else
                "Histórico de macros insuficiente — usando referências fisiológicas."))
 
-        if _pct_carb_hist:
+        if _pct_carb_hist or (_cal_lookup is not None and _pct_c_lookup):
+            # Prioridade: lookup histórico (mesmas semanas do peso/bf alvo)
+            # Fallback: Q1 BF histórico
+            _pct_c_ref = _pct_c_lookup if (_cal_lookup and _pct_c_lookup) else _pct_carb_hist
+            _pct_f_ref = _pct_f_lookup if (_cal_lookup and _pct_f_lookup) else _pct_fat_hist
+            _pct_p_ref = _pct_p_lookup if (_cal_lookup and _pct_p_lookup) else _pct_ptn_hist
+            _fonte_macro = ("lookup histórico" if (_cal_lookup and _pct_c_lookup)
+                            else "Q1 BF histórico")
             st.info(
                 f"📊 Nas semanas em que tiveste BF mais baixo (Q1 histórico), a distribuição típica foi: "
                 f"**{_pct_carb_hist:.0f}% Carb | {_pct_fat_hist:.0f}% Gordura | {_pct_ptn_hist:.0f}% Proteína**. "
@@ -862,62 +985,6 @@ def tab_corporal(dc, da_full, wc=None):
         if a >= 0.50: return "★★★ Forte"
         if a >= 0.30: return "★★ Moderada"
         return None
-
-    # ── Construir combined semanal ────────────────────────────────────────
-    _dc_all2 = dc.copy()
-    _dc_all2['_w'] = _dc_all2['Data'].dt.to_period('W')
-    corp_agg = _dc_all2.groupby('_w')[['Peso','BF','Calorias','Net','Carb','Fat','Ptn']].mean()
-
-    # % de macros (independente do volume calórico total)
-    _macro_g = ['Carb','Fat','Ptn']
-    _kcal_map = {'Carb':4,'Fat':9,'Ptn':4}
-    _has_macros = all(c in corp_agg.columns for c in _macro_g)
-    if _has_macros:
-        _kcal_tot = sum(corp_agg[m].fillna(0) * _kcal_map[m] for m in _macro_g)
-        _kcal_tot = _kcal_tot.replace(0, np.nan)
-        for m in _macro_g:
-            corp_agg[f'pct_{m}'] = corp_agg[m] * _kcal_map[m] / _kcal_tot * 100
-
-    train_agg = pd.DataFrame()
-    if da_full is not None and len(da_full) > 0:
-        df_all = da_full.copy()
-        df_all['Data'] = pd.to_datetime(df_all['Data'])
-        df_all['_w']   = df_all['Data'].dt.to_period('W')
-        df_all['_mt']  = pd.to_numeric(df_all['moving_time'], errors='coerce') / 3600
-        df_cicl = df_all[df_all['type'].apply(norm_tipo) != 'WeightTraining'].copy()
-        if 'icu_joules' in df_cicl.columns:
-            df_cicl['_kj'] = pd.to_numeric(df_cicl['icu_joules'], errors='coerce') / 1000
-        elif 'power_avg' in df_cicl.columns:
-            df_cicl['_kj'] = (pd.to_numeric(df_cicl['power_avg'], errors='coerce') *
-                              pd.to_numeric(df_cicl['moving_time'], errors='coerce') / 1000)
-        else:
-            df_cicl['_kj'] = np.nan
-        df_cicl['_km'] = pd.to_numeric(
-            df_cicl.get('distance', pd.Series(dtype=float)), errors='coerce') / 1000
-        df_wt = df_all[df_all['type'].apply(norm_tipo) == 'WeightTraining'].copy()
-        train_agg = df_cicl.groupby('_w').agg(
-            Horas_cicl=('_mt','sum'), KJ_sem=('_kj','sum'), KM_sem=('_km','sum'))
-        if len(df_wt) > 0:
-            train_agg = train_agg.join(
-                df_wt.groupby('_w').agg(Horas_WT=('_mt','sum')), how='outer')
-        else:
-            train_agg['Horas_WT'] = np.nan
-        train_agg['Horas_total'] = (train_agg['Horas_cicl'].fillna(0) +
-                                     train_agg['Horas_WT'].fillna(0))
-        train_agg[train_agg == 0] = np.nan
-
-    combined = (corp_agg.join(train_agg, how='outer')
-                if len(train_agg) > 0 else corp_agg.copy())
-    combined.index = combined.index.to_timestamp()
-    combined = combined.sort_index()
-
-    # ── Criar versões lagged das variáveis de treino ──────────────────────
-    # KJ/Horas de semanas anteriores → Peso/BF desta semana
-    # lag_treino = lag óptimo detectado (média de lag_peso e lag_bf, arredondado a semanas)
-    _lag_treino_semanas = max(1, round((_lag_peso + _lag_bf) / 2 / 7))
-    for col_t in ['KJ_sem','Horas_cicl','Horas_total','Horas_WT','KM_sem']:
-        if col_t in combined.columns:
-            combined[f'{col_t}_lag'] = combined[col_t].shift(_lag_treino_semanas)
 
     # ── Definir predictors e targets ──────────────────────────────────────
     _lag_sufx = f'_lag' if _lag_treino_semanas > 0 else ''
