@@ -114,6 +114,44 @@ def tab_corporal(dc, da_full, wc=None):
     _lag_peso, _r_lag_peso = _calc_lag_optimo(_peso_r7)
     _lag_bf,   _r_lag_bf   = _calc_lag_optimo(_bf_r7)
 
+    # ── KJ e Horas reais do atleta (últimas 8 semanas completas) ─────────
+    # Usados como valores pré-preenchidos na calculadora — N=1 real
+    _kj_semana_real    = 0
+    _horas_total_real  = 0.0
+    _horas_cicl_real   = 0.0
+    _kj_semana_med_hist = 0  # mediana histórica para comparação
+    if da_full is not None and len(da_full) > 0:
+        try:
+            _daf_pre = da_full.copy()
+            _daf_pre['Data'] = pd.to_datetime(_daf_pre['Data'])
+            _daf_pre['_w']   = _daf_pre['Data'].dt.to_period('W')
+            _daf_pre['_mt']  = pd.to_numeric(_daf_pre['moving_time'], errors='coerce') / 3600
+            _daf_cicl_pre = _daf_pre[_daf_pre['type'].apply(norm_tipo) != 'WeightTraining'].copy()
+            if 'icu_joules' in _daf_cicl_pre.columns:
+                _daf_cicl_pre['_kj'] = pd.to_numeric(_daf_cicl_pre['icu_joules'], errors='coerce') / 1000
+            else:
+                _daf_cicl_pre['_kj'] = np.nan
+            _daf_wt_pre = _daf_pre[_daf_pre['type'].apply(norm_tipo) == 'WeightTraining']
+
+            _kj_por_sem   = _daf_cicl_pre.groupby('_w')['_kj'].sum()
+            _h_cicl_p_sem = _daf_cicl_pre.groupby('_w')['_mt'].sum()
+            _h_wt_p_sem   = (_daf_wt_pre.groupby('_w')['_mt'].sum()
+                              if len(_daf_wt_pre) > 0 else pd.Series(dtype=float))
+            _h_tot_p_sem  = (_h_cicl_p_sem.add(_h_wt_p_sem, fill_value=0))
+
+            _sem_atual_pre = pd.Timestamp.now().to_period('W')
+            _sems_completas_pre = sorted(
+                [s for s in _kj_por_sem.index if s < _sem_atual_pre],
+                reverse=True)[:8]
+
+            if _sems_completas_pre:
+                _kj_semana_real   = int(_kj_por_sem[_sems_completas_pre].median())
+                _horas_cicl_real  = float(_h_cicl_p_sem.reindex(_sems_completas_pre).median())
+                _horas_total_real = float(_h_tot_p_sem.reindex(_sems_completas_pre).median())
+                _kj_semana_med_hist = int(_kj_por_sem.median())
+        except Exception:
+            pass
+
     # ════════════════════════════════════════════════════════════════════════
     # 🎯 CALCULADORA INTEGRADA — Peso + BF + Calorias + Macros
     # ════════════════════════════════════════════════════════════════════════
@@ -140,11 +178,21 @@ def tab_corporal(dc, da_full, wc=None):
                 st.metric("💪 Massa magra (LBM)", f"{_lbm_atual:.1f} kg")
             if _fm_atual:
                 st.metric("🔴 Massa gorda", f"{_fm_atual:.1f} kg")
+            # Treino real
+            if _kj_semana_real > 0:
+                st.metric("🚴 KJ/sem (mediana 8sem)", f"{_kj_semana_real} kJ",
+                          delta=f"hist.: {_kj_semana_med_hist} kJ",
+                          delta_color="off")
+            if _horas_total_real > 0:
+                st.metric("⏱️ Horas treino/sem (mediana 8sem)",
+                          f"{_horas_total_real:.1f}h",
+                          delta=f"cíclico: {_horas_cicl_real:.1f}h",
+                          delta_color="off")
 
         with _ci2:
             st.markdown("**Definir alvos**")
             _peso_alvo = st.number_input(
-                f"⚖️ Peso-alvo (kg)",
+                "⚖️ Peso-alvo (kg)",
                 min_value=30.0, max_value=200.0,
                 value=float(round(_peso_atual, 1)) if _peso_atual else 75.0,
                 step=0.1, key="calc_peso_alvo")
@@ -153,16 +201,22 @@ def tab_corporal(dc, da_full, wc=None):
                 min_value=3.0, max_value=50.0,
                 value=float(round(_bf_atual, 1)) if _bf_atual else 15.0,
                 step=0.1, key="calc_bf_alvo")
+
+            st.markdown("**Ajustar treino planeado** *(pré-preenchido com os teus dados reais)*")
             _kj_semana = st.number_input(
-                "🚴 KJ semanal planeado (cíclico, 0 = ignorar)",
-                min_value=0, max_value=20000, value=0, step=100,
-                key="calc_kj_sem",
-                help="Se introduzires o KJ semanal de treino, o TDEE é ajustado.")
+                "🚴 KJ semanal cíclico",
+                min_value=0, max_value=20000,
+                value=int(_kj_semana_real) if _kj_semana_real > 0 else 0,
+                step=100, key="calc_kj_sem",
+                help=f"Mediana real das últimas 8 semanas: {_kj_semana_real} kJ. "
+                     "Altera se planeas mudar o volume de treino.")
             _horas_total = st.number_input(
-                "⏱️ Horas totais de treino/semana (0 = ignorar)",
-                min_value=0.0, max_value=40.0, value=0.0, step=0.5,
-                key="calc_horas",
-                help="Horas cíclico + musculação. Usado para ajustar necessidade proteica.")
+                "⏱️ Horas totais de treino/semana",
+                min_value=0.0, max_value=40.0,
+                value=float(round(_horas_total_real, 1)) if _horas_total_real > 0 else 0.0,
+                step=0.5, key="calc_horas",
+                help=f"Mediana real: {_horas_total_real:.1f}h (cíclico {_horas_cicl_real:.1f}h). "
+                     "Usado para ajustar necessidade proteica.")
 
         # ── Cálculo de composição corporal alvo ───────────────────────────
         _lbm_alvo = _peso_alvo * (1 - _bf_alvo/100)
@@ -261,15 +315,44 @@ def tab_corporal(dc, da_full, wc=None):
             _cal_std     = 300.0
             _fonte_cal   = "Sem dados suficientes"
 
-        # Ajuste por treino: kJ → kcal (1 kJ = 0.239 kcal, eficiência ~25%)
-        # Gasto real = kJ_mecanico / eficiencia_metabolica (~0.22-0.27)
+        # ── Ajuste calórico por treino — baseado nos dados reais N=1 ─────
         _ajuste_treino = 0.0
         _ajuste_treino_lbl = ""
+        _eficiencia_real = 0.25  # default
+
         if _kj_semana > 0:
-            _eficiencia = 0.25  # eficiência metabólica típica
-            _gasto_semanal_kcal = _kj_semana / _eficiencia * 0.239
-            _ajuste_treino = _gasto_semanal_kcal / 7  # por dia
-            _ajuste_treino_lbl = f"+{_ajuste_treino:.0f} kcal/dia de treino ({_kj_semana} kJ/sem)"
+            # Tentar calcular eficiência metabólica real: slope(KJ_sem → Calorias)
+            # slope em kcal/kJ → eficiência = slope × 0.239 (conversão J→cal)
+            if da_full is not None and len(da_full) > 0 and 'Calorias' in _dc_all.columns:
+                try:
+                    from scipy.stats import linregress as _lr_kj
+                    _daf_eff = da_full.copy()
+                    _daf_eff['Data'] = pd.to_datetime(_daf_eff['Data'])
+                    _daf_eff['_w'] = _daf_eff['Data'].dt.to_period('W')
+                    if 'icu_joules' in _daf_eff.columns:
+                        _daf_eff['_kj'] = pd.to_numeric(
+                            _daf_eff['icu_joules'], errors='coerce') / 1000
+                        _kj_w_eff = _daf_eff.groupby('_w')['_kj'].sum()
+                        _dc_cal_w = _dc_all.copy()
+                        _dc_cal_w['_w'] = _dc_cal_w['Data'].dt.to_period('W')
+                        _cal_w_eff = _dc_cal_w.groupby('_w')['Calorias'].mean()
+                        _pair_eff  = pd.DataFrame(
+                            {'kj': _kj_w_eff, 'cal': _cal_w_eff}).dropna()
+                        if len(_pair_eff) >= 10:
+                            _sl_eff, _, _, _pv_eff, _ = _lr_kj(
+                                _pair_eff['kj'].values, _pair_eff['cal'].values)
+                            if _pv_eff < 0.15 and _sl_eff > 0:
+                                # kcal_extra / kJ_extra → converte para eficiência
+                                _eficiencia_real = max(0.15, min(0.40,
+                                    float(_sl_eff * 0.239)))
+                except Exception:
+                    pass
+
+            _gasto_diario = _kj_semana / _eficiencia_real * 0.239 / 7
+            _ajuste_treino = _gasto_diario
+            _ajuste_treino_lbl = (
+                f"+{_ajuste_treino:.0f} kcal/dia "
+                f"({_kj_semana} kJ/sem | efic. real={_eficiencia_real:.0%})")
 
         if _cal_central:
             _cal_com_treino = _cal_central + _ajuste_treino
