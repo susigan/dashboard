@@ -550,7 +550,10 @@ def tab_corporal(dc, da_full, wc=None):
     st.subheader("🔗 Correlações entre variáveis corporais e de treino")
     st.caption(
         "Correlação de Spearman semanal sobre **todo o histórico**. "
-        "Só mostra moderada (|r|≥0.40) ou forte (|r|≥0.60). MDC confirma variação real.")
+        "Variáveis de treino (KJ, Horas) usam **lag óptimo** para evitar confounding "
+        "de retenção de água pós-treino. "
+        "Só mostra moderada (|r|≥0.30) ou forte (|r|≥0.50)."
+    )
 
     def _sem_mdc(series, icc=0.90):
         s = series.dropna()
@@ -560,13 +563,24 @@ def tab_corporal(dc, da_full, wc=None):
 
     def _forca(r):
         a = abs(r)
-        if a >= 0.60: return "★★★ Forte"
-        if a >= 0.40: return "★★ Moderada"
+        if a >= 0.50: return "★★★ Forte"
+        if a >= 0.30: return "★★ Moderada"
         return None
 
+    # ── Construir combined semanal ────────────────────────────────────────
     _dc_all2 = dc.copy()
     _dc_all2['_w'] = _dc_all2['Data'].dt.to_period('W')
     corp_agg = _dc_all2.groupby('_w')[['Peso','BF','Calorias','Net','Carb','Fat','Ptn']].mean()
+
+    # % de macros (independente do volume calórico total)
+    _macro_g = ['Carb','Fat','Ptn']
+    _kcal_map = {'Carb':4,'Fat':9,'Ptn':4}
+    _has_macros = all(c in corp_agg.columns for c in _macro_g)
+    if _has_macros:
+        _kcal_tot = sum(corp_agg[m].fillna(0) * _kcal_map[m] for m in _macro_g)
+        _kcal_tot = _kcal_tot.replace(0, np.nan)
+        for m in _macro_g:
+            corp_agg[f'pct_{m}'] = corp_agg[m] * _kcal_map[m] / _kcal_tot * 100
 
     train_agg = pd.DataFrame()
     if da_full is not None and len(da_full) > 0:
@@ -582,11 +596,11 @@ def tab_corporal(dc, da_full, wc=None):
                               pd.to_numeric(df_cicl['moving_time'], errors='coerce') / 1000)
         else:
             df_cicl['_kj'] = np.nan
-        df_cicl['_km'] = (pd.to_numeric(df_cicl.get('distance', pd.Series(dtype=float)),
-                                         errors='coerce') / 1000)
+        df_cicl['_km'] = pd.to_numeric(
+            df_cicl.get('distance', pd.Series(dtype=float)), errors='coerce') / 1000
         df_wt = df_all[df_all['type'].apply(norm_tipo) == 'WeightTraining'].copy()
         train_agg = df_cicl.groupby('_w').agg(
-            Horas_cicl=('_mt', 'sum'), KJ_sem=('_kj', 'sum'), KM_sem=('_km', 'sum'))
+            Horas_cicl=('_mt','sum'), KJ_sem=('_kj','sum'), KM_sem=('_km','sum'))
         if len(df_wt) > 0:
             train_agg = train_agg.join(
                 df_wt.groupby('_w').agg(Horas_WT=('_mt','sum')), how='outer')
@@ -601,47 +615,203 @@ def tab_corporal(dc, da_full, wc=None):
     combined.index = combined.index.to_timestamp()
     combined = combined.sort_index()
 
-    targets = [c for c in ['Peso','BF','Net','Calorias'] if c in combined.columns]
+    # ── Criar versões lagged das variáveis de treino ──────────────────────
+    # KJ/Horas de semanas anteriores → Peso/BF desta semana
+    # lag_treino = lag óptimo detectado (média de lag_peso e lag_bf, arredondado a semanas)
+    _lag_treino_semanas = max(1, round((_lag_peso + _lag_bf) / 2 / 7))
+    for col_t in ['KJ_sem','Horas_cicl','Horas_total','Horas_WT','KM_sem']:
+        if col_t in combined.columns:
+            combined[f'{col_t}_lag'] = combined[col_t].shift(_lag_treino_semanas)
+
+    # ── Definir predictors e targets ──────────────────────────────────────
+    _lag_sufx = f'_lag' if _lag_treino_semanas > 0 else ''
+    targets = [c for c in ['Peso','BF'] if c in combined.columns]
     predictors_all = [c for c in
-        ['Calorias','Carb','Fat','Ptn','Net',
-         'Horas_cicl','KJ_sem','KM_sem','Horas_WT','Horas_total','Peso','BF']
+        # Nutrição (sem lag — são consumidas antes do efeito)
+        ['Calorias','Net','Carb','Fat','Ptn','pct_Carb','pct_Fat','pct_Ptn'] +
+        # Treino com lag
+        [f'KJ_sem{_lag_sufx}', f'Horas_cicl{_lag_sufx}',
+         f'Horas_total{_lag_sufx}', f'Horas_WT{_lag_sufx}',
+         f'KM_sem{_lag_sufx}']
         if c in combined.columns]
 
+    from scipy.stats import spearmanr as _sc_sp
     corr_rows = []
     for tgt in targets:
-        _, mdc95 = _sem_mdc(combined[tgt])
-        if mdc95 is not None:
-            vr = combined[tgt].dropna()
-            if (vr.max() - vr.min()) < mdc95: continue
         for pred in predictors_all:
             if pred == tgt: continue
             pair = combined[[tgt, pred]].dropna()
             if len(pair) < 8: continue
-            r, pv = spearmanr(pair[pred].values, pair[tgt].values)
+            r, pv = _sc_sp(pair[pred].values, pair[tgt].values)
             if pv >= 0.10: continue
             f = _forca(r)
             if f is None: continue
-            d0 = pair.index.min(); d1 = pair.index.max()
+            # Label mais legível
+            pred_lbl = (pred.replace('_lag', f' (lag {_lag_treino_semanas}sem)')
+                            .replace('pct_', '% ')
+                            .replace('KJ_sem', 'KJ semanal')
+                            .replace('Horas_cicl', 'Horas cíclico')
+                            .replace('Horas_total', 'Horas total')
+                            .replace('Horas_WT', 'Horas musculação')
+                            .replace('KM_sem', 'KM semanal'))
             corr_rows.append({
-                'Alvo': tgt, 'Preditor': pred,
-                'r': f"{r:+.2f}", 'p-value': f"{pv:.3f}",
-                'N semanas': len(pair),
-                'Período': f"{d0.strftime('%m/%Y')}→{d1.strftime('%m/%Y')}",
+                'Alvo': tgt,
+                'Preditor': pred_lbl,
+                'r': f"{r:+.2f}", 'p': f"{pv:.3f}",
+                'N': len(pair),
                 'Força': f,
-                'Efeito': (f"↗ {pred} ↑ → {tgt} ↑" if r > 0
-                           else f"↘ {pred} ↑ → {tgt} ↓"),
+                'Direcção': (f"↗ mais → {tgt}↑" if r > 0 else f"↘ mais → {tgt}↓"),
             })
 
     if corr_rows:
         df_c = pd.DataFrame(corr_rows)
         df_c['_ar'] = df_c['r'].str.replace('+','',regex=False).astype(float).abs()
-        df_c = (df_c.sort_values('_ar', ascending=False)
+        df_c = (df_c.sort_values(['Alvo','_ar'], ascending=[True, False])
                     .drop_duplicates(subset=['Alvo','Preditor'], keep='first')
-                    .drop(columns=['_ar'])
-                    .sort_values(['Alvo','Força'], ascending=[True, True]))
-        st.dataframe(df_c, width="stretch", hide_index=True)
+                    .drop(columns=['_ar']))
+        # Mostrar por alvo
+        for tgt in targets:
+            sub_c = df_c[df_c['Alvo'] == tgt]
+            if len(sub_c) == 0: continue
+            st.markdown(f"**{tgt}** — correlações significativas:")
+            st.dataframe(sub_c[['Preditor','r','p','N','Força','Direcção']],
+                         hide_index=True, use_container_width=True)
     else:
-        st.info("Sem correlações moderadas/fortes. Pode ser necessário mais semanas.")
+        st.info("Sem correlações moderadas/fortes detectadas.")
+
+    if _lag_treino_semanas > 0:
+        st.caption(
+            f"KJ/Horas com lag={_lag_treino_semanas} semana(s) — "
+            "evita confounding de retenção de água/glicogénio imediata pós-treino. "
+            "% Carb/Fat/Ptn = distribuição em kcal, independente do volume calórico total.")
+
+    st.markdown("---")
+
+    # ── MACROS: efeito independente das calorias ──────────────────────────
+    st.subheader("🥗 Distribuição de Macronutrientes — efeito independente das calorias")
+    st.caption(
+        "A pergunta: **uma distribuição diferente de macros (mais Carb, mais Fat, mais Ptn) "
+        "faz diferença na composição corporal, independentemente das calorias totais?** "
+        "Método: correlação parcial controlando Calorias, e quartis de % macro por quartil de BF/Peso."
+    )
+
+    if _has_macros and all(c in combined.columns for c in ['pct_Carb','pct_Fat','pct_Ptn']):
+        # ── Correlação parcial: macro% → Peso/BF controlando Calorias ────
+        from scipy.stats import spearmanr as _sp_m, rankdata as _rd
+        st.markdown("**Correlação parcial: % Macro → Peso/BF (controlando Calorias totais)**")
+        st.caption(
+            "Correlação parcial de Spearman: remove o efeito das calorias totais antes de "
+            "calcular a correlação entre distribuição de macros e composição corporal. "
+            "r próximo de 0 = os macros não explicam variação de BF/Peso além das calorias."
+        )
+
+        def _spearman_parcial(x, y, z):
+            """Correlação parcial de Spearman entre x e y controlando z."""
+            df_xyz = pd.DataFrame({'x': x, 'y': y, 'z': z}).dropna()
+            if len(df_xyz) < 10: return None, None, len(df_xyz)
+            # Rankar tudo
+            rx = _rd(df_xyz['x'].values).astype(float)
+            ry = _rd(df_xyz['y'].values).astype(float)
+            rz = _rd(df_xyz['z'].values).astype(float)
+            # Residualizar x e y em relação a z via OLS
+            from numpy.linalg import lstsq as _ls
+            X_z = np.column_stack([np.ones(len(rz)), rz])
+            res_rx = rx - X_z @ _ls(X_z, rx, rcond=None)[0]
+            res_ry = ry - X_z @ _ls(X_z, ry, rcond=None)[0]
+            # Correlação de Pearson nos resíduos
+            if np.std(res_rx) == 0 or np.std(res_ry) == 0: return None, None, len(df_xyz)
+            r_p = float(np.corrcoef(res_rx, res_ry)[0,1])
+            # p-value aproximado (Fisher z → t)
+            n = len(df_xyz)
+            t_stat = r_p * np.sqrt(n - 3) / np.sqrt(max(1 - r_p**2, 1e-10))
+            from scipy.stats import t as _t_dist
+            pv = float(2 * _t_dist.sf(abs(t_stat), df=n-3))
+            return round(r_p, 3), round(pv, 4), n
+
+        parc_rows = []
+        for tgt_m in ['BF','Peso']:
+            if tgt_m not in combined.columns: continue
+            if 'Calorias' not in combined.columns: continue
+            for macro_pct, macro_lbl in [
+                ('pct_Carb', '% Carb'),
+                ('pct_Fat',  '% Gordura'),
+                ('pct_Ptn',  '% Proteína'),
+            ]:
+                if macro_pct not in combined.columns: continue
+                r_p, pv_p, n_p = _spearman_parcial(
+                    combined[macro_pct], combined[tgt_m], combined['Calorias'])
+                if r_p is None: continue
+                sig = '✅ p<0.05' if pv_p < 0.05 else '~ p<0.10' if pv_p < 0.10 else '✗ ns'
+                interp = ''
+                if pv_p < 0.10:
+                    if tgt_m == 'BF':
+                        interp = (f"↘ mais {macro_lbl.replace('% ','')} → menos gordura"
+                                  if r_p < 0 else
+                                  f"↗ mais {macro_lbl.replace('% ','')} → mais gordura")
+                    else:
+                        interp = (f"↘ mais {macro_lbl.replace('% ','')} → menos peso"
+                                  if r_p < 0 else
+                                  f"↗ mais {macro_lbl.replace('% ','')} → mais peso")
+                parc_rows.append({
+                    'Alvo': tgt_m, 'Macro': macro_lbl, 'N': n_p,
+                    'r parcial': f"{r_p:+.3f}", 'Sig': sig,
+                    'Interpretação': interp if interp else '→ sem efeito independente',
+                })
+        if parc_rows:
+            st.dataframe(pd.DataFrame(parc_rows), hide_index=True, use_container_width=True)
+
+        # ── Quartis de BF por distribuição de macros ──────────────────────
+        st.markdown("**Distribuição de macros por quartil de BF (semanas com dados completos)**")
+        st.caption(
+            "Semanas agrupadas por quartil de BF. "
+            "Mostra se há diferença sistemática na distribuição de macros "
+            "entre semanas de BF mais baixo vs mais alto."
+        )
+
+        _cols_q = ['BF','Calorias','pct_Carb','pct_Fat','pct_Ptn']
+        _data_q  = combined[_cols_q].dropna()
+        if len(_data_q) >= 16:
+            try:
+                _data_q = _data_q.copy()
+                _data_q['_qbf'] = pd.qcut(_data_q['BF'], q=4,
+                                           labels=['Q1 BF baixo','Q2','Q3','Q4 BF alto'],
+                                           duplicates='drop')
+                rows_macro_q = []
+                for ql in ['Q1 BF baixo','Q2','Q3','Q4 BF alto']:
+                    g = _data_q[_data_q['_qbf'] == ql]
+                    if len(g) < 3: continue
+                    rows_macro_q.append({
+                        'Quartil BF': ql,
+                        'N semanas': len(g),
+                        'BF médio (%)': f"{g['BF'].mean():.1f}",
+                        'Cal média': f"{g['Calorias'].mean():.0f} kcal",
+                        '% Carb': f"{g['pct_Carb'].mean():.0f}%",
+                        '% Gordura': f"{g['pct_Fat'].mean():.0f}%",
+                        '% Proteína': f"{g['pct_Ptn'].mean():.0f}%",
+                    })
+                if rows_macro_q:
+                    st.dataframe(pd.DataFrame(rows_macro_q), hide_index=True, use_container_width=True)
+                    # Nota de interpretação
+                    _q1 = _data_q[_data_q['_qbf']=='Q1 BF baixo']
+                    _q4 = _data_q[_data_q['_qbf']=='Q4 BF alto']
+                    if len(_q1) >= 3 and len(_q4) >= 3:
+                        _d_ptn = _q1['pct_Ptn'].mean() - _q4['pct_Ptn'].mean()
+                        _d_carb = _q1['pct_Carb'].mean() - _q4['pct_Carb'].mean()
+                        _d_fat  = _q1['pct_Fat'].mean() - _q4['pct_Fat'].mean()
+                        _d_cal  = _q1['Calorias'].mean() - _q4['Calorias'].mean()
+                        st.info(
+                            f"Q1 (BF mais baixo) vs Q4 (BF mais alto): "
+                            f"Proteína {_d_ptn:+.0f}pp | Carb {_d_carb:+.0f}pp | "
+                            f"Gordura {_d_fat:+.0f}pp | Calorias {_d_cal:+.0f} kcal. "
+                            "Diferença nas calorias indica que parte do efeito pode ser calórico. "
+                            "A correlação parcial acima isola o efeito independente."
+                        )
+            except Exception:
+                st.info("Dados insuficientes para quartis de macros.")
+        else:
+            st.info(f"Dados insuficientes para análise de macros por quartil (N={len(_data_q)}, mín 16).")
+    else:
+        st.info("Sem dados de macronutrientes suficientes para análise de distribuição.")
 
     st.markdown("---")
 
