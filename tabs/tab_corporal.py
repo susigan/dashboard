@@ -77,50 +77,47 @@ def tab_corporal(dc, da_full, wc=None):
                "Dias sem registo são ignorados em médias e correlações.")
     st.markdown("---")
 
+    # ── Preparação de dados — fora do expander para uso global ───────────────
+    _dc_all = dc.copy()
+    _dc_all['_w'] = _dc_all['Data'].dt.to_period('W')
+    _wk = _dc_all.groupby('_w')[['Peso','BF','Calorias','Net']].mean()
+    _wk.index = _wk.index.to_timestamp()
+    _wk = _wk.sort_index()
+
+    # Rolling 7 dias (remove ruído diário de água/glicogénio)
+    _peso_r7 = (_dc_all.set_index('Data')['Peso'].resample('D').mean()
+                .rolling(7, min_periods=3).mean() if 'Peso' in _dc_all.columns else pd.Series(dtype=float))
+    _bf_r7   = (_dc_all.set_index('Data')['BF'].resample('D').mean()
+                .rolling(7, min_periods=3).mean() if 'BF' in _dc_all.columns else pd.Series(dtype=float))
+    _cal_r7  = (_dc_all.set_index('Data')['Calorias'].resample('D').mean()
+                .rolling(7, min_periods=3).mean() if 'Calorias' in _dc_all.columns else pd.Series(dtype=float))
+
+    # Peso/BF actual = mediana rolling 7d das últimas 2 semanas
+    _peso_atual = float(_peso_r7.dropna().tail(14).median()) if len(_peso_r7.dropna()) >= 3 else None
+    _bf_atual   = float(_bf_r7.dropna().tail(14).median())   if len(_bf_r7.dropna()) >= 3 else None
+
+    # Calcular lag óptimo kcal → Peso/BF (testa 0, 3, 5, 7, 10, 14, 21 dias)
+    def _calc_lag_optimo(var_r7_series):
+        from scipy.stats import spearmanr as _sr
+        if len(_cal_r7.dropna()) < 15 or len(var_r7_series.dropna()) < 15:
+            return 7, None
+        best_lag, best_r = 7, 0.0
+        for lag in [0, 3, 5, 7, 10, 14, 21]:
+            cal_lagged = _cal_r7.shift(lag)
+            pair = pd.DataFrame({'cal': cal_lagged, 'var': var_r7_series}).dropna()
+            if len(pair) < 15: continue
+            r, p = _sr(pair['cal'].values, pair['var'].values)
+            if p < 0.10 and abs(r) > abs(best_r):
+                best_lag, best_r = lag, r
+        return best_lag, best_r if best_r != 0.0 else None
+
+    _lag_peso, _r_lag_peso = _calc_lag_optimo(_peso_r7)
+    _lag_bf,   _r_lag_bf   = _calc_lag_optimo(_bf_r7)
+
     # ════════════════════════════════════════════════════════════════════════
     # 🎯 MINI-CALCULADORA — usa TODO o histórico independente de filtros
     # ════════════════════════════════════════════════════════════════════════
     with st.expander("🎯 Calculadora de Metas — Peso, BF e Calorias", expanded=True):
-
-        _dc_all = dc.copy()
-        _dc_all['_w'] = _dc_all['Data'].dt.to_period('W')
-        _wk = _dc_all.groupby('_w')[['Peso','BF','Calorias','Net']].mean()
-        _wk.index = _wk.index.to_timestamp()
-        _wk = _wk.sort_index()
-
-        # ── Rolling 7 dias para suavizar flutuações diárias ───────────────
-        _peso_r7 = (_dc_all.set_index('Data')['Peso'].resample('D').mean()
-                    .rolling(7, min_periods=3).mean() if 'Peso' in _dc_all.columns else pd.Series())
-        _bf_r7   = (_dc_all.set_index('Data')['BF'].resample('D').mean()
-                    .rolling(7, min_periods=3).mean() if 'BF' in _dc_all.columns else pd.Series())
-
-        # Peso/BF actual = mediana das últimas 2 semanas com rolling 7d
-        _peso_atual = float(_peso_r7.dropna().tail(14).median()) if len(_peso_r7.dropna()) >= 3 else None
-        _bf_atual   = float(_bf_r7.dropna().tail(14).median())   if len(_bf_r7.dropna()) >= 3 else None
-
-        # ── Calcular lag óptimo kcal → Peso/BF ────────────────────────────
-        # Usa calorias rolling 7d com lag de 0 a 21 dias vs peso rolling 7d
-        # O lag com r Spearman mais forte é o lag real de resposta metabólica
-        def _calc_lag_optimo(var_col):
-            """Retorna lag_dias óptimo e o r Spearman correspondente."""
-            from scipy.stats import spearmanr as _sr
-            if 'Calorias' not in _dc_all.columns or var_col not in _dc_all.columns:
-                return 7, None
-            _d = _dc_all.set_index('Data')
-            _cal_d = _d['Calorias'].resample('D').mean().rolling(7, min_periods=3).mean()
-            _var_d = _d[var_col].resample('D').mean().rolling(7, min_periods=3).mean()
-            best_lag, best_r, best_p = 7, 0, 1.0
-            for lag in [0, 3, 5, 7, 10, 14, 21]:
-                cal_lagged = _cal_d.shift(lag)
-                pair = pd.DataFrame({'cal': cal_lagged, 'var': _var_d}).dropna()
-                if len(pair) < 15: continue
-                r, p = _sr(pair['cal'].values, pair['var'].values)
-                if p < 0.10 and abs(r) > abs(best_r):
-                    best_lag, best_r, best_p = lag, r, p
-            return best_lag, best_r if best_r != 0 else None
-
-        _lag_peso, _r_lag_peso = _calc_lag_optimo('Peso')
-        _lag_bf,   _r_lag_bf   = _calc_lag_optimo('BF')
 
         st.caption(
             "Valores actuais = **mediana rolling 7d das últimas 2 semanas** (remove flutuações de água/glicogénio). "
@@ -656,13 +653,7 @@ def tab_corporal(dc, da_full, wc=None):
         "Semanas com kJ alto têm peso transitoriamente mais alto por retenção de glicogénio/água."
     )
 
-    # Lag já calculado acima (_lag_peso, _lag_bf)
-    _d_idx = _dc_all.set_index('Data')
-
-    # Calorias rolling 7d
-    _cal_r7 = _d_idx['Calorias'].resample('D').mean().rolling(7, min_periods=3).mean() \
-              if 'Calorias' in _dc_all.columns else pd.Series()
-    # Peso/BF rolling 7d já calculados (_peso_r7, _bf_r7)
+    # _cal_r7, _peso_r7, _bf_r7, _lag_peso, _lag_bf já calculados acima
 
     # kJ semanal para estratificação
     _kj_semanal = None
