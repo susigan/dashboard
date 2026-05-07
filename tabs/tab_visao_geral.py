@@ -1276,11 +1276,14 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 _kappa_s = None
 
         # Calcular percentis REAIS do atleta e estado actual
+        # Janela: últimos 2 anos (mais representativo do atleta actual)
         if _kappa_s is not None and len(_kappa_s) >= 10:
-            # Percentis dinâmicos sobre o histórico real
-            _KAPPA_P25 = float(_kappa_s.quantile(0.25))
-            _KAPPA_P75 = float(_kappa_s.quantile(0.75))
-            _KAPPA_P87 = float(_kappa_s.quantile(0.87))
+            _kappa_2anos = _kappa_s.iloc[max(0, len(_kappa_s)-730):]  # últimos 730 dias
+            _kappa_ref   = _kappa_2anos if len(_kappa_2anos) >= 50 else _kappa_s
+
+            _KAPPA_P25 = float(_kappa_ref.quantile(0.25))
+            _KAPPA_P75 = float(_kappa_ref.quantile(0.75))
+            _KAPPA_P87 = float(_kappa_ref.quantile(0.87))
 
             _kappa_now = float(_kappa_s.dropna().iloc[-1]) if _kappa_s.notna().any() else 0.0
             _kappa_pct = float((_kappa_s < _kappa_now).mean() * 100)
@@ -2334,9 +2337,9 @@ Estes valores são específicos deste atleta. Recalibrar anualmente com novos da
 
                 for i, (kj_orig, fator) in enumerate(zip(_carga_sugerida, _factors)):
                     kj   = kj_orig
-                    data = (_hoje + pd.Timedelta(days=i+1)).strftime('%d/%m')
-                    dia  = _dias_semana[(_hoje + pd.Timedelta(days=i+1)).weekday()]
-                    nota = ''
+                    data = (_hoje + pd.Timedelta(days=i)).strftime('%d/%m')
+                    dia  = _dias_semana[(_hoje + pd.Timedelta(days=i)).weekday()]
+                    nota = '' if i > 0 else '← hoje'
 
                     # Intensidade base pelo padrão
                     if kj == 0 or fator == 0:
@@ -2357,13 +2360,14 @@ Estes valores são específicos deste atleta. Recalibrar anualmente com novos da
                         if intensidade_base == 'z1' and kj > _kj_sessao_max * 0.50:
                             intensidade_base = 'z2'  # 50% do p90 → pelo menos Z2
 
-                    # Override HIIT-Guided só para dia 1
+                    # Override HIIT-Guided só para dia 1 (hoje)
                     intensidade_final = intensidade_base
                     if i == 0:
                         if _hiit_hoje == 'Recuperação' and intensidade_base in ('z3', 'z2'):
-                            intensidade_final = 'z1'; nota = '⬇️ HRV→Rec'; kj = round(kj * 0.4, 0)
+                            intensidade_final = 'z1'; nota = '← hoje ⬇️ HRV→Rec'; kj = round(kj * 0.4, 0)
                         elif _hiit_hoje is None and intensidade_base == 'z3':
-                            intensidade_final = 'z2'; nota = '⚠️ sem HRV'; kj = round(kj * 0.75, 0)
+                            intensidade_final = 'z2'; nota = '← hoje ⚠️ sem HRV'; kj = round(kj * 0.75, 0)
+                        # nota já tem '← hoje' se não houve override
 
                     # Regra tau=2d: máximo 2 dias Z3 consecutivos
                     if intensidade_final == 'z3':
@@ -2408,7 +2412,7 @@ Estes valores são específicos deste atleta. Recalibrar anualmente com novos da
                     st.markdown(f"""
 **Hierarquia de decisão por dia:**
 
-1. **HIIT-Guided** (HRV) define a intensidade máxima permitida hoje (dia 1):
+1. **HIIT-Guided** (HRV) define a intensidade máxima permitida **hoje** (dia 1):
    - HRV → HIIT: intensidade máxima = Z3 ✅
    - HRV → Recuperação: intensidade máxima = Z1 🔴 (carga reduzida 60%)
    - Sem HRV: intensidade máxima = Z2 ⚠️
@@ -2422,6 +2426,7 @@ Estes valores são específicos deste atleta. Recalibrar anualmente com novos da
    Para os dias seguintes, o HRV-Guided real do dia deve confirmar a sugestão.
 
 **Legenda coluna "Nota":**
+- ← hoje: dia actual (sugestão para agora)
 - ⬇️ HRV→Rec: rebaixado por HRV-Guided indicar recuperação
 - ⬇️ 2×Z3 consec.: rebaixado por tau de recuperação (2d máx. de Z3 seguidos)
 - ⚠️ sem HRV: sem medição hoje, Z3 preventivamente rebaixado para Z2
