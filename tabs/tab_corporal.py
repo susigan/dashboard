@@ -211,19 +211,54 @@ def tab_corporal(dc, da_full, wc=None):
     # Encontra semanas onde Peso e BF estiveram próximos de qualquer alvo definido
     # Serve como estimativa directa N=1 sem necessidade de regressão separada
     def _lookup_historico(combined_df, peso_alvo, bf_alvo,
-                          tol_peso=1.5, tol_bf=1.5):
-        """Retorna semanas históricas onde Peso≈alvo E BF≈alvo."""
+                          tol_peso=1.5, tol_bf=1.5,
+                          lag_peso_dias=21, lag_bf_dias=21):
+        """
+        Encontra semanas históricas onde Peso≈alvo E BF≈alvo.
+        Devolve as CALORIAS e MACROS de lag_dias ANTES — ou seja,
+        o que o atleta comia quando estava a PRODUZIR aquele Peso/BF,
+        não o que comia quando já estava lá.
+        """
         if 'Peso' not in combined_df.columns or 'BF' not in combined_df.columns:
             return pd.DataFrame()
-        d = combined_df[['Peso','BF','Calorias'] +
-                         [c for c in ['Net','pct_Carb','pct_Fat','pct_Ptn',
+
+        d = combined_df[['Peso','BF'] +
+                         [c for c in ['Calorias','Net','pct_Carb','pct_Fat','pct_Ptn',
                                        'KJ_sem','Horas_total','Horas_cicl']
-                          if c in combined_df.columns]].dropna(subset=['Peso','BF'])
+                          if c in combined_df.columns]].copy()
+
+        # Calcular lag em semanas (arredondar)
+        lag_sem_peso = max(1, round(lag_peso_dias / 7))
+        lag_sem_bf   = max(1, round(lag_bf_dias   / 7))
+        lag_sem      = max(lag_sem_peso, lag_sem_bf)
+
+        # Máscara: semanas onde o estado corporal ≈ alvo
         mask = ((d['Peso'] - peso_alvo).abs() <= tol_peso) & \
                ((d['BF']   - bf_alvo).abs()   <= tol_bf)
-        return d[mask]
+        semanas_alvo = d[mask].index
 
-    # (o lookup é chamado dentro da calculadora com os alvos definidos pelo user)
+        if len(semanas_alvo) == 0:
+            return pd.DataFrame()
+
+        # Para cada semana no alvo, buscar calorias/macros de lag_sem semanas antes
+        rows_lag = []
+        cal_cols  = [c for c in ['Calorias','Net','pct_Carb','pct_Fat','pct_Ptn',
+                                  'KJ_sem','Horas_total','Horas_cicl']
+                     if c in d.columns]
+        idx_sorted = d.index.sort_values()
+
+        for sem_alvo in semanas_alvo:
+            pos = idx_sorted.get_loc(sem_alvo) if sem_alvo in idx_sorted else None
+            if pos is None or pos < lag_sem: continue
+            sem_antes = idx_sorted[pos - lag_sem]
+            row_antes = d.loc[sem_antes, cal_cols].to_dict() if sem_antes in d.index else {}
+            if row_antes and not all(pd.isna(v) for v in row_antes.values()):
+                row_antes['_sem_alvo']  = sem_alvo
+                row_antes['_Peso_real'] = d.loc[sem_alvo, 'Peso']
+                row_antes['_BF_real']   = d.loc[sem_alvo, 'BF']
+                rows_lag.append(row_antes)
+
+        return pd.DataFrame(rows_lag) if rows_lag else pd.DataFrame()
     # 🎯 CALCULADORA INTEGRADA — Peso + BF + Calorias + Macros
     # ════════════════════════════════════════════════════════════════════════
     with st.expander("🎯 Calculadora de Metas — Peso, BF, Calorias e Macros", expanded=True):
@@ -363,32 +398,40 @@ def tab_corporal(dc, da_full, wc=None):
 
         # ── Lookup histórico ──────────────────────────────────────────────
         _lookup = _lookup_historico(combined, _peso_alvo, _bf_alvo,
-                                     tol_peso=1.5, tol_bf=1.5)
-        # Alargar tolerância se poucos registos
+                                     tol_peso=1.5, tol_bf=1.5,
+                                     lag_peso_dias=_lag_peso, lag_bf_dias=_lag_bf)
         if len(_lookup) < 3:
             _lookup = _lookup_historico(combined, _peso_alvo, _bf_alvo,
-                                         tol_peso=2.5, tol_bf=2.5)
+                                         tol_peso=2.5, tol_bf=2.5,
+                                         lag_peso_dias=_lag_peso, lag_bf_dias=_lag_bf)
             _tol_usada = "±2.5"
         else:
             _tol_usada = "±1.5"
 
+        _lag_sem_usado = max(1, round(max(_lag_peso, _lag_bf) / 7))
+
         _cal_lookup = None
+        _pct_c_lookup = _pct_f_lookup = _pct_p_lookup = None
+        _kj_lookup = _h_lookup = None
         _lookup_info = ""
         if len(_lookup) >= 3 and 'Calorias' in _lookup.columns:
             _cal_lookup     = float(_lookup['Calorias'].median())
             _cal_lookup_std = float(_lookup['Calorias'].std())
-            _kj_lookup      = float(_lookup['KJ_sem'].median())  if 'KJ_sem'      in _lookup.columns else None
+            _kj_lookup      = float(_lookup['KJ_sem'].median())      if 'KJ_sem'      in _lookup.columns else None
             _h_lookup       = float(_lookup['Horas_total'].median()) if 'Horas_total' in _lookup.columns else None
-            _pct_c_lookup   = float(_lookup['pct_Carb'].median()) if 'pct_Carb' in _lookup.columns else None
-            _pct_f_lookup   = float(_lookup['pct_Fat'].median())  if 'pct_Fat'  in _lookup.columns else None
-            _pct_p_lookup   = float(_lookup['pct_Ptn'].median())  if 'pct_Ptn'  in _lookup.columns else None
+            _pct_c_lookup   = float(_lookup['pct_Carb'].median())    if 'pct_Carb'    in _lookup.columns else None
+            _pct_f_lookup   = float(_lookup['pct_Fat'].median())     if 'pct_Fat'     in _lookup.columns else None
+            _pct_p_lookup   = float(_lookup['pct_Ptn'].median())     if 'pct_Ptn'     in _lookup.columns else None
             _lookup_info = (
-                f"✅ **Lookup histórico**: {len(_lookup)} semanas com "
-                f"Peso {_peso_alvo:.1f}±{_tol_usada}kg e BF {_bf_alvo:.1f}±{_tol_usada}%")
+                f"✅ **Lookup com lag ({_lag_sem_usado} semana(s))**: "
+                f"{len(_lookup)} semanas históricas onde "
+                f"Peso≈{_peso_alvo:.1f}kg e BF≈{_bf_alvo:.1f}% (tol {_tol_usada}). "
+                f"Calorias = o que o atleta comia **{_lag_sem_usado} semana(s) antes** "
+                f"de atingir esse estado corporal.")
         else:
             _lookup_info = (
-                f"⚠️ **Sem semanas históricas** com Peso≈{_peso_alvo:.1f}kg e BF≈{_bf_alvo:.1f}% "
-                f"(tolerância ±2.5). A usar regressão como estimativa.")
+                f"⚠️ Sem semanas históricas com Peso≈{_peso_alvo:.1f}kg e BF≈{_bf_alvo:.1f}% "
+                f"(tol ±2.5). A usar regressão com lag={_lag_peso}d (Peso) / {_lag_bf}d (BF).")
 
         st.caption(_lookup_info)
 
