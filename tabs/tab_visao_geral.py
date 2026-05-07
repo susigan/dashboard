@@ -2095,11 +2095,11 @@ Estes valores são específicos deste atleta. Recalibrar anualmente com novos da
 
                 # Indicador do estado HRV actual
                 if _hiit_hoje == 'HIIT':
-                    st.success(f"🟢 HRV-Guided hoje: **HIIT permitido** — dia 1 pode ser Z3")
+                    st.success("🟢 HRV-Guided hoje: **HIIT permitido** — Z3 e Z2 disponíveis (padrão decide)")
                 elif _hiit_hoje == 'Recuperação':
-                    st.warning(f"🔴 HRV-Guided hoje: **Recuperação** — dia 1 limitado a Z1/Descanso")
+                    st.warning("🔴 HRV-Guided hoje: **Recuperação** — Z3 bloqueado | Z2 com carga -30% | Z1/Descanso livres")
                 else:
-                    st.info("⬜ HRV-Guided: sem dados de HRV hoje — assumindo neutro (Z2 máx.)")
+                    st.info("⬜ HRV-Guided: sem dados — Z3 bloqueado preventivamente, Z2 com carga -25%")
 
                 # Target IM configurável
                 _im_target = st.slider(
@@ -2337,58 +2337,76 @@ Estes valores são específicos deste atleta. Recalibrar anualmente com novos da
 
                 for i, (kj_orig, fator) in enumerate(zip(_carga_sugerida, _factors)):
                     kj   = kj_orig
+                    # i=0 = hoje, i=1 = amanhã, ...
                     data = (_hoje + pd.Timedelta(days=i)).strftime('%d/%m')
                     dia  = _dias_semana[(_hoje + pd.Timedelta(days=i)).weekday()]
-                    nota = '' if i > 0 else '← hoje'
+                    nota = '← hoje' if i == 0 else ''
 
-                    # Intensidade base pelo padrão
+                    # Intensidade base pelo padrão de distribuição
                     if kj == 0 or fator == 0:
                         intensidade_base = 'descanso'
                     else:
                         rel = fator / (sum(f for f in _factors if f > 0) /
                                        sum(1 for f in _factors if f > 0))
-                        # Threshold primário por factor relativo
-                        # Threshold secundário por kJ absoluto:
-                        # se kJ > p75 das sessões históricas → no mínimo Z2
                         if rel >= 1.3:
                             intensidade_base = 'z3'
-                        elif rel >= 0.6:  # baixado de 0.8 para 0.6
+                        elif rel >= 0.6:
                             intensidade_base = 'z2'
                         else:
                             intensidade_base = 'z1'
                         # Override por kJ absoluto — sessões pesadas não são Z1
                         if intensidade_base == 'z1' and kj > _kj_sessao_max * 0.50:
-                            intensidade_base = 'z2'  # 50% do p90 → pelo menos Z2
+                            intensidade_base = 'z2'
 
-                    # Override HIIT-Guided só para dia 1 (hoje)
+                    # ── HIIT-Guided: tecto de intensidade, não substituição fixa ──
+                    # HIIT  → Z3 e Z2 permitidos (padrão decide qual)
+                    # Rec   → Z1, Z2 ou Descanso permitidos (Z3 bloqueado)
+                    # None  → Z2 máximo (Z3 bloqueado por precaução)
                     intensidade_final = intensidade_base
                     if i == 0:
-                        if _hiit_hoje == 'Recuperação' and intensidade_base in ('z3', 'z2'):
-                            intensidade_final = 'z1'; nota = '← hoje ⬇️ HRV→Rec'; kj = round(kj * 0.4, 0)
-                        elif _hiit_hoje is None and intensidade_base == 'z3':
-                            intensidade_final = 'z2'; nota = '← hoje ⚠️ sem HRV'; kj = round(kj * 0.75, 0)
-                        # nota já tem '← hoje' se não houve override
+                        if _hiit_hoje == 'Recuperação':
+                            if intensidade_base == 'z3':
+                                # Z3 → Z1 (redução clara por recuperação)
+                                intensidade_final = 'z1'
+                                nota = '← hoje ⬇️ HRV→Rec'
+                                kj   = round(kj * 0.5, 0)
+                            elif intensidade_base == 'z2':
+                                # Z2 pode manter-se em Recuperação (Z2 leve é permitido)
+                                # Mas reduz a carga
+                                intensidade_final = 'z2'
+                                nota = '← hoje ⬇️ HRV→Rec (Z2 reduzido)'
+                                kj   = round(kj * 0.7, 0)
+                            # z1 e descanso: mantêm-se sem alteração
+                        elif _hiit_hoje is None:
+                            if intensidade_base == 'z3':
+                                intensidade_final = 'z2'
+                                nota = '← hoje ⚠️ sem HRV'
+                                kj   = round(kj * 0.75, 0)
+                        # HIIT: padrão mantém-se — Z3, Z2 ou Z1 conforme o padrão decidiu
 
                     # Regra tau=2d: máximo 2 dias Z3 consecutivos
                     if intensidade_final == 'z3':
                         if _hiit_consecutivos >= 2:
-                            intensidade_final = 'z2'; nota = '⬇️ 2×Z3 consec.'; kj = round(kj * 0.75, 0); _hiit_consecutivos = 0
+                            intensidade_final = 'z2'
+                            kj = round(kj * 0.75, 0)
+                            nota = (nota + ' ⬇️ 2×Z3' if nota else '⬇️ 2×Z3 consec.')
+                            _hiit_consecutivos = 0
                         else:
                             _hiit_consecutivos += 1
                     elif intensidade_final in ('z1', 'descanso'):
                         _hiit_consecutivos = 0
 
-                    # Tipo/RPE/duração
+                    # Tipo / RPE / duração
                     if intensidade_final == 'descanso' or kj == 0:
                         tipo = '🔵 Descanso'; dur = '—'; rpe = '—'; kj = 0.0
                     elif intensidade_final == 'z3':
-                        tipo = '🔴 HIIT / Z3'; rpe_n = 8   # Z3 = RPE≥7 — usar 8 como centro da zona
+                        tipo = '🔴 HIIT / Z3'; rpe_n = 8
                         dur = _kj_to_hms(kj, _kj_z3); rpe = str(rpe_n)
                     elif intensidade_final == 'z2':
-                        tipo = '🟡 Moderado Z2'; rpe_n = 5  # Z2 = RPE 5-6
+                        tipo = '🟡 Moderado Z2'; rpe_n = 5
                         dur = _kj_to_hms(kj, _kj_z2); rpe = str(rpe_n)
                     else:
-                        tipo = '🟢 Leve Z1'; rpe_n = 3      # Z1 = RPE 3-4
+                        tipo = '🟢 Leve Z1'; rpe_n = 3
                         dur = _kj_to_hms(kj, _kj_z1); rpe = str(rpe_n)
 
                     # IM acumulado — usar simulação pré-calculada
@@ -2412,10 +2430,10 @@ Estes valores são específicos deste atleta. Recalibrar anualmente com novos da
                     st.markdown(f"""
 **Hierarquia de decisão por dia:**
 
-1. **HIIT-Guided** (HRV) define a intensidade máxima permitida **hoje** (dia 1):
-   - HRV → HIIT: intensidade máxima = Z3 ✅
-   - HRV → Recuperação: intensidade máxima = Z1 🔴 (carga reduzida 60%)
-   - Sem HRV: intensidade máxima = Z2 ⚠️
+1. **HIIT-Guided** (HRV) define o **tecto** de intensidade hoje (dia 1) — não fixa a zona:
+   - HRV → HIIT: Z3 e Z2 permitidos — o **padrão** decide qual usar ✅
+   - HRV → Recuperação: Z3 bloqueado; Z2 permitido com carga reduzida (-30%); Z1 e Descanso livres 🔴
+   - Sem HRV: Z3 bloqueado preventivamente; Z2 com carga -25% ⚠️
 
 2. **Padrão de monotonia** distribui os 7 dias para atingir IM={_im_target:.1f}
 
@@ -2428,7 +2446,7 @@ Estes valores são específicos deste atleta. Recalibrar anualmente com novos da
 **Legenda coluna "Nota":**
 - ← hoje: dia actual (sugestão para agora)
 - ⬇️ HRV→Rec: rebaixado por HRV-Guided indicar recuperação
-- ⬇️ 2×Z3 consec.: rebaixado por tau de recuperação (2d máx. de Z3 seguidos)
+- ⬇️ 2×Z3: rebaixado por tau de recuperação (2d máx. de Z3 seguidos)
 - ⚠️ sem HRV: sem medição hoje, Z3 preventivamente rebaixado para Z2
                     """)
                 st.info(
