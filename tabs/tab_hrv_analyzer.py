@@ -2451,7 +2451,6 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                 _runner_results = []
                 _summary_rows   = []
 
-                # Períodos — inclui "todo histórico" para validar directional 83-96%
                 _periodos_run = [
                     (180,   "180 dias"),
                     (365,   "1 ano"),
@@ -2460,15 +2459,19 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                     (99999, "Todo histórico"),
                 ]
 
-                # Grids — todos os parâmetros testados automaticamente, sem escolha do utilizador
-                _LAG_GRID     = [7, 10, 14, 21, 28, 35]
-                _CLUSTER_GRID = [3, 4, 5, 6, 7]
-                _DIR_GRID     = [5, 7, 10, 14]
-                _Z_GRID       = [1.0, 1.5, 2.0]
-                _FP_GRID      = [3, 5, 7, 14]           # dias antes fingerprint
-                _DR_LAG_GRID  = [0, 3, 5, 7, 10, 14, 21, 28]
-                _DR_VARS      = ['load','kj','atl','pct_z3','mono_7d',
-                                 'strain_7d','load_28d','freq_7d']
+                # Grids — testados automaticamente, sem escolha do utilizador
+                _LAG_GRID      = [7, 10, 14, 21, 28, 35]
+                _LAG_MAX_GRID  = [14, 21, 28, 35]   # lag máximo a testar na lag correlation
+                _CLUSTER_GRID  = [3, 4, 5, 6, 7]
+                _DIR_GRID      = [5, 7, 10, 14]
+                _Z_GRID        = [1.0, 1.5, 2.0]
+                _FP_GRID       = [3, 5, 7, 14]
+                _DR_LAG_GRID   = [0, 3, 5, 7, 10, 14, 21, 28]
+                _DR_VARS       = ['load','kj','atl','pct_z3','mono_7d',
+                                  'strain_7d','load_28d','freq_7d']
+                # Variáveis HRV alvo a testar — todas as disponíveis em sig_hrv
+                _HRV_ALVO_GRID = [v for v in ['hrv','ln_hrv','hrv_norm','hrv_z28']
+                                  if v in sig_hrv.columns]
 
                 _hoje_ar = pd.Timestamp.now().normalize()
 
@@ -2518,79 +2521,116 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                     _hrv_vals_ri  = _hrv_vals.reindex(_date_range_p)
                     _trn_idx_ri   = _trn_idx.reindex(_date_range_p)
 
-                    # ── A. Lag correlations: testar todos os lags do grid ──────────
+                    # ── A. Lag correlations: HRV alvo × lag máximo × variáveis treino
+                    # Testa todas as variáveis HRV alvo disponíveis ×
+                    # todos os lag máximos do grid × todas as variáveis de treino
                     _lag_vars = [c for c in _trn_idx_ri.columns
                                  if _trn_idx_ri[c].notna().sum() >= 20]
-                    _best_lag_por_var = {}  # var → {lag, r_p, r_s, r_abs}
+                    _best_lag_por_var = {}  # sumário — hrv principal, lag máx maior
 
-                    for _var in _lag_vars:
-                        x_full = pd.to_numeric(_trn_idx_ri[_var], errors='coerce')
-                        best_lag_v = {'lag': 0, 'r_pearson': 0, 'r_spearman': 0, 'r_abs': 0}
-                        for _lag in range(0, max(_LAG_GRID) + 1):
-                            x_lag = x_full.shift(_lag)
-                            df_xy = pd.DataFrame({'x': x_lag, 'y': _hrv_vals_ri}).dropna()
-                            if len(df_xy) < 15: continue
-                            try:
-                                rp, pp = _pr(df_xy['x'].values, df_xy['y'].values)
-                                rs, ps = _sr(df_xy['x'].values, df_xy['y'].values)
-                                if abs(rp) > abs(best_lag_v['r_abs']):
-                                    best_lag_v = {
-                                        'lag': _lag,
-                                        'r_pearson':  round(rp, 4),
-                                        'r_spearman': round(rs, 4),
-                                        'p_pearson':  round(pp, 4),
-                                        'p_spearman': round(ps, 4),
-                                        'r_abs':      round(abs(rp), 4),
-                                        'n':          len(df_xy),
-                                    }
-                            except Exception:
-                                pass
-                        if best_lag_v['r_abs'] > 0:
-                            _best_lag_por_var[_var] = best_lag_v
-                            _runner_results.append({
-                                'periodo':   _plabel,
-                                'analise':   'lag_correlation',
-                                'variavel':  _var,
-                                'param_nome':'lag_optimo_dias',
-                                'param_val': best_lag_v['lag'],
-                                'r_pearson': best_lag_v['r_pearson'],
-                                'r_spearman':best_lag_v['r_spearman'],
-                                'p_pearson': best_lag_v.get('p_pearson', None),
-                                'n':         best_lag_v.get('n', None),
-                                'r_abs':     best_lag_v['r_abs'],
-                                'nota':      '',
-                            })
+                    # Construir séries HRV alvo filtradas para este período
+                    _hrv_p_df = _filtrar_por_data(sig_hrv, _cutoff)
+                    _hrv_alvo_series = {}
+                    for _hrv_alvo in _HRV_ALVO_GRID:
+                        if _hrv_alvo not in _hrv_p_df.columns: continue
+                        if 'Data' in _hrv_p_df.columns:
+                            _s = pd.Series(
+                                pd.to_numeric(_hrv_p_df[_hrv_alvo].values, errors='coerce'),
+                                index=pd.to_datetime(_hrv_p_df['Data'])
+                            )
+                        else:
+                            _s = pd.to_numeric(_hrv_p_df[_hrv_alvo], errors='coerce')
+                        _hrv_alvo_series[_hrv_alvo] = _s.reindex(_date_range_p)
+
+                    for _hrv_alvo, _hrv_alvo_ri in _hrv_alvo_series.items():
+                        for _lmax in _LAG_MAX_GRID:
+                            for _var in _lag_vars:
+                                x_full = pd.to_numeric(_trn_idx_ri[_var], errors='coerce')
+                                best_v = {'lag': 0, 'r_pearson': 0, 'r_spearman': 0,
+                                          'r_abs': 0, 'n': 0}
+                                for _lag in range(0, _lmax + 1):
+                                    df_xy = pd.DataFrame(
+                                        {'x': x_full.shift(_lag), 'y': _hrv_alvo_ri}
+                                    ).dropna()
+                                    if len(df_xy) < 15: continue
+                                    try:
+                                        rp, pp = _pr(df_xy['x'].values, df_xy['y'].values)
+                                        rs, ps = _sr(df_xy['x'].values, df_xy['y'].values)
+                                        if abs(rp) > abs(best_v['r_abs']):
+                                            best_v = {
+                                                'lag':        _lag,
+                                                'r_pearson':  round(rp, 4),
+                                                'r_spearman': round(rs, 4),
+                                                'p_pearson':  round(pp, 4),
+                                                'r_abs':      round(abs(rp), 4),
+                                                'n':          len(df_xy),
+                                            }
+                                    except Exception:
+                                        pass
+                                if best_v['r_abs'] > 0:
+                                    # Guardar para sumário (só hrv principal + lag_max maior)
+                                    if (_hrv_alvo == _HRV_ALVO_GRID[0]
+                                            and _lmax == max(_LAG_MAX_GRID)):
+                                        _best_lag_por_var[_var] = best_v
+                                    _runner_results.append({
+                                        'periodo':          _plabel,
+                                        'analise':          'lag_correlation',
+                                        'variavel':         _var,
+                                        'hrv_alvo':         _hrv_alvo,
+                                        'lag_max_testado':  _lmax,
+                                        'param_nome':       'lag_optimo_dias',
+                                        'param_val':        best_v['lag'],
+                                        'r_pearson':        best_v['r_pearson'],
+                                        'r_spearman':       best_v['r_spearman'],
+                                        'p_pearson':        best_v.get('p_pearson'),
+                                        'n':                best_v.get('n'),
+                                        'r_abs':            best_v['r_abs'],
+                                        'nota':             '',
+                                    })
 
                     _prog.progress(20)
 
-                    # ── B. Lag máximo óptimo: qual grid value maximiza r² médio ──
-                    _lag_max_scores = {}
-                    for _lmax in _LAG_GRID:
-                        _scores = []
-                        for _var in list(_best_lag_por_var.keys())[:6]:
-                            x_full = pd.to_numeric(_trn_idx_ri.get(_var, pd.Series(dtype=float)), errors='coerce')
-                            best_r  = 0
-                            for _lag in range(0, _lmax + 1):
-                                x_lag = x_full.shift(_lag)
-                                df_xy = pd.DataFrame({'x': x_lag, 'y': _hrv_vals_ri}).dropna()
-                                if len(df_xy) < 15: continue
-                                try:
-                                    rp, _ = _pr(df_xy['x'].values, df_xy['y'].values)
-                                    best_r = max(best_r, abs(rp))
-                                except Exception:
-                                    pass
-                            _scores.append(best_r)
-                        _lag_max_scores[_lmax] = float(np.mean(_scores)) if _scores else 0
-                    _best_lmax = max(_lag_max_scores, key=_lag_max_scores.get)
-                    _runner_results.append({
-                        'periodo': _plabel, 'analise': 'lag_max_optimo',
-                        'variavel': 'global', 'param_nome': 'lag_max_dias',
-                        'param_val': _best_lmax,
-                        'r_pearson': round(_lag_max_scores[_best_lmax], 4),
-                        'r_spearman': None, 'p_pearson': None, 'n': _N_hrv,
-                        'r_abs': round(_lag_max_scores[_best_lmax], 4),
-                        'nota': f"Scores por lag_max: {_lag_max_scores}",
-                    })
+                    # ── B. Lag máximo óptimo por HRV alvo ─────────────────────────
+                    # Para cada HRV alvo, qual lag máximo maximiza o r² médio
+                    for _hrv_alvo_b, _hrv_ri_b in _hrv_alvo_series.items():
+                        _lag_max_scores_b = {}
+                        for _lmax in _LAG_MAX_GRID:
+                            _scores_b = []
+                            for _var in list(_best_lag_por_var.keys())[:6]:
+                                x_full = pd.to_numeric(
+                                    _trn_idx_ri.get(_var, pd.Series(dtype=float)), errors='coerce')
+                                best_r = 0
+                                for _lag in range(0, _lmax + 1):
+                                    df_xy = pd.DataFrame(
+                                        {'x': x_full.shift(_lag), 'y': _hrv_ri_b}).dropna()
+                                    if len(df_xy) < 15: continue
+                                    try:
+                                        rp, _ = _pr(df_xy['x'].values, df_xy['y'].values)
+                                        best_r = max(best_r, abs(rp))
+                                    except Exception:
+                                        pass
+                                _scores_b.append(best_r)
+                            _lag_max_scores_b[_lmax] = float(np.mean(_scores_b)) if _scores_b else 0
+                        _best_lmax_b = max(_lag_max_scores_b, key=_lag_max_scores_b.get)
+                        _runner_results.append({
+                            'periodo':    _plabel,
+                            'analise':    'lag_max_optimo',
+                            'variavel':   'global',
+                            'hrv_alvo':   _hrv_alvo_b,
+                            'lag_max_testado': None,
+                            'param_nome': 'lag_max_dias',
+                            'param_val':  _best_lmax_b,
+                            'r_pearson':  round(_lag_max_scores_b[_best_lmax_b], 4),
+                            'r_spearman': None, 'p_pearson': None, 'n': _N_hrv,
+                            'r_abs':      round(_lag_max_scores_b[_best_lmax_b], 4),
+                            'nota':       f"Scores por lag_max: {_lag_max_scores_b}",
+                        })
+                    # Para sumário: usar hrv principal
+                    _hrv_ri_principal = _hrv_alvo_series.get(_HRV_ALVO_GRID[0], _hrv_vals_ri)
+                    _lag_max_scores_p = {k: v for k, v in _lag_max_scores_b.items()
+                                         if _hrv_alvo_b == _HRV_ALVO_GRID[0]} \
+                        if _HRV_ALVO_GRID else {28: 0}
+                    _best_lmax = _best_lmax_b if _hrv_alvo_b == _HRV_ALVO_GRID[0] else 28
 
                     _prog.progress(40)
 
@@ -2627,47 +2667,75 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                     _prog.progress(55)
 
                     # ── D. Directional: qual janela maximiza consistência ─────────
-                    _dir_scores   = {}
+                    # Critério correcto: HRV médio dos N dias APÓS evento
+                    #                   vs HRV médio dos N dias ANTES do evento (baseline)
+                    # Responde a: "após carga elevada, o HRV dos dias seguintes foi
+                    # acima ou abaixo do baseline pré-evento?"
+                    # N por janela pode diferir: eventos muito próximos podem ser excluídos
+                    # se a janela pós-evento se sobrepõe ao próximo evento
+                    _dir_scores    = {}
                     _dir_n_eventos = {}
                     if 'atl' in _trn_idx_ri.columns:
-                        _atl = pd.to_numeric(_trn_idx_ri.get('atl', pd.Series(dtype=float)), errors='coerce')
-                        _ctl = (pd.to_numeric(_trn_idx_ri.get('ctl', pd.Series(dtype=float)), errors='coerce')
-                                if 'ctl' in _trn_idx_ri.columns else None)
+                        _atl  = pd.to_numeric(_trn_idx_ri.get('atl', pd.Series(dtype=float)), errors='coerce')
+                        _ctl  = (pd.to_numeric(_trn_idx_ri.get('ctl', pd.Series(dtype=float)), errors='coerce')
+                                 if 'ctl' in _trn_idx_ri.columns else None)
                         _hrv_s = _hrv_vals_ri.reindex(_atl.index, method='nearest')
+
+                        # Identificar todos os eventos (ATL > CTL×1.2)
+                        _event_dates = []
+                        for _dt in _atl.index:
+                            if _ctl is not None:
+                                _cv = float(_ctl.get(_dt, 0) or 0)
+                                _av = float(_atl.get(_dt, 0) or 0)
+                                if _cv > 0 and _av / _cv > 1.2:
+                                    _event_dates.append(_dt)
+                            else:
+                                if float(_atl.get(_dt, 0) or 0) >= 25:
+                                    _event_dates.append(_dt)
+
                         for _jdir in _DIR_GRID:
                             _ok = 0; _total = 0
-                            for _dt in _atl.index:
-                                if _ctl is not None:
-                                    _ctl_val = float(_ctl.get(_dt, 0) or 0)
-                                    _atl_val = float(_atl.get(_dt, 0) or 0)
-                                    if _ctl_val <= 0 or _atl_val / _ctl_val <= 1.2: continue
-                                else:
-                                    if float(_atl.get(_dt, 0) or 0) < 25: continue
-                                _hrv_now = float(_hrv_s.get(_dt, np.nan) or np.nan)
-                                _hrv_future = [float(_hrv_s.get(
-                                    _dt + pd.Timedelta(days=k), np.nan) or np.nan)
-                                    for k in range(1, _jdir + 1)]
-                                _hrv_future = [v for v in _hrv_future if np.isfinite(v)]
-                                if not _hrv_future or not np.isfinite(_hrv_now): continue
+                            for _i_ev, _dt in enumerate(_event_dates):
+                                # Baseline = média HRV dos _jdir dias ANTES do evento
+                                _pre_vals = [
+                                    float(_hrv_s.get(_dt - pd.Timedelta(days=k), np.nan) or np.nan)
+                                    for k in range(1, _jdir + 1)
+                                ]
+                                _pre_vals = [v for v in _pre_vals if np.isfinite(v)]
+                                if len(_pre_vals) < max(1, _jdir // 2): continue  # mín. metade da janela
+
+                                # Outcome = média HRV dos _jdir dias APÓS o evento
+                                _fut_vals = [
+                                    float(_hrv_s.get(_dt + pd.Timedelta(days=k), np.nan) or np.nan)
+                                    for k in range(1, _jdir + 1)
+                                ]
+                                _fut_vals = [v for v in _fut_vals if np.isfinite(v)]
+                                if len(_fut_vals) < max(1, _jdir // 2): continue
+
+                                _hrv_baseline = float(np.mean(_pre_vals))
+                                _hrv_outcome  = float(np.mean(_fut_vals))
                                 _total += 1
-                                if np.mean(_hrv_future) > _hrv_now: _ok += 1
-                            _dir_scores[_jdir]    = round(_ok/_total, 4) if _total >= 5 else None
+                                if _hrv_outcome > _hrv_baseline: _ok += 1
+
+                            _dir_scores[_jdir]    = round(_ok / _total, 4) if _total >= 5 else None
                             _dir_n_eventos[_jdir] = _total
 
-                    _valid_dir = {k: v for k, v in _dir_scores.items() if v is not None}
-                    _best_jdir = (max(_valid_dir, key=lambda k: abs(_valid_dir[k] - 0.5))
-                                  if _valid_dir else 10)
+                    _valid_dir  = {k: v for k, v in _dir_scores.items() if v is not None}
+                    _best_jdir  = (max(_valid_dir, key=lambda k: abs(_valid_dir[k] - 0.5))
+                                   if _valid_dir else 10)
                     _best_n_dir = _dir_n_eventos.get(_best_jdir, 0)
                     _runner_results.append({
-                        'periodo': _plabel, 'analise': 'directional_janela',
-                        'variavel': 'Carga muito elevada (ATL>CTL×1.2)',
+                        'periodo':    _plabel,
+                        'analise':    'directional_janela',
+                        'variavel':   'Carga muito elevada (ATL>CTL×1.2)',
                         'param_nome': 'janela_outcome_dias',
-                        'param_val': _best_jdir,
-                        'r_pearson': None, 'r_spearman': None, 'p_pearson': None,
-                        'n': _best_n_dir,
-                        'r_abs': round(abs(_valid_dir.get(_best_jdir, 0.5) - 0.5), 4),
-                        'nota': (f"Consistência: {_valid_dir} | "
-                                 f"N eventos por janela: {_dir_n_eventos}"),
+                        'param_val':  _best_jdir,
+                        'r_pearson':  None, 'r_spearman': None, 'p_pearson': None,
+                        'n':          _best_n_dir,
+                        'r_abs':      round(abs(_valid_dir.get(_best_jdir, 0.5) - 0.5), 4),
+                        'nota':       (f"Critério: HRV(pós N dias) vs HRV(pré N dias baseline) | "
+                                       f"Consistência: {_valid_dir} | "
+                                       f"N eventos por janela: {_dir_n_eventos}"),
                     })
 
                     _prog.progress(65)
