@@ -2474,33 +2474,58 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                     st.markdown(f"**▶ Período: {_plabel}**")
                     _prog = st.progress(0)
 
-                    # Filtrar dados para este período
+                    # Filtrar dados para este período — Data é coluna, não índice
                     _cutoff = _hoje_ar - pd.Timedelta(days=_ndias)
-                    _hrv_p  = sig_hrv[sig_hrv.index >= _cutoff].copy() \
-                              if isinstance(sig_hrv.index, pd.DatetimeIndex) \
-                              else sig_hrv[pd.to_datetime(sig_hrv.index) >= _cutoff].copy()
-                    _trn_p  = sig_train[sig_train.index >= _cutoff].copy() \
-                              if isinstance(sig_train.index, pd.DatetimeIndex) \
-                              else sig_train[pd.to_datetime(sig_train.index) >= _cutoff].copy()
+
+                    # sig_hrv e sig_train têm 'Data' como coluna normal
+                    def _filtrar_por_data(df_in, cutoff):
+                        df_c = df_in.copy()
+                        if 'Data' in df_c.columns:
+                            df_c['Data'] = pd.to_datetime(df_c['Data'])
+                            return df_c[df_c['Data'] >= cutoff].reset_index(drop=True)
+                        # Fallback: tentar índice
+                        try:
+                            idx = pd.to_datetime(df_c.index)
+                            return df_c[idx >= cutoff]
+                        except Exception:
+                            return df_c
+
+                    _hrv_p  = _filtrar_por_data(sig_hrv, _cutoff)
+                    _trn_p  = _filtrar_por_data(sig_train, _cutoff)
 
                     if len(_hrv_p) < 30:
                         st.warning(f"  Dados insuficientes para {_plabel} (N={len(_hrv_p)}).")
                         continue
 
-                    _hrv_vals = pd.to_numeric(_hrv_p.iloc[:, 0], errors='coerce').dropna()
+                    # Construir série HRV indexada por Data para correlações com shift
+                    _hrv_col = 'hrv' if 'hrv' in _hrv_p.columns else _hrv_p.columns[0]
+                    _hrv_series = pd.to_numeric(_hrv_p[_hrv_col], errors='coerce')
+                    if 'Data' in _hrv_p.columns:
+                        _hrv_series.index = pd.to_datetime(_hrv_p['Data'])
+                    _hrv_vals = _hrv_series.dropna()
                     _N_hrv    = len(_hrv_vals)
 
+                    # Construir série de treino indexada por Data
+                    if 'Data' in _trn_p.columns:
+                        _trn_idx = _trn_p.set_index(pd.to_datetime(_trn_p['Data'])).drop(columns=['Data'])
+                    else:
+                        _trn_idx = _trn_p.copy()
+                    # Alinhar índice ao mesmo range que hrv
+                    _date_range_p = pd.date_range(_cutoff, _hoje_ar, freq='D')
+                    _hrv_vals_ri  = _hrv_vals.reindex(_date_range_p)
+                    _trn_idx_ri   = _trn_idx.reindex(_date_range_p)
+
                     # ── A. Lag correlations: testar todos os lags do grid ──────────
-                    _lag_vars = [c for c in _trn_p.columns
-                                 if _trn_p[c].notna().sum() >= 20]
+                    _lag_vars = [c for c in _trn_idx_ri.columns
+                                 if _trn_idx_ri[c].notna().sum() >= 20]
                     _best_lag_por_var = {}  # var → {lag, r_p, r_s, r_abs}
 
                     for _var in _lag_vars:
-                        x_full = pd.to_numeric(_trn_p[_var], errors='coerce')
+                        x_full = pd.to_numeric(_trn_idx_ri[_var], errors='coerce')
                         best_lag_v = {'lag': 0, 'r_pearson': 0, 'r_spearman': 0, 'r_abs': 0}
                         for _lag in range(0, max(_LAG_GRID) + 1):
                             x_lag = x_full.shift(_lag)
-                            df_xy = pd.DataFrame({'x': x_lag, 'y': _hrv_vals}).dropna()
+                            df_xy = pd.DataFrame({'x': x_lag, 'y': _hrv_vals_ri}).dropna()
                             if len(df_xy) < 15: continue
                             try:
                                 rp, pp = _pr(df_xy['x'].values, df_xy['y'].values)
@@ -2539,12 +2564,12 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                     _lag_max_scores = {}
                     for _lmax in _LAG_GRID:
                         _scores = []
-                        for _var in list(_best_lag_por_var.keys())[:6]:  # top 6 vars
-                            x_full = pd.to_numeric(_trn_p.get(_var, pd.Series()), errors='coerce')
+                        for _var in list(_best_lag_por_var.keys())[:6]:
+                            x_full = pd.to_numeric(_trn_idx_ri.get(_var, pd.Series(dtype=float)), errors='coerce')
                             best_r  = 0
                             for _lag in range(0, _lmax + 1):
                                 x_lag = x_full.shift(_lag)
-                                df_xy = pd.DataFrame({'x': x_lag, 'y': _hrv_vals}).dropna()
+                                df_xy = pd.DataFrame({'x': x_lag, 'y': _hrv_vals_ri}).dropna()
                                 if len(df_xy) < 15: continue
                                 try:
                                     rp, _ = _pr(df_xy['x'].values, df_xy['y'].values)
@@ -2567,8 +2592,8 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                     _prog.progress(40)
 
                     # ── C. Clustering: qual n_clusters tem menor Davies-Bouldin ──
-                    _wk_cols = [c for c in _trn_p.columns if _trn_p[c].notna().sum() >= 10]
-                    _wk_data = _trn_p[_wk_cols].resample('W').mean().dropna(how='all')
+                    _wk_cols = [c for c in _trn_idx_ri.columns if _trn_idx_ri[c].notna().sum() >= 10]
+                    _wk_data = _trn_idx_ri[_wk_cols].resample('W').mean().dropna(how='all')
                     _wk_data = _wk_data.fillna(_wk_data.median())
                     _best_nc = 4; _best_db = 9999
                     _cluster_scores = {}
@@ -2601,12 +2626,11 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                     # ── D. Directional: qual janela maximiza consistência ─────────
                     _dir_scores = {}
                     for _jdir in _DIR_GRID:
-                        # "Carga muito elevada" → HRV melhora nos próximos _jdir dias
-                        if 'atl' not in _trn_p.columns: break
-                        _atl = pd.to_numeric(_trn_p.get('atl', pd.Series()), errors='coerce')
-                        _ctl = pd.to_numeric(_trn_p.get('ctl', pd.Series()), errors='coerce') \
-                               if 'ctl' in _trn_p.columns else None
-                        _hrv_s = _hrv_vals.reindex(_atl.index, method='nearest')
+                        if 'atl' not in _trn_idx_ri.columns: break
+                        _atl = pd.to_numeric(_trn_idx_ri.get('atl', pd.Series(dtype=float)), errors='coerce')
+                        _ctl = pd.to_numeric(_trn_idx_ri.get('ctl', pd.Series(dtype=float)), errors='coerce') \
+                               if 'ctl' in _trn_idx_ri.columns else None
+                        _hrv_s = _hrv_vals_ri.reindex(_atl.index, method='nearest')
                         _ok = 0; _total = 0
                         for _dt in _atl.index:
                             if _ctl is not None:
@@ -2644,24 +2668,25 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
 
                     # ── E. Elasticidade: qual target_z detecta mais eventos ────────
                     _ela_scores = {}
-                    _hrv_roll = _hrv_vals.rolling(14, min_periods=7).mean()
-                    _hrv_std  = _hrv_vals.rolling(14, min_periods=7).std()
+                    _hrv_roll = _hrv_vals_ri.rolling(14, min_periods=7).mean()
+                    _hrv_std  = _hrv_vals_ri.rolling(14, min_periods=7).std()
                     for _tz in _Z_GRID:
                         _n_events = 0
                         _taus     = []
-                        for _i in range(14, len(_hrv_vals)):
-                            _dt  = _hrv_vals.index[_i]
-                            _mu  = float(_hrv_roll.iloc[_i - 1] or np.nan)
-                            _sd  = float(_hrv_std.iloc[_i - 1] or np.nan)
-                            _val = float(_hrv_vals.iloc[_i])
+                        for _i in range(14, len(_hrv_vals_ri)):
+                            _dt  = _hrv_vals_ri.index[_i]
+                            _mu  = float(_hrv_roll.iloc[_i - 1] if not pd.isna(_hrv_roll.iloc[_i - 1]) else np.nan)
+                            _sd  = float(_hrv_std.iloc[_i - 1]  if not pd.isna(_hrv_std.iloc[_i - 1])  else np.nan)
+                            _val = float(_hrv_vals_ri.iloc[_i]  if not pd.isna(_hrv_vals_ri.iloc[_i])   else np.nan)
                             if not all(np.isfinite([_mu, _sd, _val])): continue
                             if _sd <= 0: continue
-                            if (_mu - _val) / _sd >= _tz:  # supressão
+                            if (_mu - _val) / _sd >= _tz:
                                 _n_events += 1
-                                # Contar dias até recuperação
                                 for _k in range(1, 15):
-                                    if _i + _k >= len(_hrv_vals): break
-                                    if _hrv_vals.iloc[_i + _k] >= _mu - _sd * 0.5:
+                                    if _i + _k >= len(_hrv_vals_ri): break
+                                    _v_next = _hrv_vals_ri.iloc[_i + _k]
+                                    if pd.isna(_v_next): continue
+                                    if float(_v_next) >= _mu - _sd * 0.5:
                                         _taus.append(_k); break
                         _ela_scores[_tz] = {
                             'n_events': _n_events,
@@ -2686,7 +2711,6 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                     _prog.progress(85)
 
                     # ── F. Sumário do período ─────────────────────────────────────
-                    # Variável com r mais forte (positivo e negativo)
                     _top_pos = sorted(
                         [(v, d) for v, d in _best_lag_por_var.items() if d['r_pearson'] > 0],
                         key=lambda x: x[1]['r_abs'], reverse=True)[:2]
