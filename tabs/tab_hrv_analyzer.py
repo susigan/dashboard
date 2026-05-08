@@ -2421,6 +2421,11 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                     key="adv_tm_dl"
                 )
 
+    # ════════════════════════════════════════════════════════════════════════
+    # AUTO-RUNNER — optimização automática de todos os parâmetros
+    # ════════════════════════════════════════════════════════════════════════
+    _adv_tabs_full = st.tabs(["🔬 Auto-Runner — parâmetros óptimos por período"])
+
     with _adv_tabs_full[0]:
         st.markdown("#### 🔬 Auto-Runner — Optimização automática de parâmetros")
         st.caption(
