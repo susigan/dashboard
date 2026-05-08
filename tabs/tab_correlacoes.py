@@ -1250,7 +1250,7 @@ def tab_correlacoes(da, dw):
     with _adv_tabs[3]:
         st.markdown("**Preditores de HRV com lag de 14 a 35 dias**")
         st.caption(
-            "Baseado nos resultados do Auto-Runner (1770 análises × 5 períodos). "
+            "Baseado nos resultados do Auto-Runner (CSV). "
             "Os lags curtos (1-7d) capturam efeitos agudos. "
             "Os lags longos (14-35d) capturam efeitos crónicos — "
             "**load_28d @19d e atl @27d** são os preditores mais fortes. "
@@ -1268,62 +1268,142 @@ def tab_correlacoes(da, dw):
         )
 
         st.markdown("---")
-        st.markdown("**Tabela de correlações — preditores óptimos por período (Auto-Runner)**")
 
-        # Dados do autorunner hardcoded — actualizados do CSV v3
-        # hrv alvo = hrv, lag_max = 35d
-        _ar_data = {
-            '180 dias': [
-                ('load_28d', +0.2096, 28, '↗ Sinal invertido — efeito selecção'),
-                ('tsb',      -0.2900, 23, '↘ TSB negativo → HRV cai'),
-                ('ctl',      -0.2400, 27, '↘ CTL alto → HRV cai'),
-                ('strain_7d',-0.1627, 28, '↘ Strain alto → HRV cai'),
-            ],
-            '1 ano': [
-                ('load_28d', -0.4420, 19, '↘ Preditor mais forte — r=-0.44 @19d'),
-                ('atl',      -0.4142, 27, '↘ ATL alto → HRV cai com lag 27d'),
-                ('load_7d',  -0.4147, 25, '↘ Carga semanal com lag longo'),
-                ('ctl',      -0.4124, 14, '↘ CTL alto → HRV cai'),
-                ('freq_7d',  -0.3974, 25, '↘ Frequência de sessões'),
-                ('pct_z3',   -0.2060, 20, '↘ % Z3 → HRV cai com lag 20d'),
-                ('strain_7d',-0.2256, 33, '↘ Strain — pico em 3d mas sinal até 33d'),
-            ],
-            '2 anos': [
-                ('load_28d', -0.3600, 21, '↘ Consistente'),
-                ('atl',      -0.3400, 27, '↘ Lag 27d confirmado'),
-                ('ctl',      -0.3100, 27, '↘'),
-                ('freq_7d',  -0.2700, 26, '↘'),
-            ],
-        }
+        # Tentar ler o CSV do autorunner para dados reais
+        import os as _os
+        _ar_paths = [
+            "atheltica_hrv_autorunner_completo.csv",
+            "tabs/atheltica_hrv_autorunner_completo.csv",
+            "/tmp/atheltica_hrv_autorunner_completo.csv",
+        ]
+        _ar_df = None
+        for _p in _ar_paths:
+            if _os.path.exists(_p):
+                try:
+                    _ar_df = pd.read_csv(_p, sep=';', decimal=',')
+                    break
+                except Exception:
+                    pass
 
-        # Exibir por período
-        for _per, _rows in _ar_data.items():
-            with st.expander(f"📅 {_per}", expanded=(_per == '1 ano')):
-                _ll_df = pd.DataFrame(_rows,
-                    columns=['Variável', 'r Pearson', 'Lag óptimo (d)', 'Interpretação'])
-                _ll_df['|r|'] = _ll_df['r Pearson'].abs().round(3)
-                _ll_df = _ll_df.sort_values('|r|', ascending=False).drop(columns=['|r|'])
-                st.dataframe(_ll_df, hide_index=True, use_container_width=True)
+        if _ar_df is not None and 'analise' in _ar_df.columns:
+            st.success("✅ CSV Auto-Runner carregado — a mostrar valores reais dos dados.")
+            _lc_ar = _ar_df[_ar_df['analise']=='lag_correlation'].copy()
 
-        st.markdown("---")
-        st.markdown("**Comparação lag_max e impacto no r óptimo (hrv, 1 ano)**")
-        st.caption("Para cada variável, o r aumenta conforme se amplia a janela de lag testada.")
+            st.markdown("**Preditores óptimos por período (hrv, lag_max=35d)**")
+            _periodos_ll = [p for p in ['180 dias','1 ano','2 anos','3 anos','Todo histórico']
+                            if p in _lc_ar['periodo'].unique()]
+            for _per_ll in _periodos_ll:
+                _sub_ll = (_lc_ar[(_lc_ar['periodo']==_per_ll) &
+                                   (_lc_ar['hrv_alvo']=='hrv') &
+                                   (_lc_ar['lag_max_testado']==35)]
+                           .nlargest(8,'r_abs')
+                           [['variavel','r_pearson','param_val','r_abs']]
+                           .copy())
+                if len(_sub_ll)==0: continue
+                _sub_ll.columns = ['Variável','r Pearson','Lag óptimo (d)','|r|']
+                _sub_ll['r Pearson'] = _sub_ll['r Pearson'].apply(lambda x: f"{float(x):+.4f}")
+                _sub_ll['|r|']       = _sub_ll['|r|'].apply(lambda x: f"{float(x):.4f}")
+                with st.expander(f"📅 {_per_ll}", expanded=(_per_ll=='1 ano')):
+                    st.dataframe(_sub_ll, hide_index=True, use_container_width=True)
 
-        _lmax_comp = pd.DataFrame([
-            ('atl',       -0.323, -0.346, -0.414, -0.414, 'ALTO — perde 22% truncando em 14d'),
-            ('load',      -0.191, -0.208, -0.247, -0.247, 'MÉDIO — perde 23%'),
-            ('pct_z3',    -0.120, -0.206, -0.206, -0.206, 'ALTO — perde 42% truncando em 14d'),
-            ('load_28d',  -0.440, -0.442, -0.442, -0.442, 'BAIXO — pico antes de 14d'),
-            ('strain_7d', -0.217, -0.217, -0.218, -0.226, 'BAIXO — pico em 3d'),
-        ], columns=['Variável', 'lag_max=14d', 'lag_max=21d', 'lag_max=28d', 'lag_max=35d', 'Impacto de truncar'])
-        st.dataframe(_lmax_comp, hide_index=True, use_container_width=True)
+            st.markdown("---")
+            st.markdown("**Comparação lag_max — impacto no r óptimo (hrv, 1 ano)**")
+            st.caption("Mostra como o r aumenta ao ampliar a janela de lag testada.")
+            _comp_rows = []
+            for _var_c in ['atl','load','load_28d','pct_z3','strain_7d','ctl','freq_7d']:
+                row_c = {'Variável': _var_c}
+                for _lmax_c in [14,21,28,35]:
+                    _sv = _lc_ar[(_lc_ar['periodo']=='1 ano') & (_lc_ar['hrv_alvo']=='hrv') &
+                                  (_lc_ar['lag_max_testado']==_lmax_c) & (_lc_ar['variavel']==_var_c)]
+                    if len(_sv)>0:
+                        row_c[f'lag_max={_lmax_c}d'] = f"{float(_sv['r_pearson'].iloc[0]):+.4f}@{int(_sv['param_val'].iloc[0])}d"
+                    else:
+                        row_c[f'lag_max={_lmax_c}d'] = '—'
+                # Calcular impacto: diferença entre lag_max=14d e 35d
+                _r14 = abs(float(_lc_ar[(_lc_ar['periodo']=='1 ano') & (_lc_ar['hrv_alvo']=='hrv') &
+                                         (_lc_ar['lag_max_testado']==14) & (_lc_ar['variavel']==_var_c)
+                                        ]['r_abs'].iloc[0])) \
+                       if len(_lc_ar[(_lc_ar['periodo']=='1 ano') & (_lc_ar['hrv_alvo']=='hrv') &
+                                      (_lc_ar['lag_max_testado']==14) & (_lc_ar['variavel']==_var_c)])>0 else 0
+                _r35 = abs(float(_lc_ar[(_lc_ar['periodo']=='1 ano') & (_lc_ar['hrv_alvo']=='hrv') &
+                                         (_lc_ar['lag_max_testado']==35) & (_lc_ar['variavel']==_var_c)
+                                        ]['r_abs'].iloc[0])) \
+                       if len(_lc_ar[(_lc_ar['periodo']=='1 ano') & (_lc_ar['hrv_alvo']=='hrv') &
+                                      (_lc_ar['lag_max_testado']==35) & (_lc_ar['variavel']==_var_c)])>0 else 0
+                if _r14 > 0 and _r35 > _r14:
+                    pct_ganho = (_r35 - _r14) / _r14 * 100
+                    row_c['Impacto de truncar'] = (
+                        f"ALTO — perde {pct_ganho:.0f}% truncando em 14d" if pct_ganho > 20
+                        else f"MÉDIO — perde {pct_ganho:.0f}%"
+                        if pct_ganho > 5 else "BAIXO")
+                else:
+                    row_c['Impacto de truncar'] = "BAIXO — pico antes de 14d" if _r14 >= _r35 else '—'
+                _comp_rows.append(row_c)
+            if _comp_rows:
+                st.dataframe(pd.DataFrame(_comp_rows), hide_index=True, use_container_width=True)
+
+        else:
+            # Fallback: mostrar nota de como carregar
+            st.info(
+                "📂 **Para ver os dados reais do Auto-Runner aqui:**  \n"
+                "1. Correr o Auto-Runner na Tab HRV Analyzer  \n"
+                "2. Fazer download do CSV  \n"
+                "3. Colocar o ficheiro `atheltica_hrv_autorunner_completo.csv` "
+                "na raiz do projecto no servidor  \n\n"
+                "Enquanto isso, os valores abaixo são do último run conhecido:"
+            )
+            # Fallback com valores do CSV confirmado
+            _ar_data_fb = {
+                '180 dias': [
+                    ('load_z7d_pct', +0.3391, 19, '↗ Efeito selecção — não causal'),
+                    ('tsb',          -0.2933, 23, '↘ TSB negativo → HRV cai'),
+                    ('load',         +0.2482,  3, '↗ Sinal invertido — efeito selecção'),
+                    ('ctl',          -0.2426, 27, '↘ CTL alto → HRV cai'),
+                    ('load_28d',     -0.2312, 31, '↘ load_28d @31d — sinal negativo'),
+                    ('pct_z3',       -0.2267, 12, '↘ % Z3 → HRV cai'),
+                ],
+                '1 ano': [
+                    ('load_28d',    -0.4420, 19, '↘ Preditor mais forte r=-0.44 @19d'),
+                    ('load_7d',     -0.4147, 25, '↘ Carga semanal com lag longo'),
+                    ('atl',         -0.4142, 27, '↘ ATL alto → HRV cai com lag 27d'),
+                    ('ctl',         -0.4124, 14, '↘ CTL alto → HRV cai'),
+                    ('freq_7d',     -0.3974, 25, '↘ Frequência de sessões'),
+                    ('tsb',         +0.2807, 35, '↗ TSB positivo (forma) eleva HRV'),
+                    ('n_sess',      -0.2689, 28, '↘ N sessões → HRV cai'),
+                    ('dur_min',     -0.2645, 28, '↘ Duração → HRV cai'),
+                    ('load_z7d_pct',-0.2580, 35, '↘ % Z3 semanal @35d'),
+                    ('load',        -0.2473, 27, '↘ Load TSS → HRV cai'),
+                ],
+                '2 anos': [
+                    ('atl',     -0.2281, 35, '↘ Lag 35d no 2anos'),
+                    ('ctl',     -0.2230, 14, '↘ CTL @14d consistente'),
+                    ('load_28d',-0.2220, 25, '↘ load_28d @25d'),
+                    ('load_7d', -0.2111, 23, '↘'),
+                    ('freq_7d', -0.1735, 24, '↘'),
+                    ('n_sess',  -0.1735, 28, '↘'),
+                ],
+                '3 anos': [
+                    ('atl',     -0.1923, 27, '↘ Lag 27d confirmado em todos os períodos'),
+                    ('ctl',     -0.1883, 14, '↘'),
+                    ('load_28d',-0.1756, 14, '↘'),
+                    ('kj',      -0.1592,  7, '↘ kJ @7d'),
+                ],
+            }
+            for _per_fb, _rows_fb in _ar_data_fb.items():
+                with st.expander(f"📅 {_per_fb}", expanded=(_per_fb=='1 ano')):
+                    _fb_df = pd.DataFrame(_rows_fb,
+                        columns=['Variável','r Pearson','Lag óptimo (d)','Interpretação'])
+                    _fb_df = _fb_df.sort_values('r Pearson')
+                    st.dataframe(_fb_df, hide_index=True, use_container_width=True)
 
         st.info(
             "💡 **Conclusões do Auto-Runner (1 ano, hrv, lag_max=35d):**  \n"
-            "• **load_28d** é o preditor mais forte e consistente: r=−0.44 @lag19d  \n"
+            "• **load_28d** é o preditor mais forte e consistente: r=−0.442 @lag19d  \n"
             "• **atl** tem lag real de **27 dias** — não 6-13d como CSV antigo indicava  \n"
-            "• **pct_z3** tem lag de **20 dias** — o bloco Z3 desta semana afecta o HRV daqui a 3 semanas  \n"
+            "• **pct_z3** a lag_max=35d inverte de sinal (+0.21 @34d) — possível não-linearidade  \n"
             "• **strain_7d** tem resposta dupla: pico imediato @3d e sinal crónico até 33d  \n"
+            "• **ctl** tem pico em 14d — estável em todos os lag_max  \n"
+            "• **freq_7d** perde 37% do sinal truncando em 14d — lag real = 25d  \n"
             "• Lag máximo óptimo = **28 dias** (hrv/hrv_norm) — estável em todos os períodos"
         )
 
@@ -1594,12 +1674,12 @@ def tab_correlacoes(da, dw):
                     _sintese.append(
                         f"⏱️ **Recuperação após Pesado**: HRV regressa ao neutro em t+{first_neutral}d "
                         f"(pico do efeito em t+{deepest_k}d: {deepest_v:+.1f}%). "
-                        "Nota: o HRV Analyzer indica que o efeito máximo de ATL/Z3 aparece em t+10-13d — "
+                        "Nota: o HRV Analyzer indica que o efeito máximo de ATL/Z3 aparece em t+19-27d — "
                         "esta janela (t+1 a t+7) capta apenas o efeito agudo.")
                 else:
                     _sintese.append(
                         "⏱️ **Efeito de Pesado persiste além de t+7d** — "
-                        "consistente com o lag 10-13d detectado pelo HRV Analyzer.")
+                        "consistente com o lag 19-27d detectado pelo HRV Analyzer.")
 
         # 5. Load Ecology — dinâmico, sem texto fixo
         if '_eco_pairs' in dir() and _eco_pairs:
@@ -1618,7 +1698,7 @@ def tab_correlacoes(da, dw):
             else:
                 _sintese.append(
                     "🌊 **Load Ecology**: nenhum preditor com sinal detectável com os dados actuais. "
-                    f"O efeito real da carga acumulada aparece com lag 10-13d "
+                    f"O efeito real da carga acumulada aparece com lag 19-27d "
                     f"(ver HRV Analyzer), fora desta janela de análise.")
 
         # 6. kJ vs TSS
@@ -1691,9 +1771,9 @@ def tab_correlacoes(da, dw):
         # ── Nota sobre lag ────────────────────────────────────────────────
         st.info(
             "⏱️ **Nota sobre lag temporal**: esta tab analisa o efeito do treino em t+1 a t+7 dias. "
-            "O HRV Analyzer mostra que o efeito mais forte de pct_Z3 e ATL aparece em **t+10 a t+13 dias** — "
+            "O HRV Analyzer mostra que o efeito mais forte de pct_Z3 e ATL aparece em **t+19 a t+27 dias** — "
             "fora desta janela. Por isso esta tab subestima o impacto de cargas intensas acumuladas. "
-            "Para ver o efeito completo com lag 10-13d, consultar Tab HRV Analyzer → Lag Avançado."
+            "Para ver o efeito completo com lag 19-27d, consultar Tab HRV Analyzer → Lag Avançado."
         )
 
     st.info(
