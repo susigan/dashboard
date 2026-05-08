@@ -2420,3 +2420,411 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                     "atheltica_hrv_transition_matrix.csv", "text/csv",
                     key="adv_tm_dl"
                 )
+
+    # ════════════════════════════════════════════════════════════════════════
+    # TAB 9 — AUTO-RUNNER: optimização automática de todos os parâmetros
+    # ════════════════════════════════════════════════════════════════════════
+    _adv_tabs_full = st.tabs([
+        "🔬 Auto-Runner — parâmetros óptimos por período"
+    ])
+
+    with _adv_tabs_full[0]:
+        st.markdown("#### 🔬 Auto-Runner — Optimização automática de parâmetros")
+        st.caption(
+            "Roda todas as análises para **4 períodos** (180d / 1ano / 2anos / 3anos) "
+            "testando automaticamente múltiplas combinações de parâmetros. "
+            "Detecta os valores óptimos por variável e período. "
+            "Output: CSV consolidado com todos os resultados + comparação entre períodos."
+        )
+        st.info(
+            "⏱️ Tempo estimado: **30–90 segundos** dependendo do histórico disponível. "
+            "Corre uma vez e exporta tudo — não precisas de explorar manualmente."
+        )
+
+        if st.button("▶ Rodar análise completa (todos os períodos)", type="primary",
+                     key="autorunner_go"):
+            with st.spinner("A optimizar parâmetros para todos os períodos..."):
+
+                import io as _io
+                from scipy.stats import pearsonr as _pr, spearmanr as _sr
+                from sklearn.cluster import KMeans as _KM
+                from sklearn.metrics import davies_bouldin_score as _dbs
+
+                _runner_results = []   # lista de dicts → CSV final
+                _summary_rows   = []   # resumo por período
+
+                # Períodos a testar
+                _periodos_run = [
+                    (180,  "180 dias"),
+                    (365,  "1 ano"),
+                    (730,  "2 anos"),
+                    (1095, "3 anos"),
+                ]
+
+                # Grids de parâmetros a testar
+                _LAG_GRID     = [7, 10, 14, 21, 28, 35]
+                _CLUSTER_GRID = [3, 4, 5, 6, 7]
+                _DIR_GRID     = [5, 7, 10, 14]   # janela directional (dias)
+                _Z_GRID       = [1.0, 1.5, 2.0]  # target_z elasticidade
+                _FP_GRID      = [3, 5, 7, 14]    # dias antes fingerprint
+
+                _hoje_ar = pd.Timestamp.now().normalize()
+
+                for _ndias, _plabel in _periodos_run:
+                    st.markdown(f"**▶ Período: {_plabel}**")
+                    _prog = st.progress(0)
+
+                    # Filtrar dados para este período
+                    _cutoff = _hoje_ar - pd.Timedelta(days=_ndias)
+                    _hrv_p  = sig_hrv[sig_hrv.index >= _cutoff].copy() \
+                              if isinstance(sig_hrv.index, pd.DatetimeIndex) \
+                              else sig_hrv[pd.to_datetime(sig_hrv.index) >= _cutoff].copy()
+                    _trn_p  = sig_train[sig_train.index >= _cutoff].copy() \
+                              if isinstance(sig_train.index, pd.DatetimeIndex) \
+                              else sig_train[pd.to_datetime(sig_train.index) >= _cutoff].copy()
+
+                    if len(_hrv_p) < 30:
+                        st.warning(f"  Dados insuficientes para {_plabel} (N={len(_hrv_p)}).")
+                        continue
+
+                    _hrv_vals = pd.to_numeric(_hrv_p.iloc[:, 0], errors='coerce').dropna()
+                    _N_hrv    = len(_hrv_vals)
+
+                    # ── A. Lag correlations: testar todos os lags do grid ──────────
+                    _lag_vars = [c for c in _trn_p.columns
+                                 if _trn_p[c].notna().sum() >= 20]
+                    _best_lag_por_var = {}  # var → {lag, r_p, r_s, r_abs}
+
+                    for _var in _lag_vars:
+                        x_full = pd.to_numeric(_trn_p[_var], errors='coerce')
+                        best_lag_v = {'lag': 0, 'r_pearson': 0, 'r_spearman': 0, 'r_abs': 0}
+                        for _lag in range(0, max(_LAG_GRID) + 1):
+                            x_lag = x_full.shift(_lag)
+                            df_xy = pd.DataFrame({'x': x_lag, 'y': _hrv_vals}).dropna()
+                            if len(df_xy) < 15: continue
+                            try:
+                                rp, pp = _pr(df_xy['x'].values, df_xy['y'].values)
+                                rs, ps = _sr(df_xy['x'].values, df_xy['y'].values)
+                                if abs(rp) > abs(best_lag_v['r_abs']):
+                                    best_lag_v = {
+                                        'lag': _lag,
+                                        'r_pearson':  round(rp, 4),
+                                        'r_spearman': round(rs, 4),
+                                        'p_pearson':  round(pp, 4),
+                                        'p_spearman': round(ps, 4),
+                                        'r_abs':      round(abs(rp), 4),
+                                        'n':          len(df_xy),
+                                    }
+                            except Exception:
+                                pass
+                        if best_lag_v['r_abs'] > 0:
+                            _best_lag_por_var[_var] = best_lag_v
+                            _runner_results.append({
+                                'periodo':   _plabel,
+                                'analise':   'lag_correlation',
+                                'variavel':  _var,
+                                'param_nome':'lag_optimo_dias',
+                                'param_val': best_lag_v['lag'],
+                                'r_pearson': best_lag_v['r_pearson'],
+                                'r_spearman':best_lag_v['r_spearman'],
+                                'p_pearson': best_lag_v.get('p_pearson', None),
+                                'n':         best_lag_v.get('n', None),
+                                'r_abs':     best_lag_v['r_abs'],
+                                'nota':      '',
+                            })
+
+                    _prog.progress(20)
+
+                    # ── B. Lag máximo óptimo: qual grid value maximiza r² médio ──
+                    _lag_max_scores = {}
+                    for _lmax in _LAG_GRID:
+                        _scores = []
+                        for _var in list(_best_lag_por_var.keys())[:6]:  # top 6 vars
+                            x_full = pd.to_numeric(_trn_p.get(_var, pd.Series()), errors='coerce')
+                            best_r  = 0
+                            for _lag in range(0, _lmax + 1):
+                                x_lag = x_full.shift(_lag)
+                                df_xy = pd.DataFrame({'x': x_lag, 'y': _hrv_vals}).dropna()
+                                if len(df_xy) < 15: continue
+                                try:
+                                    rp, _ = _pr(df_xy['x'].values, df_xy['y'].values)
+                                    best_r = max(best_r, abs(rp))
+                                except Exception:
+                                    pass
+                            _scores.append(best_r)
+                        _lag_max_scores[_lmax] = float(np.mean(_scores)) if _scores else 0
+                    _best_lmax = max(_lag_max_scores, key=_lag_max_scores.get)
+                    _runner_results.append({
+                        'periodo': _plabel, 'analise': 'lag_max_optimo',
+                        'variavel': 'global', 'param_nome': 'lag_max_dias',
+                        'param_val': _best_lmax,
+                        'r_pearson': round(_lag_max_scores[_best_lmax], 4),
+                        'r_spearman': None, 'p_pearson': None, 'n': _N_hrv,
+                        'r_abs': round(_lag_max_scores[_best_lmax], 4),
+                        'nota': f"Scores por lag_max: {_lag_max_scores}",
+                    })
+
+                    _prog.progress(40)
+
+                    # ── C. Clustering: qual n_clusters tem menor Davies-Bouldin ──
+                    _wk_cols = [c for c in _trn_p.columns if _trn_p[c].notna().sum() >= 10]
+                    _wk_data = _trn_p[_wk_cols].resample('W').mean().dropna(how='all')
+                    _wk_data = _wk_data.fillna(_wk_data.median())
+                    _best_nc = 4; _best_db = 9999
+                    _cluster_scores = {}
+                    if len(_wk_data) >= 15:
+                        from sklearn.preprocessing import StandardScaler as _SS
+                        _X_wk = _SS().fit_transform(_wk_data.values)
+                        for _nc in _CLUSTER_GRID:
+                            if _nc >= len(_wk_data): continue
+                            try:
+                                _km = _KM(n_clusters=_nc, random_state=42, n_init=10)
+                                _labels = _km.fit_predict(_X_wk)
+                                _db = _dbs(_X_wk, _labels)
+                                _cluster_scores[_nc] = round(_db, 4)
+                                if _db < _best_db:
+                                    _best_db = _db; _best_nc = _nc
+                            except Exception:
+                                pass
+                    _runner_results.append({
+                        'periodo': _plabel, 'analise': 'clustering_semanas',
+                        'variavel': 'global', 'param_nome': 'n_clusters',
+                        'param_val': _best_nc,
+                        'r_pearson': None, 'r_spearman': None, 'p_pearson': None,
+                        'n': len(_wk_data),
+                        'r_abs': round(1 / _best_db, 4) if _best_db > 0 else 0,
+                        'nota': f"Davies-Bouldin por n_clusters: {_cluster_scores} — menor=melhor",
+                    })
+
+                    _prog.progress(55)
+
+                    # ── D. Directional: qual janela maximiza consistência ─────────
+                    _dir_scores = {}
+                    for _jdir in _DIR_GRID:
+                        # "Carga muito elevada" → HRV melhora nos próximos _jdir dias
+                        if 'atl' not in _trn_p.columns: break
+                        _atl = pd.to_numeric(_trn_p.get('atl', pd.Series()), errors='coerce')
+                        _ctl = pd.to_numeric(_trn_p.get('ctl', pd.Series()), errors='coerce') \
+                               if 'ctl' in _trn_p.columns else None
+                        _hrv_s = _hrv_vals.reindex(_atl.index, method='nearest')
+                        _ok = 0; _total = 0
+                        for _dt in _atl.index:
+                            if _ctl is not None:
+                                _ctl_val = float(_ctl.get(_dt, 0) or 0)
+                                _atl_val = float(_atl.get(_dt, 0) or 0)
+                                if _ctl_val <= 0 or _atl_val / _ctl_val <= 1.2: continue
+                            else:
+                                if float(_atl.get(_dt, 0) or 0) < 25: continue
+                            _hrv_now = float(_hrv_s.get(_dt, np.nan) or np.nan)
+                            _future_dates = [_dt + pd.Timedelta(days=k)
+                                             for k in range(1, _jdir + 1)]
+                            _hrv_future = [float(_hrv_s.get(fd, np.nan) or np.nan)
+                                           for fd in _future_dates]
+                            _hrv_future = [v for v in _hrv_future if np.isfinite(v)]
+                            if not _hrv_future or not np.isfinite(_hrv_now): continue
+                            _total += 1
+                            if np.mean(_hrv_future) > _hrv_now: _ok += 1
+                        _dir_scores[_jdir] = round(_ok / _total, 4) if _total >= 10 else None
+                    # Escolher janela com consistência mais extrema (>0.90 ou <0.60)
+                    _valid_dir = {k: v for k, v in _dir_scores.items() if v is not None}
+                    _best_jdir = max(_valid_dir, key=lambda k: abs(_valid_dir[k] - 0.5)) \
+                                 if _valid_dir else 10
+                    _runner_results.append({
+                        'periodo': _plabel, 'analise': 'directional_janela',
+                        'variavel': 'Carga muito elevada (ATL>CTL×1.2)',
+                        'param_nome': 'janela_outcome_dias',
+                        'param_val': _best_jdir,
+                        'r_pearson': None, 'r_spearman': None, 'p_pearson': None,
+                        'n': None,
+                        'r_abs': round(abs(_valid_dir.get(_best_jdir, 0.5) - 0.5), 4),
+                        'nota': f"Consistência por janela: {_valid_dir}",
+                    })
+
+                    _prog.progress(70)
+
+                    # ── E. Elasticidade: qual target_z detecta mais eventos ────────
+                    _ela_scores = {}
+                    _hrv_roll = _hrv_vals.rolling(14, min_periods=7).mean()
+                    _hrv_std  = _hrv_vals.rolling(14, min_periods=7).std()
+                    for _tz in _Z_GRID:
+                        _n_events = 0
+                        _taus     = []
+                        for _i in range(14, len(_hrv_vals)):
+                            _dt  = _hrv_vals.index[_i]
+                            _mu  = float(_hrv_roll.iloc[_i - 1] or np.nan)
+                            _sd  = float(_hrv_std.iloc[_i - 1] or np.nan)
+                            _val = float(_hrv_vals.iloc[_i])
+                            if not all(np.isfinite([_mu, _sd, _val])): continue
+                            if _sd <= 0: continue
+                            if (_mu - _val) / _sd >= _tz:  # supressão
+                                _n_events += 1
+                                # Contar dias até recuperação
+                                for _k in range(1, 15):
+                                    if _i + _k >= len(_hrv_vals): break
+                                    if _hrv_vals.iloc[_i + _k] >= _mu - _sd * 0.5:
+                                        _taus.append(_k); break
+                        _ela_scores[_tz] = {
+                            'n_events': _n_events,
+                            'tau_med':  round(float(np.median(_taus)), 1) if _taus else None,
+                        }
+                    # Óptimo: target_z que tem N razoável (≥10) e tau estável
+                    _best_tz = min(
+                        [tz for tz, v in _ela_scores.items() if v['n_events'] >= 10],
+                        key=lambda tz: abs(_ela_scores[tz].get('tau_med', 99) - 2.0),
+                        default=1.5
+                    )
+                    _runner_results.append({
+                        'periodo': _plabel, 'analise': 'elasticidade_target_z',
+                        'variavel': 'hrv', 'param_nome': 'target_z',
+                        'param_val': _best_tz,
+                        'r_pearson': None, 'r_spearman': None, 'p_pearson': None,
+                        'n': _ela_scores[_best_tz]['n_events'],
+                        'r_abs': None,
+                        'nota': str(_ela_scores),
+                    })
+
+                    _prog.progress(85)
+
+                    # ── F. Sumário do período ─────────────────────────────────────
+                    # Variável com r mais forte (positivo e negativo)
+                    _top_pos = sorted(
+                        [(v, d) for v, d in _best_lag_por_var.items() if d['r_pearson'] > 0],
+                        key=lambda x: x[1]['r_abs'], reverse=True)[:2]
+                    _top_neg = sorted(
+                        [(v, d) for v, d in _best_lag_por_var.items() if d['r_pearson'] < 0],
+                        key=lambda x: x[1]['r_abs'], reverse=True)[:2]
+
+                    _summary_rows.append({
+                        'Período': _plabel,
+                        'N dias HRV': _N_hrv,
+                        'Lag máx óptimo': _best_lmax,
+                        'N clusters óptimo': _best_nc,
+                        'Janela directional (d)': _best_jdir,
+                        'Target Z (elasticidade)': _best_tz,
+                        'Melhor preditor ↘ HRV': (f"{_top_neg[0][0]} r={_top_neg[0][1]['r_pearson']:+.3f} "
+                                                   f"@lag{_top_neg[0][1]['lag']}d")
+                                                  if _top_neg else '—',
+                        'Melhor preditor ↗ HRV': (f"{_top_pos[0][0]} r={_top_pos[0][1]['r_pearson']:+.3f} "
+                                                   f"@lag{_top_pos[0][1]['lag']}d")
+                                                  if _top_pos else '—',
+                        'N_lags_sig_p<0.05': sum(
+                            1 for d in _best_lag_por_var.values()
+                            if d.get('p_pearson', 1) < 0.05),
+                        'Tau elast. mediano': _ela_scores[_best_tz].get('tau_med', '—'),
+                    })
+
+                    _prog.progress(100)
+
+                # ── Display resumo ────────────────────────────────────────────────
+                st.markdown("---")
+                st.markdown("### 📊 Resumo — parâmetros óptimos por período")
+                st.caption(
+                    "Do período mais curto (180d = padrão recente) ao mais longo (3anos = padrão histórico). "
+                    "Valores divergentes entre períodos indicam mudança de resposta ao longo do tempo."
+                )
+
+                if _summary_rows:
+                    _df_sum = pd.DataFrame(_summary_rows)
+                    st.dataframe(_df_sum, hide_index=True, use_container_width=True)
+
+                    # ── Análise de divergências automática ────────────────────────
+                    st.markdown("### 🔍 Divergências entre períodos")
+                    _div_rows = []
+
+                    # Lag máximo
+                    _lag_vals = [r['Lag máx óptimo'] for r in _summary_rows]
+                    if max(_lag_vals) - min(_lag_vals) >= 7:
+                        _div_rows.append({
+                            'Parâmetro': 'Lag máximo óptimo',
+                            'Min': f"{min(_lag_vals)}d",
+                            'Max': f"{max(_lag_vals)}d",
+                            'Divergência': '⚠️ Alta — lag de resposta ao HRV mudou ao longo do tempo',
+                        })
+                    else:
+                        _div_rows.append({
+                            'Parâmetro': 'Lag máximo óptimo',
+                            'Min': f"{min(_lag_vals)}d",
+                            'Max': f"{max(_lag_vals)}d",
+                            'Divergência': '✅ Estável entre períodos',
+                        })
+
+                    # Target Z
+                    _tz_vals = [r['Target Z (elasticidade)'] for r in _summary_rows]
+                    if len(set(_tz_vals)) > 1:
+                        _div_rows.append({
+                            'Parâmetro': 'Target Z (limiar supressão HRV)',
+                            'Min': str(min(_tz_vals)),
+                            'Max': str(max(_tz_vals)),
+                            'Divergência': '⚠️ Sensibilidade HRV mudou — atleta mais/menos resiliente recentemente',
+                        })
+                    else:
+                        _div_rows.append({
+                            'Parâmetro': 'Target Z',
+                            'Min': str(_tz_vals[0]),
+                            'Max': str(_tz_vals[0]),
+                            'Divergência': '✅ Consistente',
+                        })
+
+                    # N clusters
+                    _nc_vals = [r['N clusters óptimo'] for r in _summary_rows]
+                    if max(_nc_vals) - min(_nc_vals) >= 2:
+                        _div_rows.append({
+                            'Parâmetro': 'N clusters óptimo',
+                            'Min': str(min(_nc_vals)),
+                            'Max': str(max(_nc_vals)),
+                            'Divergência': '⚠️ Complexidade dos padrões de treino mudou',
+                        })
+                    else:
+                        _div_rows.append({
+                            'Parâmetro': 'N clusters',
+                            'Min': str(min(_nc_vals)),
+                            'Max': str(max(_nc_vals)),
+                            'Divergência': '✅ Estável',
+                        })
+
+                    st.dataframe(pd.DataFrame(_div_rows), hide_index=True,
+                                 use_container_width=True)
+
+                    # ── Insights síntese ──────────────────────────────────────────
+                    st.markdown("### 💡 Insights — período mais recente (180 dias)")
+                    _rec = _summary_rows[0] if _summary_rows else {}
+                    if _rec:
+                        st.markdown(f"""
+- **Lag de resposta HRV**: {_rec.get('Lag máx óptimo','—')} dias — carga de treino hoje afecta o HRV visível daqui a **{_rec.get('Lag máx óptimo','?')} dias**
+- **Preditor que mais suprime HRV**: {_rec.get('Melhor preditor ↘ HRV','—')}
+- **Preditor que mais eleva HRV**: {_rec.get('Melhor preditor ↗ HRV','—')}
+- **Limiar de supressão detectável**: Z={_rec.get('Target Z (elasticidade)','—')} — supressões abaixo deste limiar não são consistentemente detectadas
+- **Tempo de recuperação mediano**: {_rec.get('Tau elast. mediano','—')} dias após supressão
+- **N variáveis com sinal significativo (p<0.05)**: {_rec.get('N_lags_sig_p<0.05','—')}
+- **Clustering óptimo**: {_rec.get('N clusters óptimo','—')} tipos de semana distintos nos últimos 180 dias
+- **Janela directional óptima**: {_rec.get('Janela directional (d)','—')} dias para avaliar se HRV melhorou após um padrão de treino
+                        """)
+
+                # ── Download CSV completo ─────────────────────────────────────────
+                if _runner_results:
+                    _df_full = pd.DataFrame(_runner_results)
+                    # Ordenar: menor período primeiro
+                    _ordem_p = {"180 dias": 0, "1 ano": 1, "2 anos": 2, "3 anos": 3}
+                    _df_full['_ordem'] = _df_full['periodo'].map(_ordem_p).fillna(9)
+                    _df_full = _df_full.sort_values(['_ordem','analise','variavel']).drop(columns=['_ordem'])
+
+                    _csv_full = _df_full.to_csv(index=False, sep=';', decimal=',').encode('utf-8')
+                    st.download_button(
+                        "📥 Download completo — todos os parâmetros óptimos por período",
+                        _csv_full,
+                        "atheltica_hrv_autorunner_completo.csv",
+                        "text/csv",
+                        key="autorunner_dl_full"
+                    )
+                    if _summary_rows:
+                        _csv_sum = pd.DataFrame(_summary_rows).to_csv(
+                            index=False, sep=';', decimal=',').encode('utf-8')
+                        st.download_button(
+                            "📥 Download resumo — parâmetros óptimos (síntese)",
+                            _csv_sum,
+                            "atheltica_hrv_autorunner_resumo.csv",
+                            "text/csv",
+                            key="autorunner_dl_sum"
+                        )
+                else:
+                    st.warning("Sem resultados — dados insuficientes para todos os períodos.")
