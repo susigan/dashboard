@@ -1952,13 +1952,13 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 delta=(
                     "✅ zona óptima (<30)" if _atl_val and _atl_val < 30 else
                     "🟡 atenção (30-38)" if _atl_val and 30 <= _atl_val < 38 else
-                    "🔴 supressão lag 13d (>38)" if _atl_val and _atl_val >= 38 else None
+                    "🔴 risco supressão HRV (>38)" if _atl_val and _atl_val >= 38 else None
                 ),
                 delta_color="off",
                 help=(
                     "ATL = fadiga aguda (EWM span=7). "
-                    "Preditor mais forte de HRV: r=-0.507 @ lag 13d. "
-                    "ATL>38 → HRV 40% mais baixo nos dias de pico. "
+                    "Preditor mais forte de HRV: r=-0.414 @ lag 27d (Auto-Runner 1ano, lag_max=35d). "
+                    "ATL alto hoje → HRV suprimido daqui a ~27 dias. "
                     "<30 ✅ | 30–38 🟡 | >38 🔴"
                 )
             )
@@ -2019,17 +2019,17 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                     f"Load={_load_7d_tss:.0f} TSS (300-400). Zona óptima HRV: 150-300/sem.",
                     "#f39c12"))
 
-            # Alerta ATL
+            # Alerta ATL — lag real = 27d (Auto-Runner 1ano, lag_max=35d)
             if _atl_val is not None and _atl_val >= 38:
                 _alertas.append(("🔴", "ATL CRÍTICA — risco de supressão HRV",
-                    f"ATL={_atl_val:.1f} (≥38) — preditor mais forte de HRV (r=-0.507). "
-                    f"HRV suprimido esperado nos próximos 13 dias. "
+                    f"ATL={_atl_val:.1f} (≥38) — preditor de HRV: r=-0.414 @lag27d. "
+                    f"HRV suprimido esperado nos próximos ~27 dias (4 semanas). "
                     f"Reduzir carga aguda. Ver Tab HRV Analyzer → ARI.",
                     "#c0392b"))
             elif _atl_val is not None and _atl_val >= 30:
                 _alertas.append(("🟡", "ATL na zona de atenção",
                     f"ATL={_atl_val:.1f} (30-38). Monitorizar. "
-                    f"ATL>38 associada a -40% nos dias de melhor HRV.",
+                    f"Efeito no HRV visível em ~27 dias.",
                     "#f39c12"))
 
             # Alerta Z3
@@ -2076,8 +2076,10 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
 | Strain | 100–400 | 400–600 | >600 | r=-0.270, p<0.001 |
 | Load (TSS/sem) | 150–300 | 300–400 | >400 | r=-0.228, p=0.003 |
 | % Z3 | 20–30% | 30–50% | >50% | bins k-means |
-| ATL | <30 | 30–38 | ≥38 | r=-0.507 @ 13d |
+| ATL | <30 | 30–38 | ≥38 | r=-0.414 @ lag27d (Auto-Runner 1ano) |
 
+Nota: lag ATL corrigido de 13d para 27d com base no Auto-Runner (lag_max=35d, 1ano).
+ATL alto hoje → efeito no HRV visível daqui a ~4 semanas, não 13 dias.
 Estes valores são específicos deste atleta. Recalibrar anualmente com novos dados do HRV Analyzer.
                 """)
 
