@@ -2895,16 +2895,17 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                             'Divergência': '✅ Estável entre períodos',
                         })
 
-                    # Target Z
-                    _tz_vals = [r['Target Z (elasticidade)'] for r in _summary_rows]
-                    if len(set(_tz_vals)) > 1:
+                    # Target Z — usar chave correcta 'Target Z'
+                    _tz_vals = [r['Target Z'] for r in _summary_rows
+                                if r['Período'] != 'Todo histórico']
+                    if _tz_vals and len(set(_tz_vals)) > 1:
                         _div_rows.append({
                             'Parâmetro': 'Target Z (limiar supressão HRV)',
                             'Min': str(min(_tz_vals)),
                             'Max': str(max(_tz_vals)),
                             'Divergência': '⚠️ Sensibilidade HRV mudou — atleta mais/menos resiliente recentemente',
                         })
-                    else:
+                    elif _tz_vals:
                         _div_rows.append({
                             'Parâmetro': 'Target Z',
                             'Min': str(_tz_vals[0]),
@@ -2913,15 +2914,16 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                         })
 
                     # N clusters
-                    _nc_vals = [r['N clusters óptimo'] for r in _summary_rows]
-                    if max(_nc_vals) - min(_nc_vals) >= 2:
+                    _nc_vals = [r['N clusters óptimo'] for r in _summary_rows
+                                if r['Período'] != 'Todo histórico']
+                    if _nc_vals and max(_nc_vals) - min(_nc_vals) >= 2:
                         _div_rows.append({
                             'Parâmetro': 'N clusters óptimo',
                             'Min': str(min(_nc_vals)),
                             'Max': str(max(_nc_vals)),
                             'Divergência': '⚠️ Complexidade dos padrões de treino mudou',
                         })
-                    else:
+                    elif _nc_vals:
                         _div_rows.append({
                             'Parâmetro': 'N clusters',
                             'Min': str(min(_nc_vals)),
@@ -2929,29 +2931,45 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                             'Divergência': '✅ Estável',
                         })
 
+                    # Directional: todo histórico vs 1 ano
+                    _dir_hist = next((r for r in _summary_rows
+                                      if r['Período'] == 'Todo histórico'), None)
+                    _dir_1a   = next((r for r in _summary_rows
+                                      if r['Período'] == '1 ano'), None)
+                    if _dir_hist and _dir_1a:
+                        _div_rows.append({
+                            'Parâmetro': 'Directional consistência',
+                            'Min': _dir_1a['Consist. directional'],
+                            'Max': _dir_hist['Consist. directional'],
+                            'Divergência': (
+                                f"⚠️ Efeito N: histór. "
+                                f"{_dir_hist['Consist. directional']} "
+                                f"(N={_dir_hist['N eventos directional']}) vs "
+                                f"1ano {_dir_1a['Consist. directional']} "
+                                f"(N={_dir_1a['N eventos directional']})")
+                        })
+
                     st.dataframe(pd.DataFrame(_div_rows), hide_index=True,
                                  use_container_width=True)
 
-                    # ── Insights síntese ──────────────────────────────────────────
+                    # ── Insights síntese — 180 dias ───────────────────────────────
                     st.markdown("### 💡 Insights — período mais recente (180 dias)")
-                    _rec = _summary_rows[0] if _summary_rows else {}
+                    _rec = next((r for r in _summary_rows if r['Período']=='180 dias'), {})
                     if _rec:
                         st.markdown(f"""
-- **Lag de resposta HRV**: {_rec.get('Lag máx óptimo','—')} dias — carga de treino hoje afecta o HRV visível daqui a **{_rec.get('Lag máx óptimo','?')} dias**
+- **Lag de resposta HRV**: {_rec.get('Lag máx óptimo','—')}d — carga hoje afecta HRV daqui a **{_rec.get('Lag máx óptimo','?')} dias**
 - **Preditor que mais suprime HRV**: {_rec.get('Melhor preditor ↘ HRV','—')}
-- **Preditor que mais eleva HRV**: {_rec.get('Melhor preditor ↗ HRV','—')}
-- **Limiar de supressão detectável**: Z={_rec.get('Target Z (elasticidade)','—')} — supressões abaixo deste limiar não são consistentemente detectadas
-- **Tempo de recuperação mediano**: {_rec.get('Tau elast. mediano','—')} dias após supressão
-- **N variáveis com sinal significativo (p<0.05)**: {_rec.get('N_lags_sig_p<0.05','—')}
-- **Clustering óptimo**: {_rec.get('N clusters óptimo','—')} tipos de semana distintos nos últimos 180 dias
-- **Janela directional óptima**: {_rec.get('Janela directional (d)','—')} dias para avaliar se HRV melhorou após um padrão de treino
+- **Fingerprint (var mais discriminante)**: {_rec.get('FP: var mais discriminante','—')}
+- **Limiar de supressão (Z)**: {_rec.get('Target Z','—')} | Tau recuperação: {_rec.get('Tau elast. (d)','—')}d
+- **Directional (180d)**: {_rec.get('Consist. directional','—')} (N={_rec.get('N eventos directional','—')})
+- **Clusters óptimos**: {_rec.get('N clusters óptimo','—')} tipos de semana nos últimos 180d
+- **N variáveis sig. (p<0.05)**: {_rec.get('N lags sig p<0.05','—')}
                         """)
 
                 # ── Download CSV completo ─────────────────────────────────────────
                 if _runner_results:
                     _df_full = pd.DataFrame(_runner_results)
-                    # Ordenar: menor período primeiro
-                    _ordem_p = {"180 dias": 0, "1 ano": 1, "2 anos": 2, "3 anos": 3}
+                    _ordem_p = {"180 dias":0,"1 ano":1,"2 anos":2,"3 anos":3,"Todo histórico":4}
                     _df_full['_ordem'] = _df_full['periodo'].map(_ordem_p).fillna(9)
                     _df_full = _df_full.sort_values(['_ordem','analise','variavel']).drop(columns=['_ordem'])
 
