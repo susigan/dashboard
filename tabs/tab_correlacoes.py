@@ -1340,6 +1340,8 @@ def tab_correlacoes(da, dw):
 
         st.markdown("**Preditores óptimos por período (lag 0–35d, r Spearman)**")
 
+        _ll_rows_all = []  # acumula todos os períodos para download
+
         for _nd_ll, _pl_ll in _periodos_ll_def:
             _cut_ll  = _hoje_ll - pd.Timedelta(days=_nd_ll)
             _hrv_p   = _hrv_idx[_hrv_idx.index >= _cut_ll]
@@ -1362,15 +1364,18 @@ def tab_correlacoes(da, dw):
                             best = {'lag':_lg,'r':round(r,4),'r_abs':round(abs(r),4),'n':len(_pair)}
                     except Exception:
                         pass
-                if best['r_abs'] > 0.10:  # só mostrar correlações com sinal detectável
-                    _rows_ll.append({
+                if best['r_abs'] > 0.10:
+                    _row_ll = {
                         'Variável': _vn,
                         'r Spearman': f"{best['r']:+.4f}",
                         'Lag óptimo': f"{best['lag']}d",
                         '|r|': best['r_abs'],
                         'N': best['n'],
                         'Direcção': '↘ mais → HRV↓' if best['r'] < 0 else '↗ mais → HRV↑',
-                    })
+                        'periodo': _pl_ll,
+                    }
+                    _rows_ll.append(_row_ll)
+                    _ll_rows_all.append(_row_ll)
 
             if _rows_ll:
                 _df_ll = (pd.DataFrame(_rows_ll)
@@ -1803,6 +1808,9 @@ def tab_correlacoes(da, dw):
     # 6. Perfil multi-período
     if _periodos:
         _all_dl_final.append(pd.DataFrame(_periodos).assign(analise='10-Perfil_multiperiodo'))
+    # 7. Lag Longo (calculado na tab, sem dependência externa)
+    if '_ll_rows_all' in dir() and _ll_rows_all:
+        _all_dl_final.append(pd.DataFrame(_ll_rows_all).assign(analise='11-Lag_longo_0_35d'))
 
     if _all_dl_final:
         import io
