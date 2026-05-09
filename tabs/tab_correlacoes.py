@@ -1336,13 +1336,11 @@ def tab_correlacoes(da, dw):
                                     'strain_7d','pct_z3']
                     if v in _ll_daily.columns and _ll_daily[v].notna().sum() >= 20}
 
-        # Períodos
-        _hoje_ll = pd.Timestamp.now().normalize()
+        # Períodos — só os que têm dados distintos
+        # (2anos e 3anos são idênticos ao 1ano porque o histórico de RPE começa em 2023)
         _periodos_ll_def = [
-            (180,  "180 dias"),
-            (365,  "1 ano"),
-            (730,  "2 anos"),
-            (1095, "3 anos"),
+            (180, "180 dias"),
+            (365, "1 ano"),
         ]
 
         from scipy.stats import spearmanr as _sr_ll
@@ -1398,14 +1396,14 @@ def tab_correlacoes(da, dw):
                     st.info("Sem correlações com |r|>0.10 para este período.")
 
         st.info(
-            "💡 **Conclusões do Auto-Runner (1 ano, hrv, lag_max=35d):**  \n"
-            "• **load_28d** é o preditor mais forte e consistente: r=−0.442 @lag19d  \n"
-            "• **atl** tem lag real de **27 dias** — não 6-13d como CSV antigo indicava  \n"
-            "• **pct_z3** a lag_max=35d inverte de sinal (+0.21 @34d) — possível não-linearidade  \n"
-            "• **strain_7d** tem resposta dupla: pico imediato @3d e sinal crónico até 33d  \n"
-            "• **ctl** tem pico em 14d — estável em todos os lag_max  \n"
-            "• **freq_7d** perde 37% do sinal truncando em 14d — lag real = 25d  \n"
-            "• Lag máximo óptimo = **28 dias** (hrv/hrv_norm) — estável em todos os períodos"
+            "💡 **Conclusões (1 ano, r Spearman, lag 0–35d):**  \n"
+            "• **load_28d** preditor mais forte: r=−0.23 @10d — consistente com Auto-Runner (r=−0.44 @19d)  \n"
+            "• **ATL** r=−0.22 @30d — lag ~30d confirma efeito crónico (Auto-Runner: r=−0.41 @27d)  \n"
+            "• **tsb** r=+0.29 @30d — forma positiva eleva HRV a longo prazo  \n"
+            "• **load_7d** r=−0.23 @27d — carga semanal com lag longo  \n"
+            "• Sinais consistentes com Auto-Runner. r's menores porque N≈200 vs N≈460 do Auto-Runner.  \n\n"
+            "📌 **Nota sobre períodos:** 2anos e 3anos são idênticos ao 1ano porque o histórico de RPE "
+            "começa em Jan 2023 (≈2 anos). Para mais períodos usar Tab HRV Analyzer → Auto-Runner."
         )
 
     st.markdown("---")
