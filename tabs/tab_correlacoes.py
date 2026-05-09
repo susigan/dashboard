@@ -1317,9 +1317,18 @@ def tab_correlacoes(da, dw):
         else:
             _ll_daily['pct_z3'] = np.nan
 
-        # HRV série indexada por Data
+        # HRV série indexada por Data — garantir DatetimeIndex ordenado
         _hrv_idx = (_ll_daily.dropna(subset=['hrv_t'])
+                    .assign(Data=lambda x: pd.to_datetime(x['Data']))
+                    .sort_values('Data')
                     .set_index('Data')['hrv_t'])
+        _hrv_idx.index = pd.to_datetime(_hrv_idx.index)
+
+        # _ll_daily com índice temporal para filtros correctos
+        _ll_daily_idx = (_ll_daily
+                         .assign(Data=lambda x: pd.to_datetime(x['Data']))
+                         .sort_values('Data')
+                         .set_index('Data'))
 
         # Variáveis a testar
         _ll_vars = {v: v for v in ['load','kj','n_sess','ATL','CTL','tsb',
@@ -1343,19 +1352,20 @@ def tab_correlacoes(da, dw):
         _ll_rows_all = []  # acumula todos os períodos para download
 
         for _nd_ll, _pl_ll in _periodos_ll_def:
-            _cut_ll  = _hoje_ll - pd.Timedelta(days=_nd_ll)
-            _hrv_p   = _hrv_idx[_hrv_idx.index >= _cut_ll]
-            _dat_p   = _ll_daily[_ll_daily['Data'] >= _cut_ll].set_index('Data')
+            _cut_ll = pd.Timestamp.now().normalize() - pd.Timedelta(days=_nd_ll)
+            _hrv_p  = _hrv_idx[_hrv_idx.index >= _cut_ll]
+            _dat_p  = _ll_daily_idx[_ll_daily_idx.index >= _cut_ll]
 
             if len(_hrv_p) < 30: continue
 
             _rows_ll = []
             for _vn, _vc in _ll_vars.items():
-                x_full = pd.to_numeric(_dat_p.get(_vc, pd.Series(dtype=float)),
-                                       errors='coerce')
+                if _vc not in _dat_p.columns: continue
+                x_full = pd.to_numeric(_dat_p[_vc], errors='coerce')
                 best = {'lag':0,'r':0,'r_abs':0,'n':0}
                 for _lg in range(0, 36):
                     x_lag = x_full.shift(_lg)
+                    # Alinhar via índice — join por Data
                     _pair = pd.DataFrame({'x': x_lag, 'y': _hrv_p}).dropna()
                     if len(_pair) < 15: continue
                     try:
