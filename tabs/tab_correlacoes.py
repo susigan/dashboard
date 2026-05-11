@@ -1396,14 +1396,20 @@ def tab_correlacoes(da, dw):
                     st.info("Sem correlações com |r|>0.10 para este período.")
 
         st.info(
-            "💡 **Conclusões (1 ano, r Spearman, lag 0–35d):**  \n"
-            "• **load_28d** preditor mais forte: r=−0.23 @10d — consistente com Auto-Runner (r=−0.44 @19d)  \n"
-            "• **ATL** r=−0.22 @30d — lag ~30d confirma efeito crónico (Auto-Runner: r=−0.41 @27d)  \n"
+            "💡 **Conclusões (1 ano, r Spearman, lag 0–35d — HRV absoluto):**  \n"
+            "• **load_28d** r=−0.23 @10d — preditor mais forte e consistente  \n"
+            "• **ATL** r=−0.22 @30d — lag real ~27-30d (carga hoje → HRV em 4 semanas)  \n"
             "• **tsb** r=+0.29 @30d — forma positiva eleva HRV a longo prazo  \n"
-            "• **load_7d** r=−0.23 @27d — carga semanal com lag longo  \n"
-            "• Sinais consistentes com Auto-Runner. r's menores porque N≈200 vs N≈460 do Auto-Runner.  \n\n"
-            "📌 **Nota sobre períodos:** 2anos e 3anos são idênticos ao 1ano porque o histórico de RPE "
-            "começa em Jan 2023 (≈2 anos). Para mais períodos usar Tab HRV Analyzer → Auto-Runner."
+            "• r's menores que Auto-Runner (N≈200 vs N≈460)  \n\n"
+            "🫀 **Estabilidade HRV (CV% como alvo — Auto-Runner 1ano):**  \n"
+            "• **CTLg_Row** r=−0.632 @35d — preditor mais forte de estabilidade ✅ "
+            "(era neutro — o sinal só aparece com lag >14d)  \n"
+            "• **CTLg_Ski** r=−0.560 @35d — segundo preditor de estabilidade ✅  \n"
+            "• **CTLg_Bike** r=−0.459 @24d — estabilizador consistente ✅  \n"
+            "• **CTLg_Run:** neutro em 2025+ — desestabilizador apenas em 2023-2024  \n"
+            "• **ctl_poly2** r=+0.334 — curvatura positiva (CTL a acelerar) prediz instabilidade  \n\n"
+            "📌 **Períodos:** 2anos/3anos = 1ano (histórico RPE desde Jan 2023). "
+            "Para mais períodos: Tab HRV Analyzer → Auto-Runner."
         )
 
     st.markdown("---")
