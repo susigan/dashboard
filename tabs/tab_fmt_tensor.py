@@ -231,13 +231,10 @@ def tab_fmt_tensor(da, wc=None):
     ctl_s    = pd.to_numeric(ld['CTL'], errors='coerce')
     dates    = pd.to_datetime(ld['Data'])
 
-    # Percentile thresholds — últimos 2 anos (mais representativo do atleta actual)
-    # Fallback para todo o histórico se N < 50
-    _kappa_2anos = kappa_s.iloc[max(0, len(kappa_s)-730):]
-    _kappa_ref   = _kappa_2anos if _kappa_2anos.notna().sum() >= 50 else kappa_s
-    q25 = float(_kappa_ref.quantile(0.25))
-    q50 = float(_kappa_ref.quantile(0.50))
-    q75 = float(_kappa_ref.quantile(0.75))
+    # Percentile thresholds from full history
+    q25 = float(kappa_s.quantile(0.25))
+    q50 = float(kappa_s.quantile(0.50))
+    q75 = float(kappa_s.quantile(0.75))
 
     # Last values
     kappa_now = float(kappa_s.dropna().iloc[-1])
@@ -549,6 +546,47 @@ def tab_fmt_tensor(da, wc=None):
                 f"<div><b>{_rcfg['label']}</b><br>"
                 f"<small style='color:var(--text-color);opacity:0.7'>{_rcfg['desc']}</small></div></div>",
                 unsafe_allow_html=True)
+
+    # ── CV% HRV por regime (achado Auto-Runner: intense < recovery) ───────────
+    st.markdown("---")
+    st.markdown("**🫀 CV% HRV por regime — estabilidade autonómica**")
+    st.caption(
+        "CV% HRV rolling 28d. CV% baixo = HRV mais estável = melhor adaptação autonómica. "
+        "⚠️ Regime 'intense' tem CV% mais baixo do que 'recovery' — carga bem gerida "
+        "estabiliza o HRV; recuperação incompleta aumenta a variabilidade."
+    )
+    if 'hrv' in ld.columns and ld['hrv'].notna().sum() >= 20:
+        _ld_cv = ld.copy()
+        _ld_cv['_hrv_cv28'] = (
+            _ld_cv['hrv'].rolling(28, min_periods=14).std() /
+            _ld_cv['hrv'].rolling(28, min_periods=14).mean() * 100
+        )
+        _ld_cv['_regime'] = (regimes + ['none'] * max(0, len(_ld_cv) - len(regimes)))[:len(_ld_cv)]
+        _cv_por_regime = []
+        for _rk_cv in ['intense','silent','normal','super','recovery','overreach']:
+            _sub_cv = _ld_cv[_ld_cv['_regime']==_rk_cv]['_hrv_cv28'].dropna()
+            if len(_sub_cv) < 5: continue
+            _rc_cv = REGIME_CFG.get(_rk_cv, {})
+            _cv_por_regime.append({
+                'Regime': _rc_cv.get('label', _rk_cv),
+                'N dias': len(_sub_cv),
+                'CV% HRV (médio)': f"{_sub_cv.mean():.1f}%",
+                'CV% HRV (mediana)': f"{_sub_cv.median():.1f}%",
+                'HRV médio': f"{_ld_cv[_ld_cv['_regime']==_rk_cv]['hrv'].dropna().mean():.1f}ms",
+                'Estabilidade': ('🟢 Melhor' if _sub_cv.mean() < 40 else
+                                 '🟡 Médio' if _sub_cv.mean() < 46 else '🔴 Alta variabilidade'),
+            })
+        if _cv_por_regime:
+            _df_cv_reg = pd.DataFrame(_cv_por_regime).sort_values('CV% HRV (médio)')
+            st.dataframe(_df_cv_reg, hide_index=True, use_container_width=True)
+            st.info(
+                "💡 **Interpretação:** Regime 'intense' (carga alta estruturada) tende a ter "
+                "CV% mais baixo do que 'recovery'. Isto indica que adaptação real ocorre durante "
+                "a fase de carga — não apenas na recuperação. "
+                "Se 'recovery' tiver CV% alto, pode indicar recuperação incompleta ou efeito residual."
+            )
+    else:
+        st.info("HRV não disponível para calcular CV% por regime.")
 
     # ── SECTION 6: Focal Stress Analysis ─────────────────────────────────────
     st.markdown("---")
