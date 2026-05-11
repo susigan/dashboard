@@ -1,10 +1,6 @@
 from utils.config import *
 from utils.phase_detector import detect_all_phases, phase_summary, PHASE_LABELS
 from utils.helpers import *
-from utils.helpers import (
-    _NLSS_MU_POP, _NLSS_SD_POP,
-    _NLSS_LAMBDA_MAX, _NLSS_N_HALF,
-)
 from utils.data import *
 import streamlit as st
 import pandas as pd
@@ -184,25 +180,20 @@ def tab_pmc(da, wc=None):
     ld['TSB']  = ld['CTL'] - ld['ATL']
 
     # ── FTLM fraccionário — Della Mattia (2025) Dual-Gamma ──────────────────
-    # CACHE via session_state — evita recalcular em cada render.
-    # O @st.cache_data dentro de funções é recriado em cada chamada → anula o cache.
-    # Solução: guardar resultado em session_state com chave baseada em hash leve.
-    _da_key = (str(da_full['Data'].max()) if 'Data' in da_full.columns else '',
-               len(da_full))
-    _wc_key = (str(wc['Data'].max()) if wc is not None and 'Data' in wc.columns else '',
-               len(wc) if wc is not None else 0)
-    _csc_key = f'csc_cache_{_da_key}_{_wc_key}'
+    # Usa calcular_series_carga para fitting de γ_perf (icu_pm_cp) e γ_rec (HRV)
+    # O bloco CTL/ATL/TSB acima é mantido para compatibilidade e velocidade.
+    # O FTLM fraccionário é computado separadamente e adicionado a ld.
+    @st.cache_data(show_spinner="A calcular FTLM fraccionário (γ dual)...", ttl=3600)
+    def _cached_csc(_da_hash, _wc_hash, da, wc_arg):
+        # _da_hash and _wc_hash are used only as cache keys (not computed again)
+        return calcular_series_carga(da, df_wellness=wc_arg, ate_hoje=True)
 
-    if _csc_key not in st.session_state:
-        with st.spinner("A calcular FTLM fraccionário (γ dual)..."):
-            _ld_frac, _info = calcular_series_carga(da_full, df_wellness=wc, ate_hoje=True)
-        st.session_state[_csc_key] = (_ld_frac, _info)
-        # Limpar caches antigos para não acumular memória
-        _old_keys = [k for k in st.session_state if k.startswith('csc_cache_') and k != _csc_key]
-        for _ok in _old_keys:
-            del st.session_state[_ok]
-    else:
-        _ld_frac, _info = st.session_state[_csc_key]
+    # Cache key: tuple of (last date, n_rows) — recomputes only when data changes
+    _da_key  = (str(da_full['Data'].max()) if 'Data' in da_full.columns else '',
+                len(da_full))
+    _wc_key  = (str(wc['Data'].max())      if wc is not None and 'Data' in wc.columns else '',
+                len(wc) if wc is not None else 0)
+    _ld_frac, _info = _cached_csc(_da_key, _wc_key, da_full, wc)
 
     # Guardar no session_state para que tab_visao_geral possa ler κ sem recalcular
     if len(_ld_frac) > 0:
@@ -565,17 +556,34 @@ def tab_pmc(da, wc=None):
 
     st.subheader("📊 Resumo PMC")
     tsb_v = u['TSB']
-    if   tsb_v >  25: tsb_i = "🟢 Forma — pronto para competir/esforço máximo"
-    elif tsb_v >   5: tsb_i = "🟡 Fresco — bom equilíbrio treino/recuperação"
-    elif tsb_v > -10: tsb_i = "🟠 Neutro — zona de manutenção"
-    elif tsb_v > -25: tsb_i = "🔴 Fatigado — carga elevada, monitorar recuperação"
-    else:              tsb_i = "⛔ Sobrecarregado — reduzir carga imediatamente"
+    atl_v = u['ATL']
+    ctl_v = u['CTL']
+    # Zonas calibradas para este atleta (Auto-Runner 1ano, estado óptimo CV%<Q33+HRV>média)
+    # Estado óptimo: ATL=40-61, CTL=46-53, TSB=-12 a +3  |  Estado mau: ATL=37, CTL=37, TSB=-0.2
+    if   tsb_v >   3: tsb_i = "🟢 Forma — TSB acima do range óptimo (+3). Janela de performance."
+    elif tsb_v >= -12: tsb_i = "🟢 Óptimo — TSB no range calibrado (−12 a +3). Estado de adaptação."
+    elif tsb_v >= -20: tsb_i = "🟡 Atenção — TSB abaixo do range óptimo. Monitorar HRV."
+    elif tsb_v >= -30: tsb_i = "🔴 Fatigado — carga elevada. Reduzir intensidade."
+    else:              tsb_i = "⛔ Sobrecarregado — reduzir carga imediatamente."
+
+    # ATL calibrado: óptimo 40-61
+    if   atl_v > 63:  atl_i = "⚠️ Acima do range óptimo (>63) — risco HRV instável em ~27d"
+    elif atl_v >= 40: atl_i = "✅ Range óptimo (40–61) — zone de adaptação e HRV estável"
+    elif atl_v >= 25: atl_i = "🟡 Abaixo do range óptimo (<40) — carga insuficiente para adaptação"
+    else:             atl_i = "⬇️ ATL muito baixo — fase de deload ou inactividade"
+
+    # CTL calibrado: óptimo 46-53
+    if   ctl_v > 55:  ctl_i = "🟡 CTL alto (>55) — monitorar CV% HRV"
+    elif ctl_v >= 46: ctl_i = "✅ Range óptimo (46–53) — fitness na zona calibrada"
+    elif ctl_v >= 35: ctl_i = "🟡 CTL em crescimento — abaixo do óptimo calibrado"
+    else:             ctl_i = "⬇️ CTL baixo — condição base em desenvolvimento"
+
     resumo = pd.DataFrame([
-        {'Métrica': 'CTL (Fitness atual)',  'Valor': f"{u['CTL']:.1f}",
-         'Interpretação': 'Capacidade aeróbica crónica (42d). Maior = melhor condição.'},
-        {'Métrica': 'ATL (Fadiga atual)',   'Valor': f"{u['ATL']:.1f}",
-         'Interpretação': 'Fadiga aguda (7d). Maior = mais fatigado recentemente.'},
-        {'Métrica': 'TSB (Forma atual)',    'Valor': f"{u['TSB']:+.1f}",
+        {'Métrica': 'CTL (Fitness atual)',  'Valor': f"{ctl_v:.1f}",
+         'Interpretação': ctl_i},
+        {'Métrica': 'ATL (Fadiga atual)',   'Valor': f"{atl_v:.1f}",
+         'Interpretação': atl_i},
+        {'Métrica': 'TSB (Forma atual)',    'Valor': f"{tsb_v:+.1f}",
          'Interpretação': tsb_i},
         {'Métrica': 'CTL max histórico',    'Valor': f"{ld['CTL'].max():.1f}",
          'Interpretação': 'Pico de fitness no período carregado.'},
@@ -583,6 +591,8 @@ def tab_pmc(da, wc=None):
          'Interpretação': 'Pico de fadiga no período carregado.'},
     ])
     st.dataframe(resumo, width="stretch", hide_index=True)
+    st.caption("⚙️ Zonas calibradas para este atleta — Auto-Runner 1ano (CV%<Q33 + HRV>média, N=167d). "
+               "ATL óptimo 40–61 | CTL óptimo 46–53 | TSB óptimo −12 a +3.")
 
     # ── FTLM — explicação + resultado atual ──
     st.markdown("---")
@@ -869,591 +879,6 @@ def tab_pmc(da, wc=None):
         except Exception as _fmt_err:
             st.caption(f"ℹ️ FMT tensor a calcular no próximo carregamento. ({type(_fmt_err).__name__})")
 
-
-
-
-    # ════════════════════════════════════════════════════════════════════════
-    # NLSS — Modelo Banister com K1/K2/T1/T2 individualizados
-    # "Estimating K1, K2, T1, T2 Using Hierarchical Bayesian NLSS"
-    # Gabriel Della Mattia · AGMT2 · 2026
-    # ════════════════════════════════════════════════════════════════════════
-    st.markdown("---")
-    st.subheader("🔬 Modelo Banister NLSS — K₁K₂T₁T₂ Individualizados")
-    st.caption(
-        "Estimação Bayesiana hierárquica dos parâmetros do IR-Model. "
-        "**TrainingPeaks usa K₁=K₂=1 (fixo para toda a população)** — "
-        "subestima K₁ por ×2.9 e K₂ por ×4.1 (Della Mattia, AGMT2 2026). "
-        "O NLSS recalibra semanalmente numa janela de 90 dias com prior da coorte AGMT2 (N=30)."
-    )
-
-    # ── Carregar ou calcular NLSS ─────────────────────────────────────────────
-    _nlss_cache_key = 'nlss_cache'
-    _nlss_run = st.button("⚡ Calcular NLSS (K₁K₂T₁T₂)", type="primary",
-                          key="pmc_nlss_run",
-                          help="Corre o Algorithm 1 sobre o histórico completo. "
-                               "Pode demorar 10-30s dependendo do tamanho do histórico.")
-    if _nlss_run:
-        with st.spinner("A correr Algorithm 1 — Hierarchical Bayesian NLSS..."):
-            _nlss_res = calcular_nlss(da, wc)
-            st.session_state[_nlss_cache_key] = _nlss_res
-
-    _nlss = st.session_state.get(_nlss_cache_key, None)
-
-    if _nlss is None:
-        st.info(
-            "Clica em **Calcular NLSS** para estimar K₁, K₂, T₁, T₂ individualizados. "
-            "O algoritmo usa os MMP PRs da sheet como testes de performance "
-            "e o historial de `icu_training_load` como série de carga diária."
-        )
-    elif _nlss.get('error'):
-        st.error(f"❌ NLSS: {_nlss['error']}")
-    else:
-        K1_nlss = _nlss['K1']
-        K2_nlss = _nlss['K2']
-        T1_nlss = _nlss['T1']
-        T2_nlss = _nlss['T2']
-        lam_n   = _nlss['lambda_n']
-        n_tests = _nlss['n_tests']
-
-        # ── Cards K1/K2/T1/T2 ────────────────────────────────────────────────
-        st.markdown("#### Parâmetros estimados")
-        _nc1, _nc2, _nc3, _nc4, _nc5, _nc6 = st.columns(6)
-
-        _nc1.metric("K₁ (fitness gain)",
-                    f"{K1_nlss:.3f}",
-                    delta=f"TP: 1.000  |  ×{K1_nlss:.2f}",
-                    delta_color="normal",
-                    help="Ganho de fitness por unidade de TSS. "
-                         "TrainingPeaks usa 1.0 — subestimado por ×2.9 na média AGMT2.")
-        _nc2.metric("K₂ (fatigue gain)",
-                    f"{K2_nlss:.3f}",
-                    delta=f"TP: 1.000  |  ×{K2_nlss:.2f}",
-                    delta_color="normal",
-                    help="Ganho de fadiga por unidade de TSS. "
-                         "TrainingPeaks usa 1.0 — subestimado por ×4.1 na média AGMT2.")
-        _nc3.metric("T₁ (fitness τ, dias)",
-                    f"{T1_nlss:.1f}d",
-                    delta=f"TP: 42.0d  |  Δ{T1_nlss-42:.1f}d",
-                    delta_color="off",
-                    help="Constante de tempo do fitness (decaimento positivo). "
-                         "TrainingPeaks fixa em 42 dias para todos.")
-        _nc4.metric("T₂ (fatigue τ, dias)",
-                    f"{T2_nlss:.1f}d",
-                    delta=f"TP: 7.0d  |  Δ{T2_nlss-7:.1f}d",
-                    delta_color="off",
-                    help="Constante de tempo da fadiga (decaimento negativo). "
-                         "TrainingPeaks fixa em 7 dias para todos.")
-        _nc5.metric("λ (prior weight)",
-                    f"{lam_n:.3f}",
-                    delta="prior domina" if lam_n > 1.84 else "dados dominam",
-                    delta_color="off",
-                    help="λ=5.0: prior AGMT2 domina (sem testes). "
-                         "λ≈0.67: dados individuais dominam (6+ testes). "
-                         f"λ(n={n_tests}) = {lam_n:.3f}")
-        _nc6.metric("Testes usados",
-                    f"{n_tests}",
-                    delta="Prior domina" if n_tests < 3 else
-                          ("Calibração parcial" if n_tests < 6 else "Calibração forte"),
-                    delta_color="normal" if n_tests >= 3 else "inverse",
-                    help="Número de MMP PRs na janela de 90 dias. "
-                         "≥3 testes distribuídos → melhor que TrainingPeaks. "
-                         "≥6 testes → dados dominam o prior.")
-
-        # Fonte dos testes
-        _fonte = _nlss.get('fonte_testes', 'N/A')
-        if 'fallback' in _fonte.lower():
-            st.warning(
-                f"⚠️ **Fonte: {_fonte}** — Bike tem menos de 5 testes na janela de 90 dias. "
-                f"A análise usa múltiplas modalidades — K₁/K₂ têm menor precisão fisiológica. "
-                f"Para melhor calibração, realiza mais TTs de Bike."
-            )
-        else:
-            st.caption(f"📊 Fonte de testes: **{_fonte}** · top 10% dos últimos 30 dias · intervalo mínimo 14 dias")
-
-        # Aviso se prior domina completamente
-        if n_tests == 0:
-            st.warning(
-                "⚠️ **Sem testes de performance na janela de 90 dias.** "
-                "O NLSS usa o prior AGMT2 (K₁=2.87, K₂=4.09, T₁=40.6d, T₂=6.6d). "
-                "Já é melhor que TrainingPeaks (K₁=K₂=1), mas não é individualizado. "
-                "Para calibração individual: realiza um esforço máximo (TT 20min ou 5min) "
-                "e aguarda que o PR seja registado na sheet."
-            )
-        elif n_tests < 3:
-            st.info(
-                f"ℹ️ {n_tests} teste(s) disponível(is). "
-                "Com 3+ testes em fases distintas (Base/Build/Taper) a calibração melhora. "
-                f"Prior AGMT2 ainda tem peso significativo (λ={lam_n:.2f})."
-            )
-
-        st.markdown("---")
-
-        # ── Tabela comparativa dos 3 modelos ────────────────────────────────
-        st.markdown("#### Comparação: TrainingPeaks vs NLSS vs Prior AGMT2")
-        st.caption(
-            "Replica a Tabela 3 do paper. "
-            "Erro de taper = dias de diferença na previsão do pico de forma."
-        )
-
-        _comp_rows = [
-            {
-                'Método':               'TrainingPeaks (fixo)',
-                'K₁':                   '1.000',
-                'K₂':                   '1.000',
-                'T₁ (d)':               '42.0',
-                'T₂ (d)':               '7.0',
-                'Individualização':     '❌ Nenhuma',
-                'Recalibração':         '❌ Nunca',
-                'Erro taper (sim)':     '±5–8d',
-                'Estado':               '⚠️ Actual (CTL/ATL do dashboard)',
-            },
-            {
-                'Método':               'Prior AGMT2 (N=30)',
-                'K₁':                   f'{_NLSS_MU_POP[0]:.3f}',
-                'K₂':                   f'{_NLSS_MU_POP[1]:.3f}',
-                'T₁ (d)':               f'{_NLSS_MU_POP[2]:.1f}',
-                'T₂ (d)':               f'{_NLSS_MU_POP[3]:.1f}',
-                'Individualização':     '🟡 População (N=30)',
-                'Recalibração':         '✅ Semanal (prior)',
-                'Erro taper (sim)':     '±3–5d',
-                'Estado':               '✅ Disponível sem testes',
-            },
-            {
-                'Método':               f'NLSS Bayesiano (n={n_tests} testes)',
-                'K₁':                   f'{K1_nlss:.3f}',
-                'K₂':                   f'{K2_nlss:.3f}',
-                'T₁ (d)':               f'{T1_nlss:.1f}',
-                'T₂ (d)':               f'{T2_nlss:.1f}',
-                'Individualização':     '✅ Individual (este atleta)',
-                'Recalibração':         '✅ Semanal (90d window)',
-                'Erro taper (sim)':     '±1–2d (≥3 testes)',
-                'Estado':               '✅ Calculado agora',
-            },
-        ]
-        st.dataframe(pd.DataFrame(_comp_rows), hide_index=True, use_container_width=True)
-
-        # Data mínima para todos os gráficos NLSS — definida aqui uma vez
-        _nlss_date_min = pd.Timestamp('2020-01-01')
-
-        # ── Gráfico principal — CTL/ATL comparação ─────────────────────────
-        st.markdown("#### CTL / ATL — TrainingPeaks vs NLSS")
-        st.caption(
-            "Linha sólida = NLSS com K₁/K₂ individualizados. "
-            "Linha tracejada = TrainingPeaks (K₁=K₂=1, span 42/7). "
-            "Escala diferente: NLSS tem valores ~K₁× maiores que TP."
-        )
-
-        # Limitar gráfico CTL/ATL a partir de 2020
-        _ph_dates  = _nlss['CTL_nlss'].index
-        _ph_mask   = _ph_dates >= _nlss_date_min
-        _ph_dates  = _ph_dates[_ph_mask]
-        _ctl_nlss_plot = _nlss['CTL_nlss'].values[_ph_mask]
-        _atl_nlss_plot = _nlss['ATL_nlss'].values[_ph_mask]
-        _tsb_nlss_plot = _nlss['TSB_nlss'].values[_ph_mask]
-        _ctl_tp_plot   = _nlss['CTL_tp'].values[_ph_mask]
-        _atl_tp_plot   = _nlss['ATL_tp'].values[_ph_mask]
-        _tsb_tp_plot   = _nlss['TSB_tp'].values[_ph_mask]
-
-        _fig_nlss  = make_subplots(
-            rows=2, cols=1, shared_xaxes=True,
-            row_heights=[0.55, 0.45], vertical_spacing=0.06,
-            subplot_titles=['CTL / ATL — NLSS vs TrainingPeaks',
-                            'TSB (Forma) — NLSS vs TrainingPeaks']
-        )
-
-        # CTL
-        _fig_nlss.add_trace(go.Scatter(
-            x=_ph_dates, y=_ctl_nlss_plot,
-            mode='lines', name=f'CTL NLSS (K₁={K1_nlss:.2f}, T₁={T1_nlss:.0f}d)',
-            line=dict(color='#2980b9', width=2.5),
-            hovertemplate='%{x|%d/%m/%Y}<br>CTL NLSS: <b>%{y:.1f}</b><extra></extra>'
-        ), row=1, col=1)
-        _fig_nlss.add_trace(go.Scatter(
-            x=_ph_dates, y=_ctl_tp_plot,
-            mode='lines', name='CTL TP (K₁=1, T₁=42d)',
-            line=dict(color='#2980b9', width=1.5, dash='dash'),
-            hovertemplate='%{x|%d/%m/%Y}<br>CTL TP: <b>%{y:.1f}</b><extra></extra>'
-        ), row=1, col=1)
-
-        # ATL
-        _fig_nlss.add_trace(go.Scatter(
-            x=_ph_dates, y=_atl_nlss_plot,
-            mode='lines', name=f'ATL NLSS (K₂={K2_nlss:.2f}, T₂={T2_nlss:.0f}d)',
-            line=dict(color='#e74c3c', width=2.5),
-            hovertemplate='%{x|%d/%m/%Y}<br>ATL NLSS: <b>%{y:.1f}</b><extra></extra>'
-        ), row=1, col=1)
-        _fig_nlss.add_trace(go.Scatter(
-            x=_ph_dates, y=_atl_tp_plot,
-            mode='lines', name='ATL TP (K₂=1, T₂=7d)',
-            line=dict(color='#e74c3c', width=1.5, dash='dash'),
-            hovertemplate='%{x|%d/%m/%Y}<br>ATL TP: <b>%{y:.1f}</b><extra></extra>'
-        ), row=1, col=1)
-
-        # TSB
-        # TSB agora em _tsb_nlss_plot e _tsb_tp_plot (com filtro 2020)
-        _fig_nlss.add_trace(go.Scatter(
-            x=_ph_dates, y=_tsb_nlss_plot,
-            mode='lines', name='TSB NLSS',
-            line=dict(color='#27ae60', width=2.5),
-            fill='tozeroy',
-            fillcolor='rgba(39,174,96,0.08)',
-            hovertemplate='%{x|%d/%m/%Y}<br>TSB NLSS: <b>%{y:.1f}</b><extra></extra>'
-        ), row=2, col=1)
-        _fig_nlss.add_trace(go.Scatter(
-            x=_ph_dates, y=_tsb_tp_plot,
-            mode='lines', name='TSB TP',
-            line=dict(color='#27ae60', width=1.5, dash='dash'),
-            hovertemplate='%{x|%d/%m/%Y}<br>TSB TP: <b>%{y:.1f}</b><extra></extra>'
-        ), row=2, col=1)
-
-        # Linha y=0 no TSB
-        _fig_nlss.add_hline(y=0, line_dash='dot',
-                            line_color='rgba(150,150,150,0.5)',
-                            line_width=1, row=2, col=1)
-
-        # Pontos de teste
-        if _nlss['test_dates']:
-            _td_idx  = [pd.Timestamp(d) for d in _nlss['test_dates']]
-            _tw_vals = _nlss['test_watts']
-            # Escalar watts para o eixo CTL (para visualizar no mesmo gráfico)
-            _tw_scaled = [w / max(_tw_vals) * float(_nlss['CTL_nlss'].max()) * 0.8
-                          for w in _tw_vals]
-            _fig_nlss.add_trace(go.Scatter(
-                x=_td_idx, y=_tw_scaled,
-                mode='markers',
-                name='Testes MMP (escalados)',
-                marker=dict(symbol='star', size=14, color='#f39c12',
-                            line=dict(width=1.5, color='#2c3e50')),
-                text=[f"{w:.0f}W" for w in _tw_vals],
-                textposition='top center',
-                hovertemplate='%{x|%d/%m/%Y}<br>MMP: <b>%{text}</b><extra></extra>'
-            ), row=1, col=1)
-
-        _fig_nlss.update_layout(
-            paper_bgcolor='white', plot_bgcolor='white',
-            font=dict(color='#111', size=11),
-            height=520, hovermode='x unified',
-            margin=dict(t=60, b=70, l=60, r=60),
-            legend=dict(orientation='h', y=-0.14,
-                        font=dict(color='#111', size=10),
-                        bgcolor='rgba(255,255,255,0.9)'),
-        )
-        _fig_nlss.update_xaxes(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111'))
-        _fig_nlss.update_yaxes(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111'))
-
-        st.plotly_chart(_fig_nlss, use_container_width=True,
-                        config={'displayModeBar': False, 'responsive': True,
-                                'scrollZoom': False},
-                        key='pmc_nlss_ctl_atl')
-
-        # ── p̂(t) — Performance projectada ──────────────────────────────────
-        st.markdown("#### p̂(t) — Performance projectada pelo modelo Banister NLSS")
-        st.caption(
-            f"p̂(t) = p₀ + Σ TSS(τ) × [K₁×exp(-(t-τ)/T₁) - K₂×exp(-(t-τ)/T₂)]  "
-            f"com K₁={K1_nlss:.3f}, K₂={K2_nlss:.3f}, T₁={T1_nlss:.1f}d, T₂={T2_nlss:.1f}d. "
-            f"O pico de p̂(t) indica o dia óptimo de competição (t*)."
-        )
-
-        _phat = _nlss['p_hat_series'].dropna()
-        _phat = _phat[_phat.index >= _nlss_date_min]
-        if len(_phat) > 0:
-            # Pico de forma previsto
-            _tstar_idx = _phat.idxmax()
-            _tstar_val = float(_phat.max())
-            _today_val = float(_phat.iloc[-1]) if len(_phat) > 0 else np.nan
-
-            # Cards
-            _pc1, _pc2, _pc3 = st.columns(3)
-            _pc1.metric("p̂ hoje",
-                        f"{_today_val:.1f}" if not np.isnan(_today_val) else "—",
-                        help="Performance projectada para hoje pelo modelo NLSS")
-            _pc2.metric("t* (pico de forma)",
-                        _tstar_idx.strftime('%d/%m/%Y') if pd.notna(_tstar_idx) else "—",
-                        delta=f"p̂={_tstar_val:.1f}",
-                        delta_color="normal",
-                        help="Dia com maior performance projectada na série histórica")
-            _days_to_tstar = (pd.Timestamp.now().normalize() - _tstar_idx).days
-            _pc3.metric("Distância a t*",
-                        f"{abs(_days_to_tstar)}d",
-                        delta="passado" if _days_to_tstar > 0 else "futuro",
-                        delta_color="off" if _days_to_tstar > 0 else "normal")
-
-            # Gráfico p̂(t)
-            _fig_phat = go.Figure()
-
-            # Linha p̂(t)
-            _fig_phat.add_trace(go.Scatter(
-                x=_phat.index, y=_phat.values,
-                mode='lines', name='p̂(t) NLSS',
-                line=dict(color='#8e44ad', width=2.5),
-                fill='tozeroy', fillcolor='rgba(142,68,173,0.07)',
-                hovertemplate='%{x|%d/%m/%Y}<br>p̂: <b>%{y:.1f}</b><extra></extra>'
-            ))
-
-            # Pico t*
-            # add_vline com datas é instável em várias versões Plotly
-            # Usar add_shape + add_annotation — sempre compatível
-            if pd.notna(_tstar_idx):
-                _tstar_ms = int(_tstar_idx.timestamp() * 1000)
-                _fig_phat.add_shape(
-                    type='line',
-                    x0=_tstar_ms, x1=_tstar_ms, y0=0, y1=1,
-                    xref='x', yref='paper',
-                    line=dict(color='#f39c12', width=2, dash='dash')
-                )
-                _fig_phat.add_annotation(
-                    x=_tstar_ms, y=0.97, xref='x', yref='paper',
-                    text=f"t* = {_tstar_idx.strftime('%d/%m/%Y')}",
-                    showarrow=False,
-                    font=dict(color='#f39c12', size=11),
-                    xanchor='left', bgcolor='rgba(255,255,255,0.8)',
-                    bordercolor='#f39c12', borderwidth=1
-                )
-
-            # Pontos de teste reais
-            if _nlss['test_dates']:
-                _fig_phat.add_trace(go.Scatter(
-                    x=[pd.Timestamp(d) for d in _nlss['test_dates']],
-                    y=_nlss['test_watts'],
-                    mode='markers+text',
-                    name='Performance real (MMP)',
-                    marker=dict(symbol='star', size=14, color='#f39c12',
-                                line=dict(width=1.5, color='#2c3e50')),
-                    text=[f"{w:.0f}W" for w in _nlss['test_watts']],
-                    textposition='top center',
-                    hovertemplate='%{x|%d/%m/%Y}<br>MMP: <b>%{text}</b><extra></extra>'
-                ))
-
-            _fig_phat.update_layout(
-                paper_bgcolor='white', plot_bgcolor='white',
-                font=dict(color='#111', size=11),
-                height=380, hovermode='x unified',
-                margin=dict(t=40, b=60, l=60, r=30),
-                legend=dict(orientation='h', y=-0.18,
-                            font=dict(color='#111', size=10),
-                            bgcolor='rgba(255,255,255,0.9)'),
-                xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')),
-                yaxis=dict(title='p̂(t) (u.a.)', showgrid=True,
-                           gridcolor='#eee', tickfont=dict(color='#111')),
-            )
-            st.plotly_chart(_fig_phat, use_container_width=True,
-                            config={'displayModeBar': False, 'responsive': True,
-                                    'scrollZoom': False},
-                            key='pmc_nlss_phat')
-
-        # ── Curva de influência I(τ,t) ───────────────────────────────────────
-        st.markdown("#### Curva de Influência I(τ,t)")
-        st.caption(
-            "Decompõe o efeito de uma sessão de treino ao longo do tempo. "
-            "Zero-crossing = dia em que o efeito líquido passa de negativo para positivo. "
-            "Pico = máximo benefício de uma sessão. "
-            "Comparação directa com TrainingPeaks (K₁=K₂=1)."
-        )
-
-        _tau_range = np.arange(0, 90)
-        _I_nlss    = K1_nlss * np.exp(-_tau_range / T1_nlss) - K2_nlss * np.exp(-_tau_range / T2_nlss)
-        _I_tp      = 1.0 * np.exp(-_tau_range / 42.0) - 1.0 * np.exp(-_tau_range / 7.0)
-        _I_prior   = _NLSS_MU_POP[0] * np.exp(-_tau_range / _NLSS_MU_POP[2]) -                      _NLSS_MU_POP[1] * np.exp(-_tau_range / _NLSS_MU_POP[3])
-
-        # Zero-crossings
-        def _zero_crossing(arr):
-            for i in range(1, len(arr)):
-                if arr[i-1] < 0 and arr[i] >= 0:
-                    return i
-            return None
-
-        _zc_nlss  = _zero_crossing(_I_nlss)
-        _zc_tp    = _zero_crossing(_I_tp)
-        _zc_prior = _zero_crossing(_I_prior)
-
-        _fig_inf = go.Figure()
-        _fig_inf.add_hline(y=0, line_dash='solid', line_color='rgba(150,150,150,0.5)', line_width=1)
-
-        _fig_inf.add_trace(go.Scatter(
-            x=_tau_range, y=_I_nlss,
-            mode='lines', name=f'NLSS (K₁={K1_nlss:.2f}, K₂={K2_nlss:.2f})',
-            line=dict(color='#8e44ad', width=3),
-            hovertemplate='Dia %{x}d: <b>%{y:.3f}</b> (NLSS)<extra></extra>'
-        ))
-        _fig_inf.add_trace(go.Scatter(
-            x=_tau_range, y=_I_tp,
-            mode='lines', name='TrainingPeaks (K₁=K₂=1)',
-            line=dict(color='#7f8c8d', width=1.5, dash='dot'),
-            hovertemplate='Dia %{x}d: <b>%{y:.3f}</b> (TP)<extra></extra>'
-        ))
-        _fig_inf.add_trace(go.Scatter(
-            x=_tau_range, y=_I_prior,
-            mode='lines', name='Prior AGMT2 (K₁=2.87, K₂=4.09)',
-            line=dict(color='#2980b9', width=1.5, dash='dash'),
-            hovertemplate='Dia %{x}d: <b>%{y:.3f}</b> (Prior)<extra></extra>'
-        ))
-
-        # Marcar zero-crossings
-        for _zc, _cor, _lbl in [
-            (_zc_nlss, '#8e44ad', 'NLSS'),
-            (_zc_tp, '#7f8c8d', 'TP'),
-            (_zc_prior, '#2980b9', 'Prior'),
-        ]:
-            if _zc is not None:
-                # add_vline com valor numérico (dias) — compatível
-                _fig_inf.add_shape(
-                    type='line', x0=_zc, x1=_zc, y0=0, y1=1,
-                    xref='x', yref='paper',
-                    line=dict(color=_cor, width=1, dash='dot')
-                )
-                _fig_inf.add_annotation(
-                    x=_zc, y=0.05, xref='x', yref='paper',
-                    text=f"{_lbl}:{_zc}d",
-                    showarrow=False,
-                    font=dict(color=_cor, size=9),
-                    xanchor='left'
-                )
-
-        _fig_inf.update_layout(
-            paper_bgcolor='white', plot_bgcolor='white',
-            font=dict(color='#111', size=11),
-            height=360, hovermode='x unified',
-            margin=dict(t=40, b=70, l=60, r=30),
-            legend=dict(orientation='h', y=-0.20,
-                        font=dict(color='#111', size=10),
-                        bgcolor='rgba(255,255,255,0.9)'),
-            xaxis=dict(title='Dias após a sessão (τ)', showgrid=True,
-                       gridcolor='#eee', tickfont=dict(color='#111')),
-            yaxis=dict(title='I(τ,t)', showgrid=True,
-                       gridcolor='#eee', tickfont=dict(color='#111')),
-        )
-        st.plotly_chart(_fig_inf, use_container_width=True,
-                        config={'displayModeBar': False, 'responsive': True,
-                                'scrollZoom': False},
-                        key='pmc_nlss_influence')
-
-        # ── Taper error — implicação prática ─────────────────────────────────
-        if _zc_nlss and _zc_tp:
-            _taper_diff = abs(_zc_nlss - _zc_tp)
-            if _taper_diff >= 3:
-                st.warning(
-                    f"⚠️ **Diferença de taper: {_taper_diff} dias.** "
-                    f"O NLSS indica zero-crossing em {_zc_nlss}d após sessão "
-                    f"vs {_zc_tp}d do TrainingPeaks. "
-                    f"Para T₁={T1_nlss:.0f}d (vs 42d TP), o taper ideal "
-                    f"{'é mais curto' if T1_nlss < 42 else 'é mais longo'} do que o TP indica. "
-                    f"Usar o CTL/ATL do TP pode atrasar/adiantar a competição "
-                    f"em {_taper_diff} dias."
-                )
-
-        # ── Download CSV NLSS ─────────────────────────────────────────────────
-        _nlss_dl = pd.DataFrame({
-            'Data':     _nlss['p_hat_series'].index.strftime('%Y-%m-%d'),
-            'p_hat':    _nlss['p_hat_series'].round(3),
-            'CTL_nlss': _nlss['CTL_nlss'].round(3),
-            'ATL_nlss': _nlss['ATL_nlss'].round(3),
-            'TSB_nlss': _nlss['TSB_nlss'].round(3),
-            'CTL_tp':   _nlss['CTL_tp'].round(3),
-            'ATL_tp':   _nlss['ATL_tp'].round(3),
-            'TSB_tp':   _nlss['TSB_tp'].round(3),
-        })
-        # ── Dropdown de download ─────────────────────────────────────────────
-        st.markdown("#### 📥 Download resultados NLSS")
-        _dl_opts = {
-            "CTL/ATL/TSB/p̂ — completo (desde 2020)": "completo",
-            "Apenas K₁K₂T₁T₂ por semana (histórico de calibração)": "parametros",
-            "Testes de performance usados (MMP PRs)": "testes",
-            "Comparação NLSS vs TrainingPeaks — métricas actuais": "comparacao",
-        }
-        _dl_choice = st.selectbox(
-            "Seleccionar dados para download",
-            list(_dl_opts.keys()),
-            key="nlss_dl_choice"
-        )
-        _dl_type = _dl_opts[_dl_choice]
-
-        if _dl_type == "completo":
-            _df_export = _nlss_dl
-            _fname = "atheltica_nlss_completo.csv"
-
-        elif _dl_type == "parametros":
-            _hist = _nlss.get('history', [])
-            if _hist:
-                _hist_df = pd.DataFrame(_hist)
-                # Converter índice de dia para data
-                _date0 = pd.Timestamp(_nlss['p_hat_series'].index[0])
-                _hist_df['Data'] = _hist_df['day'].apply(
-                    lambda d: (_date0 + pd.Timedelta(days=int(d))).strftime('%Y-%m-%d'))
-                _df_export = _hist_df[['Data','K1','K2','T1','T2','lambda','n_tests']].copy()
-                _df_export.columns = ['Data','K₁','K₂','T₁(d)','T₂(d)','λ','n_testes']
-            else:
-                _df_export = pd.DataFrame({'info': ['Sem histórico de calibração disponível']})
-            _fname = "atheltica_nlss_parametros_semanais.csv"
-
-        elif _dl_type == "testes":
-            if _nlss.get('test_dates') and _nlss.get('test_watts'):
-                _df_export = pd.DataFrame({
-                    'Data':      [str(d) for d in _nlss['test_dates']],
-                    'Watts_MMP': _nlss['test_watts'],
-                })
-            else:
-                _df_export = pd.DataFrame({'info': ['Sem testes MMP PR disponíveis']})
-            _fname = "atheltica_nlss_testes_mmp.csv"
-
-        else:  # comparacao
-            _df_export = pd.DataFrame({
-                'Método':           ['TrainingPeaks (fixo)', 'Prior AGMT2', f'NLSS (n={n_tests})'],
-                'K₁':               [1.0, _NLSS_MU_POP[0], round(K1_nlss, 3)],
-                'K₂':               [1.0, _NLSS_MU_POP[1], round(K2_nlss, 3)],
-                'T₁(d)':            [42.0, _NLSS_MU_POP[2], round(T1_nlss, 1)],
-                'T₂(d)':            [7.0,  _NLSS_MU_POP[3], round(T2_nlss, 1)],
-                'CTL_actual':       [round(float(_nlss['CTL_tp'].iloc[-1]),2),
-                                     '—',
-                                     round(float(_nlss['CTL_nlss'].iloc[-1]),2)],
-                'ATL_actual':       [round(float(_nlss['ATL_tp'].iloc[-1]),2),
-                                     '—',
-                                     round(float(_nlss['ATL_nlss'].iloc[-1]),2)],
-                'TSB_actual':       [round(float(_nlss['TSB_tp'].iloc[-1]),2),
-                                     '—',
-                                     round(float(_nlss['TSB_nlss'].iloc[-1]),2)],
-                'lambda_actual':    ['N/A', f'{_NLSS_LAMBDA_MAX:.1f}', round(lam_n, 3)],
-            })
-            _fname = "atheltica_nlss_comparacao.csv"
-
-        st.download_button(
-            f"⬇️ Download: {_dl_choice[:50]}",
-            _df_export.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
-            _fname, "text/csv",
-            key="pmc_nlss_dl_btn"
-        )
-
-        # ── Nota metodológica ─────────────────────────────────────────────────
-        with st.expander("ℹ️ Metodologia — NLSS Hierárquico Bayesiano"):
-            st.markdown(f"""
-**Algorithm 1 — Recalibração Semanal com Janela 90 dias**
-
-O NLSS estima {{K₁, K₂, T₁, T₂}} minimizando uma função de custo regularizada:
-
-`L(θ) = L_data(θ) + λ(n) × L_prior(θ)`
-
-- **L_data** = MSE entre performance prevista p̂ e MMP PRs reais
-- **L_prior** = distância de Mahalanobis ao prior AGMT2 (Eq. 6b)
-- **λ(n) = {_NLSS_LAMBDA_MAX} × exp(-n/{_NLSS_N_HALF})** — decresce com mais testes
-
-**Prior AGMT2 (N=30 atletas):**
-
-| Parâmetro | μ_pop | σ | TrainingPeaks |
-|---|---|---|---|
-| K₁ | {_NLSS_MU_POP[0]:.3f} | {_NLSS_SD_POP[0]:.3f} | 1.000 (×{_NLSS_MU_POP[0]:.1f} subestimado) |
-| K₂ | {_NLSS_MU_POP[1]:.3f} | {_NLSS_SD_POP[1]:.3f} | 1.000 (×{_NLSS_MU_POP[1]:.1f} subestimado) |
-| T₁ | {_NLSS_MU_POP[2]:.1f}d | {_NLSS_SD_POP[2]:.2f}d | 42.0d |
-| T₂ | {_NLSS_MU_POP[3]:.1f}d | {_NLSS_SD_POP[3]:.3f}d | 7.0d |
-
-**Correlações do cohort (off-diagonal significativas):**
-- ρ(K₁,K₂) = +0.63 — atletas que acumulam fitness rápido também acumulam fadiga
-- ρ(K₁,T₁) = -0.41 — adaptação rápida associada a decaimento mais rápido
-
-**Testes usados:** MMP PRs da sheet (`mmp20_pr_w`, `mmp5_pr_w`, `mmp12_pr_w`)
-onde `is_pr=True` — data exacta conhecida, esforço máximo confirmado.
-
-**Referência:** Della Mattia G. *Estimating K₁, K₂, T₁, T₂ Using Hierarchical
-Bayesian NLSS*. AGMT2 Technical Reports. 2026.
-            """)
 
     # ── FTLM download CSV ─────────────────────────────────────────────────────
     if len(_ld_frac) > 0:
