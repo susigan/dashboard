@@ -204,45 +204,48 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
 
         if len(_df_sw_cur) > 0:
             _df_sw_cur['_dia'] = _df_sw_cur['Data'].dt.strftime('%a %d/%m')
+            _df_sw_cur['_km'] = (pd.to_numeric(_df_sw_cur['distance'], errors='coerce') / 1000
+                                 if 'distance' in _df_sw_cur.columns else np.nan)
             rows_sw = []
             for _, r in _df_sw_cur.sort_values('Data').iterrows():
                 rows_sw.append({
                     'Dia':        r['_dia'],
                     'Modalidade': r['type'],
                     'RPE':        f"{r['_rpe']:.0f}" if pd.notna(r['_rpe']) else '—',
+                    'KM':         f"{r['_km']:.1f}" if pd.notna(r.get('_km', np.nan)) and r.get('_km', 0) > 0 else '—',
                     'KJ':         f"{r['_kj']:.0f}" if pd.notna(r['_kj']) and r['_kj']>0 else '—',
                     'Horas':      fmt_dur(r['_mt']) if pd.notna(r['_mt']) else '—',
                 })
-            # ── Resumo Semanal — semana Seg→Dom actual ───────────────────
-            st.subheader("📋 Resumo Semanal")
+        # ── Resumo Semanal — semana Seg→Dom actual ───────────────────
+        st.subheader("📋 Resumo Semanal")
 
-            # Semana actual: Seg → hoje
-            _rs_hoje     = pd.Timestamp.now().normalize()
-            _rs_dow      = _rs_hoje.weekday()
-            _rs_sem_ini  = _rs_hoje - pd.Timedelta(days=_rs_dow)   # segunda
-            # Semana anterior: Seg → Dom anterior
-            _rs_sp_fim   = _rs_sem_ini - pd.Timedelta(days=1)      # dom passado
-            _rs_sp_ini   = _rs_sp_fim  - pd.Timedelta(days=6)      # seg passada
+        # Semana actual: Seg → hoje
+        _rs_hoje     = pd.Timestamp.now().normalize()
+        _rs_dow      = _rs_hoje.weekday()
+        _rs_sem_ini  = _rs_hoje - pd.Timedelta(days=_rs_dow)   # segunda
+        # Semana anterior: Seg → Dom anterior
+        _rs_sp_fim   = _rs_sem_ini - pd.Timedelta(days=1)      # dom passado
+        _rs_sp_ini   = _rs_sp_fim  - pd.Timedelta(days=6)      # seg passada
 
-            # Filtra da_full para as duas semanas (exclui WeightTraining)
-            _rs_src = da_full.copy()
-            _rs_src['Data'] = pd.to_datetime(_rs_src['Data'])
-            _rs_src = _rs_src[_rs_src['type'].apply(norm_tipo) != 'WeightTraining']
+        # Filtra da_full para as duas semanas (exclui WeightTraining)
+        _rs_src = da_full.copy()
+        _rs_src['Data'] = pd.to_datetime(_rs_src['Data'])
+        _rs_src = _rs_src[_rs_src['type'].apply(norm_tipo) != 'WeightTraining']
 
-            _rs_cur = _rs_src[_rs_src['Data'] >= _rs_sem_ini]
-            _rs_prev= _rs_src[(_rs_src['Data'] >= _rs_sp_ini) & (_rs_src['Data'] <= _rs_sp_fim)]
+        _rs_cur = _rs_src[_rs_src['Data'] >= _rs_sem_ini]
+        _rs_prev= _rs_src[(_rs_src['Data'] >= _rs_sp_ini) & (_rs_src['Data'] <= _rs_sp_fim)]
 
-            # Sessões e Horas
-            _rs_sess_c = len(_rs_cur)
-            _rs_sess_p = len(_rs_prev)
-            _rs_h_c = _rs_cur['moving_time'].sum() / 3600 if 'moving_time' in _rs_cur.columns else 0
-            _rs_h_p = _rs_prev['moving_time'].sum() / 3600 if 'moving_time' in _rs_prev.columns else 0
-            _rs_kj_c = pd.to_numeric(_rs_cur.get('icu_joules', pd.Series()), errors='coerce').sum() / 1000 if 'icu_joules' in _rs_cur.columns else 0
-            _rs_kj_p = pd.to_numeric(_rs_prev.get('icu_joules', pd.Series()), errors='coerce').sum() / 1000 if 'icu_joules' in _rs_prev.columns else 0
+        # Sessões e Horas
+        _rs_sess_c = len(_rs_cur)
+        _rs_sess_p = len(_rs_prev)
+        _rs_h_c = _rs_cur['moving_time'].sum() / 3600 if 'moving_time' in _rs_cur.columns else 0
+        _rs_h_p = _rs_prev['moving_time'].sum() / 3600 if 'moving_time' in _rs_prev.columns else 0
+        _rs_kj_c = pd.to_numeric(_rs_cur.get('icu_joules', pd.Series()), errors='coerce').sum() / 1000 if 'icu_joules' in _rs_cur.columns else 0
+        _rs_kj_p = pd.to_numeric(_rs_prev.get('icu_joules', pd.Series()), errors='coerce').sum() / 1000 if 'icu_joules' in _rs_prev.columns else 0
 
-            def _rs_delta(vc, vp):
-                if not vp or vp == 0: return None
-                return f"{(vc-vp)/vp*100:+.0f}% vs sem.ant"
+        def _rs_delta(vc, vp):
+            if not vp or vp == 0: return None
+            return f"{(vc-vp)/vp*100:+.0f}% vs sem.ant"
 
             def _rs_delta_abs_sess(vc, vp):
                 if not vp: return None
@@ -402,7 +405,10 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             _col_sa, _col_sp = st.columns(2)
             with _col_sa:
                 st.subheader("📅 Semana actual")
-                st.dataframe(pd.DataFrame(rows_sw), width="stretch", hide_index=True)
+                if rows_sw:
+                    st.dataframe(pd.DataFrame(rows_sw), width="stretch", hide_index=True)
+                else:
+                    st.info("Sem actividades registadas esta semana.")
             with _col_sp:
                 _hoje_sw = pd.Timestamp.now().normalize()
                 _sp_fim  = _hoje_sw - pd.Timedelta(days=_hoje_sw.weekday()+1)
@@ -435,11 +441,8 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                         st.dataframe(pd.DataFrame(_rows_sp), width="stretch", hide_index=True)
                     else:
                         st.info("Sem actividades na semana anterior.")
-        else:
-            st.subheader("📋 Resumo Semanal")
-            st.info("Sem actividades desde segunda-feira.")
-            st.subheader("📅 Semana actual")
-            st.info("Sem actividades desde segunda-feira.")
+                else:
+                    st.info("Sem dados de actividades.")
         st.markdown("---")
 
     # ── HRV-Guided + Recovery Score + Peso/BF ────────────────────────────
@@ -1658,59 +1661,49 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             # Threshold +1 a +5 CTL/semana (escala icu_training_load)
             _dentro_range = 1.0 <= _delta_ctl_total <= 5.0
 
-            st.markdown("**⚡ Impacto CTL estimado — semana actual**")
+            st.markdown("**⚡ Impacto CTL — semana actual**")
             st.caption(f"Métrica: **{_tl_col}** — consistente com Tab PMC")
             _cc1, _cc2, _cc3, _cc4 = st.columns(4)
             with _cc1:
-                st.metric("CTL actual", f"{_ctl_hoje:.1f}")
+                st.metric("CTL actual", f"{_ctl_hoje:.1f}",
+                          help="CTL calculado com toda a carga acumulada até hoje.")
             with _cc2:
-                st.metric("ΔCTL estimado", f"{_delta_ctl_total:+.2f}",
+                st.metric("ΔCTL semana", f"{_delta_ctl_total:+.2f}",
                           "✅ no range 1–5" if _dentro_range else
-                          ("⚠️ abaixo de 1" if _delta_ctl_total < 1 else "⚠️ acima de 5"))
+                          ("⚠️ abaixo de 1" if _delta_ctl_total < 1 else "⚠️ acima de 5"),
+                          help="Variação de CTL acumulada pelas sessões já registadas esta semana.")
             with _cc3:
-                # CTL projectado: mostrar o valor +/- vs CTL actual
-                _ctl_delta_str = f"{_delta_ctl_total:+.2f} vs actual"
-                st.metric("CTL projectado",
-                          f"{_ctl_proj:.1f}",
-                          delta=_ctl_delta_str,
-                          delta_color="normal" if _delta_ctl_total >= 0 else "inverse",
-                          help=(
-                              f"CTL actual ({_ctl_hoje:.1f}) + ΔCTL estimado ({_delta_ctl_total:+.2f}) "
-                              f"= {_ctl_proj:.1f}. "
-                              "ΔCTL positivo = semana a construir fitness. "
-                              "ΔCTL negativo = semana a perder fitness."
-                          ))
+                # ATL actual vs range óptimo calibrado (40-61)
+                _atl_label = (f"✅ {_atl_hoje:.1f}" if 40 <= _atl_hoje <= 61 else
+                              f"⚠️ {_atl_hoje:.1f}" if _atl_hoje > 63 else
+                              f"🟡 {_atl_hoje:.1f}")
+                _atl_zona  = ("Range óptimo [40–61]" if 40 <= _atl_hoje <= 61 else
+                              "Acima do óptimo (>63)" if _atl_hoje > 63 else
+                              "Abaixo do óptimo (<40)")
+                st.metric("ATL actual", _atl_label, delta=_atl_zona, delta_color="off",
+                          help="ATL actual vs range óptimo calibrado (Auto-Runner 1ano): 40–61. "
+                               "ATL alto no range óptimo é normal e saudável para este atleta.")
             with _cc4:
-                # TSB projectado com semáforo: verde/amarelo/vermelho
-                if _tsb_proj > 5:
-                    _tsb_color = "normal"
-                    _tsb_label = f"🟢 {_tsb_proj:.1f}"
-                    _tsb_delta = "Forma positiva — janela de performance"
-                elif _tsb_proj >= -10:
-                    _tsb_color = "off"
-                    _tsb_label = f"🟡 {_tsb_proj:.1f}"
-                    _tsb_delta = "Zona neutra — manutenção"
+                # TSB actual com zonas calibradas
+                if _tsb_hoje > 3:
+                    _tsb_color = "normal"; _tsb_label = f"🟢 {_tsb_hoje:+.1f}"
+                    _tsb_delta = "Forma — acima do range óptimo"
+                elif _tsb_hoje >= -12:
+                    _tsb_color = "off"; _tsb_label = f"🟢 {_tsb_hoje:+.1f}"
+                    _tsb_delta = "Óptimo [−12 a +3]"
+                elif _tsb_hoje >= -20:
+                    _tsb_color = "off"; _tsb_label = f"🟡 {_tsb_hoje:+.1f}"
+                    _tsb_delta = "Atenção — abaixo do range"
                 else:
-                    _tsb_color = "inverse"
-                    _tsb_label = f"🔴 {_tsb_proj:.1f}"
-                    _tsb_delta = "Fadiga acumulada — atenção"
-                # Cor adicional via κ FMT tensor
-                _tsb_kappa_note = ""
+                    _tsb_color = "inverse"; _tsb_label = f"🔴 {_tsb_hoje:+.1f}"
+                    _tsb_delta = "Fatigado — reduzir carga"
                 if _kappa_now is not None and _kappa_now > _KAPPA_P87:
-                    _tsb_kappa_note = " | ⚠️ κ>p87"
-                st.metric("TSB projectado",
-                          _tsb_label,
-                          delta=_tsb_delta + _tsb_kappa_note,
+                    _tsb_delta += " | ⚠️ κ>p87"
+                st.metric("TSB actual", _tsb_label, delta=_tsb_delta,
                           delta_color=_tsb_color,
-                          help=(
-                              f"TSB actual ({_tsb_hoje:.1f}) - ΔCTL estimado ({_delta_ctl_total:+.2f}) "
-                              f"= {_tsb_proj:.1f}. "
-                              "🟢 >+5: boa forma para performance. "
-                              "🟡 -10 a +5: zona neutra. "
-                              "🔴 <-10: fadiga elevada. "
-                              + (f"κ={_kappa_now:.2f} (p{int(_kappa_now/_KAPPA_P87*87):.0f}) — "
-                                 "stress sistémico elevado." if _kappa_now is not None else "")
-                          ))
+                          help="TSB actual vs zonas calibradas para este atleta: "
+                               "🟢 Óptimo: −12 a +3 | 🟡 Atenção: −20 a −12 | 🔴 Fatigado: <−20. "
+                               + (f"κ={_kappa_now:.2f} — stress sistémico." if _kappa_now else ""))
 
             if _delta_rows:
                 with st.expander("🔍 Detalhe ΔCTL por modalidade"):
@@ -1830,17 +1823,18 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             else:
                 _im_cor = "#2980b9"; _im_emoji = "🔵"; _im_lbl = "Variabilidade muito alta"
 
-            # Semáforo Strain — calibrado por HRV
+            # Semáforo Strain — calibrado por dados reais (Auto-Runner fingerprint 1ano)
+            # Dias HRV alto (top 10%): strain_7d médio = 290 | Dias HRV baixo: strain_7d = 478
             if _strain_hoje is None:
                 _strain_cor = "#888"; _strain_emoji = "⬜"; _strain_lbl = "Sem dados"
-            elif _strain_hoje > 600:
-                _strain_cor = "#e74c3c"; _strain_emoji = "🔴"; _strain_lbl = "HRV suprimido (>600)"
-            elif _strain_hoje > 400:
-                _strain_cor = "#f39c12"; _strain_emoji = "🟡"; _strain_lbl = "Atenção (>400)"
-            elif _strain_hoje >= 100:
-                _strain_cor = "#27ae60"; _strain_emoji = "✅"; _strain_lbl = "Zona óptima (100-400)"
+            elif _strain_hoje > 478:
+                _strain_cor = "#e74c3c"; _strain_emoji = "🔴"; _strain_lbl = "HRV baixo esperado (>478)"
+            elif _strain_hoje > 380:
+                _strain_cor = "#f39c12"; _strain_emoji = "🟡"; _strain_lbl = "Zona de atenção (380-478)"
+            elif _strain_hoje >= 150:
+                _strain_cor = "#27ae60"; _strain_emoji = "✅"; _strain_lbl = "Zona óptima (150-380)"
             else:
-                _strain_cor = "#2980b9"; _strain_emoji = "🔵"; _strain_lbl = "Muito baixo"
+                _strain_cor = "#2980b9"; _strain_emoji = "🔵"; _strain_lbl = "Muito baixo (<150)"
 
             # Calcular load_7d TSS e pct_Z3 se disponíveis
             _load_7d_tss = None
@@ -1996,16 +1990,17 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                     f"Variar estímulos — zona óptima: 0.8-1.2.",
                     "#f39c12"))
 
-            # Alerta Strain
-            if _strain_hoje is not None and _strain_hoje > 600:
-                _alertas.append(("🔴", "STRAIN CRÍTICO",
-                    f"Strain={_strain_hoje:.0f} (>600) — queda de 7ms HRV esperada. "
-                    f"Reduzir volume ou variabilidade urgente. Zona óptima: 100-400.",
+            # Alerta Strain — calibrado pelo Auto-Runner fingerprint 1ano
+            # HRV alto (top 10%): strain_7d=290 | HRV baixo (bot 10%): strain_7d=478
+            if _strain_hoje is not None and _strain_hoje > 478:
+                _alertas.append(("🔴", "STRAIN ELEVADO",
+                    f"Strain={_strain_hoje:.0f} (>478 = threshold HRV baixo, fingerprint 1ano). "
+                    f"Reduzir carga nos próximos 3 dias. Óptimo: 150-380 (HRV alto: médio=290).",
                     "#e74c3c"))
-            elif _strain_hoje is not None and _strain_hoje > 400:
-                _alertas.append(("🟡", "Strain elevado",
-                    f"Strain={_strain_hoje:.0f} (400-600). HRV -3ms esperado. "
-                    f"Monitorizar ARI na Tab HRV Analyzer.",
+            elif _strain_hoje is not None and _strain_hoje > 380:
+                _alertas.append(("🟡", "Strain na zona de atenção",
+                    f"Strain={_strain_hoje:.0f} (380-478). Monitorar HRV. "
+                    f"Zona óptima: 150-380.",
                     "#f39c12"))
 
             # Alerta Load
@@ -2020,16 +2015,19 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                     "#f39c12"))
 
             # Alerta ATL — lag real = 27d (Auto-Runner 1ano, lag_max=35d)
-            if _atl_val is not None and _atl_val >= 38:
-                _alertas.append(("🔴", "ATL CRÍTICA — risco de supressão HRV",
-                    f"ATL={_atl_val:.1f} (≥38) — preditor de HRV: r=-0.414 @lag27d. "
-                    f"HRV suprimido esperado nos próximos ~27 dias (4 semanas). "
-                    f"Reduzir carga aguda. Ver Tab HRV Analyzer → ARI.",
+            # Range óptimo calibrado: ATL 40-61. Alerta apenas acima de 63 (Q75 do estado óptimo)
+            if _atl_val is not None and _atl_val > 63:
+                _alertas.append(("🔴", "ATL ACIMA DO RANGE ÓPTIMO",
+                    f"ATL={_atl_val:.1f} (>63) — acima do Q75 do estado óptimo (40–61). "
+                    f"Preditor de instabilidade HRV: r=-0.414 @lag27d. "
+                    f"Efeito esperado no HRV em ~27 dias. Monitorar CV% HRV.",
                     "#c0392b"))
-            elif _atl_val is not None and _atl_val >= 30:
-                _alertas.append(("🟡", "ATL na zona de atenção",
-                    f"ATL={_atl_val:.1f} (30-38). Monitorizar. "
-                    f"Efeito no HRV visível em ~27 dias.",
+            elif _atl_val is not None and _atl_val >= 40:
+                pass  # Range óptimo — sem alerta
+            elif _atl_val is not None and _atl_val < 25:
+                _alertas.append(("🟡", "ATL baixo — carga insuficiente",
+                    f"ATL={_atl_val:.1f} (<25) — abaixo do range mínimo para adaptação. "
+                    f"Aumentar carga gradualmente para atingir range óptimo (40–61).",
                     "#f39c12"))
 
             # Alerta Z3
