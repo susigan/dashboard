@@ -2456,24 +2456,78 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                     (365,   "1 ano"),
                     (730,   "2 anos"),
                     (1095,  "3 anos"),
-                    (99999, "Todo histórico"),
+                    (99999, "Todo historico"),
                 ]
 
-                # Grids — testados automaticamente, sem escolha do utilizador
                 _LAG_GRID      = [7, 10, 14, 21, 28, 35]
-                _LAG_MAX_GRID  = [14, 21, 28, 35]   # lag máximo a testar na lag correlation
+                _LAG_MAX_GRID  = [14, 21, 28, 35]
                 _CLUSTER_GRID  = [3, 4, 5, 6, 7]
                 _DIR_GRID      = [5, 7, 10, 14]
                 _Z_GRID        = [1.0, 1.5, 2.0]
                 _FP_GRID       = [3, 5, 7, 14]
                 _DR_LAG_GRID   = [0, 3, 5, 7, 10, 14, 21, 28]
-                _DR_VARS       = ['load','kj','atl','pct_z3','mono_7d',
-                                  'strain_7d','load_28d','freq_7d']
-                # Variáveis HRV alvo a testar — todas as disponíveis em sig_hrv
-                _HRV_ALVO_GRID = [v for v in ['hrv','ln_hrv','hrv_norm','hrv_z28']
+                _DR_VARS       = ['load','kj','atl','ctl','pct_z3','mono_7d',
+                                  'strain_7d','load_28d','freq_7d',
+                                  'CTLg_Bike','CTLg_Run','CTLg_Ski','CTLg_Row',
+                                  'ctl_poly2']
+                _HRV_ALVO_GRID = [v for v in ['hrv','hrv_norm','hrv_z28']
                                   if v in sig_hrv.columns]
+                _INCLUDE_CV    = True  # CV% como alvo adicional
 
                 _hoje_ar = pd.Timestamp.now().normalize()
+
+                # ── Construir variaveis novas: CTLg modal, polynomial, CV% ──
+                _st_extra = None
+                with st.spinner("A calcular CTLg por modalidade, polynomial e CV%..."):
+                    if da_full is not None and 'type' in da_full.columns:
+                        _da_e = da_full.copy()
+                        _da_e['Data'] = pd.to_datetime(_da_e['Data'])
+                        _load_col_e = next((c for c in ['icu_training_load','load']
+                                           if c in _da_e.columns), None)
+                        _da_e['_load'] = (pd.to_numeric(_da_e[_load_col_e], errors='coerce').fillna(0)
+                                          if _load_col_e else 0.0)
+                        _date_all_e = pd.date_range(_da_e['Data'].min(), _hoje_ar, freq='D')
+                        _st_extra = pd.DataFrame({'Data': _date_all_e})
+                        for _mod_e in ['Bike','Run','Row','Ski']:
+                            _mask_m = _da_e['type'].str.contains(_mod_e, na=False, case=False)
+                            _dm = (_da_e[_mask_m].groupby('Data')['_load'].sum()
+                                   .reindex(_date_all_e, fill_value=0))
+                            _st_extra[f'CTLg_{_mod_e}'] = _dm.ewm(span=42, adjust=False).mean().values
+                            _st_extra[f'ATLg_{_mod_e}'] = _dm.ewm(span=7,  adjust=False).mean().values
+
+                    _st_main_t = sig_train.copy()
+                    _st_main_t['Data'] = pd.to_datetime(_st_main_t['Data'])
+                    if 'ctl' in _st_main_t.columns:
+                        _ctl_s_t = (pd.to_numeric(_st_main_t.set_index('Data')['ctl'], errors='coerce'))
+                        _WIN_POLY = 60
+                        _p2_vals = []
+                        for _i_p in range(len(_ctl_s_t)):
+                            _seg = _ctl_s_t.iloc[max(0,_i_p-_WIN_POLY+1):_i_p+1].dropna().values
+                            if len(_seg) >= 10:
+                                try:
+                                    _p2_vals.append(float(np.polyfit(np.arange(len(_seg)), _seg, 2)[0]))
+                                except Exception:
+                                    _p2_vals.append(np.nan)
+                            else:
+                                _p2_vals.append(np.nan)
+                        _poly2_df = pd.DataFrame({'Data': _ctl_s_t.index, 'ctl_poly2': _p2_vals})
+                        _st_extra = _poly2_df if _st_extra is None else _st_extra.merge(_poly2_df, on='Data', how='left')
+
+                    _hrv_main_e = sig_hrv.copy()
+                    _hrv_main_e['Data'] = pd.to_datetime(_hrv_main_e['Data'])
+                    _hrv_col_e  = 'hrv' if 'hrv' in _hrv_main_e.columns else _hrv_main_e.columns[0]
+                    _hrv_s_cv   = pd.to_numeric(_hrv_main_e[_hrv_col_e], errors='coerce').values
+                    _hrv_s_cv_s = pd.Series(_hrv_s_cv, index=pd.to_datetime(_hrv_main_e['Data']))
+                    _cv28_s     = (_hrv_s_cv_s.rolling(28,min_periods=14).std() /
+                                   _hrv_s_cv_s.rolling(28,min_periods=14).mean() * 100)
+                    _cv_df_e    = pd.DataFrame({'Data': _cv28_s.index, 'hrv_cv28': _cv28_s.values})
+                    _st_extra   = _cv_df_e if _st_extra is None else _st_extra.merge(_cv_df_e, on='Data', how='left')
+
+                _n_extra = len([c for c in (_st_extra.columns if _st_extra is not None else [])
+                                if c != 'Data'])
+                st.caption(f"Variaveis adicionais calculadas: {_n_extra} "
+                           f"(CTLg x4 modalidades, ATLg x4, ctl_poly2, hrv_cv28)")
+
 
                 for _ndias, _plabel in _periodos_run:
                     st.markdown(f"**▶ Período: {_plabel}**")
@@ -2520,6 +2574,22 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                     _date_range_p = pd.date_range(_cutoff, _hoje_ar, freq='D')
                     _hrv_vals_ri  = _hrv_vals.reindex(_date_range_p)
                     _trn_idx_ri   = _trn_idx.reindex(_date_range_p)
+
+                    # Fundir variáveis extra (CTLg modal, polynomial, CV%) se disponíveis
+                    if _st_extra is not None:
+                        _extra_idx = (_st_extra.set_index(pd.to_datetime(_st_extra['Data']))
+                                      .drop(columns=['Data'])
+                                      .reindex(_date_range_p))
+                        # Adicionar colunas que ainda não existem no _trn_idx_ri
+                        for _ec in _extra_idx.columns:
+                            if _ec not in _trn_idx_ri.columns:
+                                _trn_idx_ri[_ec] = _extra_idx[_ec]
+
+                    # CV% HRV como série alvo extra (além dos HRV alvos normais)
+                    _cv28_ri = None
+                    if _INCLUDE_CV and 'hrv_cv28' in _trn_idx_ri.columns:
+                        _cv28_ri = _trn_idx_ri['hrv_cv28'].copy()
+                        _trn_idx_ri = _trn_idx_ri.drop(columns=['hrv_cv28'])  # remover de preditores
 
                     # ── A. Lag correlations: HRV alvo × lag máximo × variáveis treino
                     # Testa todas as variáveis HRV alvo disponíveis ×
@@ -2863,9 +2933,85 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                         'nota': str(_ela_scores),
                     })
 
+                    _prog.progress(85)
+
+                    # ── G. CV% HRV como alvo — preditores de estabilidade ─────
+                    # CV% baixo = HRV estável = melhor. r negativo com CV% = bom.
+                    if _cv28_ri is not None and _cv28_ri.notna().sum() >= 20:
+                        for _var_cv in _lag_vars:
+                            if _var_cv not in _trn_idx_ri.columns: continue
+                            x_cv = pd.to_numeric(_trn_idx_ri[_var_cv], errors='coerce')
+                            best_cv = {'lag':0,'r':0,'r_abs':0,'n':0}
+                            for _lag_cv in range(0, max(_LAG_MAX_GRID)+1):
+                                df_cv = pd.DataFrame({'x':x_cv.shift(_lag_cv),
+                                                      'y':_cv28_ri}).dropna()
+                                if len(df_cv) < 15: continue
+                                try:
+                                    rp_cv, _ = _pr(df_cv['x'].values, df_cv['y'].values)
+                                    if abs(rp_cv) > best_cv['r_abs']:
+                                        best_cv = {'lag':_lag_cv,'r':round(rp_cv,4),
+                                                   'r_abs':round(abs(rp_cv),4),
+                                                   'n':len(df_cv)}
+                                except Exception:
+                                    pass
+                            if best_cv['r_abs'] > 0.08:
+                                _runner_results.append({
+                                    'periodo':         _plabel,
+                                    'analise':         'cv_pct_lag_correlation',
+                                    'variavel':        _var_cv,
+                                    'hrv_alvo':        'hrv_cv28',
+                                    'lag_max_testado': max(_LAG_MAX_GRID),
+                                    'param_nome':      'lag_optimo_dias',
+                                    'param_val':       best_cv['lag'],
+                                    'r_pearson':       best_cv['r'],
+                                    'r_spearman':      None,
+                                    'p_pearson':       None,
+                                    'n':               best_cv['n'],
+                                    'r_abs':           best_cv['r_abs'],
+                                    'nota':            ('r negativo = mais variavel → CV baixo = HRV estavel'
+                                                        if best_cv['r'] < 0 else
+                                                        'r positivo = mais variavel → CV alto = instavel'),
+                                })
+
+                    # ── H. Range óptimo calibrado ─────────────────────────────
+                    # Estado óptimo = CV% < Q33 + HRV > média 28d
+                    if _cv28_ri is not None and _hrv_vals_ri.notna().sum() >= 20:
+                        _cv_q33  = float(_cv28_ri.dropna().quantile(0.33))
+                        _hrv_mu  = float(_hrv_vals_ri.dropna().mean())
+                        _otimo   = (_cv28_ri < _cv_q33) & (_hrv_vals_ri > _hrv_mu)
+                        _mau     = (_cv28_ri >= _cv28_ri.dropna().quantile(0.67)) & (_hrv_vals_ri < _hrv_mu)
+                        if _otimo.sum() >= 10 and 'ctl' in _trn_idx_ri.columns:
+                            for _metric_r, _col_r in [
+                                ('atl','atl'), ('ctl','ctl'), ('tsb','tsb'),
+                                ('CTLg_Bike','CTLg_Bike'), ('CTLg_Run','CTLg_Run'),
+                                ('CTLg_Ski','CTLg_Ski'), ('ctl_poly2','ctl_poly2'),
+                            ]:
+                                if _col_r not in _trn_idx_ri.columns: continue
+                                _s_r = _trn_idx_ri[_col_r]
+                                _s_ot = _s_r[_otimo].dropna()
+                                _s_mau= _s_r[_mau].dropna()
+                                if len(_s_ot) < 5: continue
+                                _runner_results.append({
+                                    'periodo':         _plabel,
+                                    'analise':         'range_otimo_calibrado',
+                                    'variavel':        _metric_r,
+                                    'hrv_alvo':        'hrv_cv28',
+                                    'lag_max_testado': None,
+                                    'param_nome':      'iqr_estado_otimo',
+                                    'param_val':       round(float(_s_ot.median()), 2),
+                                    'r_pearson':       round(float(_s_ot.quantile(0.25)), 2),
+                                    'r_spearman':      round(float(_s_ot.quantile(0.75)), 2),
+                                    'p_pearson':       round(float(_s_mau.median()), 2) if len(_s_mau)>3 else None,
+                                    'n':               int(_otimo.sum()),
+                                    'r_abs':           None,
+                                    'nota':            (f"otimo: med={_s_ot.median():.1f} "
+                                                        f"IQR=[{_s_ot.quantile(0.25):.1f}-{_s_ot.quantile(0.75):.1f}] "
+                                                        f"| mau: med={_s_mau.median():.1f} (N={len(_s_mau)})"),
+                                })
+
                     _prog.progress(90)
 
-                    # ── G. Sumário do período ──────────────────────────────────────
+                    # ── I. Sumário do período ──────────────────────────────────────
                     _top_neg = sorted(
                         [(v,d) for v,d in _best_lag_por_var.items() if d['r_pearson']<0],
                         key=lambda x: x[1]['r_abs'], reverse=True)[:2]
