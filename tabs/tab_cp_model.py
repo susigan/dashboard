@@ -696,9 +696,12 @@ def tab_cp_model(ac_full=None):
                     _res = (_mcfg['fn'](_combo_pts, pmax_ext=_px)
                             if _mcfg['needs_pmax']
                             else _mcfg['fn'](_combo_pts))
-                    if _res[0] is None or _res[-1] is None: continue
+                    if _res[0] is None: continue
+                    # OmPD retorna 7 valores (cp,wp,pmax,A,pp,r2,weff) — pp no idx 4
+                    _pp_gs = _res[4] if _mn == 'OmPD' and len(_res) > 4 else _res[-1]
+                    if not isinstance(_pp_gs, (list, np.ndarray)) or len(_pp_gs) == 0: continue
                     _p_obs = [p for p,_ in _combo_pts]
-                    _, _see = calc_see(_p_obs, _res[-1], k=_mcfg['k'])
+                    _, _see = calc_see(_p_obs, _pp_gs, k=_mcfg['k'])
                     if _see is None: continue
                     _best['cp_vals'].append(float(_res[0]))
                     _best['see_vals'].append(float(_see))
@@ -1034,21 +1037,29 @@ def tab_cp_model(ac_full=None):
                        " + ".join([f"{int(t//60)}min={p:.0f}W"
                                    for p, t in _gr['combo']]))
 
-            # Grid search — mostrar todas as combinações testadas
+            # Grid search — mostrar todas as combinações de N=3 pontos
             _mcfg_i = _MODELS[model_name]
             _px_i   = _pmax_global if _mcfg_i['needs_pmax'] else None
+            # Aplicar mesmas regras de filtragem da tab principal
+            _pts_i  = ([p for p in _all_mmp_pts if p[1] >= 60]
+                       if _mcfg_i.get('exclude_short') else _all_mmp_pts)
+            _n_pts_i = _mcfg_i['n_pts']
+
             from itertools import combinations as _combos
             _all_combos_rows = []
-            for _nc in range(_mcfg_i['min_pts'], len(_all_mmp_pts)+1):
-                for _cb in _combos(range(len(_all_mmp_pts)), _nc):
-                    _pts_cb = [_all_mmp_pts[i] for i in _cb]
+            if len(_pts_i) >= _n_pts_i:
+                for _cb in _combos(range(len(_pts_i)), _n_pts_i):
+                    _pts_cb = [_pts_i[i] for i in _cb]
                     try:
                         _res_cb = (_mcfg_i['fn'](_pts_cb, pmax_ext=_px_i)
                                    if _mcfg_i['needs_pmax']
                                    else _mcfg_i['fn'](_pts_cb))
-                        if _res_cb[0] is None or _res_cb[-1] is None: continue
+                        if _res_cb[0] is None: continue
                         _p_obs_cb = [p for p, _ in _pts_cb]
-                        _, _see_cb = calc_see(_p_obs_cb, _res_cb[-1], k=_mcfg_i['k'])
+                        # OmPD: pp no índice 4
+                        _pp_cb = _res_cb[4] if model_name == 'OmPD' and len(_res_cb) > 4 else _res_cb[-1]
+                        if not isinstance(_pp_cb, (list, np.ndarray)) or len(_pp_cb) == 0: continue
+                        _, _see_cb = calc_see(_p_obs_cb, _pp_cb, k=_mcfg_i['k'])
                         if _see_cb is None: continue
                         _all_combos_rows.append({
                             'Pontos usados': " + ".join([f"{int(t//60)}min" for _, t in _pts_cb]),
