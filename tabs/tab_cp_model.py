@@ -616,14 +616,24 @@ def tab_cp_model(ac_full=None):
             _ac_mod = ac_full[ac_full[_col_mod] == modalidade].copy()
             for _mc, _dur in MMP_COLS.items():
                 if _mc not in _ac_mod.columns: continue
+                # Row e Ski: excluir MMP20 (1200s) e MMP60 (3600s) do fitting
+                # — esforços de 20min+ nestas modalidades raramente são máximos absolutos
+                _max_dur_mod = 720 if modalidade in ('Row', 'Ski') else 1200
+                if _mc == 'MMP60':           # sempre validação apenas
+                    _ac_mod_s = _ac_mod.sort_values(_col_date, ascending=False)
+                    for _, _rr in _ac_mod_s.iterrows():
+                        _mv = parse_mmp(str(_rr[_mc]))
+                        if _mv is not None:
+                            _mmp60_val = _mv
+                            break
+                    continue
+                if float(_dur) > _max_dur_mod:  # MMP20 excluído para Row/Ski
+                    continue
                 _ac_mod_s = _ac_mod.sort_values(_col_date, ascending=False)
                 for _, _rr in _ac_mod_s.iterrows():
                     _mv = parse_mmp(str(_rr[_mc]))
                     if _mv is not None:
-                        if _mc == 'MMP60':          # 3600s → validação apenas
-                            _mmp60_val = _mv
-                        else:
-                            _all_mmp_pts.append((_mv, float(_dur)))
+                        _all_mmp_pts.append((_mv, float(_dur)))
                         break
             _all_mmp_pts = sorted(set(_all_mmp_pts), key=lambda x: x[1])
             for _pc in ['p_max','icu_power_max']:
@@ -743,6 +753,12 @@ def tab_cp_model(ac_full=None):
         if not _all_mmp_pts:
             st.warning("Sem pontos MMP disponíveis. Verifica se a modalidade tem dados 'Yes' na sheet.")
             st.stop()
+
+        if modalidade in ('Row', 'Ski'):
+            st.info(
+                f"ℹ️ **{modalidade}:** pontos limitados a ≤12min (MMP1, MMP3, MMP5, MMP12). "
+                "MMP20 e MMP60 excluídos — esforços de 20min+ nestas modalidades raramente são máximos absolutos."
+            )
 
         st.info(f"**Pontos MMP disponíveis ({modalidade}):** " +
                 " · ".join([f"{int(t//60)}min={p:.0f}W" for p, t in _all_mmp_pts]))
