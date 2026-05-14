@@ -603,24 +603,29 @@ def tab_cp_model(ac_full=None):
         "🔬 Testes Manuais",
     ])
 
-    # ── Extrair MMPs da sheet ────────────────────────────────────────────────
-    _all_mmp_pts = []  # lista de (watts, seg) — todos os pontos disponíveis
-    _pmax_global = None
+    # ── Extrair MMPs da sheet — excluindo MMP60 (3600s) dos pontos de fitting ──
+    # MMP60 entra como validação externa, não como ponto de fitting
+    # Papers recomendam 3-4 pontos entre 2-20min para CP (Monod, Morton, Puchowicz)
+    _all_mmp_pts     = []   # todos sem MMP60 — para fitting
+    _mmp60_val       = None # MMP60 guardado para validação
+    _pmax_global     = None
     if ac_full is not None and len(ac_full) > 0:
         _col_mod  = next((c for c in ['type','modality'] if c in ac_full.columns), None)
         _col_date = next((c for c in ['date','Data'] if c in ac_full.columns), None)
         if _col_mod and _col_date:
             _ac_mod = ac_full[ac_full[_col_mod] == modalidade].copy()
             for _mc, _dur in MMP_COLS.items():
-                if _mc in _ac_mod.columns:
-                    _ac_mod_s = _ac_mod.sort_values(_col_date, ascending=False)
-                    for _, _rr in _ac_mod_s.iterrows():
-                        _mv = parse_mmp(str(_rr[_mc]))
-                        if _mv is not None:
+                if _mc not in _ac_mod.columns: continue
+                _ac_mod_s = _ac_mod.sort_values(_col_date, ascending=False)
+                for _, _rr in _ac_mod_s.iterrows():
+                    _mv = parse_mmp(str(_rr[_mc]))
+                    if _mv is not None:
+                        if _mc == 'MMP60':          # 3600s → validação apenas
+                            _mmp60_val = _mv
+                        else:
                             _all_mmp_pts.append((_mv, float(_dur)))
-                            break
+                        break
             _all_mmp_pts = sorted(set(_all_mmp_pts), key=lambda x: x[1])
-            # Pmax: coluna p_max ou icu_power_max
             for _pc in ['p_max','icu_power_max']:
                 if _pc in _ac_mod.columns:
                     _px = (_ac_mod[[_pc, _col_date]]
@@ -630,33 +635,99 @@ def tab_cp_model(ac_full=None):
                         _pmax_global = float(_px[_pc].iloc[0])
                         break
 
+    # Cada modelo usa exactamente 3 pontos (papers) — testamos todas as C(n,3)
+    # Ward-Smith: 3 pontos entre 2-20min (excluir ponto <60s para este modelo)
+    _FIXED_N_PTS = 3   # número fixo de pontos por modelo (recomendação papers)
+
     # ── Correr grid search para todos os modelos ──────────────────────────
     _MODELS = {
-        'OmPD':         {'fn': fit_ompd,         'min_pts': 3, 'k': 3,
-                         'color': '#8e44ad', 'needs_pmax': True},
-        '2P Hiperbólico':{'fn': fit_2p_hyperbolic,'min_pts': 2, 'k': 2,
-                          'color': '#2980b9', 'needs_pmax': False},
-        '3P Hiperbólico':{'fn': fit_3p_hyperbolic,'min_pts': 3, 'k': 3,
-                          'color': '#27ae60', 'needs_pmax': True},
-        'Ward-Smith':   {'fn': fit_ward_smith,    'min_pts': 3, 'k': 2,
-                         'color': '#e67e22', 'needs_pmax': True},
-        'Om3CP':        {'fn': fit_om3cp,         'min_pts': 3, 'k': 3,
-                         'color': '#16a085', 'needs_pmax': True},
-        'OmExp':        {'fn': fit_omexp,         'min_pts': 2, 'k': 2,
-                         'color': '#d35400', 'needs_pmax': True},
-        'Power Law':    {'fn': fit_power_law,     'min_pts': 2, 'k': 2,
-                         'color': '#c0392b', 'needs_pmax': False},
+        'OmPD':          {'fn': fit_ompd,          'n_pts': 3, 'k': 3,
+                          'color': '#8e44ad', 'needs_pmax': True,
+                          'desc': '3 pts (incluindo ≤3min para Pmax). Puchowicz 2020.'},
+        '2P Hiperbólico':{'fn': fit_2p_hyperbolic, 'n_pts': 3, 'k': 2,
+                          'color': '#2980b9', 'needs_pmax': False,
+                          'desc': '3 pts entre 3-20min. Monod & Scherrer 1965.'},
+        '3P Hiperbólico':{'fn': fit_3p_hyperbolic, 'n_pts': 3, 'k': 3,
+                          'color': '#27ae60', 'needs_pmax': True,
+                          'desc': '3 pts incluindo ≤3min. Morton 1996.'},
+        'Ward-Smith':    {'fn': fit_ward_smith,    'n_pts': 3, 'k': 2,
+                          'color': '#e67e22', 'needs_pmax': True,
+                          'desc': '3 pts entre 3-20min (excluir <60s). Ward-Smith 1999.',
+                          'exclude_short': True},
+        'Om3CP':         {'fn': fit_om3cp,         'n_pts': 3, 'k': 3,
+                          'color': '#16a085', 'needs_pmax': True,
+                          'desc': '3 pts incluindo ≤3min. Puchowicz variante.'},
+        'OmExp':         {'fn': fit_omexp,         'n_pts': 3, 'k': 2,
+                          'color': '#d35400', 'needs_pmax': True,
+                          'desc': '3 pts. Variante OmPD com decaimento exponencial.'},
+        'Power Law':     {'fn': fit_power_law,     'n_pts': 3, 'k': 2,
+                          'color': '#c0392b', 'needs_pmax': False,
+                          'desc': '3 pts entre 3-20min. Sem CP explícito.'},
     }
 
+    # Grid search: exactamente N=3 pontos (C(n,3) combinações)
+    # Ward-Smith exclui pontos <60s
     _results = {}
     if _all_mmp_pts:
         for _mn, _mcfg in _MODELS.items():
-            _px = _pmax_global if _mcfg['needs_pmax'] else None
-            _gr = _grid_search_model(_mcfg['fn'], _all_mmp_pts,
-                                      _mcfg['min_pts'], pmax_ext=_px,
-                                      k_params=_mcfg['k'])
-            if _gr:
-                _results[_mn] = _gr
+            _px   = _pmax_global if _mcfg['needs_pmax'] else None
+            _pts  = ([p for p in _all_mmp_pts if p[1] >= 60]
+                     if _mcfg.get('exclude_short') else _all_mmp_pts)
+            _n_pts = _mcfg['n_pts']
+            if len(_pts) < _n_pts: continue
+
+            from itertools import combinations as _comb
+            _best = {'see_pct': 999, 'result': None, 'combo': None,
+                     'cp_vals': [], 'see_vals': []}
+
+            for _cb in _comb(range(len(_pts)), _n_pts):
+                _combo_pts = [_pts[i] for i in _cb]
+                try:
+                    _res = (_mcfg['fn'](_combo_pts, pmax_ext=_px)
+                            if _mcfg['needs_pmax']
+                            else _mcfg['fn'](_combo_pts))
+                    if _res[0] is None or _res[-1] is None: continue
+                    _p_obs = [p for p,_ in _combo_pts]
+                    _, _see = calc_see(_p_obs, _res[-1], k=_mcfg['k'])
+                    if _see is None: continue
+                    _best['cp_vals'].append(float(_res[0]))
+                    _best['see_vals'].append(float(_see))
+                    if _see < _best['see_pct']:
+                        _best.update({'see_pct': _see, 'result': _res,
+                                      'combo': _combo_pts, 'n_pts': _n_pts,
+                                      'cp': float(_res[0])})
+                except Exception:
+                    pass
+
+            if _best['result'] is not None:
+                # cp_var% = variação de CP entre combinações
+                _cp_v = _best['cp_vals']
+                _see_v = _best['see_vals']
+                _cp_mean = float(np.mean(_cp_v)) if _cp_v else 0
+                _cp_range = (max(_cp_v)-min(_cp_v))/_cp_mean*100 if _cp_mean>0 and len(_cp_v)>1 else 0
+                _see_mean = float(np.mean(_see_v)) if _see_v else _best['see_pct']
+                _cv_pct   = float(np.std(_cp_v)/_cp_mean*100) if _cp_mean>0 and len(_cp_v)>1 else 0
+
+                # Validação MMP60: erro relativo se disponível
+                _mmp60_err = None
+                if _mmp60_val and _best['result'][0]:
+                    _cp_best = _best['result'][0]
+                    _wp_best = _best['result'][1] if len(_best['result'])>1 else 0
+                    _pred60  = (_wp_best/3600 + _cp_best) if isinstance(_wp_best, float) and _wp_best > 0 else None
+                    if _pred60:
+                        _mmp60_err = abs(_pred60 - _mmp60_val) / _mmp60_val * 100
+
+                # Score composto (igual ao testes manuais)
+                _sc = (0.40*(_cp_range/30) +
+                       0.30*(_see_mean/20) +
+                       0.20*(_cv_pct/20) +
+                       0.10*((_mmp60_err or 0)/20))
+                _best['cp_var_pct'] = round(_cp_range, 1)
+                _best['cv_pct']     = round(_cv_pct, 1)
+                _best['see_mean']   = round(_see_mean, 2)
+                _best['score']      = round(_sc*100, 1)
+                _best['mmp60_err']  = round(_mmp60_err, 1) if _mmp60_err else None
+                _results[_mn]       = _best
 
     # ════════════════════════════════════════════════════════════════════════
     # TAB 1 — RANKING SEE%
@@ -679,37 +750,86 @@ def tab_cp_model(ac_full=None):
         if not _results:
             st.error("Nenhum modelo convergiu com os dados disponíveis.")
         else:
-            # Tabela ranking
+            st.caption(
+                "**CP var%** = amplitude de CP entre todas as combinações de 3 pontos (≤5% = robusto). "
+                "**CV%** = desvio-padrão de CP / média (≤5% = consistente). "
+                "**SEE% médio** = erro médio entre todas as combinações. "
+                "**Score** = composto ponderado (menor = melhor)."
+            )
             _rank_rows = []
-            for _mn, _gr in sorted(_results.items(), key=lambda x: x[1]['see_pct']):
-                _res = _gr['result']
+            for _mn, _gr in sorted(_results.items(), key=lambda x: x[1]['score']):
+                _res  = _gr['result']
                 _cp_v = _gr.get('cp')
                 _wp_v = _res[1] if len(_res) > 1 else None
-                _pm_v = _res[2] if len(_res) > 2 else None
                 _pts_lbl = " + ".join([f"{int(t//60)}min" for _, t in _gr['combo']])
+                _n_combos = len(_gr['cp_vals'])
+
+                _cp_var  = _gr.get('cp_var_pct', '—')
+                _cv      = _gr.get('cv_pct', '—')
+                _see_b   = round(_gr['see_pct'],   2)
+                _see_m   = _gr.get('see_mean', '—')
+                _score   = _gr.get('score', '—')
+                _m60_err = _gr.get('mmp60_err')
+
+                # Semáforos
+                def _flag_cp_var(v):
+                    if not isinstance(v, float): return '—'
+                    return f"{'✅' if v<5 else '⚠️' if v<15 else '❌'} {v:.1f}%"
+                def _flag_cv(v):
+                    if not isinstance(v, float): return '—'
+                    return f"{'✅' if v<5 else '⚠️' if v<10 else '❌'} {v:.1f}%"
+                def _flag_see(v):
+                    if not isinstance(v, float): return '—'
+                    return f"{'✅' if v<2 else '⚠️' if v<5 else '❌'} {v:.2f}%"
+
                 _rank_rows.append({
-                    'Modelo': _mn,
-                    'SEE%': f"{_gr['see_pct']:.2f}%",
-                    'CP (W)': f"{_cp_v:.0f}" if _cp_v else "—",
-                    "W′ (J)": f"{_wp_v:.0f}" if _wp_v and isinstance(_wp_v, float) and _wp_v > 100 else "—",
-                    'Pmax (W)': f"{_pm_v:.0f}" if _pm_v and isinstance(_pm_v, float) and _pm_v > 100 and _mn != 'Power Law' else "—",
-                    'Melhores pontos': _pts_lbl,
-                    'N pts': _gr['n_pts'],
+                    'Modelo':       _mn,
+                    'CP (W)':       f"{_cp_v:.0f}" if _cp_v else "—",
+                    "W′ (J)":       f"{_wp_v:.0f}" if isinstance(_wp_v, float) and _wp_v > 100 else "—",
+                    'SEE% melhor':  _flag_see(_see_b),
+                    'SEE% médio':   _flag_see(float(_see_m)) if isinstance(_see_m, float) else '—',
+                    'CP var%':      _flag_cp_var(float(_cp_var)) if isinstance(_cp_var, float) else '—',
+                    'CV%':          _flag_cv(float(_cv)) if isinstance(_cv, float) else '—',
+                    'Val. 60min':   f"{_m60_err:.1f}%" if _m60_err else ('sem dado' if _mmp60_val is None else '—'),
+                    'N combos':     _n_combos,
+                    'Score ↓':      _score,
+                    'Melhores 3pts':_pts_lbl,
                 })
             _rank_df = pd.DataFrame(_rank_rows)
+
+            # Colorir Score — menor = mais verde
+            def _color_score(val):
+                try:
+                    v = float(val)
+                    if v < 20: return 'background-color:#EAF3DE'
+                    if v < 50: return 'background-color:#FEF3E2'
+                    return 'background-color:#FDEAEA'
+                except: return ''
+
             st.dataframe(_rank_df, hide_index=True, use_container_width=True)
 
-            # Melhor modelo destacado
-            _best_mn = sorted(_results.items(), key=lambda x: x[1]['see_pct'])[0]
+            # Legenda
+            st.caption(
+                "✅ Excelente | ⚠️ Aceitável | ❌ Problemático — "
+                f"3 pontos fixos por modelo (papers) | MMP60 excluído do fitting "
+                + (f"(usado como validação: 60min={_mmp60_val:.0f}W)" if _mmp60_val else "(MMP60 não disponível)")
+            )
+
+            # Melhor modelo
+            _best_mn  = sorted(_results.items(), key=lambda x: x[1]['score'])[0]
             _best_lbl, _best_gr = _best_mn
             _best_res = _best_gr['result']
             _best_cp  = _best_gr.get('cp')
-            _best_wp  = _best_res[1] if len(_best_res) > 1 else None
+            _best_wp  = _best_res[1] if len(_best_res)>1 else None
 
             st.success(
-                f"**Modelo mais fidedigno: {_best_lbl}** | "
-                f"SEE%={_best_gr['see_pct']:.2f}% | "
-                f"CP={_best_cp:.0f}W" + (f" | W′={_best_wp:.0f}J" if isinstance(_best_wp, float) and _best_wp > 100 else "") +
+                f"**Modelo mais confiável: {_best_lbl}** | "
+                f"Score={_best_gr['score']} | "
+                f"SEE% melhor={_best_gr['see_pct']:.2f}% | "
+                f"SEE% médio={_best_gr.get('see_mean','—')} | "
+                f"CP var%={_best_gr.get('cp_var_pct','—')}% | "
+                f"CV%={_best_gr.get('cv_pct','—')}% | "
+                f"CP={_best_cp:.0f}W" + (f" | W′={_best_wp:.0f}J" if isinstance(_best_wp, float) and _best_wp>100 else "") +
                 f" | Pontos: " + " + ".join([f"{int(t//60)}min" for _, t in _best_gr['combo']])
             )
 
