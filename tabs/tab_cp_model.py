@@ -301,8 +301,12 @@ def tab_cp_model(ac_full=None):
         cv_w   = std_w/mean_w*100 if mean_w>0 else 0.0
         p_pts  = [p for p,t in tests if p>cp]
         sl = 0.0
-        if len(p_pts)>=2:
-            sl,_,_,_,_ = linregress(p_pts, wp_pts)
+        # Proteger contra valores idênticos (linregress falha com std=0)
+        if len(p_pts) >= 2 and len(set(p_pts)) > 1:
+            try:
+                sl,_,_,_,_ = linregress(p_pts, wp_pts)
+            except Exception:
+                sl = 0.0
         return {"std":round(std_w,1),"cv":round(cv_w,1),
                 "mean":round(mean_w,0),"slope":round(float(sl),4)}
 
@@ -348,33 +352,58 @@ def tab_cp_model(ac_full=None):
 
     def fit_3p_hyperbolic(tests, pmax_ext=None):
         """3P Hiperbólico: P(t) = (Pmax·W′) / (W′ + (Pmax-CP)·t)
-        Requer ponto curto (<60s) para estimar Pmax. Mínimo: 3 pontos."""
+        Se pmax_ext disponível → Pmax FIXO (apenas 2 parâmetros livres: CP, W′).
+        Sem pmax_ext → Pmax como 3º parâmetro livre (precisa ponto curto <30s)."""
         from scipy.optimize import minimize as _min
-        if len(tests) < 3: return None, None, None, None
+        if len(tests) < 2: return None, None, None, None
         p_obs = np.array([p for p, _ in tests])
         t_obs = np.array([t for _, t in tests])
-        pmax0 = float(pmax_ext) if pmax_ext and pmax_ext > max(p_obs) else float(max(p_obs)) * 1.15
 
+        # Usar Pmax externo fixo se disponível → reduz a 2 parâmetros, muito mais estável
+        if pmax_ext and float(pmax_ext) > float(max(p_obs)):
+            pmax_fixed = float(pmax_ext)
+            def _p3f(t, cp, wp):
+                return (pmax_fixed * wp) / (wp + (pmax_fixed - cp) * t)
+            def _loss2(params):
+                cp, wp = params
+                if cp <= 0 or wp <= 0 or cp >= min(p_obs)*0.99 or cp >= pmax_fixed: return 1e12
+                pred = _p3f(t_obs, cp, wp)
+                return float(np.sum((p_obs - pred)**2))
+            best = None
+            for cp0 in np.linspace(float(min(p_obs))*0.50, float(min(p_obs))*0.93, 8):
+                wp0 = float(np.mean(t_obs))*(float(min(p_obs))-cp0)*0.5
+                if wp0 <= 0: continue
+                try:
+                    r = _min(_loss2, [cp0, max(wp0,1)],
+                             bounds=[(1, float(min(p_obs))*0.98), (1, 1e7)],
+                             method='L-BFGS-B')
+                    if best is None or r.fun < best.fun: best = r
+                except Exception: pass
+            if best is None or best.fun > 1e10: return None, None, None, None
+            cp, wp = float(best.x[0]), float(best.x[1])
+            pp = [float(_p3f(np.array([t]), cp, wp)[0]) for _, t in tests]
+            return cp, wp, pmax_fixed, pp
+
+        # Sem Pmax externo → optimizar os 3 parâmetros (precisa ponto curto para Pmax)
         def _p3(t, cp, wp, pmax):
             return (pmax * wp) / (wp + (pmax - cp) * t)
-
-        def _loss(params):
+        def _loss3(params):
             cp, wp, pmax = params
-            if cp <= 0 or wp <= 0 or pmax <= max(p_obs) or cp >= min(p_obs)*0.99: return 1e12
+            if cp<=0 or wp<=0 or pmax<=max(p_obs) or cp>=min(p_obs)*0.99: return 1e12
             pred = _p3(t_obs, cp, wp, pmax)
             return float(np.sum((p_obs - pred)**2))
-
         best = None
         for cp0 in np.linspace(float(min(p_obs))*0.5, float(min(p_obs))*0.92, 5):
-            wp0   = float(np.mean(t_obs)) * (float(min(p_obs)) - cp0) * 0.5
-            pmax0 = float(max(p_obs)) * 1.2
-            try:
-                r = _min(_loss, [cp0, wp0, pmax0],
-                         bounds=[(1, float(min(p_obs))*0.98), (1, 1e7),
-                                 (float(max(p_obs))*1.01, float(max(p_obs))*3)],
-                         method='L-BFGS-B')
-                if best is None or r.fun < best.fun: best = r
-            except Exception: pass
+            for pm0 in [float(max(p_obs))*f for f in [1.05,1.10,1.20,1.50,2.0]]:
+                wp0 = float(np.mean(t_obs))*(float(min(p_obs))-cp0)*0.5
+                if wp0 <= 0: continue
+                try:
+                    r = _min(_loss3, [cp0, max(wp0,1), pm0],
+                             bounds=[(1, float(min(p_obs))*0.98), (1, 1e7),
+                                     (float(max(p_obs))*1.01, float(max(p_obs))*3)],
+                             method='L-BFGS-B')
+                    if best is None or r.fun < best.fun: best = r
+                except Exception: pass
         if best is None or best.fun > 1e10: return None, None, None, None
         cp, wp, pmax = float(best.x[0]), float(best.x[1]), float(best.x[2])
         pp = [float(_p3(np.array([t]), cp, wp, pmax)[0]) for _, t in tests]
@@ -416,7 +445,7 @@ def tab_cp_model(ac_full=None):
         """Om3CP (Omni-3CP): OmPD com 3P base em vez de 2P.
         P(t) = W′/t × f(t,Pmax,CP) + CP, âncora em τ de 3P Pmax."""
         from scipy.optimize import minimize as _min
-        if len(tests) < 3: return None, None, None, None
+        if len(tests) < 2: return None, None, None, None
         p_obs = np.array([p for p, _ in tests])
         t_obs = np.array([t for _, t in tests])
         pmax  = float(pmax_ext) if pmax_ext and pmax_ext > max(p_obs) else float(max(p_obs)) * 1.15
@@ -651,20 +680,20 @@ def tab_cp_model(ac_full=None):
 
     # ── Correr grid search para todos os modelos ──────────────────────────
     _MODELS = {
-        'OmPD':          {'fn': fit_ompd,          'n_pts': 3, 'k': 3,
+        'OmPD':          {'fn': fit_ompd,          'n_pts': 3, 'k': 2,
                           'color': '#8e44ad', 'needs_pmax': True,
                           'desc': '3 pts (incluindo ≤3min para Pmax). Puchowicz 2020.'},
         '2P Hiperbólico':{'fn': fit_2p_hyperbolic, 'n_pts': 3, 'k': 2,
                           'color': '#2980b9', 'needs_pmax': False,
                           'desc': '3 pts entre 3-20min. Monod & Scherrer 1965.'},
-        '3P Hiperbólico':{'fn': fit_3p_hyperbolic, 'n_pts': 3, 'k': 3,
+        '3P Hiperbólico':{'fn': fit_3p_hyperbolic, 'n_pts': 3, 'k': 2,
                           'color': '#27ae60', 'needs_pmax': True,
                           'desc': '3 pts incluindo ≤3min. Morton 1996.'},
         'Ward-Smith':    {'fn': fit_ward_smith,    'n_pts': 3, 'k': 2,
                           'color': '#e67e22', 'needs_pmax': True,
                           'desc': '3 pts entre 3-20min (excluir <60s). Ward-Smith 1999.',
                           'exclude_short': True},
-        'Om3CP':         {'fn': fit_om3cp,         'n_pts': 3, 'k': 3,
+        'Om3CP':         {'fn': fit_om3cp,         'n_pts': 3, 'k': 2,
                           'color': '#16a085', 'needs_pmax': True,
                           'desc': '3 pts incluindo ≤3min. Puchowicz variante.'},
         'OmExp':         {'fn': fit_omexp,         'n_pts': 3, 'k': 2,
@@ -925,86 +954,80 @@ def tab_cp_model(ac_full=None):
     # ════════════════════════════════════════════════════════════════════════
     with _tab_ompd:
         st.caption(
-            "Fitting OmPD automático com season bests (MMP) da sheet. "
-            "**MMP1**=60s · **MMP3**=180s · **MMP5**=300s · "
-            "**MMP12**=720s · **MMP20**=1200s · **MMP60**=3600s"
+            "OmPD com os melhores 3 pontos MMP encontrados pelo grid search. "
+            "MMP60 excluído do fitting (só validação). "
+            "Row/Ski: máximo 12min."
         )
-        if ac_full is None or len(ac_full) == 0:
-            st.info("Dados de actividades não disponíveis (ac_full).")
-        else:
-            _col_mod_dd  = next((c for c in ['type','modality'] if c in ac_full.columns), None)
-            _col_date_dd = next((c for c in ['date','Data'] if c in ac_full.columns), None)
-            _mods_dd = ([m for m in ["Bike","Run","Row","Ski"]
-                         if m in ac_full[_col_mod_dd].values]
-                        if _col_mod_dd else ["Bike"])
-            _dd1, _dd2, _dd3, _dd4, _dd5 = st.columns(5)
-            with _dd1:
-                _mod_dd = st.selectbox("Modalidade",_mods_dd,key="ompd_dd_mod")
-            _ac_dd = ac_full[ac_full[_col_mod_dd]==_mod_dd] if _col_mod_dd else ac_full
-            with _dd2:
-                _pmax_col_opts = [c for c in ['p_max','icu_power_max'] if c in _ac_dd.columns]
-                _pm_dd = None
-                if _pmax_col_opts:
-                    _pm_sub = (_ac_dd[[_pmax_col_opts[0], _col_date_dd]]
-                               .dropna(subset=[_pmax_col_opts[0]])
-                               .sort_values(_col_date_dd, ascending=False))
-                    if not _pm_sub.empty:
-                        _pm_dd = float(_pm_sub[_pmax_col_opts[0]].iloc[0])
-                st.metric("Pmax sheet",f"{_pm_dd:.0f}W" if _pm_dd else "—")
-            _mmp_dd = []
-            for _mc2, _dur2 in MMP_COLS.items():
-                if _mc2 in _ac_dd.columns:
-                    _ac_s2 = _ac_dd.sort_values(_col_date_dd, ascending=False)
-                    for _, _rr2 in _ac_s2.iterrows():
-                        _mv2 = parse_mmp(str(_rr2[_mc2]))
-                        if _mv2 is not None:
-                            _mmp_dd.append((_mv2, float(_dur2))); break
-            _mmp_dd = sorted(_mmp_dd, key=lambda x: x[1])
-            with _dd3: st.metric("Pontos MMP (Yes)", str(len(_mmp_dd)))
-            if len(_mmp_dd) < 2:
-                st.warning(f"⚠️ {_mod_dd}: menos de 2 pontos MMP com 'Yes'.")
-            else:
-                with st.expander(f"📋 Pontos MMP — {_mod_dd}", expanded=False):
-                    st.dataframe(pd.DataFrame(_mmp_dd, columns=["Potência (W)","Duração (s)"]),
-                                 hide_index=True)
-                _res_dd = fit_ompd(_mmp_dd, pmax_ext=_pm_dd)
-                _cp_dd, _wp_dd, _pm2_dd, _A_dd, _pp_dd, _r2_dd, _weff_dd = (
-                    _res_dd if _res_dd[0] is not None
-                    else (None,)*7
-                )
-                with _dd4:
-                    if _cp_dd: st.metric("CP",f"{_cp_dd:.0f}W")
-                with _dd5:
-                    if _wp_dd: st.metric("W′",f"{_wp_dd:.0f}J")
-                if _pp_dd:
-                    _,_see_dd = calc_see([p for p,_ in _mmp_dd], _pp_dd, k=2)
-                    st.metric("SEE%",f"{_see_dd:.1f}%" if _see_dd else "—")
-                    _ddr5a, _ddr5b = st.columns(2)
-                    _ddr5a.metric("R²", f"{_r2_dd:.4f}" if _r2_dd else "—")
-                    _ddr5b.metric("W′eff @120s", f"{_weff_dd:.1f}%" if _weff_dd else "—")
-                    _p_obs_dd = [p for p,_ in _mmp_dd]
-                    _t_obs_dd = [t for _,t in _mmp_dd]
-                    _trng_dd  = np.logspace(np.log10(min(_t_obs_dd)*0.5), np.log10(max(_t_obs_dd)*3), 400)
-                    def _ompd_p_dd(t_arr,cp,wp,pmax_v,A):
-                        tau  = wp/max(pmax_v-cp,1.0)
-                        base = wp/t_arr*(1-np.exp(-t_arr/tau))+cp
-                        if A and A>0:
-                            decay = np.where(t_arr>TCP_MAX,A*np.log(t_arr/TCP_MAX),0.0)
-                            return base-decay
-                        return base
-                    _ydd = _ompd_p_dd(_trng_dd,_cp_dd,_wp_dd,_pm2_dd,_A_dd or 0.0)
-                    _fig_dd = go.Figure()
-                    _fig_dd.add_trace(go.Scatter(x=_t_obs_dd,y=_p_obs_dd,mode='markers',
-                        name='MMP',marker=dict(size=9,color='#e74c3c')))
-                    _fig_dd.add_trace(go.Scatter(x=list(_trng_dd),y=list(_ydd),
-                        mode='lines',name='OmPD',line=dict(color='#8e44ad',width=2.5)))
-                    _fig_dd.update_layout(**BASE,
-                        xaxis=dict(**AX,title="Duração (s)",type='log'),
-                        yaxis=dict(**AX,title="Potência (W)"),
-                        title=dict(text=f"OmPD — {_mod_dd} | CP={_cp_dd:.0f}W | W′={_wp_dd:.0f}J",
-                                   font=dict(size=13,color='#111111')))
-                    st.plotly_chart(_fig_dd,use_container_width=True)
+        # Mostrar resultado do grid search para OmPD (consistente com o Ranking)
+        if 'OmPD' in _results:
+            _gr_od = _results['OmPD']
+            _res_od = _gr_od['result']
+            _cp_od, _wp_od = _res_od[0], _res_od[1]
+            _pm_od, _A_od  = _res_od[2], _res_od[3]
+            _pp_od, _r2_od, _weff_od = _res_od[4], _res_od[5], _res_od[6]
+            _pts_od = _gr_od['combo']
 
+            _od1, _od2, _od3, _od4, _od5 = st.columns(5)
+            _od1.metric("CP", f"{_cp_od:.0f}W")
+            _od2.metric("W′", f"{_wp_od:.0f}J")
+            _od3.metric("Pmax", f"{_pm_od:.0f}W" if _pm_od else "—")
+            _, _see_od = calc_see([p for p,_ in _pts_od], _pp_od, k=2)
+            _od4.metric("SEE%", f"{_see_od:.2f}%" if _see_od else "—")
+            _od5.metric("W′eff @120s", f"{_weff_od:.1f}%" if _weff_od else "—")
+
+            st.caption(f"Pontos usados: " +
+                       " + ".join([f"{int(t//60)}min={p:.0f}W" for p, t in _pts_od]) +
+                       f" | CP var%={_gr_od.get('cp_var_pct','—')}% | Score={_gr_od.get('score','—')}")
+
+            _t_obs_od = [t for _, t in _pts_od]
+            _trng_od  = np.logspace(np.log10(30), np.log10(max(_t_obs_od)*3), 400)
+            def _ompd_p_od(t_arr, cp, wp, pmax_v, A):
+                tau  = wp / max(pmax_v - cp, 1.0)
+                base = wp / t_arr * (1 - np.exp(-t_arr / tau)) + cp
+                if A and A > 0:
+                    decay = np.where(t_arr > TCP_MAX, A * np.log(t_arr / TCP_MAX), 0.0)
+                    return base - decay
+                return base
+            _ydd_od = _ompd_p_od(_trng_od, _cp_od, _wp_od,
+                                  _pm_od or _pmax_global or max(p for p,_ in _pts_od)*1.15,
+                                  _A_od or 0.0)
+            _fig_od = go.Figure()
+            _fig_od.add_trace(go.Scatter(
+                x=[t for _,t in _all_mmp_pts], y=[p for p,_ in _all_mmp_pts],
+                mode='markers+text', name='MMP (todos)',
+                marker=dict(size=9, color='#e74c3c'),
+                text=[f"{int(t//60)}min" for _,t in _all_mmp_pts],
+                textposition='top center', textfont=dict(size=9),
+            ))
+            _fig_od.add_trace(go.Scatter(
+                x=[t for _,t in _pts_od], y=[p for p,_ in _pts_od],
+                mode='markers', name='Pontos usados (3)',
+                marker=dict(size=13, color='#8e44ad', symbol='star'),
+            ))
+            _fig_od.add_trace(go.Scatter(
+                x=list(_trng_od), y=list(_ydd_od),
+                mode='lines', name='OmPD',
+                line=dict(color='#8e44ad', width=2.5),
+            ))
+            if _mmp60_val:
+                _fig_od.add_trace(go.Scatter(
+                    x=[3600], y=[_mmp60_val],
+                    mode='markers', name=f'MMP60 validação ({_mmp60_val:.0f}W)',
+                    marker=dict(size=10, color='#e67e22', symbol='diamond'),
+                ))
+            _fig_od.add_hline(y=_cp_od, line_dash='dot', line_color='#888',
+                               annotation_text=f"CP={_cp_od:.0f}W",
+                               annotation_position="right")
+            _fig_od.update_layout(
+                **BASE,
+                xaxis=dict(**AX, title="Duração (s)", type='log'),
+                yaxis=dict(**AX, title="Potência (W)"),
+                title=dict(text=f"OmPD — {modalidade} | 3 melhores pontos",
+                           font=dict(size=13)),
+            )
+            st.plotly_chart(_fig_od, use_container_width=True)
+        else:
+            st.warning("OmPD não convergiu. Ver tab Ranking para diagnóstico.")
     # ════════════════════════════════════════════════════════════════════════
     # TABS DOS MODELOS INDIVIDUAIS — helper para mostrar resultado do grid
     # ════════════════════════════════════════════════════════════════════════
