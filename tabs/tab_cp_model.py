@@ -669,14 +669,13 @@ def tab_cp_model(ac_full=None):
                         _all_mmp_pts.append((_mv, float(_dur)))
                         break
             _all_mmp_pts = sorted(set(_all_mmp_pts), key=lambda x: x[1])
-            for _pc in ['p_max','icu_power_max']:
-                if _pc in _ac_mod.columns:
-                    _px = (_ac_mod[[_pc, _col_date]]
-                           .dropna(subset=[_pc])
-                           .sort_values(_col_date, ascending=False))
-                    if not _px.empty:
-                        _pmax_global = float(_px[_pc].iloc[0])
-                        break
+            # Pmax — mesma coluna do teste manual: p_max
+            if 'p_max' in _ac_mod.columns:
+                _px = (_ac_mod[['p_max', _col_date]]
+                       .dropna(subset=['p_max'])
+                       .sort_values(_col_date, ascending=False))
+                if not _px.empty:
+                    _pmax_global = float(_px['p_max'].iloc[0])
 
     # Cada modelo usa exactamente 3 pontos (papers) — testamos todas as C(n,3)
     # Ward-Smith: 3 pontos entre 2-20min (excluir ponto <60s para este modelo)
@@ -810,7 +809,10 @@ def tab_cp_model(ac_full=None):
             )
 
         st.info(f"**Pontos MMP disponíveis ({modalidade}):** " +
-                " · ".join([f"{int(t//60)}min={p:.0f}W" for p, t in _all_mmp_pts]))
+                " · ".join([f"{int(t//60)}min={p:.0f}W" for p, t in _all_mmp_pts]) +
+                (f" | **Pmax:** {_pmax_global:.0f}W (da sheet)" if _pmax_global
+                 else " | ⚠️ **Pmax não encontrado** — modelos Omni usarão estimativa (max×1.15). "
+                      "Para melhores resultados, preencher coluna `p_max` ou `icu_pmax` na sheet."))
 
         if not _results:
             st.error("Nenhum modelo convergiu com os dados disponíveis.")
