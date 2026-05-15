@@ -619,10 +619,14 @@ def tab_cp_model(ac_full=None):
     # ════════════════════════════════════════════════════════════════════════
     # ESTRUTURA DE TABS
     # ════════════════════════════════════════════════════════════════════════
-    _tab_rank, _tab_ompd, _tab_2p, _tab_3p, _tab_ws, _tab_om3, \
+    _tab_rank, _tab_ompd, _tab_m1, _tab_m2, _tab_m3, \
+        _tab_2p, _tab_3p, _tab_ws, _tab_om3, \
         _tab_omexp, _tab_pl, _tab_manual = st.tabs([
         "🏆 Ranking SEE%",
         "🏅 OmPD",
+        "📐 M1: P vs 1/t",
+        "📐 M2: Work-Time",
+        "📐 M3: Hiperbólico-t",
         "📐 2P Hiperbólico",
         "📐 3P Hiperbólico",
         "📐 Ward-Smith",
@@ -680,14 +684,27 @@ def tab_cp_model(ac_full=None):
 
     # ── Correr grid search para todos os modelos ──────────────────────────
     _MODELS = {
+        # Modelos do Ranking automático (grid search 3 pontos)
+        'M1: P vs 1/t':   {'fn': lambda pts, **kw: fit_m1(pts, np.ones(len(pts))),
+                            'n_pts': 3, 'k': 2, 'color': '#e74c3c',
+                            'needs_pmax': False,
+                            'desc': 'P = W′/t + CP. Regressão linear. Monod & Scherrer 1965.'},
+        'M2: Work-Time':  {'fn': lambda pts, **kw: fit_m2(pts, np.ones(len(pts))),
+                            'n_pts': 3, 'k': 2, 'color': '#2980b9',
+                            'needs_pmax': False,
+                            'desc': 'W = CP·t + W′. Espaço trabalho-tempo. Morton 1986.'},
+        'M3: Hiperbólico-t':{'fn': lambda pts, **kw: fit_m3(pts, np.ones(len(pts))),
+                             'n_pts': 3, 'k': 2, 'color': '#27ae60',
+                             'needs_pmax': False,
+                             'desc': 't = W′/(P-CP). Minimiza erro em tempo. Mais robusto.'},
         'OmPD':          {'fn': fit_ompd,          'n_pts': 3, 'k': 2,
                           'color': '#8e44ad', 'needs_pmax': True,
                           'desc': '3 pts (incluindo ≤3min para Pmax). Puchowicz 2020.'},
         '2P Hiperbólico':{'fn': fit_2p_hyperbolic, 'n_pts': 3, 'k': 2,
-                          'color': '#2980b9', 'needs_pmax': False,
+                          'color': '#1abc9c', 'needs_pmax': False,
                           'desc': '3 pts entre 3-20min. Monod & Scherrer 1965.'},
         '3P Hiperbólico':{'fn': fit_3p_hyperbolic, 'n_pts': 3, 'k': 2,
-                          'color': '#27ae60', 'needs_pmax': True,
+                          'color': '#f39c12', 'needs_pmax': True,
                           'desc': '3 pts incluindo ≤3min. Morton 1996.'},
         'Ward-Smith':    {'fn': fit_ward_smith,    'n_pts': 3, 'k': 2,
                           'color': '#e67e22', 'needs_pmax': True,
@@ -907,7 +924,11 @@ def tab_cp_model(ac_full=None):
                 _px_c = _pmax_global if _mcfg_c['needs_pmax'] else None
                 # Recalcular curva completa com todos os pontos t_comp
                 try:
-                    if _mn == 'OmPD':
+                    if _mn in ('M1: P vs 1/t', '2P Hiperbólico',
+                               'M2: Work-Time', 'M3: Hiperbólico-t'):
+                        _cp_c2, _wp_c2 = _res[0], _res[1]
+                        _y_comp = _wp_c2 / _t_comp + _cp_c2
+                    elif _mn == 'OmPD':
                         _cp_c2, _wp_c2, _pm_c2, _A_c2 = _res[0], _res[1], _res[2], _res[3]
                         def _ompd_curve(t_arr, cp, wp, pmax_v, A):
                             tau  = wp / max(pmax_v - cp, 1.0)
@@ -1103,7 +1124,10 @@ def tab_cp_model(ac_full=None):
             _t_plot = np.logspace(np.log10(30), np.log10(12000), 400)
             _y_plot = None
             try:
-                if model_name == '2P Hiperbólico':
+                if model_name in ('M1: P vs 1/t', '2P Hiperbólico'):
+                    _y_plot = _wp_m / _t_plot + _cp_m
+                elif model_name in ('M2: Work-Time', 'M3: Hiperbólico-t'):
+                    # M2 e M3 têm a mesma curva P = W′/t + CP
                     _y_plot = _wp_m / _t_plot + _cp_m
                 elif model_name == '3P Hiperbólico':
                     _y_plot = (_pm_m * _wp_m) / (_wp_m + (_pm_m - _cp_m) * _t_plot)
@@ -1153,12 +1177,15 @@ def tab_cp_model(ac_full=None):
                 st.plotly_chart(_fig_m, use_container_width=True)
 
     # Mostrar cada modelo na sua tab
-    _show_model_tab(_tab_2p,    '2P Hiperbólico', '#2980b9')
-    _show_model_tab(_tab_3p,    '3P Hiperbólico', '#27ae60')
-    _show_model_tab(_tab_ws,    'Ward-Smith',     '#e67e22')
-    _show_model_tab(_tab_om3,   'Om3CP',          '#16a085')
-    _show_model_tab(_tab_omexp, 'OmExp',          '#d35400')
-    _show_model_tab(_tab_pl,    'Power Law',      '#c0392b')
+    _show_model_tab(_tab_m1,    'M1: P vs 1/t',      '#e74c3c')
+    _show_model_tab(_tab_m2,    'M2: Work-Time',      '#2980b9')
+    _show_model_tab(_tab_m3,    'M3: Hiperbólico-t',  '#27ae60')
+    _show_model_tab(_tab_2p,    '2P Hiperbólico',     '#1abc9c')
+    _show_model_tab(_tab_3p,    '3P Hiperbólico',     '#f39c12')
+    _show_model_tab(_tab_ws,    'Ward-Smith',         '#e67e22')
+    _show_model_tab(_tab_om3,   'Om3CP',              '#16a085')
+    _show_model_tab(_tab_omexp, 'OmExp',              '#d35400')
+    _show_model_tab(_tab_pl,    'Power Law',          '#c0392b')
 
     with _tab_manual:
         st.subheader("📥 Testes Máximos")
