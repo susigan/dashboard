@@ -649,9 +649,11 @@ def tab_cp_model(ac_full=None):
             _ac_mod = ac_full[ac_full[_col_mod] == modalidade].copy()
             for _mc, _dur in MMP_COLS.items():
                 if _mc not in _ac_mod.columns: continue
-                # Row e Ski: excluir MMP20 (1200s) e MMP60 (3600s) do fitting
-                # — esforços de 20min+ nestas modalidades raramente são máximos absolutos
+                # Row e Ski: excluir MMP1 (60s), MMP20 (1200s) e MMP60 (3600s)
+                # MMP1 nestes desportos raramente é esforço máximo real
+                # MMP20+ raramente é esforço máximo absoluto
                 _max_dur_mod = 720 if modalidade in ('Row', 'Ski') else 1200
+                _min_dur_mod = 180 if modalidade in ('Row', 'Ski') else 60
                 if _mc == 'MMP60':           # sempre validação apenas
                     _ac_mod_s = _ac_mod.sort_values(_col_date, ascending=False)
                     for _, _rr in _ac_mod_s.iterrows():
@@ -660,8 +662,8 @@ def tab_cp_model(ac_full=None):
                             _mmp60_val = _mv
                             break
                     continue
-                if float(_dur) > _max_dur_mod:  # MMP20 excluído para Row/Ski
-                    continue
+                if float(_dur) > _max_dur_mod: continue
+                if float(_dur) < _min_dur_mod: continue
                 _ac_mod_s = _ac_mod.sort_values(_col_date, ascending=False)
                 for _, _rr in _ac_mod_s.iterrows():
                     _mv = parse_mmp(str(_rr[_mc]))
@@ -804,8 +806,9 @@ def tab_cp_model(ac_full=None):
 
         if modalidade in ('Row', 'Ski'):
             st.info(
-                f"ℹ️ **{modalidade}:** pontos limitados a ≤12min (MMP1, MMP3, MMP5, MMP12). "
-                "MMP20 e MMP60 excluídos — esforços de 20min+ nestas modalidades raramente são máximos absolutos."
+                f"ℹ️ **{modalidade}:** pontos limitados a 3–12min (MMP3, MMP5, MMP12). "
+                "MMP1 excluído — esforço de 1min raramente é máximo absoluto nestas modalidades. "
+                "MMP20 e MMP60 também excluídos."
             )
 
         st.info(f"**Pontos MMP disponíveis ({modalidade}):** " +
