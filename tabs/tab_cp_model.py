@@ -773,10 +773,27 @@ def tab_cp_model(ac_full=None):
                 # cp_var% = variação de CP entre combinações
                 _cp_v = _best['cp_vals']
                 _see_v = _best['see_vals']
-                _cp_mean = float(np.mean(_cp_v)) if _cp_v else 0
-                _cp_range = (max(_cp_v)-min(_cp_v))/_cp_mean*100 if _cp_mean>0 and len(_cp_v)>1 else 0
+                _cp_mean  = float(np.mean(_cp_v)) if _cp_v else 0
+                # None quando só 1 fit — sem variação a medir (igual a N/A nos testes manuais)
+                _cp_range = ((max(_cp_v)-min(_cp_v))/_cp_mean*100
+                             if _cp_mean>0 and len(_cp_v)>1 else None)
                 _see_mean = float(np.mean(_see_v)) if _see_v else _best['see_pct']
-                _cv_pct   = float(np.std(_cp_v)/_cp_mean*100) if _cp_mean>0 and len(_cp_v)>1 else 0
+                _cv_pct   = (float(np.std(_cp_v)/_cp_mean*100)
+                             if _cp_mean>0 and len(_cp_v)>1 else None)
+
+                # Quando só há 1 combinação (ex: Row/Ski com C(3,3)=1),
+                # usar variação cross-modelos (M1/M2/M3) como proxy de estabilidade
+                if _cp_range is None or _cv_pct is None:
+                    _cp_classicos = [
+                        _results[m]['cp']
+                        for m in ('M1: P vs 1/t','M2: Work-Time','M3: Hiperbólico-t')
+                        if m in _results and _results[m].get('cp')
+                    ]
+                    if len(_cp_classicos) > 1:
+                        _cm = float(np.mean(_cp_classicos))
+                        if _cm > 0:
+                            _cp_range = (max(_cp_classicos)-min(_cp_classicos))/_cm*100
+                            _cv_pct   = float(np.std(_cp_classicos)/_cm*100)
 
                 # Validação MMP60: erro relativo se disponível
                 _mmp60_err = None
@@ -788,12 +805,12 @@ def tab_cp_model(ac_full=None):
                         _mmp60_err = abs(_pred60 - _mmp60_val) / _mmp60_val * 100
 
                 # Score composto (igual ao testes manuais)
-                _sc = (0.40*(_cp_range/30) +
+                _sc = (0.40*((_cp_range or 0)/30) +
                        0.30*(_see_mean/20) +
-                       0.20*(_cv_pct/20) +
+                       0.20*((_cv_pct or 0)/20) +
                        0.10*((_mmp60_err or 0)/20))
-                _best['cp_var_pct'] = round(_cp_range, 1)
-                _best['cv_pct']     = round(_cv_pct, 1)
+                _best['cp_var_pct'] = round(_cp_range, 1) if _cp_range is not None else None
+                _best['cv_pct']     = round(_cv_pct, 1)   if _cv_pct   is not None else None
                 _best['see_mean']   = round(_see_mean, 2)
                 _best['score']      = round(_sc*100, 1)
                 _best['mmp60_err']  = round(_mmp60_err, 1) if _mmp60_err else None
@@ -831,9 +848,9 @@ def tab_cp_model(ac_full=None):
             st.error("Nenhum modelo convergiu com os dados disponíveis.")
         else:
             st.caption(
-                "**CP var%** = amplitude de CP entre todas as combinações de 3 pontos (≤5% = robusto). "
-                "**CV%** = desvio-padrão de CP / média (≤5% = consistente). "
-                "**SEE% médio** = erro médio entre todas as combinações. "
+                "**CP var%** = amplitude de CP entre combinações (ou entre M1/M2/M3 quando só há 1 combinação). "
+                "**CV%** = desvio-padrão/média (≤5% = consistente). "
+                "**SEE% médio** = erro médio. "
                 "**Score** = composto ponderado (menor = melhor)."
             )
 
