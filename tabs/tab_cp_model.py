@@ -1903,7 +1903,15 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
 
                             # Layout com 3 eixos Y
                             _fig_z.update_layout(
-                                **_BASE_MB,
+                                plot_bgcolor="rgba(0,0,0,0)",
+                                paper_bgcolor="rgba(0,0,0,0)",
+                                font=dict(size=11),
+                                legend=dict(
+                                    bgcolor="rgba(0,0,0,0.3)",
+                                    font=dict(size=9),
+                                    x=0.01, y=0.99,
+                                ),
+                                margin=dict(l=60, r=140, t=50, b=40),
                                 title=dict(
                                     text=f"Perfil Fisiológico Integrado — {modalidade}",
                                     font=dict(size=13)),
@@ -1913,7 +1921,9 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                                     tickfont=dict(size=10),
                                 ),
                                 yaxis=dict(
-                                    **_AX_MB,
+                                    showgrid=True,
+                                    gridcolor="rgba(128,128,128,0.15)",
+                                    zeroline=False,
                                     title="HR (bpm)",
                                     range=[_hr_min_plot, _hr_max_plot],
                                     titlefont=dict(color='#AAAAAA'),
@@ -1928,17 +1938,11 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                                 yaxis3=dict(
                                     title="Fat (g/h)",
                                     overlaying='y', side='right',
-                                    anchor='free', position=1.0,
                                     showgrid=False, zeroline=False,
                                     titlefont=dict(color='#00C896'),
                                     tickfont=dict(color='#00C896', size=10),
+                                    anchor='x', position=0.92,
                                 ),
-                                legend=dict(
-                                    bgcolor="rgba(0,0,0,0.3)",
-                                    font=dict(size=9),
-                                    x=0.01, y=0.99,
-                                ),
-                                margin=dict(l=60, r=120, t=50, b=40),
                             )
                             st.plotly_chart(_fig_z, use_container_width=True)
                             st.caption(
