@@ -744,8 +744,16 @@ def tab_cp_model(ac_full=None):
                             if _mcfg['needs_pmax']
                             else _mcfg['fn'](_combo_pts))
                     if _res[0] is None: continue
-                    # OmPD retorna 7 valores (cp,wp,pmax,A,pp,r2,weff) — pp no idx 4
-                    _pp_gs = _res[4] if _mn == 'OmPD' and len(_res) > 4 else _res[-1]
+                    # Extrair pp conforme o tipo de modelo:
+                    # OmPD: (cp,wp,pmax,A,pp,r2,weff) → idx 4
+                    # M1/M2/M3: (cp,wp,None,pp,r2,k)  → idx 3
+                    # Outros: (cp,wp,pmax,pp)           → idx -1 (= idx 3)
+                    if _mn == 'OmPD':
+                        _pp_gs = _res[4] if len(_res) > 4 else None
+                    elif _mn in ('M1: P vs 1/t', 'M2: Work-Time', 'M3: Hiperbólico-t'):
+                        _pp_gs = _res[3] if len(_res) > 3 else None
+                    else:
+                        _pp_gs = _res[-1]
                     if not isinstance(_pp_gs, (list, np.ndarray)) or len(_pp_gs) == 0: continue
                     _p_obs = [p for p,_ in _combo_pts]
                     _, _see = calc_see(_p_obs, _pp_gs, k=_mcfg['k'])
@@ -1106,7 +1114,12 @@ def tab_cp_model(ac_full=None):
                         if _res_cb[0] is None: continue
                         _p_obs_cb = [p for p, _ in _pts_cb]
                         # OmPD: pp no índice 4
-                        _pp_cb = _res_cb[4] if model_name == 'OmPD' and len(_res_cb) > 4 else _res_cb[-1]
+                        if model_name == 'OmPD':
+                            _pp_cb = _res_cb[4] if len(_res_cb) > 4 else None
+                        elif model_name in ('M1: P vs 1/t', 'M2: Work-Time', 'M3: Hiperbólico-t'):
+                            _pp_cb = _res_cb[3] if len(_res_cb) > 3 else None
+                        else:
+                            _pp_cb = _res_cb[-1]
                         if not isinstance(_pp_cb, (list, np.ndarray)) or len(_pp_cb) == 0: continue
                         _, _see_cb = calc_see(_p_obs_cb, _pp_cb, k=_mcfg_i['k'])
                         if _see_cb is None: continue
