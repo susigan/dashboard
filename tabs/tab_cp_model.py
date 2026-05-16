@@ -636,12 +636,17 @@ def tab_cp_model(ac_full=None):
         "🔬 Testes Manuais",
     ])
 
-    # ── Extrair MMPs da sheet — excluindo MMP60 (3600s) dos pontos de fitting ──
-    # MMP60 entra como validação externa, não como ponto de fitting
-    # Papers recomendam 3-4 pontos entre 2-20min para CP (Monod, Morton, Puchowicz)
-    _all_mmp_pts     = []   # todos sem MMP60 — para fitting
-    _mmp60_val       = None # MMP60 guardado para validação
-    _pmax_global     = None
+    # ── Extrair MMPs da sheet ─────────────────────────────────────────────────
+    # MMP60: sempre só validação. Nunca entra no fitting.
+    # Row/Ski M1/M2/M3: usar MMP1, MMP5, MMP12 (sem MMP3 nem MMP20)
+    # Row/Ski outros modelos: usar MMP1, MMP3, MMP5, MMP12, MMP20
+    # Bike/Run: usar MMP1, MMP3, MMP5, MMP12, MMP20
+
+    _all_mmp_pts      = []   # M1/M2/M3 Row/Ski: MMP1+MMP5+MMP12
+    _all_mmp_pts_full = []   # outros modelos: todos excluindo MMP60
+    _mmp60_val        = None
+    _pmax_global      = None
+
     if ac_full is not None and len(ac_full) > 0:
         _col_mod  = next((c for c in ['type','modality'] if c in ac_full.columns), None)
         _col_date = next((c for c in ['date','Data'] if c in ac_full.columns), None)
@@ -649,31 +654,36 @@ def tab_cp_model(ac_full=None):
             _ac_mod = ac_full[ac_full[_col_mod] == modalidade].copy()
             for _mc, _dur in MMP_COLS.items():
                 if _mc not in _ac_mod.columns: continue
-                # Row e Ski: usar MMP1(60s), MMP5(300s), MMP12(720s)
-                # Excluir MMP3(180s), MMP20(1200s), MMP60(3600s)
-                # MMP3 é redundante entre MMP1 e MMP5 nestas modalidades
-                if modalidade in ('Row', 'Ski'):
-                    if float(_dur) in (180.0, 1200.0, 3600.0): continue
-                else:
-                    # Bike/Run: excluir apenas MMP60
-                    if float(_dur) == 3600.0:
-                        pass  # tratado abaixo como validação
-                if _mc == 'MMP60':           # sempre validação apenas
-                    _ac_mod_s = _ac_mod.sort_values(_col_date, ascending=False)
+                _dur_f = float(_dur)
+                _ac_mod_s = _ac_mod.sort_values(_col_date, ascending=False)
+
+                # MMP60 → sempre validação
+                if _mc == 'MMP60':
                     for _, _rr in _ac_mod_s.iterrows():
                         _mv = parse_mmp(str(_rr[_mc]))
                         if _mv is not None:
-                            _mmp60_val = _mv
-                            break
+                            _mmp60_val = _mv; break
                     continue
-                _ac_mod_s = _ac_mod.sort_values(_col_date, ascending=False)
+
+                # Ler o valor MMP
+                _mv = None
                 for _, _rr in _ac_mod_s.iterrows():
                     _mv = parse_mmp(str(_rr[_mc]))
-                    if _mv is not None:
-                        _all_mmp_pts.append((_mv, float(_dur)))
-                        break
-            _all_mmp_pts = sorted(set(_all_mmp_pts), key=lambda x: x[1])
-            # Pmax — mesma coluna do teste manual: p_max
+                    if _mv is not None: break
+                if _mv is None: continue
+
+                # _all_mmp_pts_full: todos os MMPs excl. MMP60
+                _all_mmp_pts_full.append((_mv, _dur_f))
+
+                # _all_mmp_pts (para M1/M2/M3 Row/Ski): MMP1+MMP5+MMP12 apenas
+                if modalidade in ('Row', 'Ski'):
+                    if _dur_f not in (60.0, 300.0, 720.0): continue  # só 1min,5min,12min
+                _all_mmp_pts.append((_mv, _dur_f))
+
+            _all_mmp_pts      = sorted(set(_all_mmp_pts),      key=lambda x: x[1])
+            _all_mmp_pts_full = sorted(set(_all_mmp_pts_full), key=lambda x: x[1])
+
+            # Pmax
             if 'p_max' in _ac_mod.columns:
                 _px = (_ac_mod[['p_max', _col_date]]
                        .dropna(subset=['p_max'])
@@ -727,11 +737,16 @@ def tab_cp_model(ac_full=None):
     # Grid search: exactamente N=3 pontos (C(n,3) combinações)
     # Ward-Smith exclui pontos <60s
     _results = {}
-    if _all_mmp_pts:
+    if _all_mmp_pts_full:
         for _mn, _mcfg in _MODELS.items():
-            _px   = _pmax_global if _mcfg['needs_pmax'] else None
-            _pts  = ([p for p in _all_mmp_pts if p[1] >= 60]
-                     if _mcfg.get('exclude_short') else _all_mmp_pts)
+            _px    = _pmax_global if _mcfg['needs_pmax'] else None
+            # M1/M2/M3 Row/Ski: usar MMP1+MMP5+MMP12 apenas
+            # Todos os outros: usar conjunto completo (MMP1+MMP3+MMP5+MMP12+MMP20)
+            _pts_base = (_all_mmp_pts
+                         if _mn in _M_CLASSICOS and modalidade in ('Row','Ski')
+                         else _all_mmp_pts_full)
+            _pts  = ([p for p in _pts_base if p[1] >= 60]
+                     if _mcfg.get('exclude_short') else _pts_base)
             _n_pts = _mcfg['n_pts']
             if len(_pts) < _n_pts: continue
 
@@ -833,16 +848,17 @@ def tab_cp_model(ac_full=None):
 
         if modalidade in ('Row', 'Ski'):
             st.info(
-                f"ℹ️ **{modalidade}:** pontos usados: MMP1(1min), MMP5(5min), MMP12(12min). "
-                "MMP3 excluído (redundante entre 1min e 5min). "
-                "MMP20 e MMP60 excluídos."
+                f"ℹ️ **{modalidade}:** "
+                f"M1/M2/M3 usam MMP1+MMP5+MMP12 | "
+                f"Outros modelos usam MMP1+MMP3+MMP5+MMP12+MMP20. "
+                "MMP60 sempre excluído do fitting (usado como validação)."
             )
 
-        st.info(f"**Pontos MMP disponíveis ({modalidade}):** " +
-                " · ".join([f"{int(t//60)}min={p:.0f}W" for p, t in _all_mmp_pts]) +
-                (f" | **Pmax:** {_pmax_global:.0f}W (da sheet)" if _pmax_global
-                 else " | ⚠️ **Pmax não encontrado** — modelos Omni usarão estimativa (max×1.15). "
-                      "Para melhores resultados, preencher coluna `p_max` ou `icu_pmax` na sheet."))
+        _pts_display = _all_mmp_pts_full if _all_mmp_pts_full else _all_mmp_pts
+        st.info(f"**Pontos disponíveis ({modalidade}):** " +
+                " · ".join([f"{int(t//60)}min={p:.0f}W" for p, t in _pts_display]) +
+                (f" | **Pmax:** {_pmax_global:.0f}W" if _pmax_global
+                 else " | ⚠️ Pmax não encontrado — modelos Omni usarão estimativa"))
 
         if not _results:
             st.error("Nenhum modelo convergiu com os dados disponíveis.")
