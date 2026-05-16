@@ -836,6 +836,22 @@ def tab_cp_model(ac_full=None):
                 "**SEE% médio** = erro médio entre todas as combinações. "
                 "**Score** = composto ponderado (menor = melhor)."
             )
+
+            # Semáforos (definidos fora do loop)
+            def _flag_cp_var(v):
+                if not isinstance(v, float): return '—'
+                return f"{'✅' if v<5 else '⚠️' if v<15 else '❌'} {v:.1f}%"
+            def _flag_cv(v):
+                if not isinstance(v, float): return '—'
+                return f"{'✅' if v<5 else '⚠️' if v<10 else '❌'} {v:.1f}%"
+            def _flag_see(v):
+                if not isinstance(v, float): return '—'
+                return f"{'✅' if v<2 else '⚠️' if v<5 else '❌'} {v:.2f}%"
+
+            # Modelos clássicos para CP Row/Ski
+            _M_CLASSICOS = ('M1: P vs 1/t', 'M2: Work-Time', 'M3: Hiperbólico-t')
+            _M_CP_FILTER = _M_CLASSICOS if modalidade in ('Row', 'Ski') else None
+
             _rank_rows = []
             for _mn, _gr in sorted(_results.items(), key=lambda x: x[1]['score']):
                 _res  = _gr['result']
@@ -843,24 +859,21 @@ def tab_cp_model(ac_full=None):
                 _wp_v = _res[1] if len(_res) > 1 else None
                 _pts_lbl = " + ".join([f"{int(t//60)}min" for _, t in _gr['combo']])
                 _n_combos = len(_gr['cp_vals'])
-
                 _cp_var  = _gr.get('cp_var_pct', '—')
                 _cv      = _gr.get('cv_pct', '—')
-                _see_b   = round(_gr['see_pct'],   2)
+                _see_b   = round(_gr['see_pct'], 2)
                 _see_m   = _gr.get('see_mean', '—')
                 _score   = _gr.get('score', '—')
                 _m60_err = _gr.get('mmp60_err')
 
-                # Semáforos
-                def _flag_cp_var(v):
-                    if not isinstance(v, float): return '—'
-                    return f"{'✅' if v<5 else '⚠️' if v<15 else '❌'} {v:.1f}%"
-                def _flag_cv(v):
-                    if not isinstance(v, float): return '—'
-                    return f"{'✅' if v<5 else '⚠️' if v<10 else '❌'} {v:.1f}%"
-                def _flag_see(v):
-                    if not isinstance(v, float): return '—'
-                    return f"{'✅' if v<2 else '⚠️' if v<5 else '❌'} {v:.2f}%"
+                # Classificação de fadiga via veloclinic
+                _fat_lbl = '—'
+                try:
+                    if _cp_v and _wp_v and isinstance(_wp_v, float) and _wp_v > 0:
+                        _vm = vc_metrics(_gr['combo'], _cp_v, _wp_v)
+                        _fat_lbl = classify_fatigue(_vm)
+                except Exception:
+                    pass
 
                 _rank_rows.append({
                     'Modelo':       _mn,
@@ -870,120 +883,218 @@ def tab_cp_model(ac_full=None):
                     'SEE% médio':   _flag_see(float(_see_m)) if isinstance(_see_m, float) else '—',
                     'CP var%':      _flag_cp_var(float(_cp_var)) if isinstance(_cp_var, float) else '—',
                     'CV%':          _flag_cv(float(_cv)) if isinstance(_cv, float) else '—',
+                    'Fadiga':       _fat_lbl,
                     'Val. 60min':   f"{_m60_err:.1f}%" if _m60_err else ('sem dado' if _mmp60_val is None else '—'),
                     'N combos':     _n_combos,
                     'Score ↓':      _score,
                     'Melhores 3pts':_pts_lbl,
                 })
             _rank_df = pd.DataFrame(_rank_rows)
-
-            # Colorir Score — menor = mais verde
-            def _color_score(val):
-                try:
-                    v = float(val)
-                    if v < 20: return 'background-color:#EAF3DE'
-                    if v < 50: return 'background-color:#FEF3E2'
-                    return 'background-color:#FDEAEA'
-                except: return ''
-
             st.dataframe(_rank_df, hide_index=True, use_container_width=True)
 
-            # Legenda
             st.caption(
                 "✅ Excelente | ⚠️ Aceitável | ❌ Problemático — "
-                f"3 pontos fixos por modelo (papers) | MMP60 excluído do fitting "
-                + (f"(usado como validação: 60min={_mmp60_val:.0f}W)" if _mmp60_val else "(MMP60 não disponível)")
+                f"3 pontos por modelo | MMP60 excluído do fitting "
+                + (f"(validação: 60min={_mmp60_val:.0f}W)" if _mmp60_val else "(MMP60 não disponível)")
+                + (f" | **Row/Ski: CP seleccionado apenas entre M1, M2, M3**" if modalidade in ('Row','Ski') else "")
             )
 
-            # Melhor modelo
+            # ── Melhor modelo global ──────────────────────────────────────
             _best_mn  = sorted(_results.items(), key=lambda x: x[1]['score'])[0]
             _best_lbl, _best_gr = _best_mn
-            _best_res = _best_gr['result']
-            _best_cp  = _best_gr.get('cp')
-            _best_wp  = _best_res[1] if len(_best_res)>1 else None
 
-            st.success(
-                f"**Modelo mais confiável: {_best_lbl}** | "
-                f"Score={_best_gr['score']} | "
-                f"SEE% melhor={_best_gr['see_pct']:.2f}% | "
-                f"SEE% médio={_best_gr.get('see_mean','—')} | "
-                f"CP var%={_best_gr.get('cp_var_pct','—')}% | "
-                f"CV%={_best_gr.get('cv_pct','—')}% | "
-                f"CP={_best_cp:.0f}W" + (f" | W′={_best_wp:.0f}J" if isinstance(_best_wp, float) and _best_wp>100 else "") +
-                f" | Pontos: " + " + ".join([f"{int(t//60)}min" for _, t in _best_gr['combo']])
-            )
+            # Para Row/Ski: melhor CP apenas entre M1/M2/M3
+            if _M_CP_FILTER:
+                _res_classicos = {k:v for k,v in _results.items() if k in _M_CP_FILTER}
+                if _res_classicos:
+                    _best_cp_mn   = sorted(_res_classicos.items(), key=lambda x: x[1]['score'])[0]
+                    _best_cp_lbl, _best_cp_gr = _best_cp_mn
+                    _best_cp_val  = _best_cp_gr.get('cp')
+                    _best_cp_res  = _best_cp_gr['result']
+                    _best_cp_wp   = _best_cp_res[1] if len(_best_cp_res) > 1 else None
+                    st.success(
+                        f"**CP para {modalidade} (M1/M2/M3): {_best_cp_lbl}** | "
+                        f"Score={_best_cp_gr['score']} | "
+                        f"SEE% melhor={_best_cp_gr['see_pct']:.2f}% | "
+                        f"CP={_best_cp_val:.0f}W" +
+                        (f" | W′={_best_cp_wp:.0f}J" if isinstance(_best_cp_wp, float) and _best_cp_wp > 100 else "") +
+                        f" | Pontos: " + " + ".join([f"{int(t//60)}min" for _, t in _best_cp_gr['combo']])
+                    )
+                    st.info(
+                        f"**Melhor modelo global (todos):** {_best_lbl} | "
+                        f"Score={_best_gr['score']} | CP={_best_gr.get('cp',0):.0f}W — "
+                        "para Row/Ski, o CP recomendado é do modelo clássico acima."
+                    )
+                else:
+                    st.warning("Nenhum modelo clássico (M1/M2/M3) convergiu.")
+            else:
+                _best_res = _best_gr['result']
+                _best_cp  = _best_gr.get('cp')
+                _best_wp  = _best_res[1] if len(_best_res) > 1 else None
+                st.success(
+                    f"**Modelo mais confiável: {_best_lbl}** | "
+                    f"Score={_best_gr['score']} | "
+                    f"SEE%={_best_gr['see_pct']:.2f}% | "
+                    f"CP={_best_cp:.0f}W" +
+                    (f" | W′={_best_wp:.0f}J" if isinstance(_best_wp, float) and _best_wp > 100 else "") +
+                    f" | Pontos: " + " + ".join([f"{int(t//60)}min" for _, t in _best_gr['combo']])
+                )
 
-            # Gráfico comparativo: todos os modelos na mesma curva
+            # ── Gráfico P-D comparativo (eixo X em MINUTOS) ──────────────
             _fig_comp = go.Figure()
-            _t_comp   = np.logspace(np.log10(30), np.log10(10800), 400)
-            _colors_rank = ['#8e44ad','#2980b9','#27ae60','#e67e22','#16a085','#d35400','#c0392b']
+            _t_comp_s = np.logspace(np.log10(30), np.log10(10800), 400)
+            _t_comp_m = _t_comp_s / 60.0   # converter para minutos no eixo X
+            _colors_rank = ['#e74c3c','#2980b9','#27ae60','#8e44ad',
+                            '#e67e22','#16a085','#d35400','#c0392b',
+                            '#f39c12','#1abc9c']
 
-            # Pontos observados
+            # Pontos observados (X em minutos)
             _fig_comp.add_trace(go.Scatter(
-                x=[t for _, t in _all_mmp_pts],
+                x=[t/60 for _, t in _all_mmp_pts],
                 y=[p for p, _ in _all_mmp_pts],
-                mode='markers+text',
-                name='MMP',
-                marker=dict(size=10, color='#e74c3c'),
+                mode='markers+text', name='MMP',
+                marker=dict(size=10, color='#111111'),
                 text=[f"{int(t//60)}min" for _, t in _all_mmp_pts],
-                textposition='top center',
-                textfont=dict(size=9),
+                textposition='top center', textfont=dict(size=9),
             ))
+            if _mmp60_val:
+                _fig_comp.add_trace(go.Scatter(
+                    x=[60.0], y=[_mmp60_val],
+                    mode='markers', name=f'MMP60 validação ({_mmp60_val:.0f}W)',
+                    marker=dict(size=10, color='#e67e22', symbol='diamond'),
+                ))
 
-            for (_mn, _gr), _col in zip(sorted(_results.items(),
-                                                key=lambda x: x[1]['see_pct']),
-                                         _colors_rank):
+            for (_mn, _gr), _col in zip(
+                    sorted(_results.items(), key=lambda x: x[1]['score']),
+                    _colors_rank):
                 _res = _gr['result']
-                _cp_c = _gr['cp']
-                _mcfg_c = _MODELS[_mn]
-                _px_c = _pmax_global if _mcfg_c['needs_pmax'] else None
-                # Recalcular curva completa com todos os pontos t_comp
                 try:
-                    if _mn in ('M1: P vs 1/t', '2P Hiperbólico',
-                               'M2: Work-Time', 'M3: Hiperbólico-t'):
-                        _cp_c2, _wp_c2 = _res[0], _res[1]
-                        _y_comp = _wp_c2 / _t_comp + _cp_c2
+                    if _mn in ('M1: P vs 1/t', 'M2: Work-Time',
+                               'M3: Hiperbólico-t', '2P Hiperbólico'):
+                        _y_comp = _res[1] / _t_comp_s + _res[0]
                     elif _mn == 'OmPD':
-                        _cp_c2, _wp_c2, _pm_c2, _A_c2 = _res[0], _res[1], _res[2], _res[3]
-                        def _ompd_curve(t_arr, cp, wp, pmax_v, A):
-                            tau  = wp / max(pmax_v - cp, 1.0)
-                            base = wp / t_arr * (1 - np.exp(-t_arr / tau)) + cp
-                            if A and A > 0:
-                                decay = np.where(t_arr > TCP_MAX, A * np.log(t_arr / TCP_MAX), 0.0)
-                                return base - decay
-                            return base
-                        _y_comp = _ompd_curve(_t_comp, _cp_c2, _wp_c2, _pm_c2 or _pmax_global or max(p for p,_ in _all_mmp_pts)*1.15, _A_c2 or 0)
-                    elif _mn == '2P Hiperbólico':
-                        _cp_c2, _wp_c2 = _res[0], _res[1]
-                        _y_comp = _wp_c2 / _t_comp + _cp_c2
+                        _cp2,_wp2,_pm2,_A2 = _res[0],_res[1],_res[2],_res[3]
+                        _pm2 = _pm2 or _pmax_global or max(p for p,_ in _all_mmp_pts)*1.15
+                        _tau2 = _wp2/max(_pm2-_cp2,1.0)
+                        _y_comp = _wp2/_t_comp_s*(1-np.exp(-_t_comp_s/_tau2))+_cp2
+                        if _A2 and _A2>0:
+                            _y_comp -= np.where(_t_comp_s>TCP_MAX, _A2*np.log(_t_comp_s/TCP_MAX),0)
                     elif _mn == '3P Hiperbólico':
-                        _cp_c2, _wp_c2, _pm_c2 = _res[0], _res[1], _res[2]
-                        _y_comp = (_pm_c2 * _wp_c2) / (_wp_c2 + (_pm_c2 - _cp_c2) * _t_comp)
+                        _cp2,_wp2,_pm2 = _res[0],_res[1],_res[2]
+                        _y_comp = (_pm2*_wp2)/(_wp2+(_pm2-_cp2)*_t_comp_s)
                     elif _mn == 'Ward-Smith':
-                        _cp_c2, _wp_c2 = _res[0], _res[1]
-                        _pm_c2 = _res[2] or _pmax_global or max(p for p,_ in _all_mmp_pts)*1.2
-                        _y_comp = _cp_c2 + (_pm_c2 - _cp_c2) * np.exp(-_t_comp * (_pm_c2 - _cp_c2) / max(_wp_c2, 1))
+                        _cp2,_wp2 = _res[0],_res[1]
+                        _pm2 = _res[2] or _pmax_global or max(p for p,_ in _all_mmp_pts)*1.2
+                        _y_comp = _cp2+(_pm2-_cp2)*np.exp(-_t_comp_s*(_pm2-_cp2)/max(_wp2,1))
                     elif _mn == 'Power Law':
-                        _a_pl, _b_pl = _res[1], _res[2]
-                        _y_comp = _a_pl * _t_comp**(-_b_pl)
+                        _a_pl,_b_pl = _res[1],_res[2]
+                        _y_comp = _a_pl*_t_comp_s**(-_b_pl)
+                    elif _mn in ('Om3CP','OmExp'):
+                        _cp2,_wp2 = _res[0],_res[1]
+                        _pm2 = _res[2] or _pmax_global or max(p for p,_ in _all_mmp_pts)*1.15
+                        _tau2 = _wp2/max(_pm2-_cp2,1.0)
+                        _y_comp = _wp2/_t_comp_s*(1-np.exp(-_t_comp_s/_tau2))+_cp2
                     else:
                         continue
+
+                    _is_cp_model = _mn in _M_CLASSICOS
+                    _line_w = 2.5 if (_M_CP_FILTER and _is_cp_model) else 1.5
+                    _dash   = 'solid' if (_M_CP_FILTER and _is_cp_model) or not _M_CP_FILTER else 'dot'
+
                     _fig_comp.add_trace(go.Scatter(
-                        x=list(_t_comp), y=list(_y_comp),
+                        x=list(_t_comp_m), y=list(_y_comp),
                         mode='lines',
-                        name=f"{_mn} ({_gr['see_pct']:.1f}%)",
-                        line=dict(color=_col, width=2),
+                        name=f"{_mn} (SEE={_gr['see_pct']:.1f}%)",
+                        line=dict(color=_col, width=_line_w, dash=_dash),
                     ))
                 except Exception:
                     pass
 
+            # Linha horizontal CP do melhor modelo clássico (Row/Ski)
+            if _M_CP_FILTER and _res_classicos:
+                _fig_comp.add_hline(
+                    y=_best_cp_val, line_dash='dot', line_color='#27ae60', line_width=1.5,
+                    annotation_text=f"CP={_best_cp_val:.0f}W ({_best_cp_lbl})",
+                    annotation_position="right",
+                )
+
             _fig_comp.update_layout(
                 **BASE,
-                title=dict(text=f"Comparação de modelos — {modalidade}", font=dict(size=14)),
-                xaxis=dict(**AX, title="Duração (s)", type='log'),
+                title=dict(text=f"Comparação de modelos — {modalidade} "
+                           f"({'M1/M2/M3 a cheio, outros pontilhados' if _M_CP_FILTER else 'todos os modelos'})",
+                           font=dict(size=13)),
+                xaxis=dict(**AX, title="Duração (min)", type='log',
+                           tickvals=[1,2,3,5,10,20,30,60,120,180],
+                           ticktext=['1','2','3','5','10','20','30','60','120','180']),
                 yaxis=dict(**AX, title="Potência (W)"),
             )
             st.plotly_chart(_fig_comp, use_container_width=True)
+
+            # ── Veloclinic Plot ───────────────────────────────────────────
+            st.markdown("---")
+            st.markdown("**🔬 Veloclinic Plot — diagnóstico de W′**")
+            st.caption(
+                "Eixo X = Potência (W) | Eixo Y = W′_ponto = t×(P−CP) para cada MMP. "
+                "W′ consistente → pontos alinhados horizontalmente. "
+                "Declive positivo = fadiga central (W′ cresce com P). "
+                "Declive negativo = fadiga periférica (W′ cai com P)."
+            )
+
+            # Usar CP do melhor modelo clássico (Row/Ski) ou melhor global
+            _cp_vc  = _best_cp_val  if _M_CP_FILTER and _res_classicos else _best_gr.get('cp', 0)
+            _wp_vc  = _best_cp_gr['result'][1] if _M_CP_FILTER and _res_classicos else _best_gr['result'][1]
+            _lbl_vc = _best_cp_lbl if _M_CP_FILTER and _res_classicos else _best_lbl
+
+            if _cp_vc and _cp_vc > 0:
+                _p_vc  = [p for p,_ in _all_mmp_pts if p > _cp_vc]
+                _wp_vc_pts = [t*(p-_cp_vc) for p,t in _all_mmp_pts if p > _cp_vc]
+                _lbl_vc_pts = [f"{int(t//60)}min" for p,t in _all_mmp_pts if p > _cp_vc]
+
+                if len(_p_vc) >= 2:
+                    _vm_vc = vc_metrics(_all_mmp_pts, _cp_vc, _wp_vc)
+                    _fat_vc = classify_fatigue(_vm_vc)
+
+                    _fig_vc = go.Figure()
+                    _fig_vc.add_trace(go.Scatter(
+                        x=_p_vc, y=_wp_vc_pts,
+                        mode='markers+text',
+                        name='W′ por ponto',
+                        marker=dict(size=11, color='#8e44ad'),
+                        text=_lbl_vc_pts,
+                        textposition='top center',
+                        textfont=dict(size=9),
+                    ))
+                    # Linha horizontal de W′ médio
+                    _fig_vc.add_hline(
+                        y=_vm_vc['mean'], line_dash='dash', line_color='#27ae60',
+                        annotation_text=f"W′ médio={_vm_vc['mean']:.0f}J",
+                        annotation_position="right",
+                    )
+                    # Linha de regressão se slope significativo
+                    if len(_p_vc) >= 2 and len(set(_p_vc)) > 1:
+                        _x_reg = np.array(_p_vc)
+                        _y_reg = _vm_vc['slope']*_x_reg + (_vm_vc['mean'] - _vm_vc['slope']*np.mean(_x_reg))
+                        _fig_vc.add_trace(go.Scatter(
+                            x=list(_x_reg), y=list(_y_reg),
+                            mode='lines', name='Tendência',
+                            line=dict(color='#e74c3c', dash='dot', width=1.5),
+                        ))
+                    _fig_vc.update_layout(
+                        **BASE,
+                        title=dict(text=f"Veloclinic — {modalidade} | CP={_cp_vc:.0f}W ({_lbl_vc}) | {_fat_vc}",
+                                   font=dict(size=13)),
+                        xaxis=dict(**AX, title="Potência (W)"),
+                        yaxis=dict(**AX, title="W′ pontual = t×(P−CP)  [J]"),
+                    )
+                    st.plotly_chart(_fig_vc, use_container_width=True)
+
+                    _vc1, _vc2, _vc3, _vc4 = st.columns(4)
+                    _vc1.metric("W′ médio", f"{_vm_vc['mean']:.0f} J")
+                    _vc2.metric("CV%", f"{_vm_vc['cv']:.1f}%")
+                    _vc3.metric("Declive", f"{_vm_vc['slope']:.1f}")
+                    _vc4.metric("Fadiga", _fat_vc)
+                else:
+                    st.info("Poucos pontos acima do CP para o Veloclinic Plot.")
 
     # ════════════════════════════════════════════════════════════════════════
     # TAB OmPD (existente, mantida)
