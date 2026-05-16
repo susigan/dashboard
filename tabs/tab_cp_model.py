@@ -1266,12 +1266,9 @@ def tab_cp_model(ac_full=None):
                 _mb_idade  = st.number_input("Idade (anos)", 15, 80, 40, 1,
                                              key="mb_idade_rank")
             with _mb3:
-                # Peso: média 30d da wellness se disponível
-                _mb_peso_def = 85.0
-                if da_full is not None and 'Peso' in (da_full.columns if hasattr(da_full,'columns') else []):
-                    pass  # peso vem de wc_full, não da_full
+                # Peso: input manual (wellness não disponível neste contexto)
                 _mb_peso = st.number_input("Peso (kg)", 40.0, 150.0,
-                                           _mb_peso_def, 0.5,
+                                           85.0, 0.5,
                                            key="mb_peso_rank",
                                            help="Média do mês da sheet Wellness")
             with _mb4:
