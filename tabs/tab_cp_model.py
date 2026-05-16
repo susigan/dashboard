@@ -1130,6 +1130,129 @@ def tab_cp_model(ac_full=None):
                 else:
                     st.info("Poucos pontos acima do CP para o Veloclinic Plot.")
 
+            # ── Calculadora P ↔ t ────────────────────────────────────────
+            st.markdown("---")
+            st.markdown("**🧮 Calculadora — Potência ↔ Tempo**")
+            st.caption(
+                "Baseada na equação do Critical Power: **W′ = (P − CP) × t**. "
+                "Usa o CP e W′ do modelo recomendado acima."
+            )
+
+            # CP e W′ a usar: melhor clássico (Row/Ski) ou melhor global
+            _calc_cp = (_best_cp_val
+                        if _M_CP_FILTER and '_best_cp_val' in dir() and _best_cp_val
+                        else _best_gr.get('cp', 0))
+            _calc_wp = (_best_cp_res[1]
+                        if _M_CP_FILTER and '_best_cp_res' in dir()
+                        else _best_gr['result'][1] if _best_gr.get('result') else 0)
+            _calc_lbl = (_best_cp_lbl
+                         if _M_CP_FILTER and '_best_cp_lbl' in dir()
+                         else _best_lbl)
+
+            if not _calc_cp or not _calc_wp or _calc_cp <= 0 or _calc_wp <= 0:
+                st.warning("CP ou W′ não disponível — corre o Ranking primeiro.")
+            else:
+                st.caption(f"Modelo: **{_calc_lbl}** | CP = **{_calc_cp:.0f} W** | W′ = **{_calc_wp:.0f} J**")
+
+                _calc_mode = st.radio(
+                    "O que queres calcular?",
+                    ["⏱️ Tempo — entro com Watts, obtenho duração",
+                     "⚡ Potência — entro com Tempo, obtenho Watts"],
+                    horizontal=True, key="calc_mode_rank"
+                )
+
+                if "Tempo" in _calc_mode:
+                    # Entrada: Watts → Saída: Tempo
+                    _c1, _c2 = st.columns([1, 2])
+                    with _c1:
+                        _p_input = st.number_input(
+                            "Potência (W)", min_value=int(_calc_cp)+1,
+                            max_value=int(_calc_cp)+2000,
+                            value=int(_calc_cp)+50, step=5,
+                            key="calc_p_input"
+                        )
+                    with _c2:
+                        if _p_input > _calc_cp:
+                            _t_result_s = _calc_wp / (_p_input - _calc_cp)
+                            _t_min = int(_t_result_s // 60)
+                            _t_sec = int(_t_result_s % 60)
+                            _excess = _p_input - _calc_cp
+                            # Cor por duração
+                            _color = ("#27ae60" if _t_result_s > 1800 else
+                                      "#f39c12" if _t_result_s > 600 else "#e74c3c")
+                            st.markdown(f"""
+<div style='background:var(--secondary-background-color);border-radius:8px;padding:16px 20px;margin-top:8px'>
+<p style='margin:0;font-size:12px;color:var(--text-color);opacity:.7'>Duração máxima a {_p_input}W</p>
+<p style='margin:4px 0 0;font-size:28px;font-weight:600;color:{_color}'>{_t_min:02d}:{_t_sec:02d} min</p>
+<p style='margin:4px 0 0;font-size:12px;color:var(--text-color);opacity:.7'>
+  {_p_input-_calc_cp:.0f}W acima do CP | W′ consumido a {(_p_input-_calc_cp):.0f} J/s
+</p>
+</div>""", unsafe_allow_html=True)
+
+                            # Avisos fisiológicos
+                            if _t_result_s < 120:
+                                st.warning(f"⚠️ {_t_min:02d}:{_t_sec:02d} — esforço muito curto. "
+                                           "Domínio supramáximo. Esgota W′ rapidamente.")
+                            elif _t_result_s < 600:
+                                st.info(f"ℹ️ {_t_min:02d}:{_t_sec:02d} — intervalo de alta intensidade. "
+                                        "Acima do CP, W′ a consumir-se.")
+                            elif _t_result_s < 2400:
+                                st.success(f"✅ {_t_min:02d}:{_t_sec:02d} — próximo do CP. "
+                                           "RPE progressivo, sustentável com concentração.")
+                            else:
+                                st.success(f"✅ {_t_min:02d}:{_t_sec:02d} — muito próximo do CP. "
+                                           "Considera usar CP directamente para esforços >40min.")
+                        else:
+                            st.info(f"Potência abaixo ou igual ao CP ({_calc_cp:.0f}W) → "
+                                    "teoricamente sustentável indefinidamente. Não esgota W′.")
+
+                else:
+                    # Entrada: Tempo (MM:SS) → Saída: Potência
+                    _c1, _c2 = st.columns([1, 2])
+                    with _c1:
+                        _t_str = st.text_input(
+                            "Duração (MM:SS)", value="20:00",
+                            key="calc_t_input",
+                            help="Formato: minutos:segundos. Ex: 20:00 = 20 minutos"
+                        )
+                    with _c2:
+                        # Parse MM:SS
+                        _t_valid = False
+                        _t_secs  = 0
+                        try:
+                            _parts = _t_str.strip().split(":")
+                            if len(_parts) == 2:
+                                _t_secs = int(_parts[0])*60 + int(_parts[1])
+                            elif len(_parts) == 1:
+                                _t_secs = int(_parts[0])*60
+                            _t_valid = _t_secs > 0
+                        except Exception:
+                            pass
+
+                        if not _t_valid:
+                            st.warning("Formato inválido. Use MM:SS (ex: 20:00)")
+                        else:
+                            _p_result = _calc_cp + _calc_wp / _t_secs
+                            _excess_r  = _p_result - _calc_cp
+                            _pct_cp    = _p_result / _calc_cp * 100
+                            _color_p   = ("#e74c3c" if _t_secs < 600 else
+                                          "#f39c12" if _t_secs < 1800 else "#27ae60")
+                            _min_d = _t_secs // 60; _sec_d = _t_secs % 60
+                            st.markdown(f"""
+<div style='background:var(--secondary-background-color);border-radius:8px;padding:16px 20px;margin-top:8px'>
+<p style='margin:0;font-size:12px;color:var(--text-color);opacity:.7'>Potência máxima para {_min_d:02d}:{_sec_d:02d}</p>
+<p style='margin:4px 0 0;font-size:28px;font-weight:600;color:{_color_p}'>{_p_result:.0f} W</p>
+<p style='margin:4px 0 0;font-size:12px;color:var(--text-color);opacity:.7'>
+  {_pct_cp:.1f}% do CP | {_excess_r:.0f}W acima do CP | RPE esperado: {"9-10/10" if _t_secs<600 else "8-9/10" if _t_secs<1800 else "7-8/10"}
+</p>
+</div>""", unsafe_allow_html=True)
+
+                            if _t_secs < 120:
+                                st.warning("⚠️ Duração muito curta — modelo CP menos preciso abaixo de 2min.")
+                            elif _t_secs > 3600:
+                                st.info("ℹ️ Acima de 60min, outros factores (glicogénio, temperatura) "
+                                        "podem limitar antes do W′ esgotar.")
+
     # ════════════════════════════════════════════════════════════════════════
     # TAB OmPD (existente, mantida)
     # ════════════════════════════════════════════════════════════════════════
