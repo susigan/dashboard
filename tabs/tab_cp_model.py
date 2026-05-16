@@ -691,9 +691,11 @@ def tab_cp_model(ac_full=None):
                 if not _px.empty:
                     _pmax_global = float(_px['p_max'].iloc[0])
 
-    # Cada modelo usa exactamente 3 pontos (papers) — testamos todas as C(n,3)
-    # Ward-Smith: 3 pontos entre 2-20min (excluir ponto <60s para este modelo)
-    _FIXED_N_PTS = 3   # número fixo de pontos por modelo (recomendação papers)
+    # Modelos clássicos para CP Row/Ski — definido aqui para uso no grid search
+    _M_CLASSICOS = ('M1: P vs 1/t', 'M2: Work-Time', 'M3: Hiperbólico-t')
+
+    # Cada modelo usa exactamente 3 pontos (papers)
+    _FIXED_N_PTS = 3
 
     # ── Correr grid search para todos os modelos ──────────────────────────
     _MODELS = {
@@ -882,7 +884,6 @@ def tab_cp_model(ac_full=None):
                 return f"{'✅' if v<2 else '⚠️' if v<5 else '❌'} {v:.2f}%"
 
             # Modelos clássicos para CP Row/Ski
-            _M_CLASSICOS = ('M1: P vs 1/t', 'M2: Work-Time', 'M3: Hiperbólico-t')
             _M_CP_FILTER = _M_CLASSICOS if modalidade in ('Row', 'Ski') else None
 
             _rank_rows = []
