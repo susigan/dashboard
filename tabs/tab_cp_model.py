@@ -1886,22 +1886,21 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                                     showlegend=True,
                                 ))
 
-                            # FatMax g/h no Y3
+                            # FatMax g/h — anotação no gráfico (não eixo separado)
                             if _mb_fat_FM and _mb_fat_FM > 0:
                                 _fig_z.add_trace(go.Scatter(
-                                    x=['FatMax (Mader)'], y=[_mb_fat_FM],
-                                    yaxis='y3',
+                                    x=['FatMax (Mader)'], y=[_mb_fat_FM * 0.5],
+                                    yaxis='y2',
                                     mode='markers+text',
                                     name=f"Fat@FatMax ({_mb_fat_FM:.0f} g/h)",
-                                    text=[f"{_mb_fat_FM:.0f} g/h"],
-                                    textposition='bottom center',
+                                    text=[f"🌿 {_mb_fat_FM:.0f} g/h"],
+                                    textposition='top center',
                                     textfont=dict(size=9, color='#00C896'),
-                                    marker=dict(size=10, color='#00C896',
-                                                symbol='star'),
+                                    marker=dict(size=8, color='#00C896',
+                                                symbol='star', opacity=0.7),
                                     showlegend=True,
                                 ))
 
-                            # Layout com 3 eixos Y
                             _fig_z.update_layout(
                                 plot_bgcolor="rgba(0,0,0,0)",
                                 paper_bgcolor="rgba(0,0,0,0)",
@@ -1911,7 +1910,7 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                                     font=dict(size=9),
                                     x=0.01, y=0.99,
                                 ),
-                                margin=dict(l=60, r=140, t=50, b=40),
+                                margin=dict(l=60, r=120, t=50, b=40),
                                 title=dict(
                                     text=f"Perfil Fisiológico Integrado — {modalidade}",
                                     font=dict(size=13)),
@@ -1929,19 +1928,11 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                                     titlefont=dict(color='#AAAAAA'),
                                 ),
                                 yaxis2=dict(
-                                    title="Potência (W)",
+                                    title="Potência (W) · Fat (g/h × 0.5)",
                                     overlaying='y', side='right',
                                     showgrid=False, zeroline=False,
                                     titlefont=dict(color='#A855F7'),
                                     tickfont=dict(color='#A855F7', size=10),
-                                ),
-                                yaxis3=dict(
-                                    title="Fat (g/h)",
-                                    overlaying='y', side='right',
-                                    showgrid=False, zeroline=False,
-                                    titlefont=dict(color='#00C896'),
-                                    tickfont=dict(color='#00C896', size=10),
-                                    anchor='x', position=0.92,
                                 ),
                             )
                             st.plotly_chart(_fig_z, use_container_width=True)
