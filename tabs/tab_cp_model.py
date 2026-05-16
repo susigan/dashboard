@@ -1634,9 +1634,245 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
             except Exception as _mb_err:
                 st.warning(f"Erro no modelo metabólico: {_mb_err}")
 
-    # ════════════════════════════════════════════════════════════════════════
-    # TAB OmPD (existente, mantida)
-    # ════════════════════════════════════════════════════════════════════════
+            # ── VO2max: múltiplas fórmulas comparativas ───────────────────────
+            st.markdown("---")
+            st.markdown("**🫁 VO2max — Comparação de Estimativas (maior → menor)**")
+            st.caption("Todas sem necessidade de laboratório. Ordenadas da maior para a menor.")
+
+            _vo2_estimates = []
+
+            # 1. INSCYD/konaendu (com VLamax) — já calculado acima
+            _vo2_estimates.append({
+                'Método': 'INSCYD / konaendu (com VLamax)',
+                'VO2max': round(_mb_vo2max, 1),
+                'Inputs': 'CP + MMP3 + MMP5 + Pmax + VLamax',
+                'Precisão': 'Bias -0.21 ml/min/kg vs espirometria (N=11)',
+                'Requer VLamax': '✅ Sim',
+            })
+
+            # 2. Hawley & Noakes via CP
+            _vo2_hawley_cp = round(_calc_cp / _mb_peso * 10.8 + 7, 1)
+            _vo2_estimates.append({
+                'Método': 'Hawley & Noakes via CP',
+                'VO2max': _vo2_hawley_cp,
+                'Inputs': 'CP + peso',
+                'Precisão': 'Boa para endurance; subestima se VLamax alto',
+                'Requer VLamax': '❌ Não',
+            })
+
+            # 3. Hawley & Noakes via MMP5 (Sitko 2022, r=0.84)
+            _vo2_hawley_mmp5 = round(_mb_mmp5_in / _mb_peso * 10.8 + 7, 1)
+            _vo2_estimates.append({
+                'Método': 'Hawley via MMP5 (Sitko 2022)',
+                'VO2max': _vo2_hawley_mmp5,
+                'Inputs': 'MMP5 + peso',
+                'Precisão': 'r=0.84 em ciclistas treinados',
+                'Requer VLamax': '❌ Não',
+            })
+
+            # 4. Hawley via MMP3 (Dexheimer 2020, r=0.82)
+            _vo2_hawley_mmp3 = round(_mb_mmp3_in / _mb_peso * 10.8 + 7, 1)
+            _vo2_estimates.append({
+                'Método': 'Hawley via MMP3 (Dexheimer 2020)',
+                'VO2max': _vo2_hawley_mmp3,
+                'Inputs': 'MMP3 + peso',
+                'Precisão': 'r=0.82 em atletas funcionais',
+                'Requer VLamax': '❌ Não',
+            })
+
+            # 5. Pvo2max da sheet (se disponível)
+            _pvo2_val = None
+            if ac_full is not None and _col_mod is not None and 'Pvo2max' in ac_full.columns:
+                _ac_pv = ac_full[ac_full[_col_mod] == modalidade]
+                _col_d_pv = next((c for c in ['date','Data'] if c in _ac_pv.columns), None)
+                if _col_d_pv:
+                    _pv_s = (_ac_pv[['Pvo2max', _col_d_pv]]
+                             .dropna(subset=['Pvo2max'])
+                             .sort_values(_col_d_pv, ascending=False))
+                    if not _pv_s.empty:
+                        try:
+                            _pvo2_val = float(str(_pv_s['Pvo2max'].iloc[0]).replace(',','.'))
+                        except: pass
+            if _pvo2_val:
+                _vo2_pvo2 = round(_pvo2_val / _mb_peso * 10.8 + 7, 1)
+                _vo2_estimates.append({
+                    'Método': 'Via Pvo2max (sheet)',
+                    'VO2max': _vo2_pvo2,
+                    'Inputs': f'Pvo2max={_pvo2_val:.0f}W + peso',
+                    'Precisão': 'Estimativa directa de potência @ VO2max',
+                    'Requer VLamax': '❌ Não',
+                })
+
+            # Ordenar maior → menor
+            _vo2_df = (pd.DataFrame(_vo2_estimates)
+                       .sort_values('VO2max', ascending=False)
+                       .reset_index(drop=True))
+            # Highlight da maior
+            _vo2_df.insert(0, 'Rank', [f"{'🥇' if i==0 else '🥈' if i==1 else '🥉' if i==2 else f'{i+1}º'}" for i in range(len(_vo2_df))])
+            st.dataframe(_vo2_df, hide_index=True, use_container_width=True)
+            st.caption(
+                f"⚙️ Peso usado: {_mb_peso}kg | CP={_calc_cp}W | MMP3={_mb_mmp3_in}W | MMP5={_mb_mmp5_in}W"
+            )
+
+            # ── Limiares HR por modalidade (HRVT1/T1PLUS/TMSS/T2 + AeTHR + PBP) ───
+            st.markdown("---")
+            st.markdown("**❤️ Limiares Fisiológicos por HR — por Modalidade**")
+            st.caption(
+                "Baseado nas colunas do Intervals.icu calculadas por DFA-alpha1 piecewise fitting. "
+                "Limpeza IQR×1.5. Valores em bpm (HR) ou W (potência)."
+            )
+
+            _THRESH_COLS = {
+                'HRVT1':     {'label': 'LT1 / AeT',         'fisiologia': 'Z1→Z2 (72-80% FCmax)'},
+                'HRVT1PLUS': {'label': 'LT1+ / Transição',  'fisiologia': 'Z2 superior (81-84% FCmax)'},
+                'HRVTMSS':   {'label': 'MLSS / Limiar est.','fisiologia': 'Z2→Z3 (84-89% FCmax)'},
+                'HRVT2':     {'label': 'LT2 / AnT',         'fisiologia': 'Z3→Z4 (89-95% FCmax)'},
+                'AeTHR':     {'label': 'AeT HR',            'fisiologia': 'Limiar aeróbio (HR)'},
+                'PBP':       {'label': 'PBP (W)',            'fisiologia': 'Power @ breakpoint LT1-LT2'},
+                'Pvo2max':   {'label': 'Pvo2max (W)',        'fisiologia': 'Power @ VO2max estimado'},
+            }
+
+            def _clean_iqr(series, factor=1.5):
+                """Remove outliers IQR×factor. Retorna série limpa."""
+                s = pd.to_numeric(series, errors='coerce').dropna()
+                if len(s) < 4: return s
+                q1, q3 = s.quantile(0.25), s.quantile(0.75)
+                iqr = q3 - q1
+                return s[(s >= q1 - factor*iqr) & (s <= q3 + factor*iqr)]
+
+            if ac_full is not None and _col_mod is not None:
+                _ac_thr = ac_full[ac_full[_col_mod] == modalidade].copy()
+                _cols_avail = [c for c in _THRESH_COLS if c in _ac_thr.columns]
+
+                if not _cols_avail:
+                    st.info("Colunas de limiares (HRVT1, HRVT2, etc.) não encontradas "
+                            "nas actividades. Verifica se os custom fields estão configurados "
+                            "no Intervals.icu.")
+                else:
+                    _thr_rows = []
+                    _hr_zones = {}  # para o gráfico
+
+                    for _tc in ['HRVT1','HRVT1PLUS','HRVTMSS','HRVT2','AeTHR','PBP','Pvo2max']:
+                        if _tc not in _cols_avail: continue
+                        _cfg = _THRESH_COLS[_tc]
+                        _raw = _clean_iqr(_ac_thr[_tc])
+                        if len(_raw) < 2: continue
+                        _med = float(_raw.median())
+                        _q25 = float(_raw.quantile(0.25))
+                        _q75 = float(_raw.quantile(0.75))
+                        _mn  = float(_raw.min())
+                        _mx  = float(_raw.max())
+                        _n   = len(_raw)
+                        _unit = 'bpm' if _tc not in ('PBP','Pvo2max') else 'W'
+                        _thr_rows.append({
+                            'Métrica':     _cfg['label'],
+                            'Zona':        _cfg['fisiologia'],
+                            'Mediana':     f"{_med:.0f} {_unit}",
+                            'IQR [Q25-Q75]': f"[{_q25:.0f} – {_q75:.0f}]",
+                            'Range':       f"{_mn:.0f} – {_mx:.0f}",
+                            'N':           _n,
+                        })
+                        _hr_zones[_tc] = {
+                            'med': _med, 'q25': _q25, 'q75': _q75,
+                            'label': _cfg['label'], 'unit': _unit
+                        }
+
+                    if _thr_rows:
+                        st.dataframe(pd.DataFrame(_thr_rows), hide_index=True,
+                                     use_container_width=True)
+
+                        # Gráfico de zonas HR com ranges
+                        _hr_keys = [k for k in ['HRVT1','HRVT1PLUS','HRVTMSS','HRVT2','AeTHR']
+                                    if k in _hr_zones and _hr_zones[k]['unit'] == 'bpm']
+
+                        if len(_hr_keys) >= 2:
+                            _fig_zones = go.Figure()
+                            _colors_z = ['#60A5FA','#34D399','#FBBF24','#F87171','#A78BFA']
+
+                            for _zi, _zk in enumerate(_hr_keys):
+                                _zd = _hr_zones[_zk]
+                                # IQR como barra de erro
+                                _fig_zones.add_trace(go.Scatter(
+                                    x=[_zi], y=[_zd['med']],
+                                    mode='markers+text',
+                                    name=_zd['label'],
+                                    text=[f"{_zd['med']:.0f} bpm"],
+                                    textposition='top center',
+                                    textfont=dict(size=10),
+                                    marker=dict(size=14, color=_colors_z[_zi % len(_colors_z)]),
+                                    error_y=dict(
+                                        type='data', symmetric=False,
+                                        array=[_zd['q75'] - _zd['med']],
+                                        arrayminus=[_zd['med'] - _zd['q25']],
+                                        color=_colors_z[_zi % len(_colors_z)],
+                                        thickness=3, width=8,
+                                    ),
+                                ))
+                                # Faixa de zona (entre este threshold e o próximo)
+                                if _zi < len(_hr_keys) - 1:
+                                    _zd_next = _hr_zones[_hr_keys[_zi + 1]]
+                                    _fig_zones.add_hrect(
+                                        y0=_zd['med'], y1=_zd_next['med'],
+                                        fillcolor=_colors_z[_zi % len(_colors_z)],
+                                        opacity=0.07, line_width=0,
+                                    )
+
+                            # Zona nomes no eixo X
+                            _zona_nomes = ['Z1→Z2\n(LT1)', 'Z2 sup\n(LT1+)',
+                                           'Z2→Z3\n(MLSS)', 'Z3→Z4\n(LT2)', 'AeT']
+                            _fig_zones.update_layout(
+                                **_BASE_MB,
+                                title=dict(
+                                    text=f"Zonas de HR por Limiar — {modalidade} "
+                                         f"(mediana ± IQR)",
+                                    font=dict(size=13)),
+                                xaxis=dict(
+                                    tickmode='array',
+                                    tickvals=list(range(len(_hr_keys))),
+                                    ticktext=[_hr_zones[k]['label'] for k in _hr_keys],
+                                    showgrid=False, zeroline=False,
+                                    tickfont=dict(size=10),
+                                ),
+                                yaxis=dict(**_AX_MB, title="HR (bpm)"),
+                                showlegend=False,
+                            )
+                            st.plotly_chart(_fig_zones, use_container_width=True)
+
+                        # Tabela de zonas treino consolidada
+                        if len(_hr_keys) >= 2:
+                            st.markdown("**📋 Zonas de Treino Consolidadas**")
+                            _z_treino = []
+                            _z_defs = [
+                                ('Z1 — Recuperação',  None,         'HRVT1',     '#60A5FA'),
+                                ('Z2 — Aeróbio',      'HRVT1',      'HRVTMSS',   '#34D399'),
+                                ('Z3 — Tempo / MLSS', 'HRVTMSS',    'HRVT2',     '#FBBF24'),
+                                ('Z4 — Limiar',       'HRVT2',      None,        '#F87171'),
+                            ]
+                            for _znome, _zlow_k, _zhigh_k, _zcol in _z_defs:
+                                _zlow  = f"< {_hr_zones[_zlow_k]['med']:.0f} bpm"  if _zlow_k  and _zlow_k  in _hr_zones else '—'
+                                _zhigh = f"< {_hr_zones[_zhigh_k]['med']:.0f} bpm" if _zhigh_k and _zhigh_k in _hr_zones else '>'
+                                _zrange = (f"{_hr_zones[_zlow_k]['med']:.0f} – {_hr_zones[_zhigh_k]['med']:.0f} bpm"
+                                           if _zlow_k and _zhigh_k and _zlow_k in _hr_zones and _zhigh_k in _hr_zones
+                                           else (_zlow if not _zlow_k else _zhigh))
+                                _z_treino.append({'Zona': _znome, 'HR Range': _zrange})
+
+                            if 'PBP' in _hr_zones:
+                                _z_treino.append({
+                                    'Zona': 'PBP (breakpoint)',
+                                    'HR Range': f"Power @ LT1-LT2: {_hr_zones['PBP']['med']:.0f} W "
+                                                f"[{_hr_zones['PBP']['q25']:.0f}–{_hr_zones['PBP']['q75']:.0f}]"
+                                })
+                            if 'Pvo2max' in _hr_zones:
+                                _z_treino.append({
+                                    'Zona': 'VO2max power',
+                                    'HR Range': f"Power @ VO2max: {_hr_zones['Pvo2max']['med']:.0f} W "
+                                                f"[{_hr_zones['Pvo2max']['q25']:.0f}–{_hr_zones['Pvo2max']['q75']:.0f}]"
+                                })
+                            st.dataframe(pd.DataFrame(_z_treino), hide_index=True,
+                                         use_container_width=True)
+
+            else:
+                st.info("Dados de actividades não disponíveis.")
     with _tab_ompd:
         st.caption(
             "OmPD com os melhores 3 pontos MMP encontrados pelo grid search. "
