@@ -657,7 +657,7 @@ def tab_cp_model(ac_full=None):
                 _dur_f = float(_dur)
                 _ac_mod_s = _ac_mod.sort_values(_col_date, ascending=False)
 
-                # MMP60 → sempre validação
+                # MMP60 → sempre só validação, nunca fitting
                 if _mc == 'MMP60':
                     for _, _rr in _ac_mod_s.iterrows():
                         _mv = parse_mmp(str(_rr[_mc]))
@@ -665,20 +665,30 @@ def tab_cp_model(ac_full=None):
                             _mmp60_val = _mv; break
                     continue
 
-                # Ler o valor MMP
+                # Ler o valor
                 _mv = None
                 for _, _rr in _ac_mod_s.iterrows():
                     _mv = parse_mmp(str(_rr[_mc]))
                     if _mv is not None: break
                 if _mv is None: continue
 
-                # _all_mmp_pts_full: todos os MMPs excl. MMP60
-                _all_mmp_pts_full.append((_mv, _dur_f))
-
-                # _all_mmp_pts (para M1/M2/M3 Row/Ski): MMP1+MMP5+MMP12 apenas
+                # _all_mmp_pts — M1/M2/M3:
+                #   Row/Ski → MMP3(180s) + MMP5(300s) + MMP12(720s)
+                #   Bike/Run → todos exceto MMP60
                 if modalidade in ('Row', 'Ski'):
-                    if _dur_f not in (60.0, 300.0, 720.0): continue  # só 1min,5min,12min
-                _all_mmp_pts.append((_mv, _dur_f))
+                    if _dur_f in (180.0, 300.0, 720.0):
+                        _all_mmp_pts.append((_mv, _dur_f))
+                else:
+                    _all_mmp_pts.append((_mv, _dur_f))
+
+                # _all_mmp_pts_full — modelos não-clássicos:
+                #   Row/Ski → MMP3+MMP5+MMP12+MMP20 (excluir MMP1 e MMP60)
+                #   Bike/Run → todos exceto MMP60
+                if modalidade in ('Row', 'Ski'):
+                    if _dur_f != 60.0:   # excluir MMP1
+                        _all_mmp_pts_full.append((_mv, _dur_f))
+                else:
+                    _all_mmp_pts_full.append((_mv, _dur_f))
 
             _all_mmp_pts      = sorted(set(_all_mmp_pts),      key=lambda x: x[1])
             _all_mmp_pts_full = sorted(set(_all_mmp_pts_full), key=lambda x: x[1])
@@ -851,8 +861,8 @@ def tab_cp_model(ac_full=None):
         if modalidade in ('Row', 'Ski'):
             st.info(
                 f"ℹ️ **{modalidade}:** "
-                f"M1/M2/M3 usam MMP1+MMP5+MMP12 | "
-                f"Outros modelos usam MMP1+MMP3+MMP5+MMP12+MMP20. "
+                f"M1/M2/M3 usam MMP3+MMP5+MMP12 | "
+                f"Outros modelos usam MMP3+MMP5+MMP12+MMP20 (sem MMP1). "
                 "MMP60 sempre excluído do fitting (usado como validação)."
             )
 
@@ -946,6 +956,16 @@ def tab_cp_model(ac_full=None):
                     _best_cp_val  = _best_cp_gr.get('cp')
                     _best_cp_res  = _best_cp_gr['result']
                     _best_cp_wp   = _best_cp_res[1] if len(_best_cp_res) > 1 else None
+
+                    # Guardar no session_state para tab_metab
+                    if _best_cp_val:
+                        _ss_key = f"cp_model_{modalidade}"
+                        st.session_state[_ss_key] = {
+                            'cp': float(_best_cp_val),
+                            'wp': float(_best_cp_wp) if isinstance(_best_cp_wp, float) else None,
+                            'modelo': _best_cp_lbl,
+                            'score': _best_cp_gr.get('score'),
+                        }
                     st.success(
                         f"**CP para {modalidade} (M1/M2/M3): {_best_cp_lbl}** | "
                         f"Score={_best_cp_gr['score']} | "
@@ -965,6 +985,15 @@ def tab_cp_model(ac_full=None):
                 _best_res = _best_gr['result']
                 _best_cp  = _best_gr.get('cp')
                 _best_wp  = _best_res[1] if len(_best_res) > 1 else None
+
+                # Guardar no session_state para tab_metab
+                if _best_cp:
+                    st.session_state[f"cp_model_{modalidade}"] = {
+                        'cp': float(_best_cp),
+                        'wp': float(_best_wp) if isinstance(_best_wp, float) else None,
+                        'modelo': _best_lbl,
+                        'score': _best_gr.get('score'),
+                    }
                 st.success(
                     f"**Modelo mais confiável: {_best_lbl}** | "
                     f"Score={_best_gr['score']} | "
@@ -1219,6 +1248,248 @@ def tab_cp_model(ac_full=None):
                             delta=f"{_p_input - _calc_cp:.0f}W acima do CP | W′/s = {_p_input-_calc_cp:.0f}J/s",
                             delta_color="off"
                         )
+
+            # ── Perfil Metabólico (Mader / Hauser / konaendu) ────────────────
+            st.markdown("---")
+            st.markdown("**🧪 Perfil Metabólico — Mader / Hauser / konaendu**")
+            st.caption(
+                "VLamax estimado via CP, MMP3/5 e Pmax. "
+                "MLSS, FatMax, CHO/Fat e lactato calculados pelo modelo Mader (1986/2003)."
+            )
+
+            # ── Inputs metabólicos ────────────────────────────────────────────
+            _mb1, _mb2, _mb3, _mb4 = st.columns(4)
+            with _mb1:
+                _mb_altura = st.number_input("Altura (cm)", 140, 220, 178, 1,
+                                             key="mb_altura_rank")
+            with _mb2:
+                _mb_idade  = st.number_input("Idade (anos)", 15, 80, 40, 1,
+                                             key="mb_idade_rank")
+            with _mb3:
+                # Peso: média 30d da wellness se disponível
+                _mb_peso_def = 85.0
+                if da_full is not None and 'Peso' in (da_full.columns if hasattr(da_full,'columns') else []):
+                    pass  # peso vem de wc_full, não da_full
+                _mb_peso = st.number_input("Peso (kg)", 40.0, 150.0,
+                                           _mb_peso_def, 0.5,
+                                           key="mb_peso_rank",
+                                           help="Média do mês da sheet Wellness")
+            with _mb4:
+                _mb_bf = st.number_input("% Gordura", 5.0, 40.0, 14.0, 0.5,
+                                         key="mb_bf_rank")
+
+            # MMP3 e MMP5 da sheet (já disponíveis)
+            _mb_mmp3 = _mb_mmp5 = None
+            if ac_full is not None and _col_mod is not None:
+                _ac_mb = ac_full[ac_full[_col_mod] == modalidade].copy()
+                _col_date_mb = next((c for c in ['date','Data'] if c in _ac_mb.columns), None)
+                for _mc_mb, _dur_mb in [('MMP3',180),('MMP5',300)]:
+                    if _mc_mb in _ac_mb.columns and _col_date_mb:
+                        _s_mb = (_ac_mb[[_mc_mb,_col_date_mb]]
+                                 .dropna(subset=[_mc_mb])
+                                 .sort_values(_col_date_mb, ascending=False))
+                        if not _s_mb.empty:
+                            try:
+                                _v = float(str(_s_mb[_mc_mb].iloc[0]).replace(',','.'))
+                                if _v > 0:
+                                    if _mc_mb == 'MMP3': _mb_mmp3 = _v
+                                    else: _mb_mmp5 = _v
+                            except Exception: pass
+
+            _mb5, _mb6 = st.columns(2)
+            with _mb5:
+                _mb_mmp3_in = st.number_input("MMP3 (W)", 50, 1000,
+                                              int(_mb_mmp3) if _mb_mmp3 else int(_calc_cp*1.4),
+                                              5, key="mb_mmp3_rank")
+            with _mb6:
+                _mb_mmp5_in = st.number_input("MMP5 (W)", 50, 900,
+                                              int(_mb_mmp5) if _mb_mmp5 else int(_calc_cp*1.25),
+                                              5, key="mb_mmp5_rank")
+
+            # ── Calcular VLamax (konaendu) ────────────────────────────────────
+            _mb_bmi        = _mb_peso / ((_mb_altura/100)**2)
+            _mb_workload   = (_mb_mmp3_in + _mb_mmp5_in) / 3
+            _mb_volrel_vla = _mb_workload / _mb_peso
+            _mb_vo2max     = _calc_cp / _mb_peso * 10.8 + 7  # via CP
+
+            _mb_mader = (0.02049 / _mb_volrel_vla * _mb_vo2max * (_mb_bmi/22)
+                         * (1 + 0.000025*_mb_idade - 0.0000001*_mb_peso))
+            _mb_sprint = (0.000004 / _mb_volrel_vla * (_pmax_global or _calc_cp*4)
+                          * (1 + 0.0000001*_mb_idade - 0.0000001*_mb_peso))
+            _mb_vlamax_calc = float(np.clip(_mb_mader + _mb_sprint, 0.05, 1.8))
+
+            _mbc1, _mbc2, _mbc3 = st.columns(3)
+            _mbc1.metric("VO2max (via CP)", f"{_mb_vo2max:.1f} ml/min/kg")
+            _mbc2.metric("VLamax calculado", f"{_mb_vlamax_calc:.3f} mmol/L/s")
+            with _mbc3:
+                _mb_vlamax = st.number_input("VLamax (ajustar)", 0.05, 2.0,
+                                             round(_mb_vlamax_calc, 3), 0.01,
+                                             key="mb_vla_rank")
+
+            # ── Modelo Mader ──────────────────────────────────────────────────
+            _Ks1=0.0631; _Ks2=1.331; _VolRel=0.40; _Kel=4.0
+            _VO2rest=5.0; _Watt_O2=11.685; _LAC_O2=0.01576
+
+            try:
+                _mb_VO2ss  = np.arange(0.5, _mb_vo2max - 0.05, 0.01)
+                _mb_ADP    = np.sqrt(np.maximum(0, (_Ks1*_mb_VO2ss)/(_mb_vo2max-_mb_VO2ss)))
+                _mb_vLass  = 60*_mb_vlamax/( 1+(_Ks2/np.maximum(_mb_ADP**3,1e-12)))
+                _mb_LaComb = (_LAC_O2/_VolRel)*_mb_VO2ss
+                _mb_vLanet = _mb_vLass - _mb_LaComb
+                _mb_argAT  = int(np.argmin(np.abs(_mb_vLanet)))
+                _mb_overall= (_mb_vLass*(_VolRel*_mb_peso)*((1/4.3)*22.4)/_mb_peso)+_mb_VO2ss
+                _mb_Watts  = np.maximum(0, (_mb_overall-_VO2rest)*_mb_peso/_Watt_O2)
+
+                _mb_argFM  = int(np.argmax(-_mb_vLanet[:_mb_argAT])) if _mb_argAT>1 else 0
+                _mb_Fat    = np.maximum(0,
+                    (-_mb_vLanet[:_mb_argAT])*_VolRel/_LAC_O2*_mb_peso*60*4.65/9.5/1000)
+                _mb_CHO_g  = (_mb_peso*_VolRel)*60/1000/2*162.14
+
+                _mb_W_AT   = float(_mb_Watts[_mb_argAT])
+                _mb_W_FM   = float(_mb_Watts[_mb_argFM])
+                _mb_pct_AT = float(_mb_VO2ss[_mb_argAT]/_mb_vo2max*100)
+                _mb_pct_FM = float(_mb_VO2ss[_mb_argFM]/_mb_vo2max*100)
+                _mb_fat_FM = float(_mb_Fat[_mb_argFM]) if _mb_argFM < len(_mb_Fat) else 0
+
+                # Lactato estacionário
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    _mb_denom = ((_LAC_O2/_VolRel)*_mb_VO2ss[:_mb_argAT]*
+                                 (1+(_Ks2/np.maximum((_Ks1*_mb_VO2ss[:_mb_argAT])/
+                                  np.maximum(_mb_vo2max-_mb_VO2ss[:_mb_argAT],0.01),
+                                  1e-9))**1.5)-_mb_vlamax*60)
+                    _mb_CLass = np.where(_mb_denom>0,
+                                         np.sqrt(np.maximum(0,(_mb_vlamax*_Kel*60)/_mb_denom)),
+                                         np.nan)
+
+                # Glicogénio
+                _mb_fat_kg    = _mb_peso*_mb_bf/100
+                _mb_lean      = _mb_peso - _mb_fat_kg
+                _mb_muscle_kg = _mb_lean*0.70
+                _mb_fitness   = ('elite'    if _mb_vo2max>=65 and _mb_vlamax<=0.5 else
+                                 'advanced' if _mb_vo2max>=50 and _mb_vlamax<=0.7 else
+                                 'intermediate' if _mb_vo2max>=40 and _mb_vlamax<=0.9
+                                 else 'beginner')
+                _mb_gly_kg    = {'elite':17,'advanced':15,'intermediate':14,'beginner':13}[_mb_fitness]
+                _mb_gly_total = 90 + _mb_muscle_kg*_mb_gly_kg
+
+                # ── Métricas resumo ───────────────────────────────────────────
+                st.markdown("**📊 Resultados**")
+                _mr1, _mr2, _mr3, _mr4 = st.columns(4)
+                _mr1.metric("MLSS / AT", f"{_mb_W_AT:.0f} W",
+                            f"{_mb_VO2ss[_mb_argAT]:.1f} ml/min/kg · {_mb_pct_AT:.0f}% VO2max")
+                _mr2.metric("FatMax", f"{_mb_W_FM:.0f} W",
+                            f"{_mb_VO2ss[_mb_argFM]:.1f} ml/min/kg · {_mb_pct_FM:.0f}% VO2max")
+                _mr3.metric("Fat @ FatMax", f"{_mb_fat_FM:.0f} g/h")
+                _mr4.metric("Glicogénio total", f"{_mb_gly_total:.0f} g",
+                            f"Fígado 90g + Músculo {_mb_muscle_kg*_mb_gly_kg:.0f}g · {_mb_fitness}")
+
+                _mr5, _mr6, _mr7, _mr8 = st.columns(4)
+                _mr5.metric("CP vs MLSS", f"{_calc_cp - _mb_W_AT:+.0f} W",
+                            f"CP={_calc_cp}W · MLSS={_mb_W_AT:.0f}W")
+                _mr6.metric("CHO utilização", f"{_mb_CHO_g:.0f} g/h",
+                            "Constante até AT")
+                _mr7.metric("VLamax usado", f"{_mb_vlamax:.3f} mmol/L/s")
+                _mr8.metric("VO2max (CP)", f"{_mb_vo2max:.1f} ml/min/kg")
+
+                # ── Gráficos ──────────────────────────────────────────────────
+                _BASE_MB = dict(
+                    plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                    font=dict(size=11), margin=dict(l=45,r=20,t=45,b=40),
+                    legend=dict(bgcolor="rgba(0,0,0,0)"),
+                )
+                _AX_MB = dict(showgrid=True, gridcolor="rgba(128,128,128,0.15)",
+                              zeroline=False)
+
+                _gc1, _gc2 = st.columns(2)
+                with _gc1:
+                    # Curva Substratos
+                    _fig_sb = go.Figure()
+                    _n_cho  = min(_mb_argAT+400, len(_mb_Watts))
+                    _fig_sb.add_trace(go.Scatter(
+                        x=_mb_Watts[:_mb_argAT], y=_mb_Fat,
+                        mode='lines', name='Fat (g/h)',
+                        line=dict(color='#00C896', width=2.5),
+                        fill='tozeroy', fillcolor='rgba(0,200,150,0.10)',
+                    ))
+                    _fig_sb.add_trace(go.Scatter(
+                        x=_mb_Watts[:_n_cho],
+                        y=np.full(_n_cho, _mb_CHO_g),
+                        mode='lines', name='CHO (g/h)',
+                        line=dict(color='#FF6B35', width=2.5),
+                        fill='tozeroy', fillcolor='rgba(255,107,53,0.10)',
+                    ))
+                    _fig_sb.add_vline(x=_mb_W_FM, line_dash='dot',
+                                      line_color='#00C896', line_width=1.2,
+                                      annotation_text=f"FatMax {_mb_W_FM:.0f}W",
+                                      annotation_font_color='#00C896')
+                    _fig_sb.add_vline(x=_mb_W_AT, line_dash='dot',
+                                      line_color='#FFD166', line_width=1.2,
+                                      annotation_text=f"MLSS {_mb_W_AT:.0f}W",
+                                      annotation_font_color='#FFD166')
+                    _fig_sb.update_layout(
+                        **_BASE_MB,
+                        title=dict(text=f"Substratos — {modalidade}",
+                                   font=dict(size=13)),
+                        xaxis=dict(**_AX_MB, title="Potência (W)"),
+                        yaxis=dict(**_AX_MB, title="g / hora"),
+                    )
+                    st.plotly_chart(_fig_sb, use_container_width=True)
+
+                with _gc2:
+                    # Curva Lactato
+                    _mb_W_below = _mb_Watts[:_mb_argAT]
+                    _valid_la   = np.isfinite(_mb_CLass) & (_mb_CLass>0) & (_mb_CLass<20)
+                    _fig_la = go.Figure()
+                    if _valid_la.any():
+                        _fig_la.add_trace(go.Scatter(
+                            x=_mb_W_below[_valid_la], y=_mb_CLass[_valid_la],
+                            mode='lines', name='[La] mmol/L',
+                            line=dict(color='#E63946', width=2.5),
+                        ))
+                    for _y_la, _lbl_la, _col_la in [
+                        (2.0,'LT1 ~2mmol','rgba(255,209,102,0.8)'),
+                        (4.0,'LT2 ~4mmol','rgba(230,57,70,0.8)')]:
+                        _fig_la.add_hline(y=_y_la, line_dash='dot',
+                                          line_color=_col_la, line_width=1.2,
+                                          annotation_text=_lbl_la,
+                                          annotation_font_color=_col_la,
+                                          annotation_position="right")
+                    _fig_la.update_layout(
+                        **_BASE_MB,
+                        title=dict(text="Lactato Estacionário",
+                                   font=dict(size=13)),
+                        xaxis=dict(**_AX_MB, title="Potência (W)"),
+                        yaxis=dict(**_AX_MB, title="[La] mmol/L", range=[0,8]),
+                    )
+                    st.plotly_chart(_fig_la, use_container_width=True)
+
+                # Tabela de zonas
+                with st.expander("📋 Zonas de Intensidade por Substrato", expanded=False):
+                    _mb_zonas = []
+                    for _pct_z, _nome_z in [
+                        (0.50,'Recuperação'), (0.65,'Z1 — Aeróbio leve'),
+                        (0.75,'Z2 — Aeróbio mod.'), (0.85,'Z2-Z3 — FatMax'),
+                        (0.92,'Z3 — Limiar'), (1.00,'MLSS'),
+                    ]:
+                        _w_z = _mb_W_AT * _pct_z
+                        _idx_z = int(np.argmin(np.abs(_mb_Watts - _w_z)))
+                        _idx_z = min(_idx_z, _mb_argAT-1)
+                        _fat_z = float(_mb_Fat[_idx_z]) if _idx_z < len(_mb_Fat) else 0
+                        _la_z  = float(_mb_CLass[_idx_z]) if _idx_z < len(_mb_CLass) and np.isfinite(_mb_CLass[_idx_z]) else None
+                        _mb_zonas.append({
+                            'Zona': _nome_z,
+                            'Potência': f"{_w_z:.0f} W",
+                            '% MLSS': f"{_pct_z*100:.0f}%",
+                            'Fat (g/h)': f"{_fat_z:.0f}",
+                            'CHO (g/h)': f"{_mb_CHO_g:.0f}",
+                            '[La] mmol/L': f"{_la_z:.2f}" if _la_z else "—",
+                        })
+                    st.dataframe(pd.DataFrame(_mb_zonas), hide_index=True,
+                                 use_container_width=True)
+                    st.caption("⚙️ Modelo Mader/Hauser | Ks1=0.0631 · Ks2=1.331 · VolRel=0.40 · Kel=4")
+
+            except Exception as _mb_err:
+                st.warning(f"Erro no modelo metabólico: {_mb_err}")
 
     # ════════════════════════════════════════════════════════════════════════
     # TAB OmPD (existente, mantida)
