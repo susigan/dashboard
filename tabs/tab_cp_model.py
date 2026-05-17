@@ -1784,149 +1784,122 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                             _line_col = [_hr_col_map.get(t[0], ('#AAAAAA', t[0]))[0]
                                          for t in _ordered_hr]
 
-                            # ── GRÁFICO A: HR (X) vs Watts (Y) ───────────────
-                            # Eixo X = bpm, Eixo Y = Watts
-                            # Zonas: 3 faixas verticais (Z1/Z2/Z3) por IQR
-                            # Pontos: watts de referência ligados por linha
+                            # ── GRÁFICO HR vs Potência: X=duração, Y1=HR, Y2=Watts ──
                             _fig_hr = go.Figure()
 
-                            # 3 zonas com background IQR dos limiares
-                            # Z1 = abaixo de HRVT1, Z2 = HRVT1→HRVTMSS, Z3 = acima HRVTMSS
-                            _z3_defs = [
-                                ('Z1', _hr_min, 'HRVT1',   '#60A5FA'),
-                                ('Z2', 'HRVT1',  'HRVTMSS', '#34D399'),
-                                ('Z3', 'HRVTMSS', _hr_max,  '#FBBF24'),
+                            # Zonas horizontais em HR (hrect) — 3 zonas
+                            _zone_hr_defs = [
+                                (None,      'HRVT1',   '#60A5FA', 0.06, 'Z1 Aeróbio'),
+                                ('HRVT1',   'HRVTMSS', '#34D399', 0.06, 'Z2 Tempo'),
+                                ('HRVTMSS', None,      '#FBBF24', 0.06, 'Z3 Limiar+'),
                             ]
-                            for _zn, _zlo, _zhi, _zcl in _z3_defs:
-                                _x0z = (_hr_zones[_zlo]['med']
-                                        if isinstance(_zlo, str) and _zlo in _hr_zones
-                                        else _zlo)
-                                _x1z = (_hr_zones[_zhi]['med']
-                                        if isinstance(_zhi, str) and _zhi in _hr_zones
-                                        else _zhi)
-                                # IQR como faixa mais escura dentro da zona
-                                _x0q = (_hr_zones[_zlo]['q25']
-                                        if isinstance(_zlo, str) and _zlo in _hr_zones
-                                        else _zlo)
-                                _x1q = (_hr_zones[_zhi]['q75']
-                                        if isinstance(_zhi, str) and _zhi in _hr_zones
-                                        else _zhi)
-                                _fig_hr.add_vrect(x0=_x0z, x1=_x1z,
-                                    fillcolor=_zcl, opacity=0.06, line_width=0)
-                                _fig_hr.add_vrect(x0=_x0q, x1=_x1q,
-                                    fillcolor=_zcl, opacity=0.10, line_width=0)
+                            _x_max_t = 130.0
+                            for _zlo_k, _zhi_k, _zcl, _zop, _znm in _zone_hr_defs:
+                                _y0z = (_hr_zones[_zlo_k]['med'] if _zlo_k and _zlo_k in _hr_zones else _hr_min)
+                                _y1z = (_hr_zones[_zhi_k]['med'] if _zhi_k and _zhi_k in _hr_zones else _hr_max)
+                                _fig_hr.add_hrect(y0=_y0z, y1=_y1z,
+                                    fillcolor=_zcl, opacity=_zop, line_width=0)
+                                # IQR shading
+                                _y0q = (_hr_zones[_zlo_k]['q25'] if _zlo_k and _zlo_k in _hr_zones else _hr_min)
+                                _y1q = (_hr_zones[_zhi_k]['q75'] if _zhi_k and _zhi_k in _hr_zones else _hr_max)
+                                _fig_hr.add_hrect(y0=_y0q, y1=_y1q,
+                                    fillcolor=_zcl, opacity=0.09, line_width=0)
                                 _fig_hr.add_annotation(
-                                    x=(_x0z+_x1z)/2, y=_x_max_w*0.97,
-                                    text=_zn, showarrow=False,
-                                    font=dict(size=10, color=_zcl), xanchor='center')
+                                    x=_x_max_t*0.98, y=(_y0z+_y1z)/2, text=_znm,
+                                    showarrow=False, font=dict(size=9,color=_zcl), xanchor='right')
 
-                            # Pontos HR↔Watts usando âncoras reais
-                            # HRVTMSS ↔ CP, HRVT2 ↔ Pvo2max, PBP entre os dois
-                            _hr_w_pts = []  # (hr_bpm, watts, label, color)
-                            if _calc_cp and 'HRVTMSS' in _hr_zones:
-                                _hd = _hr_zones['HRVTMSS']
-                                _hr_w_pts.append((_hd['med'], float(_calc_cp),
-                                                  f"MLSS / CP\n{_hd['med']:.0f}bpm · {_calc_cp}W",
-                                                  '#FFD166',
-                                                  _hd['q25'], _hd['q75']))
-                            if 'PBP' in _hr_zones and 'HRVTMSS' in _hr_zones and 'HRVT2' in _hr_zones:
-                                _hd = _hr_zones['PBP']
-                                _hr_pbp = (_hr_zones['HRVTMSS']['med']+_hr_zones['HRVT2']['med'])/2
-                                _hr_w_pts.append((_hr_pbp, _hd['med'],
-                                                  f"PBP\n{_hr_pbp:.0f}bpm · {_hd['med']:.0f}W",
-                                                  '#FF6B35',
-                                                  _hd['q25'], _hd['q75']))
-                            if 'Pvo2max' in _hr_zones and 'HRVT2' in _hr_zones:
-                                _hd = _hr_zones['Pvo2max']
-                                _hd2 = _hr_zones['HRVT2']
-                                _hr_w_pts.append((_hd2['med'], _hd['med'],
-                                                  f"Pvo2max\n{_hd2['med']:.0f}bpm · {_hd['med']:.0f}W",
-                                                  '#60A5FA',
-                                                  _hd['q25'], _hd['q75']))
-                            if _mb_W_AT and _mb_W_FM and 'HRVTMSS' in _hr_zones:
-                                # FatMax: interpolação entre 0 e MLSS
-                                _hr_fm_est = (_hr_min + _hr_zones['HRVTMSS']['med']) / 2
-                                _hr_w_pts.append((_hr_fm_est, _mb_W_FM,
-                                                  f"FatMax\n{_hr_fm_est:.0f}bpm · {_mb_W_FM:.0f}W",
-                                                  '#00C896', _mb_W_FM, _mb_W_FM))
+                            # Duração típica de cada limiar HR
+                            _hr_x_dur = {
+                                'HRVT1':120.0, 'AeTHR':120.0,
+                                'HRVT1PLUS':60.0, 'HRVTMSS':45.0, 'HRVT2':20.0,
+                            }
+                            if 'Pvo2max' in _hr_zones and _calc_cp and isinstance(_calc_wp,float) and _calc_wp>0:
+                                _pv_w = _hr_zones['Pvo2max']['med']
+                                if _pv_w > _calc_cp:
+                                    _hr_x_dur['HRVT2'] = max(5.0, min(25.0,
+                                        _calc_wp/(_pv_w-_calc_cp)/60))
 
-                            # Ordenar por HR
-                            _hr_w_pts = sorted(_hr_w_pts, key=lambda x: x[0])
-
-                            if _hr_w_pts:
-                                _hx = [p[0] for p in _hr_w_pts]
-                                _wy = [p[1] for p in _hr_w_pts]
-                                _lbl = [p[2] for p in _hr_w_pts]
-                                _col = [p[3] for p in _hr_w_pts]
-                                _err_lo = [p[1]-p[4] for p in _hr_w_pts]
-                                _err_hi = [p[5]-p[1] for p in _hr_w_pts]
-
-                                # Linha de ligação
-                                _fig_hr.add_trace(go.Scatter(
-                                    x=_hx, y=_wy,
-                                    mode='lines',
-                                    line=dict(color='rgba(180,180,180,0.5)', width=1.5,
-                                              dash='dot'),
-                                    showlegend=False, hoverinfo='skip',
-                                ))
-                                # Dots com erro Y
-                                _fig_hr.add_trace(go.Scatter(
-                                    x=_hx, y=_wy,
+                            # Pontos HR (Y1)
+                            _hr_px, _hr_py, _hr_pc, _hr_pl = [], [], [], []
+                            for _hk in ['HRVT1','AeTHR','HRVT1PLUS','HRVTMSS','HRVT2']:
+                                if _hk not in _hr_zones: continue
+                                _hd = _hr_zones[_hk]
+                                _hc, _hl = _hr_col_map.get(_hk, ('#AAAAAA',_hk))
+                                _hr_px.append(_hr_x_dur.get(_hk,60.0))
+                                _hr_py.append(_hd['med'])
+                                _hr_pc.append(_hc)
+                                _hr_pl.append(f"{_hl}<br>{_hd['med']:.0f}bpm")
+                            if _hr_px:
+                                _ord = sorted(zip(_hr_px,_hr_py,_hr_pc,_hr_pl), key=lambda t: t[0], reverse=True)
+                                _ox,_oy,_oc,_ol = zip(*_ord)
+                                _fig_hr.add_trace(go.Scatter(x=list(_ox), y=list(_oy),
+                                    mode='lines', line=dict(color='rgba(180,180,180,0.5)',width=1.5,dash='dot'),
+                                    showlegend=False, hoverinfo='skip', yaxis='y'))
+                                _fig_hr.add_trace(go.Scatter(x=list(_ox), y=list(_oy),
                                     mode='markers+text',
-                                    marker=dict(size=13, color=_col,
-                                                line=dict(width=2, color='white')),
-                                    text=_lbl,
-                                    textposition='top center',
-                                    textfont=dict(size=8),
-                                    error_y=dict(
-                                        type='data',
-                                        array=[max(0,e) for e in _err_hi],
-                                        arrayminus=[max(0,e) for e in _err_lo],
-                                        visible=True,
-                                        color='rgba(255,255,255,0.4)',
-                                        thickness=2, width=6,
-                                    ),
-                                    showlegend=False,
-                                ))
+                                    marker=dict(size=11, color=list(_oc), line=dict(width=2,color='white')),
+                                    text=list(_ol), textposition='bottom center', textfont=dict(size=8),
+                                    showlegend=False, yaxis='y'))
 
-                            # CP e MLSS Mader como linhas horizontais no eixo Y
-                            if _calc_cp:
-                                _fig_hr.add_hline(y=_calc_cp,
-                                    line_color='#A855F7', line_width=1.5, line_dash='dot',
-                                    annotation_text=f"CP {_calc_cp}W",
-                                    annotation_font_color='#A855F7',
-                                    annotation_font_size=9,
-                                    annotation_position="right")
-                            if _mb_W_AT and _mb_W_AT > 10:
-                                _fig_hr.add_hline(y=_mb_W_AT,
-                                    line_color='#FFD166', line_width=1.5, line_dash='dot',
-                                    annotation_text=f"MLSS Mader {_mb_W_AT:.0f}W",
-                                    annotation_font_color='#FFD166',
-                                    annotation_font_size=9,
-                                    annotation_position="right")
+                            # Pontos Watts (Y2) — diamantes
+                            _w_data = []
+                            if _calc_cp: _w_data.append((45.0,float(_calc_cp),f"CP {_calc_cp}W",'#A855F7',0,0))
+                            if _mb_W_AT and _mb_W_AT>10: _w_data.append((45.0,float(_mb_W_AT),f"MLSS {_mb_W_AT:.0f}W",'#FFD166',0,0))
+                            if _mb_W_FM and _mb_W_FM>10: _w_data.append((90.0,float(_mb_W_FM),f"FatMax {_mb_W_FM:.0f}W",'#00C896',0,0))
+                            if 'PBP' in _hr_zones:
+                                _pd=_hr_zones['PBP']
+                                _w_data.append((30.0,float(_pd['med']),f"PBP {_pd['med']:.0f}W",'#FF6B35',
+                                                float(_pd['med']-_pd['q25']),float(_pd['q75']-_pd['med'])))
+                            if 'Pvo2max' in _hr_zones:
+                                _pd=_hr_zones['Pvo2max']
+                                _w_data.append((_hr_x_dur.get('HRVT2',10.0),float(_pd['med']),
+                                                f"Pvo2max {_pd['med']:.0f}W",'#60A5FA',
+                                                float(_pd['med']-_pd['q25']),float(_pd['q75']-_pd['med'])))
+                            if _w_data:
+                                _ord_w=sorted(_w_data,key=lambda t:t[0],reverse=True)
+                                _owx,_owy,_owl,_owc,_owlo,_owhi=zip(*_ord_w)
+                                _fig_hr.add_trace(go.Scatter(x=list(_owx),y=list(_owy),
+                                    mode='lines', line=dict(color='rgba(150,100,220,0.4)',width=1.5,dash='dot'),
+                                    showlegend=False, hoverinfo='skip', yaxis='y2'))
+                                _fig_hr.add_trace(go.Scatter(x=list(_owx),y=list(_owy),
+                                    mode='markers+text',
+                                    marker=dict(size=11,color=list(_owc),symbol='diamond',
+                                                line=dict(width=2,color='white')),
+                                    text=list(_owl), textposition='top center', textfont=dict(size=8),
+                                    error_y=dict(type='data',
+                                                 array=[max(0,v) for v in _owhi],
+                                                 arrayminus=[max(0,v) for v in _owlo],
+                                                 visible=True,color='rgba(255,255,255,0.4)',
+                                                 thickness=2,width=6),
+                                    showlegend=False, yaxis='y2'))
 
                             _fig_hr.update_layout(
                                 plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                                font=dict(size=11), margin=dict(l=55,r=80,t=50,b=50),
-                                height=380, showlegend=False,
-                                title=dict(text=f"HR vs Potência — {modalidade}",
+                                font=dict(size=11), margin=dict(l=55,r=70,t=50,b=50),
+                                height=400, showlegend=False,
+                                title=dict(text=f"Limiares HR e Potência — {modalidade}  • HR  ◆ Watts",
                                            font=dict(size=13)),
-                                xaxis=dict(
-                                    title="HR (bpm)",
-                                    range=[_hr_min, _hr_max],
-                                    showgrid=True,
-                                    gridcolor="rgba(128,128,128,0.12)",
-                                    zeroline=False, tickfont=dict(size=10),
-                                ),
-                                yaxis=dict(
-                                    title="Potência (W)",
-                                    range=[0, _x_max_w],
-                                    showgrid=True,
-                                    gridcolor="rgba(128,128,128,0.12)",
-                                    zeroline=False,
-                                ),
+                                xaxis=dict(title="Duração de referência (min)",
+                                           range=[_x_max_t, 0],  # invertido: alta intensidade à esquerda
+                                           showgrid=True, gridcolor="rgba(128,128,128,0.12)",
+                                           zeroline=False, tickfont=dict(size=10)),
+                                yaxis=dict(title="HR (bpm)", range=[_hr_min,_hr_max],
+                                           showgrid=True, gridcolor="rgba(128,128,128,0.12)",
+                                           zeroline=False,
+                                           titlefont=dict(color='#AAAAAA'),
+                                           tickfont=dict(color='#AAAAAA')),
+                                yaxis2=dict(title="Potência (W)", range=[0,_x_max_w],
+                                            overlaying='y', side='right',
+                                            showgrid=False, zeroline=False,
+                                            titlefont=dict(color='#A855F7'),
+                                            tickfont=dict(color='#A855F7',size=10)),
                             )
                             st.plotly_chart(_fig_hr, use_container_width=True)
+                            st.caption(
+                                "X = duração de referência (alta intensidade à esquerda). "
+                                "• Círculos = HR bpm (eixo esq). ◆ Diamantes = Potência W (eixo dir). "
+                                "Zonas horizontais com IQR histórico."
+                            )
 
                             # ── GRÁFICO B: Referência de Potência ─────────────
                             _p_refs = []
