@@ -1923,6 +1923,79 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                                                  thickness=2,width=6),
                                     showlegend=False, yaxis='y2'))
 
+                            # Linhas verticais pontilhadas — todos os valores em Watts (Y2)
+                            _hr_vlines_w = []
+                            if _calc_cp:
+                                _hr_vlines_w.append((_calc_cp, '#A855F7', f"CP {_calc_cp}W"))
+                            if _mb_W_AT and _mb_W_AT > 10:
+                                _hr_vlines_w.append((_mb_W_AT, '#FFD166', f"MLSS {_mb_W_AT:.0f}W"))
+                            if _mb_W_FM and _mb_W_FM > 10:
+                                _hr_vlines_w.append((_mb_W_FM, '#00C896', f"FatMax {_mb_W_FM:.0f}W"))
+                            if 'PBP' in _hr_zones:
+                                _hr_vlines_w.append((_hr_zones['PBP']['med'], '#FF6B35',
+                                                     f"PBP {_hr_zones['PBP']['med']:.0f}W"))
+                            if 'Pvo2max' in _hr_zones:
+                                _hr_vlines_w.append((_hr_zones['Pvo2max']['med'], '#60A5FA',
+                                                     f"Pvo2max {_hr_zones['Pvo2max']['med']:.0f}W"))
+                            # Cruzamentos LT1/LT2 do lactato (em Watts) — linha vertical
+                            _lt_colors_v = {'LT1': 'rgba(255,209,102,1.0)',
+                                            'LT2': 'rgba(230,57,70,1.0)'}
+                            if '_la_crossings' in dir() and _la_crossings:
+                                for _lt_name, _lt_w in _la_crossings.items():
+                                    _hr_vlines_w.append((_lt_w, _lt_colors_v[_lt_name],
+                                                         f"{_lt_name} {_lt_w:.0f}W"))
+
+                            for _vw, _vc_w, _vl_w in _hr_vlines_w:
+                                if _vw and 0 < _vw <= _x_max_w:
+                                    # Linha vertical no espaço Y2 (Watts)
+                                    # Plotly não tem add_vline por eixo — usamos trace vertical
+                                    _fig_hr.add_trace(go.Scatter(
+                                        x=[None], y=[None],  # trace invisível só para legenda
+                                        mode='lines',
+                                        line=dict(color=_vc_w, width=1.5, dash='dot'),
+                                        name=_vl_w, showlegend=False,
+                                        yaxis='y2',
+                                    ))
+                                    _fig_hr.add_shape(
+                                        type='line',
+                                        yref='y2', xref='paper',
+                                        x0=0, x1=1,
+                                        y0=_vw, y1=_vw,
+                                        line=dict(color=_vc_w, width=1.5, dash='dot'),
+                                    )
+                                    _fig_hr.add_annotation(
+                                        xref='paper', yref='y2',
+                                        x=0.01, y=_vw,
+                                        text=_vl_w, showarrow=False,
+                                        font=dict(size=8, color=_vc_w),
+                                        xanchor='left',
+                                    )
+
+                            # Linhas horizontais LT1/LT2 em HR (bpm) — Y1
+                            # Usar medianas de HRVT1 e HRVT2 como referência
+                            _lt_hr_refs = [
+                                ('HRVT1',   'LT1 HR', 'rgba(255,209,102,0.9)'),
+                                ('HRVT2',   'LT2 HR', 'rgba(230,57,70,0.9)'),
+                            ]
+                            for _lt_hk, _lt_lbl, _lt_col in _lt_hr_refs:
+                                if _lt_hk in _hr_zones:
+                                    _lt_hr_val = _hr_zones[_lt_hk]['med']
+                                    _fig_hr.add_shape(
+                                        type='line',
+                                        yref='y', xref='paper',
+                                        x0=0, x1=1,
+                                        y0=_lt_hr_val, y1=_lt_hr_val,
+                                        line=dict(color=_lt_col, width=1.5, dash='dot'),
+                                    )
+                                    _fig_hr.add_annotation(
+                                        xref='paper', yref='y',
+                                        x=0.99, y=_lt_hr_val,
+                                        text=f"{_lt_lbl} {_lt_hr_val:.0f}bpm",
+                                        showarrow=False,
+                                        font=dict(size=8, color=_lt_col),
+                                        xanchor='right',
+                                    )
+
                             _fig_hr.update_layout(
                                 plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
                                 font=dict(size=11), margin=dict(l=55,r=70,t=50,b=50),
