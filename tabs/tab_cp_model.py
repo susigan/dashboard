@@ -2006,31 +2006,79 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                                     annotation_position="top left",
                                 )
 
+                            # Calcular ranges automáticos baseados nos dados reais
+                            # Eixo X: min e max dos tempos dos MMPs disponíveis
+                            if _mmp_anchors:
+                                _t_min_data = min(t/60 for _,t in _mmp_anchors) * 0.7
+                                _t_max_data = max(t/60 for _,t in _mmp_anchors) * 1.5
+                            else:
+                                _t_min_data, _t_max_data = 0.5, 25.0
+                            # Incluir posições dos pontos de referência
+                            _all_x_pts = (
+                                [_w_to_min(w) for w in [
+                                    _calc_cp, _mb_W_AT, _mb_W_FM,
+                                    _hr_zones.get('PBP',{}).get('med'),
+                                    _hr_zones.get('Pvo2max',{}).get('med'),
+                                ] if w and w > 0] +
+                                list(_hr_px or [])
+                            )
+                            if _all_x_pts:
+                                _t_min_data = min(_t_min_data, min(_all_x_pts) * 0.7)
+                                _t_max_data = max(_t_max_data, max(_all_x_pts) * 1.3)
+                            _t_min_data = max(0.3, _t_min_data)
+                            _t_max_data = min(70.0, _t_max_data)
+
+                            # Eixo Y2: range baseado nos valores de Watts reais
+                            _all_w_vals = [v for v in [
+                                _calc_cp, _mb_W_AT, _mb_W_FM,
+                                _hr_zones.get('PBP',{}).get('med'),
+                                _hr_zones.get('Pvo2max',{}).get('med'),
+                            ] if v and v > 0]
+                            if _all_w_vals:
+                                _w_min_plot = max(0, min(_all_w_vals) * 0.85)
+                                _w_max_plot = max(_all_w_vals) * 1.15
+                            else:
+                                _w_min_plot, _w_max_plot = 0, _x_max_w
+
+                            # Ticks X: posições dos MMPs reais em minutos
+                            _x_tick_vals = [t/60 for _,t in _mmp_anchors]
+                            _x_tick_text = [f"{t/60:.0f}min" if t >= 120 else f"{t/60:.1f}min"
+                                            for _,t in _mmp_anchors]
+
                             _fig_hr.update_layout(
                                 plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
                                 font=dict(size=11), margin=dict(l=60,r=120,t=50,b=50),
                                 height=500, showlegend=True,
-                                legend=dict(
-                                    x=1.08, y=1, xanchor='left', yanchor='top',
-                                    bgcolor='rgba(0,0,0,0)',
-                                    font=dict(size=10),
-                                ),
+                                legend=dict(x=1.08, y=1, xanchor='left', yanchor='top',
+                                            bgcolor='rgba(0,0,0,0)', font=dict(size=10)),
                                 title=dict(text=f"Limiares HR e Potência — {modalidade}  • HR  ◆ Watts",
                                            font=dict(size=13)),
-                                xaxis=dict(title="Duração de referência (min)",
-                                           range=[_x_max_t, 0],  # invertido: alta intensidade à esquerda
-                                           showgrid=True, gridcolor="rgba(128,128,128,0.12)",
-                                           zeroline=False, tickfont=dict(size=10)),
-                                yaxis=dict(title="HR (bpm)", range=[_hr_min,_hr_max],
-                                           showgrid=True, gridcolor="rgba(128,128,128,0.12)",
-                                           zeroline=False,
-                                           title_font_color="#AAAAAA",
-                                           tickfont=dict(color='#AAAAAA')),
-                                yaxis2=dict(title="Potência (W)", range=[0,_x_max_w],
-                                            overlaying='y', side='right',
-                                            showgrid=False, zeroline=False,
-                                            title_font_color="#A855F7",
-                                            tickfont=dict(color='#A855F7',size=10)),
+                                xaxis=dict(
+                                    title="Duração (min) — escala log",
+                                    type='log',
+                                    range=[np.log10(_t_min_data), np.log10(_t_max_data)],
+                                    tickmode='array',
+                                    tickvals=_x_tick_vals,
+                                    ticktext=_x_tick_text,
+                                    showgrid=True, gridcolor="rgba(128,128,128,0.12)",
+                                    zeroline=False, tickfont=dict(size=10),
+                                    autorange='reversed',  # alta intensidade à esquerda
+                                ),
+                                yaxis=dict(
+                                    title="HR (bpm)", range=[_hr_min, _hr_max],
+                                    showgrid=True, gridcolor="rgba(128,128,128,0.12)",
+                                    zeroline=False,
+                                    title_font_color="#AAAAAA",
+                                    tickfont=dict(color='#AAAAAA'),
+                                ),
+                                yaxis2=dict(
+                                    title="Potência (W)",
+                                    range=[_w_min_plot, _w_max_plot],
+                                    overlaying='y', side='right',
+                                    showgrid=False, zeroline=False,
+                                    title_font_color="#A855F7",
+                                    tickfont=dict(color='#A855F7', size=10),
+                                ),
                             )
                             st.plotly_chart(_fig_hr, use_container_width=True)
                             st.caption(
