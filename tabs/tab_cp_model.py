@@ -1266,6 +1266,7 @@ def tab_cp_model(ac_full=None):
                         )
 
             # ── Perfil Metabólico (Mader / Hauser / INSCYD / konaendu) ──────────
+            _la_crossings = {}  # inicializar — preenchido no gráfico de lactato
             st.markdown("---")
             st.markdown("**🧪 Perfil Metabólico — Mader / Hauser / konaendu**")
 
@@ -1304,18 +1305,16 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                 _ac_mb = ac_full[ac_full[_col_mod] == modalidade].copy()
                 _col_date_mb = next((c for c in ['date','Data']
                                      if c in _ac_mb.columns), None)
-                for _mc_mb in ['MMP3','MMP5']:
+                # Usar parse_mmp e season best — igual ao Ranking SEE%
+                for _mc_mb, _dur_mb in [('MMP3', 180), ('MMP5', 300)]:
                     if _mc_mb in _ac_mb.columns and _col_date_mb:
-                        _s_mb = (_ac_mb[[_mc_mb,_col_date_mb]]
-                                 .dropna(subset=[_mc_mb])
-                                 .sort_values(_col_date_mb, ascending=False))
-                        if not _s_mb.empty:
-                            try:
-                                _v = float(str(_s_mb[_mc_mb].iloc[0]).replace(',','.'))
-                                if _v > 0:
-                                    if _mc_mb == 'MMP3': _mb_mmp3 = _v
-                                    else: _mb_mmp5 = _v
-                            except Exception: pass
+                        _s_mb = _ac_mb.sort_values(_col_date_mb, ascending=False)
+                        for _, _rr_mb in _s_mb.iterrows():
+                            _v = parse_mmp(str(_rr_mb[_mc_mb]))
+                            if _v is not None and _v > 0:
+                                if _mc_mb == 'MMP3': _mb_mmp3 = _v
+                                else: _mb_mmp5 = _v
+                                break
 
             _mb_mmp3_in = int(_mb_mmp3) if _mb_mmp3 else int(_calc_cp * 1.4)
             _mb_mmp5_in = int(_mb_mmp5) if _mb_mmp5 else int(_calc_cp * 1.25)
@@ -1533,22 +1532,28 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                         ))
 
                     # Calcular watts de cruzamento com LT1 (~2mmol) e LT2 (~4mmol)
+                    # Usar toda a curva disponível (não só abaixo do AT)
                     _la_crossings = {}
                     if _valid_la.any():
-                        _W_la  = _mb_W_below[_valid_la]
-                        _C_la  = _mb_CLass[_valid_la]
+                        _W_la = _mb_W_below[_valid_la]
+                        _C_la = _mb_CLass[_valid_la]
                         for _thr_la, _thr_name in [(2.0, 'LT1'), (4.0, 'LT2')]:
-                            # Encontrar cruzamento por interpolação
                             _cross_idx = np.where(np.diff(np.sign(_C_la - _thr_la)))[0]
                             if len(_cross_idx) > 0:
                                 _i = _cross_idx[0]
                                 if _i + 1 < len(_W_la):
-                                    # Interpolação linear
                                     _w0, _w1 = float(_W_la[_i]), float(_W_la[_i+1])
                                     _c0, _c1 = float(_C_la[_i]), float(_C_la[_i+1])
                                     if _c1 != _c0:
-                                        _w_cross = _w0 + (_thr_la - _c0) * (_w1 - _w0) / (_c1 - _c0)
+                                        _w_cross = _w0 + (_thr_la-_c0)*(_w1-_w0)/(_c1-_c0)
                                         _la_crossings[_thr_name] = float(_w_cross)
+                        # Se LT2 não encontrado: usar o valor máximo da curva
+                        # (atleta de endurance com VLamax baixo pode não cruzar 4mmol antes do AT)
+                        if 'LT2' not in _la_crossings and len(_C_la) > 0:
+                            _max_la = float(np.nanmax(_C_la[np.isfinite(_C_la)]))
+                            if _max_la >= 3.0:  # se chegou perto de 4mmol
+                                _idx_max = int(np.nanargmax(_C_la))
+                                _la_crossings['LT2'] = float(_W_la[_idx_max])
 
                     # Linhas horizontais LT1/LT2
                     for _y_la, _lbl_la, _col_la in [
