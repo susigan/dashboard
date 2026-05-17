@@ -1746,6 +1746,38 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                             )
 
                             # ── Subplot: cima=HR, baixo=Watts ─────────────────
+                            # Calcular posição X (watts) para cada limiar via interpolação
+                            _anchors = []
+                            if _calc_cp and 'HRVTMSS' in _hr_zones:
+                                _anchors.append((_hr_zones['HRVTMSS']['med'], float(_calc_cp)))
+                            if 'PBP' in _hr_zones and 'HRVTMSS' in _hr_zones and 'HRVT2' in _hr_zones:
+                                _hr_pbp_est = (_hr_zones['HRVTMSS']['med'] + _hr_zones['HRVT2']['med']) / 2
+                                _anchors.append((_hr_pbp_est, float(_hr_zones['PBP']['med'])))
+                            if 'Pvo2max' in _hr_zones and 'HRVT2' in _hr_zones:
+                                _anchors.append((_hr_zones['HRVT2']['med'], float(_hr_zones['Pvo2max']['med'])))
+                            _anchors.append((_hr_min + 5, 0.0))
+                            _anchors = sorted(set(_anchors), key=lambda x: x[0])
+
+                            def _hr_to_watts(hr_val):
+                                if len(_anchors) < 2: return float(hr_val)
+                                return float(np.interp(hr_val,
+                                                       [a[0] for a in _anchors],
+                                                       [a[1] for a in _anchors]))
+
+                            _ordered_hr = sorted(
+                                [(_hk, _hr_to_watts(_hr_zones[_hk]['med']))
+                                 for _hk in _hr_keys if _hk in _hr_zones],
+                                key=lambda t: t[1]
+                            )
+                            _line_x   = [t[1] for t in _ordered_hr]
+                            _line_y   = [_hr_zones[t[0]]['med'] for t in _ordered_hr]
+                            _line_q25 = [_hr_zones[t[0]]['q25'] for t in _ordered_hr]
+                            _line_q75 = [_hr_zones[t[0]]['q75'] for t in _ordered_hr]
+                            _line_lbl = [_hr_col_map.get(t[0], ('#AAAAAA', t[0]))[1]
+                                         for t in _ordered_hr]
+                            _line_col = [_hr_col_map.get(t[0], ('#AAAAAA', t[0]))[0]
+                                         for t in _ordered_hr]
+
                             # ── GRÁFICO A: HR por Limiar ─────────────────────
                             _fig_hr = go.Figure()
 
