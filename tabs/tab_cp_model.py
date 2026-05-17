@@ -701,27 +701,90 @@ def tab_cp_model(ac_full=None):
                 if not _px.empty:
                     _pmax_global = float(_px['p_max'].iloc[0])
 
-    # Modelos clássicos para CP Row/Ski — definido aqui para uso no grid search
-    _M_CLASSICOS = ('M1: P vs 1/t', 'M2: Work-Time', 'M3: Hiperbólico-t')
+    # Wrappers para o Ranking — testam os 3 weightings e retornam o melhor
+    def _rank_m1(pts, **kw):
+        """M1 no Ranking: menor SEE entre weightings none/1/t/1/t²"""
+        t_obs = np.array([t for _,t in pts])
+        p_obs = np.array([p for p,_ in pts])
+        best_see, best_res = 999, None
+        for mode in ["none","1/t","1/t²"]:
+            w = make_w(t_obs, mode)
+            res = fit_m1(pts, w)
+            if res[0] is None or res[3] is None: continue
+            _, see = calc_see(list(p_obs), res[3], k=2)
+            if see is not None and see < best_see:
+                best_see, best_res = see, res
+        return best_res if best_res else fit_m1(pts, np.ones(len(pts)))
+
+    def _rank_m2(pts, **kw):
+        """M2 no Ranking: menor SEE entre weightings none/1/t/1/t²"""
+        t_obs = np.array([t for _,t in pts])
+        p_obs = np.array([p for p,_ in pts])
+        best_see, best_res = 999, None
+        for mode in ["none","1/t","1/t²"]:
+            w = make_w(t_obs, mode)
+            res = fit_m2(pts, w)
+            if res[0] is None or res[3] is None: continue
+            _, see = calc_see(list(p_obs), res[3], k=2)
+            if see is not None and see < best_see:
+                best_see, best_res = see, res
+        return best_res if best_res else fit_m2(pts, np.ones(len(pts)))
+
+    def _rank_m3(pts, **kw):
+        """M3 no Ranking: menor SEE em espaço t entre weightings none/1/t/1/t²
+        SEE calculado em espaço t (consistente com a optimização do M3)."""
+        t_obs = np.array([t for _,t in pts])
+        p_obs = np.array([p for p,_ in pts])
+        best_see, best_res = 999, None
+        for mode in ["none","1/t","1/t²"]:
+            w = make_w(t_obs, mode)
+            res = fit_m3(pts, w)
+            if res[0] is None: continue
+            cp, wp = res[0], res[1]
+            if cp <= 0 or wp <= 0: continue
+            # SEE em espaço t (onde M3 optimiza)
+            t_pred = [wp/(p-cp) for p,_ in pts if p > cp]
+            t_real = [t for p,t in pts if p > cp]
+            if len(t_pred) < 2: continue
+            see_t = float(np.sqrt(np.sum((np.array(t_real)-np.array(t_pred))**2)
+                                  / max(len(t_pred)-2, 1)))
+            see_t_pct = see_t / float(np.mean(t_real)) * 100
+            if see_t_pct < best_see:
+                best_see, best_res = see_t_pct, res
+        return best_res if best_res else fit_m3(pts, np.ones(len(pts)))
 
     # Cada modelo usa exactamente 3 pontos (papers)
     _FIXED_N_PTS = 3
 
+    # Modelos clássicos para CP Row/Ski
+    _M_CLASSICOS = ('M1: P vs 1/t', 'M2: Work-Time', 'M3: Hiperbólico-t')
+
+    # Semáforos
+    def _flag_see(v):
+        if not isinstance(v, float): return '—'
+        return f"{'✅' if v<2 else '⚠️' if v<5 else '❌'} {v:.2f}%"
+    def _flag_cp_var(v):
+        if not isinstance(v, float): return '—'
+        return f"{'✅' if v<5 else '⚠️' if v<15 else '❌'} {v:.1f}%"
+    def _flag_cv(v):
+        if not isinstance(v, float): return '—'
+        return f"{'✅' if v<5 else '⚠️' if v<10 else '❌'} {v:.1f}%"
+
     # ── Correr grid search para todos os modelos ──────────────────────────
     _MODELS = {
-        # Modelos do Ranking automático (grid search 3 pontos)
-        'M1: P vs 1/t':   {'fn': lambda pts, **kw: fit_m1(pts, np.ones(len(pts))),
+        # M1/M2/M3: usam _rank_m1/m2/m3 — 3 weightings, igual ao teste manual
+        'M1: P vs 1/t':   {'fn': _rank_m1,
                             'n_pts': 3, 'k': 2, 'color': '#e74c3c',
                             'needs_pmax': False,
-                            'desc': 'P = W′/t + CP. Regressão linear. Monod & Scherrer 1965.'},
-        'M2: Work-Time':  {'fn': lambda pts, **kw: fit_m2(pts, np.ones(len(pts))),
+                            'desc': 'P = W′/t + CP. 3 weightings. Monod & Scherrer 1965.'},
+        'M2: Work-Time':  {'fn': _rank_m2,
                             'n_pts': 3, 'k': 2, 'color': '#2980b9',
                             'needs_pmax': False,
-                            'desc': 'W = CP·t + W′. Espaço trabalho-tempo. Morton 1986.'},
-        'M3: Hiperbólico-t':{'fn': lambda pts, **kw: fit_m3(pts, np.ones(len(pts))),
+                            'desc': 'W = CP·t + W′. 3 weightings. Morton 1986.'},
+        'M3: Hiperbólico-t':{'fn': _rank_m3,
                              'n_pts': 3, 'k': 2, 'color': '#27ae60',
                              'needs_pmax': False,
-                             'desc': 't = W′/(P-CP). Minimiza erro em tempo. Mais robusto.'},
+                             'desc': 't = W′/(P-CP). SEE em espaço t. 3 weightings.'},
         'OmPD':          {'fn': fit_ompd,          'n_pts': 3, 'k': 2,
                           'color': '#8e44ad', 'needs_pmax': True,
                           'desc': '3 pts (incluindo ≤3min para Pmax). Puchowicz 2020.'},
