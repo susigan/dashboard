@@ -673,10 +673,10 @@ def tab_cp_model(ac_full=None):
                 if _mv is None: continue
 
                 # _all_mmp_pts — M1/M2/M3:
-                #   Row/Ski → MMP3(180s) + MMP5(300s) + MMP12(720s)
+                #   Row/Ski → MMP1(60s) + MMP5(300s) + MMP12(720s)
                 #   Bike/Run → todos exceto MMP60
                 if modalidade in ('Row', 'Ski'):
-                    if _dur_f in (180.0, 300.0, 720.0):
+                    if _dur_f in (60.0, 300.0, 720.0):
                         _all_mmp_pts.append((_mv, _dur_f))
                 else:
                     _all_mmp_pts.append((_mv, _dur_f))
@@ -685,7 +685,7 @@ def tab_cp_model(ac_full=None):
                 #   Row/Ski → MMP3+MMP5+MMP12+MMP20 (excluir MMP1 e MMP60)
                 #   Bike/Run → todos exceto MMP60
                 if modalidade in ('Row', 'Ski'):
-                    if _dur_f != 60.0:   # excluir MMP1
+                    if _dur_f in (180.0, 300.0, 720.0, 1200.0):
                         _all_mmp_pts_full.append((_mv, _dur_f))
                 else:
                     _all_mmp_pts_full.append((_mv, _dur_f))
@@ -854,16 +854,22 @@ def tab_cp_model(ac_full=None):
             "para cada modelo (menor SEE%). SEE% < 2% = excelente | < 5% = bom."
         )
 
+        # Para Row/Ski: ranking mostra apenas M1/M2/M3
+        _results_rank = (
+            {k: v for k, v in _results.items() if k in _M_CLASSICOS}
+            if modalidade in ('Row', 'Ski') else _results
+        )
+
         if not _all_mmp_pts:
-            st.warning("Sem pontos MMP disponíveis. Verifica se a modalidade tem dados 'Yes' na sheet.")
+            st.warning("Sem pontos MMP disponíveis.")
             st.stop()
 
         if modalidade in ('Row', 'Ski'):
             st.info(
                 f"ℹ️ **{modalidade}:** "
-                f"M1/M2/M3 usam MMP3+MMP5+MMP12 | "
-                f"Outros modelos usam MMP3+MMP5+MMP12+MMP20 (sem MMP1). "
-                "MMP60 sempre excluído do fitting (usado como validação)."
+                f"M1/M2/M3 usam MMP1+MMP5+MMP12 | "
+                f"Outros modelos usam MMP3+MMP5+MMP12+MMP20. "
+                "MMP60 sempre excluído. Ranking mostra apenas M1/M2/M3."
             )
 
         _pts_display = _all_mmp_pts_full if _all_mmp_pts_full else _all_mmp_pts
@@ -876,28 +882,15 @@ def tab_cp_model(ac_full=None):
             st.error("Nenhum modelo convergiu com os dados disponíveis.")
         else:
             st.caption(
-                "**CP var%** = amplitude de CP entre combinações (ou entre M1/M2/M3 quando só há 1 combinação). "
-                "**CV%** = desvio-padrão/média (≤5% = consistente). "
-                "**SEE% médio** = erro médio. "
-                "**Score** = composto ponderado (menor = melhor)."
+                "**SEE%** = erro padrão (menor = melhor). "
+                "**CP var%** = variação CP entre combinações (ou entre M1/M2/M3). "
+                "**CV%** = desvio-padrão/média. "
+                "Row/Ski: apenas M1/M2/M3 mostrados, ordenados por SEE% melhor."
             )
 
-            # Semáforos (definidos fora do loop)
-            def _flag_cp_var(v):
-                if not isinstance(v, float): return '—'
-                return f"{'✅' if v<5 else '⚠️' if v<15 else '❌'} {v:.1f}%"
-            def _flag_cv(v):
-                if not isinstance(v, float): return '—'
-                return f"{'✅' if v<5 else '⚠️' if v<10 else '❌'} {v:.1f}%"
-            def _flag_see(v):
-                if not isinstance(v, float): return '—'
-                return f"{'✅' if v<2 else '⚠️' if v<5 else '❌'} {v:.2f}%"
-
-            # Modelos clássicos para CP Row/Ski
-            _M_CP_FILTER = _M_CLASSICOS if modalidade in ('Row', 'Ski') else None
-
             _rank_rows = []
-            for _mn, _gr in sorted(_results.items(), key=lambda x: x[1]['score']):
+            for _mn, _gr in sorted(_results_rank.items(),
+                                   key=lambda x: x[1]['see_pct']):
                 _res  = _gr['result']
                 _cp_v = _gr.get('cp')
                 _wp_v = _res[1] if len(_res) > 1 else None
@@ -943,66 +936,36 @@ def tab_cp_model(ac_full=None):
                 + (f" | **Row/Ski: CP seleccionado apenas entre M1, M2, M3**" if modalidade in ('Row','Ski') else "")
             )
 
-            # ── Melhor modelo global ──────────────────────────────────────
-            _best_mn  = sorted(_results.items(), key=lambda x: x[1]['score'])[0]
+            # Melhor modelo — menor SEE% entre os mostrados
+            _best_mn  = sorted(_results_rank.items(), key=lambda x: x[1]['see_pct'])[0]
             _best_lbl, _best_gr = _best_mn
 
             # Para Row/Ski: melhor CP apenas entre M1/M2/M3
-            if _M_CP_FILTER:
-                _res_classicos = {k:v for k,v in _results.items() if k in _M_CP_FILTER}
-                if _res_classicos:
-                    _best_cp_mn   = sorted(_res_classicos.items(), key=lambda x: x[1]['score'])[0]
-                    _best_cp_lbl, _best_cp_gr = _best_cp_mn
-                    _best_cp_val  = _best_cp_gr.get('cp')
-                    _best_cp_res  = _best_cp_gr['result']
-                    _best_cp_wp   = _best_cp_res[1] if len(_best_cp_res) > 1 else None
+            # Melhor CP = menor SEE% em _results_rank (já filtrado para Row/Ski = M1/M2/M3)
+            _best_cp_val  = _best_cp
+            _best_cp_res  = _best_res
+            _best_cp_lbl  = _best_lbl
+            _best_cp_gr   = _best_gr
+            _res_classicos = _results_rank
+            _M_CP_FILTER  = modalidade in ('Row', 'Ski')
 
-                    # Guardar no session_state para tab_metab
-                    if _best_cp_val:
-                        _ss_key = f"cp_model_{modalidade}"
-                        st.session_state[_ss_key] = {
-                            'cp': float(_best_cp_val),
-                            'wp': float(_best_cp_wp) if isinstance(_best_cp_wp, float) else None,
-                            'modelo': _best_cp_lbl,
-                            'score': _best_cp_gr.get('score'),
-                        }
-                    st.success(
-                        f"**CP para {modalidade} (M1/M2/M3): {_best_cp_lbl}** | "
-                        f"Score={_best_cp_gr['score']} | "
-                        f"SEE% melhor={_best_cp_gr['see_pct']:.2f}% | "
-                        f"CP={_best_cp_val:.0f}W" +
-                        (f" | W′={_best_cp_wp:.0f}J" if isinstance(_best_cp_wp, float) and _best_cp_wp > 100 else "") +
-                        f" | Pontos: " + " + ".join([f"{int(t//60)}min" for _, t in _best_cp_gr['combo']])
-                    )
-                    st.info(
-                        f"**Melhor modelo global (todos):** {_best_lbl} | "
-                        f"Score={_best_gr['score']} | CP={_best_gr.get('cp',0):.0f}W — "
-                        "para Row/Ski, o CP recomendado é do modelo clássico acima."
-                    )
-                else:
-                    st.warning("Nenhum modelo clássico (M1/M2/M3) convergiu.")
-            else:
-                _best_res = _best_gr['result']
-                _best_cp  = _best_gr.get('cp')
-                _best_wp  = _best_res[1] if len(_best_res) > 1 else None
+            # Guardar no session_state
+            if _best_cp:
+                st.session_state[f"cp_model_{modalidade}"] = {
+                    'cp': float(_best_cp),
+                    'wp': float(_best_wp) if isinstance(_best_wp, float) else None,
+                    'modelo': _best_lbl,
+                    'see_pct': _best_gr.get('see_pct'),
+                }
 
-                # Guardar no session_state para tab_metab
-                if _best_cp:
-                    st.session_state[f"cp_model_{modalidade}"] = {
-                        'cp': float(_best_cp),
-                        'wp': float(_best_wp) if isinstance(_best_wp, float) else None,
-                        'modelo': _best_lbl,
-                        'score': _best_gr.get('score'),
-                    }
-                st.success(
-                    f"**Modelo mais confiável: {_best_lbl}** | "
-                    f"Score={_best_gr['score']} | "
-                    f"SEE%={_best_gr['see_pct']:.2f}% | "
-                    f"CP={_best_cp:.0f}W" +
-                    (f" | W′={_best_wp:.0f}J" if isinstance(_best_wp, float) and _best_wp > 100 else "") +
-                    f" | Pontos: " + " + ".join([f"{int(t//60)}min" for _, t in _best_gr['combo']])
-                )
-
+            st.success(
+                f"**{'CP ' + modalidade + ' (menor SEE%)' if _M_CP_FILTER else 'Modelo mais confiável'}: "
+                f"{_best_lbl}** | "
+                f"SEE%={_best_gr['see_pct']:.2f}% | "
+                f"CP={_best_cp:.0f}W" +
+                (f" | W′={_best_wp:.0f}J" if isinstance(_best_wp, float) and _best_wp > 100 else "") +
+                f" | Pontos: " + " + ".join([f"{int(t//60)}min" for _, t in _best_gr['combo']])
+            )
             # ── Gráfico P-D comparativo (eixo X em MINUTOS) ──────────────
             _fig_comp = go.Figure()
             _t_comp_s = np.logspace(np.log10(30), np.log10(10800), 400)
@@ -1334,32 +1297,18 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
             _mb_Ks1 = 0.0631; _mb_Ks2 = 1.331; _mb_Kel = 4.0
             _mb_LAC_O2 = 0.01576; _mb_Watt_O2 = 11.685
 
-            # Iteração 1: VO2max inicial via Hawley
-            _mb_vo2max_0 = _calc_cp / _mb_peso * 10.8 + 7
+            # VO2max = média Hawley via MMP3 + MMP5 (mais robusto que via CP)
+            _mb_vo2max = float(np.clip(
+                ((_mb_mmp3_in / _mb_peso * 10.8 + 7) +
+                 (_mb_mmp5_in / _mb_peso * 10.8 + 7)) / 2,
+                20, 95))
 
-            # Iteração 2: calcular VLamax com VO2max_0
-            _mb_mader  = (0.02049 / _mb_volrel_vla * _mb_vo2max_0 * (_mb_bmi / 22)
+            # VLamax via konaendu com VO2max Hawley (sem iteração INSCYD)
+            _mb_mader  = (0.02049 / _mb_volrel_vla * _mb_vo2max * (_mb_bmi / 22)
                           * (1 + 0.000025 * _mb_idade - 0.0000001 * _mb_peso))
             _mb_sprint = (0.000004 / _mb_volrel_vla * (_pmax_global or _calc_cp * 4)
                           * (1 + 0.0000001 * _mb_idade - 0.0000001 * _mb_peso))
             _mb_vlamax = float(np.clip(_mb_mader + _mb_sprint, 0.05, 1.8))
-
-            # Iteração 3: VO2max corrigido (subtrai contribuição glicolítica TT3+TT5)
-            # VLamax_contrib ≈ VLamax × 60 × t_s × VolRel × bw × 5.5 / bw / t_s
-            #                = VLamax × 60 × VolRel × 5.5  [ml/min/kg]
-            _mb_vla_o2_equiv   = _mb_vlamax * 60 * _mb_VolRel * 5.5  # ml/min/kg
-            _mb_vo2_aerob_mmp3 = max(1.0, _mb_mmp3_in / _mb_peso * 10.8 + 7 - _mb_vla_o2_equiv)
-            _mb_vo2_aerob_mmp5 = max(1.0, _mb_mmp5_in / _mb_peso * 10.8 + 7 - _mb_vla_o2_equiv * 0.85)
-            _mb_vo2max         = float(np.clip(
-                (_mb_vo2_aerob_mmp3 + _mb_vo2_aerob_mmp5) / 2,
-                20, 95))
-
-            # Iteração 4: recalcular VLamax com VO2max corrigido
-            _mb_mader2  = (0.02049 / _mb_volrel_vla * _mb_vo2max * (_mb_bmi / 22)
-                           * (1 + 0.000025 * _mb_idade - 0.0000001 * _mb_peso))
-            _mb_sprint2 = (0.000004 / _mb_volrel_vla * (_pmax_global or _calc_cp * 4)
-                           * (1 + 0.0000001 * _mb_idade - 0.0000001 * _mb_peso))
-            _mb_vlamax  = float(np.clip(_mb_mader2 + _mb_sprint2, 0.05, 1.8))
 
             # Classificação do perfil fisiológico
             _mb_perfil = ('🏔️ Endurance puro'    if _mb_vlamax < 0.3 else
@@ -1367,18 +1316,14 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                           '⚡ Speed/Power'        if _mb_vlamax < 0.8 else
                           '💥 Sprint/Anaeróbio')
 
-            # Mostrar VLamax e VO2max como informação — sem input de override
-            _mbc1, _mbc2, _mbc3, _mbc4 = st.columns(4)
-            _mbc1.metric("VO2max estimado",
+            _mbc1, _mbc2, _mbc3 = st.columns(3)
+            _mbc1.metric("VO2max (Hawley média MMP3+MMP5)",
                          f"{_mb_vo2max:.1f} ml/min/kg",
-                         help="INSCYD method: subtrai contribuição glicolítica dos TT3/TT5")
+                         help=f"({_mb_mmp3_in}W + {_mb_mmp5_in}W) / 2 / {_mb_peso}kg × 10.8 + 7")
             _mbc2.metric("VLamax estimado",
                          f"{_mb_vlamax:.3f} mmol/L/s",
-                         help="konaendu formula (Mader/Hauser) — automático via MMP3+MMP5+Pmax")
+                         help="konaendu — Mader/Hauser via MMP3+MMP5+Pmax")
             _mbc3.metric("Perfil fisiológico", _mb_perfil)
-            _mbc4.metric("VO2max (Hawley simples)",
-                         f"{_mb_vo2max_0:.1f} ml/min/kg",
-                         help="CP/peso × 10.8 + 7 — referência sem correcção VLamax")
 
             # ── Modelo Mader completo ─────────────────────────────────────────
             try:
