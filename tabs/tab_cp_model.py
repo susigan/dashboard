@@ -1787,75 +1787,93 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                             _line_col = [_hr_col_map.get(t[0], ('#AAAAAA', t[0]))[0]
                                          for t in _ordered_hr]
 
-                            # ── GRÁFICO A: HR por Limiar ─────────────────────
+                            # ── GRÁFICO A: HR por Limiar — Eixo X = bpm ──────
+                            # Sem interpolação. Cada limiar no seu bpm real.
+                            # Zonas como vrect (vertical) entre limiares.
                             _fig_hr = go.Figure()
 
-                            # Faixas de zona
-                            _zone_band_pairs = [
-                                (None,      'HRVT1',   '#60A5FA', 0.05, 'Z1 Rec'),
-                                ('HRVT1',   'HRVTMSS', '#34D399', 0.05, 'Z2 Aeróbio'),
-                                ('HRVTMSS', 'HRVT2',   '#FBBF24', 0.05, 'Z3 Tempo'),
-                                ('HRVT2',   None,      '#F87171', 0.05, 'Z4 Limiar'),
-                            ]
-                            for _zlo_k, _zhi_k, _zcl, _zop, _znm in _zone_band_pairs:
-                                _y0z = _hr_zones[_zlo_k]['med'] if _zlo_k and _zlo_k in _hr_zones else _hr_min
-                                _y1z = _hr_zones[_zhi_k]['med'] if _zhi_k and _zhi_k in _hr_zones else _hr_max
-                                _fig_hr.add_hrect(y0=_y0z, y1=_y1z,
-                                    fillcolor=_zcl, opacity=_zop, line_width=0)
+                            # Ordenar limiares HR por valor crescente de bpm
+                            _hr_ordered = sorted(
+                                [(_hk, _hr_zones[_hk]) for _hk in _hr_keys if _hk in _hr_zones],
+                                key=lambda x: x[1]['med']
+                            )
+
+                            # Faixas de zona (vertical — entre limiares consecutivos)
+                            _zone_colors_v = ['#60A5FA','#34D399','#FBBF24','#F87171']
+                            _zone_names_v  = ['Z1 Rec','Z2 Aeróbio','Z3 Tempo','Z4 Limiar']
+                            _hr_breakpoints = []
+                            for _k in ['HRVT1','HRVTMSS','HRVT2']:
+                                if _k in _hr_zones:
+                                    _hr_breakpoints.append(_hr_zones[_k]['med'])
+
+                            # Zonas entre breakpoints
+                            _zone_bounds = (
+                                [(_hr_min, _hr_breakpoints[0])] +
+                                [(_hr_breakpoints[i], _hr_breakpoints[i+1])
+                                 for i in range(len(_hr_breakpoints)-1)] +
+                                [(_hr_breakpoints[-1], _hr_max)]
+                            ) if _hr_breakpoints else []
+
+                            for _zi, (_za, _zb) in enumerate(_zone_bounds):
+                                _zcl = _zone_colors_v[_zi % len(_zone_colors_v)]
+                                _znm = _zone_names_v[_zi] if _zi < len(_zone_names_v) else ''
+                                _fig_hr.add_vrect(
+                                    x0=_za, x1=_zb,
+                                    fillcolor=_zcl, opacity=0.07, line_width=0,
+                                )
                                 _fig_hr.add_annotation(
-                                    x=_x_max_w*0.01, y=(_y0z+_y1z)/2, text=_znm,
-                                    showarrow=False, font=dict(size=9,color=_zcl), xanchor='left')
+                                    x=(_za+_zb)/2, y=_hr_max-2,
+                                    text=_znm, showarrow=False,
+                                    font=dict(size=9, color=_zcl), xanchor='center',
+                                )
 
-                            # Ribbon IQR
-                            _xs_r = _line_x + _line_x[::-1]
-                            _ys_r = _line_q75 + _line_q25[::-1]
-                            _fig_hr.add_trace(go.Scatter(
-                                x=_xs_r, y=_ys_r, fill='toself',
-                                fillcolor='rgba(150,150,150,0.15)',
-                                line=dict(width=0), showlegend=False, hoverinfo='skip'))
+                            # IQR ribbon como banda horizontal por limiar
+                            for _hk, _hd in _hr_ordered:
+                                _hc, _hl = _hr_col_map.get(_hk, ('#AAAAAA', _hk))
+                                # IQR shading — box entre q25 e q75 (Y fixo, X = range IQR)
+                                _fig_hr.add_trace(go.Scatter(
+                                    x=[_hd['q25'], _hd['q75'], _hd['q75'], _hd['q25'], _hd['q25']],
+                                    y=[0, 0, 1, 1, 0],  # dummy Y — usando como marcador
+                                    fill='toself',
+                                    fillcolor=f"rgba({int(_hc[1:3],16)},{int(_hc[3:5],16)},{int(_hc[5:7],16)},0.12)",
+                                    line=dict(width=0),
+                                    showlegend=False, hoverinfo='skip',
+                                    visible=False,  # só visual via vrect abaixo
+                                ))
+                                # IQR como vrect
+                                _fig_hr.add_vrect(
+                                    x0=_hd['q25'], x1=_hd['q75'],
+                                    fillcolor=_hc, opacity=0.12, line_width=0,
+                                )
+                                # Linha mediana vertical
+                                _fig_hr.add_vline(
+                                    x=_hd['med'],
+                                    line_color=_hc, line_width=2, line_dash='solid',
+                                    annotation_text=f"<b>{_hl}</b><br>{_hd['med']:.0f} bpm",
+                                    annotation_font_color=_hc,
+                                    annotation_font_size=9,
+                                    annotation_position="top",
+                                )
 
-                            # Linha + pontos
-                            _fig_hr.add_trace(go.Scatter(
-                                x=_line_x, y=_line_y,
-                                mode='lines+markers+text',
-                                line=dict(color='rgba(200,200,200,0.7)', width=2),
-                                marker=dict(size=12, color=_line_col,
-                                            line=dict(width=2, color='white')),
-                                text=[f"{lbl}<br><b>{_line_y[i]:.0f}</b>"
-                                      for i,lbl in enumerate(_line_lbl)],
-                                textposition='top center',
-                                textfont=dict(size=9),
-                                showlegend=False))
-
-                            # Linhas verticais
-                            _vlines = []
-                            if _calc_cp:
-                                _vlines.append((_calc_cp,'#A855F7','solid',f"CP {_calc_cp}W"))
-                            if _mb_W_AT and _mb_W_AT > 10:
-                                _vlines.append((_mb_W_AT,'#FFD166','dot',f"MLSS {_mb_W_AT:.0f}W"))
-                            if _mb_W_FM and _mb_W_FM > 10:
-                                _vlines.append((_mb_W_FM,'#00C896','dot',f"FatMax {_mb_W_FM:.0f}W"))
-                            for _vx,_vc,_vd,_vl in _vlines:
-                                if _vx > _x_max_w: continue
-                                _fig_hr.add_vline(x=_vx, line_color=_vc,
-                                    line_width=1.8, line_dash=_vd,
-                                    annotation_text=_vl, annotation_font_color=_vc,
-                                    annotation_font_size=9, annotation_position="top left")
+                            # Linhas verticais: CP, MLSS, FatMax (HR estimado)
+                            # Usar relação linear simples: HR_MLSS ↔ CP, HR_LT2 ↔ Pvo2max
+                            # Não plotar aqui — mostrar apenas no gráfico B de potência
 
                             _fig_hr.update_layout(
                                 plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
                                 font=dict(size=11), margin=dict(l=55,r=30,t=50,b=50),
-                                height=360, showlegend=False,
-                                title=dict(text=f"HR por Limiar — {modalidade}",
+                                height=320, showlegend=False,
+                                title=dict(text=f"Limiares HR — {modalidade} (mediana ± IQR)",
                                            font=dict(size=13)),
-                                xaxis=dict(title="Potência (W)", range=[0,_x_max_w],
-                                           showgrid=True,
-                                           gridcolor="rgba(128,128,128,0.12)",
-                                           zeroline=False, tickfont=dict(size=10)),
-                                yaxis=dict(title="HR (bpm)", range=[_hr_min,_hr_max],
-                                           showgrid=True,
-                                           gridcolor="rgba(128,128,128,0.12)",
-                                           zeroline=False))
+                                xaxis=dict(
+                                    title="HR (bpm)",
+                                    range=[_hr_min, _hr_max],
+                                    showgrid=True,
+                                    gridcolor="rgba(128,128,128,0.12)",
+                                    zeroline=False, tickfont=dict(size=10),
+                                ),
+                                yaxis=dict(visible=False, range=[0,1]),
+                            )
                             st.plotly_chart(_fig_hr, use_container_width=True)
 
                             # ── GRÁFICO B: Referência de Potência ─────────────
