@@ -1774,34 +1774,46 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                                 )
 
                             # Linha contínua conectando medianas HR + shading IQR
-                            _hr_x_vals = []  # watts de referência para posicionar no eixo X
-                            _hr_y_meds = []
-                            _hr_y_q25  = []
-                            _hr_y_q75  = []
-                            _hr_x_map  = {  # posição X conceptual de cada limiar
-                                'HRVT1':     _x_max_w * 0.20,
-                                'HRVT1PLUS': _x_max_w * 0.35,
-                                'AeTHR':     _x_max_w * 0.30,
-                                'HRVTMSS':   _x_max_w * 0.55,
-                                'HRVT2':     _x_max_w * 0.75,
-                            }
-                            # Se PBP e Pvo2max disponíveis, usar os seus watts reais
-                            if 'PBP' in _hr_zones:
-                                _hr_x_map['HRVTMSS'] = _hr_zones['PBP']['med']
-                            if 'Pvo2max' in _hr_zones:
-                                _hr_x_map['HRVT2'] = _hr_zones['Pvo2max']['med']
-                            if _calc_cp:
-                                _hr_x_map['HRVT1PLUS'] = _calc_cp * 0.85
-                                _hr_x_map['HRVT1']     = _calc_cp * 0.70
-                                _hr_x_map['AeTHR']     = _calc_cp * 0.78
+                            # Mapear cada limiar HR para watts reais
+                            # Lógica: usar os pontos ancora conhecidos (HR↔W)
+                            # e interpolar linearmente para os outros limiares HR
+                            # Âncoras disponíveis:
+                            #   CP watts ↔ HR_MLSS (HRVTMSS)
+                            #   PBP watts ↔ entre HRVTMSS e HRVT2
+                            #   Pvo2max watts ↔ acima de HRVT2
+                            # Para limiares sem watts directos: interpolação HR→W
 
-                            # Ordenar pelos valores de X
-                            _ordered_hr = sorted(
-                                [(k, _hr_x_map.get(k, idx * _x_max_w * 0.2))
-                                 for idx, k in enumerate(_hr_keys)
-                                 if k in _hr_zones],
-                                key=lambda t: t[1]
-                            )
+                            # Construir tabela de âncoras (hr, watts)
+                            _anchors = []  # list of (hr_bpm, watts)
+                            if _calc_cp and 'HRVTMSS' in _hr_zones:
+                                _anchors.append((_hr_zones['HRVTMSS']['med'], _calc_cp))
+                            if 'PBP' in _hr_zones and 'HRVTMSS' in _hr_zones and 'HRVT2' in _hr_zones:
+                                # PBP é entre MLSS e LT2 em HR
+                                _hr_pbp_est = (_hr_zones['HRVTMSS']['med'] + _hr_zones['HRVT2']['med'])/2
+                                _anchors.append((_hr_pbp_est, _hr_zones['PBP']['med']))
+                            if 'Pvo2max' in _hr_zones and 'HRVT2' in _hr_zones:
+                                _anchors.append((_hr_zones['HRVT2']['med'], _hr_zones['Pvo2max']['med']))
+                            # Âncora de repouso (HR baixo → 0W)
+                            _anchors.append((_hr_min + 5, 0))
+
+                            _anchors = sorted(set(_anchors), key=lambda x: x[0])
+
+                            def _hr_to_watts(hr_val):
+                                """Interpolar HR→Watts via âncoras."""
+                                if len(_anchors) < 2:
+                                    return hr_val  # fallback
+                                _hrs = [a[0] for a in _anchors]
+                                _ws  = [a[1] for a in _anchors]
+                                return float(np.interp(hr_val, _hrs, _ws))
+
+                            # Calcular posição X (watts) para cada limiar HR
+                            _ordered_hr = []
+                            for _hk in _hr_keys:
+                                if _hk not in _hr_zones: continue
+                                _hr_med = _hr_zones[_hk]['med']
+                                _w_est  = _hr_to_watts(_hr_med)
+                                _ordered_hr.append((_hk, _w_est))
+                            _ordered_hr = sorted(_ordered_hr, key=lambda t: t[1])
 
                             _line_x = [t[1] for t in _ordered_hr]
                             _line_y = [_hr_zones[t[0]]['med'] for t in _ordered_hr]
