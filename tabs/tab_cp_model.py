@@ -1891,13 +1891,16 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                                     text=_hr_l_pos, textposition='top center',
                                     textfont=dict(size=8), showlegend=False, yaxis='y'))
 
-                            # Pontos Watts (diamantes) — posição X ordinal diferente
-                            _w_refs = []
-                            if _calc_cp: _w_refs.append((1, float(_calc_cp), 'CP', '#A855F7'))
-                            if _mb_W_FM and _mb_W_FM>10: _w_refs.append((2, float(_mb_W_FM), 'FatMax', '#00C896'))
-                            if _mb_W_AT and _mb_W_AT>10: _w_refs.append((3, float(_mb_W_AT), 'MLSS', '#FFD166'))
-                            if 'PBP' in _hr_zones: _w_refs.append((4, float(_hr_zones['PBP']['med']), 'PBP', '#FF6B35'))
-                            if 'Pvo2max' in _hr_zones: _w_refs.append((5, float(_hr_zones['Pvo2max']['med']), 'Pvo2max', '#60A5FA'))
+                            # Pontos Watts (diamantes) — ordenados por valor crescente
+                            _w_refs_raw = []
+                            if _mb_W_FM and _mb_W_FM>10: _w_refs_raw.append((float(_mb_W_FM), 'FatMax', '#00C896'))
+                            if _mb_W_AT and _mb_W_AT>10: _w_refs_raw.append((float(_mb_W_AT), 'MLSS', '#FFD166'))
+                            if _calc_cp: _w_refs_raw.append((float(_calc_cp), 'CP', '#A855F7'))
+                            if 'PBP' in _hr_zones: _w_refs_raw.append((float(_hr_zones['PBP']['med']), 'PBP', '#FF6B35'))
+                            if 'Pvo2max' in _hr_zones: _w_refs_raw.append((float(_hr_zones['Pvo2max']['med']), 'Pvo2max', '#60A5FA'))
+                            # Ordenar por Watts crescente
+                            _w_refs = sorted(enumerate(_w_refs_raw, 1), key=lambda x: x[1][0])
+                            _w_refs = [(i, w, lbl, c) for i, (w, lbl, c) in _w_refs]
 
                             if _w_refs:
                                 _wx = [r[0] for r in _w_refs]
