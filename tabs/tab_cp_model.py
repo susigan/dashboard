@@ -929,17 +929,18 @@ def tab_cp_model(ac_full=None):
 
         if modalidade in ('Row', 'Ski'):
             st.info(
-                f"ℹ️ **{modalidade}:** "
-                f"M1/M2/M3 usam MMP1+MMP5+MMP12 | "
-                f"Outros modelos usam MMP3+MMP5+MMP12+MMP20. "
-                "MMP60 sempre excluído. Ranking mostra apenas M1/M2/M3."
+                f"ℹ️ **{modalidade} — M1/M2/M3 usam:** " +
+                " · ".join([f"{int(t//60)}min={p:.0f}W" for p,t in _all_mmp_pts]) +
+                " | **Outros modelos:** " +
+                " · ".join([f"{int(t//60)}min={p:.0f}W" for p,t in _all_mmp_pts_full]) +
+                (f" | **Pmax:** {_pmax_global:.0f}W" if _pmax_global else "") +
+                " | MMP60 excluído. Ranking mostra apenas M1/M2/M3."
             )
-
-        _pts_display = _all_mmp_pts_full if _all_mmp_pts_full else _all_mmp_pts
-        st.info(f"**Pontos disponíveis ({modalidade}):** " +
-                " · ".join([f"{int(t//60)}min={p:.0f}W" for p, t in _pts_display]) +
-                (f" | **Pmax:** {_pmax_global:.0f}W" if _pmax_global
-                 else " | ⚠️ Pmax não encontrado — modelos Omni usarão estimativa"))
+        else:
+            st.info(f"**Pontos disponíveis ({modalidade}):** " +
+                    " · ".join([f"{int(t//60)}min={p:.0f}W" for p, t in _all_mmp_pts]) +
+                    (f" | **Pmax:** {_pmax_global:.0f}W" if _pmax_global
+                     else " | ⚠️ Pmax não encontrado"))
 
         if not _results:
             st.error("Nenhum modelo convergiu com os dados disponíveis.")
@@ -966,15 +967,6 @@ def tab_cp_model(ac_full=None):
                 _score   = _gr.get('score', '—')
                 _m60_err = _gr.get('mmp60_err')
 
-                # Classificação de fadiga via veloclinic
-                _fat_lbl = '—'
-                try:
-                    if _cp_v and _wp_v and isinstance(_wp_v, float) and _wp_v > 0:
-                        _vm = vc_metrics(_gr['combo'], _cp_v, _wp_v)
-                        _fat_lbl = classify_fatigue(_vm)
-                except Exception:
-                    pass
-
                 _rank_rows.append({
                     'Modelo':       _mn,
                     'CP (W)':       f"{_cp_v:.0f}" if _cp_v else "—",
@@ -983,11 +975,9 @@ def tab_cp_model(ac_full=None):
                     'SEE% médio':   _flag_see(float(_see_m)) if isinstance(_see_m, float) else '—',
                     'CP var%':      _flag_cp_var(float(_cp_var)) if isinstance(_cp_var, float) else '—',
                     'CV%':          _flag_cv(float(_cv)) if isinstance(_cv, float) else '—',
-                    'Fadiga':       _fat_lbl,
-                    'Val. 60min':   f"{_m60_err:.1f}%" if _m60_err else ('sem dado' if _mmp60_val is None else '—'),
-                    'N combos':     _n_combos,
+                    'Pontos (W)':   ", ".join([f"{p:.0f}W" for p,_ in _gr['combo']]),
+                    'Val. 60min':   f"{_m60_err:.1f}%" if _m60_err else ('—' if _mmp60_val is None else '—'),
                     'Score ↓':      _score,
-                    'Melhores 3pts':_pts_lbl,
                 })
             _rank_df = pd.DataFrame(_rank_rows)
             st.dataframe(_rank_df, hide_index=True, use_container_width=True)
