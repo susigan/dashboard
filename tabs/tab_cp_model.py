@@ -1285,22 +1285,20 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                 """)
 
             # ── Inputs ────────────────────────────────────────────────────────
-            _mb1, _mb2, _mb3, _mb4 = st.columns(4)
+            _mb_altura = 186  # fixo
+            _mb1, _mb2, _mb3 = st.columns(3)
             with _mb1:
-                _mb_altura = st.number_input("Altura (cm)", 140, 220, 178, 1,
-                                             key="mb_altura_rank")
+                _mb_idade = st.number_input("Idade (anos)", 15, 80, 40, 1,
+                                            key="mb_idade_rank")
             with _mb2:
-                _mb_idade  = st.number_input("Idade (anos)", 15, 80, 40, 1,
-                                             key="mb_idade_rank")
-            with _mb3:
                 _mb_peso = st.number_input("Peso (kg)", 40.0, 150.0, 85.0, 0.5,
                                            key="mb_peso_rank",
                                            help="Média do mês — sheet Wellness")
-            with _mb4:
+            with _mb3:
                 _mb_bf = st.number_input("% Gordura", 5.0, 40.0, 14.0, 0.5,
                                          key="mb_bf_rank")
 
-            # MMP3 e MMP5 — puxados da sheet
+            # MMP3 e MMP5 — automáticos da sheet, sem input manual
             _mb_mmp3 = _mb_mmp5 = None
             if ac_full is not None and _col_mod is not None:
                 _ac_mb = ac_full[ac_full[_col_mod] == modalidade].copy()
@@ -1319,21 +1317,13 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                                     else: _mb_mmp5 = _v
                             except Exception: pass
 
-            _mb5, _mb6 = st.columns(2)
-            with _mb5:
-                _mb_mmp3_in = st.number_input(
-                    "MMP3 (W) — 3 min",
-                    50, 1000,
-                    int(_mb_mmp3) if _mb_mmp3 else int(_calc_cp * 1.4),
-                    5, key="mb_mmp3_rank",
-                    help="Potência máxima 3 min — puxado automaticamente")
-            with _mb6:
-                _mb_mmp5_in = st.number_input(
-                    "MMP5 (W) — 5 min",
-                    50, 900,
-                    int(_mb_mmp5) if _mb_mmp5 else int(_calc_cp * 1.25),
-                    5, key="mb_mmp5_rank",
-                    help="Potência máxima 5 min — puxado automaticamente")
+            _mb_mmp3_in = int(_mb_mmp3) if _mb_mmp3 else int(_calc_cp * 1.4)
+            _mb_mmp5_in = int(_mb_mmp5) if _mb_mmp5 else int(_calc_cp * 1.25)
+            st.caption(
+                f"⚙️ Automático: Altura={_mb_altura}cm · "
+                f"MMP3={_mb_mmp3_in}W · MMP5={_mb_mmp5_in}W · "
+                f"Modalidade={modalidade}"
+            )
 
             # ── VLamax automático (konaendu) — sem override manual ────────────
             # volRel_vlamax ≠ VolRel (0.40). volRel_vlamax é só para a fórmula VLamax.
