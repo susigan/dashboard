@@ -2093,6 +2093,132 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
 
             else:
                 st.info("Dados de actividades não disponíveis.")
+
+            # ── Botão Guardar no Google Drive DB ──────────────────────────────
+            st.markdown("---")
+            st.markdown("**💾 Guardar resultados**")
+
+            if st.button("💾 Guardar no Drive", key="btn_save_cpmodel",
+                         help="Guarda CP, perfil metabólico e limiares HR no Google Drive"):
+                _saved_any = False
+                _skipped   = []
+                _errors    = []
+
+                try:
+                    from utils.drive_db import (
+                        get_connection, save_cp_result,
+                        save_metab_result, save_hr_thresholds,
+                        upload_db,
+                    )
+
+                    def _already_exists(table, checks):
+                        """Verifica se já existe registo com valores iguais."""
+                        conn = get_connection()
+                        if not conn: return False
+                        where = " AND ".join(
+                            f"ABS(COALESCE({k},0) - COALESCE(?,0)) < 0.5"
+                            for k in checks.keys()
+                        )
+                        q   = f"SELECT COUNT(*) FROM {table} WHERE modalidade=? AND {where}"
+                        val = (modalidade,) + tuple(checks.values())
+                        try:
+                            n = conn.execute(q, val).fetchone()[0]
+                            conn.close()
+                            return n > 0
+                        except Exception:
+                            conn.close()
+                            return False
+
+                    # 1 — CP Result
+                    if _best_cp_val and _best_cp_res:
+                        _cp_checks = {
+                            'cp_watts':  round(_best_cp_val, 1),
+                            'wp_joules': round(float(_best_cp_res[1]), 0)
+                                         if isinstance(_best_cp_res[1], float) else 0,
+                            'see_pct':   round(_best_cp_gr.get('see_pct', 0), 2),
+                        }
+                        if _already_exists('cp_results', _cp_checks):
+                            _skipped.append("CP (igual já existe)")
+                        else:
+                            _mmp_dict = {
+                                f"MMP{int(t//60)}": p
+                                for p, t in _all_mmp_pts
+                            }
+                            ok = save_cp_result(
+                                modalidade = modalidade,
+                                modelo     = _best_cp_lbl,
+                                cp_watts   = _best_cp_val,
+                                wp_joules  = float(_best_cp_res[1]) if isinstance(_best_cp_res[1], float) else 0,
+                                see_pct    = _best_cp_gr.get('see_pct', 0),
+                                combo_pts  = _best_cp_gr.get('combo', []),
+                                mmp_dict   = _mmp_dict,
+                                pmax       = _pmax_global,
+                            )
+                            if ok: _saved_any = True
+                            else:  _errors.append("CP")
+
+                    # 2 — Metab Result (se disponível)
+                    if '_mb_W_AT' in dir() and _mb_W_AT and _mb_W_AT > 0:
+                        _mb_checks = {
+                            'vo2max':   round(_mb_vo2max, 1),
+                            'vlamax':   round(_mb_vlamax, 3),
+                            'mlss_w':   round(_mb_W_AT, 1),
+                            'fatmax_w': round(_mb_W_FM, 1) if _mb_W_FM else 0,
+                        }
+                        if _already_exists('metab_results', _mb_checks):
+                            _skipped.append("Metab (igual já existe)")
+                        else:
+                            ok = save_metab_result(
+                                modalidade = modalidade,
+                                vo2max     = _mb_vo2max,
+                                vlamax     = _mb_vlamax,
+                                mlss_w     = _mb_W_AT,
+                                fatmax_w   = _mb_W_FM or 0,
+                                lt1_w      = _la_crossings.get('LT1'),
+                                lt2_w      = _la_crossings.get('LT2'),
+                                fat_fatmax = _mb_fat_FM if '_mb_fat_FM' in dir() else None,
+                                glycogen_g = _mb_gly_total if '_mb_gly_total' in dir() else None,
+                                perfil     = _mb_perfil if '_mb_perfil' in dir() else None,
+                            )
+                            if ok: _saved_any = True
+                            else:  _errors.append("Metab")
+
+                    # 3 — HR Thresholds (se disponível)
+                    if '_hr_zones' in dir() and _hr_zones:
+                        _hr_checks = {
+                            'hrvtmss_bpm': round(_hr_zones.get('HRVTMSS', {}).get('med', 0), 0),
+                            'hrvt1_bpm':   round(_hr_zones.get('HRVT1',   {}).get('med', 0), 0),
+                            'hrvt2_bpm':   round(_hr_zones.get('HRVT2',   {}).get('med', 0), 0),
+                        }
+                        if _hr_checks['hrvtmss_bpm'] > 0:
+                            if _already_exists('hr_thresholds', _hr_checks):
+                                _skipped.append("HR Thresholds (igual já existe)")
+                            else:
+                                ok = save_hr_thresholds(
+                                    modalidade = modalidade,
+                                    hr_zones   = _hr_zones,
+                                    pbp_w      = _hr_zones.get('PBP', {}).get('med'),
+                                    pvo2max_w  = _hr_zones.get('Pvo2max', {}).get('med'),
+                                )
+                                if ok: _saved_any = True
+                                else:  _errors.append("HR")
+
+                except ImportError:
+                    st.error("❌ `utils/drive_db.py` não encontrado. "
+                             "Confirma que o ficheiro está em `utils/drive_db.py` no GitHub.")
+                except Exception as _save_err:
+                    st.error(f"❌ Erro ao guardar: {_save_err}")
+
+                # Feedback
+                if _saved_any:
+                    st.success(
+                        f"✅ Guardado no Drive ({modalidade}) — "
+                        + (f"ignorados: {', '.join(_skipped)}" if _skipped else "tudo novo")
+                    )
+                elif _skipped and not _errors:
+                    st.info(f"ℹ️ Nenhum dado novo para guardar — {', '.join(_skipped)}")
+                if _errors:
+                    st.warning(f"⚠️ Falhou: {', '.join(_errors)}")
     with _tab_ompd:
         st.caption(
             "OmPD com os melhores 3 pontos MMP encontrados pelo grid search. "
