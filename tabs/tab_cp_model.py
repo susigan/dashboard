@@ -1886,12 +1886,12 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                                 yaxis=dict(title="HR (bpm)", range=[_hr_min,_hr_max],
                                            showgrid=True, gridcolor="rgba(128,128,128,0.12)",
                                            zeroline=False,
-                                           titlefont=dict(color='#AAAAAA'),
+                                           title_font_color="#AAAAAA",
                                            tickfont=dict(color='#AAAAAA')),
                                 yaxis2=dict(title="Potência (W)", range=[0,_x_max_w],
                                             overlaying='y', side='right',
                                             showgrid=False, zeroline=False,
-                                            titlefont=dict(color='#A855F7'),
+                                            title_font_color="#A855F7",
                                             tickfont=dict(color='#A855F7',size=10)),
                             )
                             st.plotly_chart(_fig_hr, use_container_width=True)
