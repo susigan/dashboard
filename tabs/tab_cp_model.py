@@ -1863,16 +1863,41 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                                     x=_x_max_t*0.98, y=(_y0z+_y1z)/2, text=_znm,
                                     showarrow=False, font=dict(size=9,color=_zcl), xanchor='right')
 
-                            # Duração típica de cada limiar HR
+                            # Âncoras W→tempo usando os MMPs reais da modalidade
+                            # MMP1=60s, MMP3=180s, MMP5=300s, MMP12=720s, MMP20=1200s
+                            _mmp_anchors = sorted(_all_mmp_pts_full, key=lambda x: x[1])  # (watts, secs)
+
+                            def _w_to_min(w_target):
+                                """Interpola/extrapola watts → minutos via MMPs."""
+                                if not _mmp_anchors: return 30.0
+                                ws  = [p for p,_ in _mmp_anchors]
+                                ts  = [t/60 for _,t in _mmp_anchors]  # segundos → minutos
+                                # Watts alvo entre âncoras: interpolação linear em log-espaço
+                                if w_target >= ws[-1]:   return ts[-1]   # mais alto que MMP1
+                                if w_target <= ws[0]:    return ts[0]    # mais baixo que MMP12+
+                                for i in range(len(ws)-1):
+                                    if ws[i] <= w_target <= ws[i+1]:
+                                        # Interpolação linear
+                                        frac = (w_target - ws[i]) / max(ws[i+1]-ws[i], 1)
+                                        return ts[i] + frac * (ts[i+1] - ts[i])
+                                return 30.0
+
+                            # Posições X via MMPs reais
                             _hr_x_dur = {
-                                'HRVT1':120.0, 'AeTHR':120.0,
-                                'HRVT1PLUS':60.0, 'HRVTMSS':45.0, 'HRVT2':20.0,
+                                'HRVT1':     _w_to_min(_hr_zones.get('HRVT1',{}).get('med', 0) * 0) or 100.0,
+                                'AeTHR':     100.0,
+                                'HRVT1PLUS': 60.0,
+                                'HRVTMSS':   _w_to_min(_mb_W_AT) if _mb_W_AT and _mb_W_AT > 0 else 45.0,
+                                'HRVT2':     _w_to_min(_hr_zones['Pvo2max']['med']) if 'Pvo2max' in _hr_zones else 10.0,
                             }
-                            if 'Pvo2max' in _hr_zones and _calc_cp and isinstance(_calc_wp,float) and _calc_wp>0:
-                                _pv_w = _hr_zones['Pvo2max']['med']
-                                if _pv_w > _calc_cp:
-                                    _hr_x_dur['HRVT2'] = max(5.0, min(25.0,
-                                        _calc_wp/(_pv_w-_calc_cp)/60))
+                            # Recalcular HR x positions mais simplesmente
+                            _hr_x_dur = {
+                                'HRVT1':      100.0,
+                                'AeTHR':      100.0,
+                                'HRVT1PLUS':  _w_to_min(_calc_cp * 0.85) if _calc_cp else 60.0,
+                                'HRVTMSS':    _w_to_min(_mb_W_AT) if _mb_W_AT and _mb_W_AT > 0 else 45.0,
+                                'HRVT2':      _w_to_min(_hr_zones['Pvo2max']['med']) if 'Pvo2max' in _hr_zones else 10.0,
+                            }
 
                             # Pontos HR (Y1)
                             _hr_px, _hr_py, _hr_pc, _hr_pl = [], [], [], []
@@ -1896,20 +1921,34 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                                     text=list(_ol), textposition='bottom center', textfont=dict(size=8),
                                     showlegend=False, yaxis='y'))
 
-                            # Pontos Watts (Y2) — diamantes
+                            # Pontos Watts (Y2) — posição X via _w_to_min
                             _w_data = []
-                            if _calc_cp: _w_data.append((45.0,float(_calc_cp),f"CP {_calc_cp}W",'#A855F7',0,0))
-                            if _mb_W_AT and _mb_W_AT>10: _w_data.append((45.0,float(_mb_W_AT),f"MLSS {_mb_W_AT:.0f}W",'#FFD166',0,0))
-                            if _mb_W_FM and _mb_W_FM>10: _w_data.append((90.0,float(_mb_W_FM),f"FatMax {_mb_W_FM:.0f}W",'#00C896',0,0))
+                            if _calc_cp:
+                                _t_cp = _w_to_min(_calc_cp)
+                                _w_data.append((_t_cp, float(_calc_cp),
+                                                f"CP {_calc_cp}W", '#A855F7', 0, 0))
+                            if _mb_W_AT and _mb_W_AT > 10:
+                                _t_mlss = _w_to_min(_mb_W_AT)
+                                _w_data.append((_t_mlss, float(_mb_W_AT),
+                                                f"MLSS {_mb_W_AT:.0f}W", '#FFD166', 0, 0))
+                            if _mb_W_FM and _mb_W_FM > 10:
+                                _t_fm = _w_to_min(_mb_W_FM)
+                                _w_data.append((_t_fm, float(_mb_W_FM),
+                                                f"FatMax {_mb_W_FM:.0f}W", '#00C896', 0, 0))
                             if 'PBP' in _hr_zones:
-                                _pd=_hr_zones['PBP']
-                                _w_data.append((30.0,float(_pd['med']),f"PBP {_pd['med']:.0f}W",'#FF6B35',
-                                                float(_pd['med']-_pd['q25']),float(_pd['q75']-_pd['med'])))
+                                _pd = _hr_zones['PBP']
+                                _t_pbp = _w_to_min(_pd['med'])
+                                _w_data.append((_t_pbp, float(_pd['med']),
+                                                f"PBP {_pd['med']:.0f}W", '#FF6B35',
+                                                float(_pd['med']-_pd['q25']),
+                                                float(_pd['q75']-_pd['med'])))
                             if 'Pvo2max' in _hr_zones:
-                                _pd=_hr_zones['Pvo2max']
-                                _w_data.append((_hr_x_dur.get('HRVT2',10.0),float(_pd['med']),
-                                                f"Pvo2max {_pd['med']:.0f}W",'#60A5FA',
-                                                float(_pd['med']-_pd['q25']),float(_pd['q75']-_pd['med'])))
+                                _pd = _hr_zones['Pvo2max']
+                                _t_pvo2 = _w_to_min(_pd['med'])
+                                _w_data.append((_t_pvo2, float(_pd['med']),
+                                                f"Pvo2max {_pd['med']:.0f}W", '#60A5FA',
+                                                float(_pd['med']-_pd['q25']),
+                                                float(_pd['q75']-_pd['med'])))
                             if _w_data:
                                 _ord_w=sorted(_w_data,key=lambda t:t[0],reverse=True)
                                 _owx,_owy,_owl,_owc,_owlo,_owhi=zip(*_ord_w)
@@ -1947,37 +1986,21 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                                             xanchor='left',
                                         )
 
-                            # Linhas verticais: CP, MLSS, FatMax, PBP, Pvo2max
-                            # add_vline actua no eixo X (duração) — correcto
-                            _vlines_hr = []
-                            if _calc_cp:
-                                _vlines_hr.append((_calc_cp,    '#A855F7', f"CP {_calc_cp}W"))
-                            if _mb_W_AT and _mb_W_AT > 10:
-                                _vlines_hr.append((_mb_W_AT,   '#FFD166', f"MLSS {_mb_W_AT:.0f}W"))
-                            if _mb_W_FM and _mb_W_FM > 10:
-                                _vlines_hr.append((_mb_W_FM,   '#00C896', f"FatMax {_mb_W_FM:.0f}W"))
-                            if 'PBP' in _hr_zones:
-                                _vlines_hr.append((_hr_zones['PBP']['med'],
-                                                   '#FF6B35', f"PBP {_hr_zones['PBP']['med']:.0f}W"))
-                            if 'Pvo2max' in _hr_zones:
-                                _vlines_hr.append((_hr_zones['Pvo2max']['med'],
-                                                   '#60A5FA', f"Pvo2max {_hr_zones['Pvo2max']['med']:.0f}W"))
-
-                            # Converter watts → duração via W'/(P-CP) para posicionar no eixo X
-                            for _vw, _vc, _vl in _vlines_hr:
-                                if not _vw or _vw <= 0: continue
-                                # Posição X: duração de referência
-                                if _calc_cp and isinstance(_calc_wp, float) and _calc_wp > 0 and _vw > _calc_cp:
-                                    _vx = _calc_wp / (_vw - _calc_cp) / 60  # minutos
-                                elif _vw <= (_calc_cp or 0):
-                                    _vx = _x_max_t * 0.95  # muito à direita (baixa intensidade)
-                                else:
-                                    _vx = 30.0  # fallback
-                                _vx = float(np.clip(_vx, 1.0, _x_max_t - 1))
+                            # Linhas verticais nas posições X reais (via _w_to_min)
+                            _vline_map = {
+                                'CP':      (float(_calc_cp) if _calc_cp else None,    '#A855F7'),
+                                'MLSS':    (float(_mb_W_AT) if _mb_W_AT and _mb_W_AT>10 else None, '#FFD166'),
+                                'FatMax':  (float(_mb_W_FM) if _mb_W_FM and _mb_W_FM>10 else None, '#00C896'),
+                                'PBP':     (float(_hr_zones['PBP']['med']) if 'PBP' in _hr_zones else None, '#FF6B35'),
+                                'Pvo2max': (float(_hr_zones['Pvo2max']['med']) if 'Pvo2max' in _hr_zones else None, '#60A5FA'),
+                            }
+                            for _vn, (_vw, _vc) in _vline_map.items():
+                                if _vw is None or _vw <= 0: continue
+                                _vx = _w_to_min(_vw)
                                 _fig_hr.add_vline(
                                     x=_vx, line_color=_vc,
-                                    line_width=1.8, line_dash='dot',
-                                    annotation_text=_vl,
+                                    line_width=1.5, line_dash='dot',
+                                    annotation_text=f"{_vn} {_vw:.0f}W",
                                     annotation_font_color=_vc,
                                     annotation_font_size=9,
                                     annotation_position="top left",
