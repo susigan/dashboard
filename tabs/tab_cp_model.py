@@ -1497,12 +1497,19 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                                       line_color='#FFD166', line_width=1.5,
                                       annotation_text=f"MLSS {_mb_W_AT:.0f}W",
                                       annotation_font_color='#FFD166')
-                    # CP marcado
-                    _fig_sb.add_vline(x=_calc_cp, line_dash='dash',
+                    _fig_sb.add_vline(x=_calc_cp, line_dash='dot',
                                       line_color='#A855F7', line_width=1.5,
                                       annotation_text=f"CP {_calc_cp}W",
                                       annotation_font_color='#A855F7',
                                       annotation_position="top left")
+                    # PBP da sheet (se disponível)
+                    if 'PBP' in (_hr_zones if '_hr_zones' in dir() else {}):
+                        _pbp_w = _hr_zones['PBP']['med']
+                        _fig_sb.add_vline(x=_pbp_w, line_dash='dot',
+                                          line_color='#FF6B35', line_width=1.2,
+                                          annotation_text=f"PBP {_pbp_w:.0f}W",
+                                          annotation_font_color='#FF6B35',
+                                          annotation_position="top right")
                     _fig_sb.update_layout(
                         **_BASE_MB,
                         title=dict(text=f"Substratos — {modalidade} | VLamax={_mb_vlamax:.3f}",
@@ -1524,6 +1531,26 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                             mode='lines', name='[La] mmol/L',
                             line=dict(color='#E63946', width=2.5),
                         ))
+
+                    # Calcular watts de cruzamento com LT1 (~2mmol) e LT2 (~4mmol)
+                    _la_crossings = {}
+                    if _valid_la.any():
+                        _W_la  = _mb_W_below[_valid_la]
+                        _C_la  = _mb_CLass[_valid_la]
+                        for _thr_la, _thr_name in [(2.0, 'LT1'), (4.0, 'LT2')]:
+                            # Encontrar cruzamento por interpolação
+                            _cross_idx = np.where(np.diff(np.sign(_C_la - _thr_la)))[0]
+                            if len(_cross_idx) > 0:
+                                _i = _cross_idx[0]
+                                if _i + 1 < len(_W_la):
+                                    # Interpolação linear
+                                    _w0, _w1 = float(_W_la[_i]), float(_W_la[_i+1])
+                                    _c0, _c1 = float(_C_la[_i]), float(_C_la[_i+1])
+                                    if _c1 != _c0:
+                                        _w_cross = _w0 + (_thr_la - _c0) * (_w1 - _w0) / (_c1 - _c0)
+                                        _la_crossings[_thr_name] = float(_w_cross)
+
+                    # Linhas horizontais LT1/LT2
                     for _y_la, _lbl_la, _col_la in [
                         (2.0, 'LT1 ~2 mmol', 'rgba(255,209,102,0.8)'),
                         (4.0, 'LT2 ~4 mmol', 'rgba(230,57,70,0.8)')]:
@@ -1532,10 +1559,43 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                                           annotation_text=_lbl_la,
                                           annotation_font_color=_col_la,
                                           annotation_position="right")
+
+                    # Linhas verticais nos cruzamentos LT1/LT2
+                    _la_colors = {'LT1': 'rgba(255,209,102,0.9)',
+                                  'LT2': 'rgba(230,57,70,0.9)'}
+                    for _thr_name, _w_cross in _la_crossings.items():
+                        _fig_la.add_vline(
+                            x=_w_cross, line_dash='dot',
+                            line_color=_la_colors[_thr_name], line_width=1.5,
+                            annotation_text=f"{_thr_name} {_w_cross:.0f}W",
+                            annotation_font_color=_la_colors[_thr_name],
+                            annotation_font_size=9,
+                            annotation_position="top left",
+                        )
+
+                    # Linhas verticais: CP, FatMax, MLSS
+                    for _vx_la, _vc_la, _vl_la in [
+                        (_mb_W_FM,  '#00C896', f"FatMax {_mb_W_FM:.0f}W"),
+                        (_mb_W_AT,  '#FFD166', f"MLSS {_mb_W_AT:.0f}W"),
+                        (float(_calc_cp) if _calc_cp else None, '#A855F7', f"CP {_calc_cp}W"),
+                    ]:
+                        if _vx_la and _vx_la > 0 and _vx_la < float(_mb_W_AT) * 1.1:
+                            _fig_la.add_vline(
+                                x=_vx_la, line_dash='dot',
+                                line_color=_vc_la, line_width=1.2,
+                                annotation_text=_vl_la,
+                                annotation_font_color=_vc_la,
+                                annotation_font_size=9,
+                                annotation_position="top right",
+                            )
+
                     _fig_la.update_layout(
                         **_BASE_MB,
-                        title=dict(text=f"Lactato Estacionário — {modalidade}",
-                                   font=dict(size=13)),
+                        title=dict(text=f"Lactato Estacionário — {modalidade}"
+                                   + (f" | LT1={_la_crossings.get('LT1',0):.0f}W"
+                                      f" · LT2={_la_crossings.get('LT2',0):.0f}W"
+                                      if _la_crossings else ""),
+                                   font=dict(size=12)),
                         xaxis=dict(**_AX_MB, title="Potência (W)"),
                         yaxis=dict(**_AX_MB, title="[La] mmol/L", range=[0, 8]),
                     )
