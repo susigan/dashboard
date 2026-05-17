@@ -1839,241 +1839,134 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                             _line_col = [_hr_col_map.get(t[0], ('#AAAAAA', t[0]))[0]
                                          for t in _ordered_hr]
 
-                            # ── GRÁFICO HR vs Potência: X=duração, Y1=HR, Y2=Watts ──
+                            # ── GRÁFICO HR vs Potência — simples e legível ────
+                            # X = posição ordinal dos limiares (espaçados igualmente)
+                            # Y1 = HR bpm | Y2 = Watts
+                            # Zonas horizontais em HR
                             _fig_hr = go.Figure()
 
-                            # Zonas horizontais em HR (hrect) — 3 zonas
+                            # Zonas horizontais em HR
                             _zone_hr_defs = [
                                 (None,      'HRVT1',   '#60A5FA', 0.06, 'Z1 Aeróbio'),
                                 ('HRVT1',   'HRVTMSS', '#34D399', 0.06, 'Z2 Tempo'),
                                 ('HRVTMSS', None,      '#FBBF24', 0.06, 'Z3 Limiar+'),
                             ]
-                            _x_max_t = 130.0
                             for _zlo_k, _zhi_k, _zcl, _zop, _znm in _zone_hr_defs:
                                 _y0z = (_hr_zones[_zlo_k]['med'] if _zlo_k and _zlo_k in _hr_zones else _hr_min)
                                 _y1z = (_hr_zones[_zhi_k]['med'] if _zhi_k and _zhi_k in _hr_zones else _hr_max)
                                 _fig_hr.add_hrect(y0=_y0z, y1=_y1z,
                                     fillcolor=_zcl, opacity=_zop, line_width=0)
-                                # IQR shading
                                 _y0q = (_hr_zones[_zlo_k]['q25'] if _zlo_k and _zlo_k in _hr_zones else _hr_min)
                                 _y1q = (_hr_zones[_zhi_k]['q75'] if _zhi_k and _zhi_k in _hr_zones else _hr_max)
                                 _fig_hr.add_hrect(y0=_y0q, y1=_y1q,
                                     fillcolor=_zcl, opacity=0.09, line_width=0)
                                 _fig_hr.add_annotation(
-                                    x=_x_max_t*0.98, y=(_y0z+_y1z)/2, text=_znm,
-                                    showarrow=False, font=dict(size=9,color=_zcl), xanchor='right')
+                                    x=0.98, y=(_y0z+_y1z)/2, xref='paper', yref='y',
+                                    text=_znm, showarrow=False,
+                                    font=dict(size=9, color=_zcl), xanchor='right')
 
-                            # Âncoras W→tempo usando os MMPs reais da modalidade
-                            # MMP1=60s, MMP3=180s, MMP5=300s, MMP12=720s, MMP20=1200s
-                            _mmp_anchors = sorted(_all_mmp_pts_full, key=lambda x: x[1])  # (watts, secs)
-
-                            def _w_to_min(w_target):
-                                """Interpola/extrapola watts → minutos via MMPs."""
-                                if not _mmp_anchors: return 30.0
-                                ws  = [p for p,_ in _mmp_anchors]
-                                ts  = [t/60 for _,t in _mmp_anchors]  # segundos → minutos
-                                # Watts alvo entre âncoras: interpolação linear em log-espaço
-                                if w_target >= ws[-1]:   return ts[-1]   # mais alto que MMP1
-                                if w_target <= ws[0]:    return ts[0]    # mais baixo que MMP12+
-                                for i in range(len(ws)-1):
-                                    if ws[i] <= w_target <= ws[i+1]:
-                                        # Interpolação linear
-                                        frac = (w_target - ws[i]) / max(ws[i+1]-ws[i], 1)
-                                        return ts[i] + frac * (ts[i+1] - ts[i])
-                                return 30.0
-
-                            # Posições X via MMPs reais
-                            _hr_x_dur = {
-                                'HRVT1':     _w_to_min(_hr_zones.get('HRVT1',{}).get('med', 0) * 0) or 100.0,
-                                'AeTHR':     100.0,
-                                'HRVT1PLUS': 60.0,
-                                'HRVTMSS':   _w_to_min(_mb_W_AT) if _mb_W_AT and _mb_W_AT > 0 else 45.0,
-                                'HRVT2':     _w_to_min(_hr_zones['Pvo2max']['med']) if 'Pvo2max' in _hr_zones else 10.0,
-                            }
-                            # Recalcular HR x positions mais simplesmente
-                            _hr_x_dur = {
-                                'HRVT1':      100.0,
-                                'AeTHR':      100.0,
-                                'HRVT1PLUS':  _w_to_min(_calc_cp * 0.85) if _calc_cp else 60.0,
-                                'HRVTMSS':    _w_to_min(_mb_W_AT) if _mb_W_AT and _mb_W_AT > 0 else 45.0,
-                                'HRVT2':      _w_to_min(_hr_zones['Pvo2max']['med']) if 'Pvo2max' in _hr_zones else 10.0,
-                            }
-
-                            # Pontos HR (Y1)
-                            _hr_px, _hr_py, _hr_pc, _hr_pl = [], [], [], []
-                            for _hk in ['HRVT1','AeTHR','HRVT1PLUS','HRVTMSS','HRVT2']:
+                            # Pontos HR (círculos) — posição X ordinal
+                            _hr_order = ['HRVT1','AeTHR','HRVT1PLUS','HRVTMSS','HRVT2']
+                            _hr_x_pos, _hr_y_pos, _hr_c_pos, _hr_l_pos = [], [], [], []
+                            _x_pos = 1
+                            for _hk in _hr_order:
                                 if _hk not in _hr_zones: continue
                                 _hd = _hr_zones[_hk]
-                                _hc, _hl = _hr_col_map.get(_hk, ('#AAAAAA',_hk))
-                                _hr_px.append(_hr_x_dur.get(_hk,60.0))
-                                _hr_py.append(_hd['med'])
-                                _hr_pc.append(_hc)
-                                _hr_pl.append(f"{_hl}<br>{_hd['med']:.0f}bpm")
-                            if _hr_px:
-                                _ord = sorted(zip(_hr_px,_hr_py,_hr_pc,_hr_pl), key=lambda t: t[0], reverse=True)
-                                _ox,_oy,_oc,_ol = zip(*_ord)
-                                _fig_hr.add_trace(go.Scatter(x=list(_ox), y=list(_oy),
-                                    mode='lines', line=dict(color='rgba(180,180,180,0.5)',width=1.5,dash='dot'),
+                                _hc, _hl = _hr_col_map.get(_hk, ('#AAAAAA', _hk))
+                                _hr_x_pos.append(_x_pos)
+                                _hr_y_pos.append(_hd['med'])
+                                _hr_c_pos.append(_hc)
+                                _hr_l_pos.append(f"{_hl}<br>{_hd['med']:.0f}bpm")
+                                _x_pos += 1
+
+                            if _hr_x_pos:
+                                _fig_hr.add_trace(go.Scatter(
+                                    x=_hr_x_pos, y=_hr_y_pos, mode='lines',
+                                    line=dict(color='rgba(180,180,180,0.5)',width=1.5,dash='dot'),
                                     showlegend=False, hoverinfo='skip', yaxis='y'))
-                                _fig_hr.add_trace(go.Scatter(x=list(_ox), y=list(_oy),
-                                    mode='markers+text',
-                                    marker=dict(size=11, color=list(_oc), line=dict(width=2,color='white')),
-                                    text=list(_ol), textposition='bottom center', textfont=dict(size=8),
-                                    showlegend=False, yaxis='y'))
-
-                            # Pontos Watts (Y2) — posição X via _w_to_min
-                            _w_data = []
-                            if _calc_cp:
-                                _t_cp = _w_to_min(_calc_cp)
-                                _w_data.append((_t_cp, float(_calc_cp),
-                                                f"CP {_calc_cp}W", '#A855F7', 0, 0))
-                            if _mb_W_AT and _mb_W_AT > 10:
-                                _t_mlss = _w_to_min(_mb_W_AT)
-                                _w_data.append((_t_mlss, float(_mb_W_AT),
-                                                f"MLSS {_mb_W_AT:.0f}W", '#FFD166', 0, 0))
-                            if _mb_W_FM and _mb_W_FM > 10:
-                                _t_fm = _w_to_min(_mb_W_FM)
-                                _w_data.append((_t_fm, float(_mb_W_FM),
-                                                f"FatMax {_mb_W_FM:.0f}W", '#00C896', 0, 0))
-                            if 'PBP' in _hr_zones:
-                                _pd = _hr_zones['PBP']
-                                _t_pbp = _w_to_min(_pd['med'])
-                                _w_data.append((_t_pbp, float(_pd['med']),
-                                                f"PBP {_pd['med']:.0f}W", '#FF6B35',
-                                                float(_pd['med']-_pd['q25']),
-                                                float(_pd['q75']-_pd['med'])))
-                            if 'Pvo2max' in _hr_zones:
-                                _pd = _hr_zones['Pvo2max']
-                                _t_pvo2 = _w_to_min(_pd['med'])
-                                _w_data.append((_t_pvo2, float(_pd['med']),
-                                                f"Pvo2max {_pd['med']:.0f}W", '#60A5FA',
-                                                float(_pd['med']-_pd['q25']),
-                                                float(_pd['q75']-_pd['med'])))
-                            if _w_data:
-                                _ord_w=sorted(_w_data,key=lambda t:t[0],reverse=True)
-                                _owx,_owy,_owl,_owc,_owlo,_owhi=zip(*_ord_w)
-                                _fig_hr.add_trace(go.Scatter(x=list(_owx),y=list(_owy),
-                                    mode='lines', line=dict(color='rgba(150,100,220,0.4)',width=1.5,dash='dot'),
-                                    showlegend=False, hoverinfo='skip', yaxis='y2'))
-                                _fig_hr.add_trace(go.Scatter(x=list(_owx),y=list(_owy),
-                                    mode='markers+text',
-                                    marker=dict(size=11,color=list(_owc),symbol='diamond',
+                                _fig_hr.add_trace(go.Scatter(
+                                    x=_hr_x_pos, y=_hr_y_pos, mode='markers+text',
+                                    marker=dict(size=12, color=_hr_c_pos,
                                                 line=dict(width=2,color='white')),
-                                    text=list(_owl), textposition='top center', textfont=dict(size=8),
-                                    error_y=dict(type='data',
-                                                 array=[max(0,v) for v in _owhi],
-                                                 arrayminus=[max(0,v) for v in _owlo],
-                                                 visible=True,color='rgba(255,255,255,0.4)',
-                                                 thickness=2,width=6),
-                                    showlegend=False, yaxis='y2'))
+                                    text=_hr_l_pos, textposition='top center',
+                                    textfont=dict(size=8), showlegend=False, yaxis='y'))
 
-                            # Linhas horizontais LT1/LT2 (do lactato estacionário)
+                            # Pontos Watts (diamantes) — posição X ordinal diferente
+                            _w_refs = []
+                            if _calc_cp: _w_refs.append((1, float(_calc_cp), 'CP', '#A855F7'))
+                            if _mb_W_FM and _mb_W_FM>10: _w_refs.append((2, float(_mb_W_FM), 'FatMax', '#00C896'))
+                            if _mb_W_AT and _mb_W_AT>10: _w_refs.append((3, float(_mb_W_AT), 'MLSS', '#FFD166'))
+                            if 'PBP' in _hr_zones: _w_refs.append((4, float(_hr_zones['PBP']['med']), 'PBP', '#FF6B35'))
+                            if 'Pvo2max' in _hr_zones: _w_refs.append((5, float(_hr_zones['Pvo2max']['med']), 'Pvo2max', '#60A5FA'))
+
+                            if _w_refs:
+                                _wx = [r[0] for r in _w_refs]
+                                _wy = [r[1] for r in _w_refs]
+                                _wl = [f"{r[2]} {r[1]:.0f}W" for r in _w_refs]
+                                _wc = [r[3] for r in _w_refs]
+                                _fig_hr.add_trace(go.Scatter(
+                                    x=_wx, y=_wy, mode='lines',
+                                    line=dict(color='rgba(150,100,220,0.4)',width=1.5,dash='dot'),
+                                    showlegend=False, hoverinfo='skip', yaxis='y2'))
+                                _fig_hr.add_trace(go.Scatter(
+                                    x=_wx, y=_wy, mode='markers+text',
+                                    marker=dict(size=12, color=_wc, symbol='diamond',
+                                                line=dict(width=2,color='white')),
+                                    text=_wl, textposition='bottom center',
+                                    textfont=dict(size=8), showlegend=False, yaxis='y2'))
+
+                            # LT1/LT2 horizontais (do lactato)
                             if '_la_crossings' in dir() and _la_crossings:
                                 for _lt_nm, _lt_col in [('LT1','rgba(255,209,102,1.0)'),
                                                          ('LT2','rgba(230,57,70,1.0)')]:
                                     if _lt_nm in _la_crossings:
                                         _lt_w = _la_crossings[_lt_nm]
-                                        _fig_hr.add_shape(
-                                            type='line', yref='y2', xref='paper',
+                                        _fig_hr.add_shape(type='line', yref='y2', xref='paper',
                                             x0=0, x1=1, y0=_lt_w, y1=_lt_w,
-                                            line=dict(color=_lt_col, width=2, dash='dot'),
-                                        )
-                                        _fig_hr.add_annotation(
-                                            xref='paper', yref='y2', x=1.01, y=_lt_w,
-                                            text=f"{_lt_nm} {_lt_w:.0f}W",
-                                            showarrow=False,
-                                            font=dict(size=9, color=_lt_col),
-                                            xanchor='left',
-                                        )
+                                            line=dict(color=_lt_col, width=2, dash='dot'))
+                                        _fig_hr.add_annotation(xref='paper', yref='y2',
+                                            x=1.01, y=_lt_w, text=f"{_lt_nm} {_lt_w:.0f}W",
+                                            showarrow=False, font=dict(size=9,color=_lt_col), xanchor='left')
 
-                            # Linhas verticais nas posições X reais (via _w_to_min)
-                            _vline_map = {
-                                'CP':      (float(_calc_cp) if _calc_cp else None,    '#A855F7'),
-                                'MLSS':    (float(_mb_W_AT) if _mb_W_AT and _mb_W_AT>10 else None, '#FFD166'),
-                                'FatMax':  (float(_mb_W_FM) if _mb_W_FM and _mb_W_FM>10 else None, '#00C896'),
-                                'PBP':     (float(_hr_zones['PBP']['med']) if 'PBP' in _hr_zones else None, '#FF6B35'),
-                                'Pvo2max': (float(_hr_zones['Pvo2max']['med']) if 'Pvo2max' in _hr_zones else None, '#60A5FA'),
-                            }
-                            for _vn, (_vw, _vc) in _vline_map.items():
-                                if _vw is None or _vw <= 0: continue
-                                _vx = _w_to_min(_vw)
-                                _fig_hr.add_vline(
-                                    x=_vx, line_color=_vc,
-                                    line_width=1.5, line_dash='dot',
-                                    annotation_text=f"{_vn} {_vw:.0f}W",
-                                    annotation_font_color=_vc,
-                                    annotation_font_size=9,
-                                    annotation_position="top left",
-                                )
+                            # Calcular range Y2 automático
+                            _all_w_vals = [r[1] for r in _w_refs] if _w_refs else [100, 300]
+                            _w_min_plot = max(50.0, min(_all_w_vals) * 0.85)
+                            _w_max_plot = max(_all_w_vals) * 1.15
 
-                            # Ranges automáticos baseados nos dados reais
-                            _all_w_vals = [v for v in [
-                                float(_calc_cp) if _calc_cp else None,
-                                float(_mb_W_AT) if _mb_W_AT and _mb_W_AT > 10 else None,
-                                float(_mb_W_FM) if _mb_W_FM and _mb_W_FM > 10 else None,
-                                float(_hr_zones['PBP']['med']) if 'PBP' in _hr_zones else None,
-                                float(_hr_zones['Pvo2max']['med']) if 'Pvo2max' in _hr_zones else None,
-                            ] if v and v > 0]
-                            _w_min_plot = max(50.0, min(_all_w_vals) * 0.85) if _all_w_vals else 50.0
-                            _w_max_plot = max(_all_w_vals) * 1.15 if _all_w_vals else _x_max_w
-
-                            # Ticks X nos MMPs reais
-                            _x_tick_vals = [t/60 for _,t in _mmp_anchors] if _mmp_anchors else [1,5,12,20]
-                            _x_tick_text = [f"{t/60:.0f}min" if t >= 120 else f"{t/60:.1f}min"
-                                            for _,t in _mmp_anchors] if _mmp_anchors else ['1','5','12','20']
-
-                            # Ranges fixos com escala log
-                            # X: 1min a 60min (log) — invertido
-                            # Y1 HR: log com range dos dados
-                            # Y2 W: log com range dos dados
-                            _w_min_log = max(50.0, _w_min_plot * 0.9)
-                            _hr_min_log = max(100.0, _hr_min * 0.97)
+                            # Ticks X: labels dos limiares HR
+                            _x_tick_hr = list(range(1, _x_pos))
+                            _x_tick_lbl = [_hr_col_map.get(k,('#',''))[1]
+                                           for k in _hr_order if k in _hr_zones]
 
                             _fig_hr.update_layout(
                                 plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                                font=dict(size=11), margin=dict(l=60,r=120,t=50,b=50),
-                                height=500, showlegend=True,
-                                legend=dict(x=1.08, y=1, xanchor='left', yanchor='top',
-                                            bgcolor='rgba(0,0,0,0)', font=dict(size=10)),
+                                font=dict(size=11), margin=dict(l=60,r=120,t=50,b=80),
+                                height=520, showlegend=False,
                                 title=dict(text=f"Limiares HR e Potência — {modalidade}  • HR  ◆ Watts",
                                            font=dict(size=13)),
                                 xaxis=dict(
-                                    title="Duração (min)",
-                                    type='log',
-                                    range=[np.log10(60), np.log10(1)],  # invertido 60→1min
-                                    tickmode='array',
-                                    tickvals=_x_tick_vals,
-                                    ticktext=_x_tick_text,
-                                    showgrid=True, gridcolor="rgba(128,128,128,0.12)",
-                                    zeroline=False, tickfont=dict(size=10),
+                                    tickmode='array', tickvals=_x_tick_hr, ticktext=_x_tick_lbl,
+                                    showgrid=False, zeroline=False, tickfont=dict(size=9),
+                                    range=[0.5, max(5, _x_pos) + 0.5],
                                 ),
                                 yaxis=dict(
-                                    title="HR (bpm)",
-                                    type='log',
-                                    range=[np.log10(_hr_min_log), np.log10(_hr_max * 1.03)],
+                                    title="HR (bpm)", range=[_hr_min, _hr_max],
                                     showgrid=True, gridcolor="rgba(128,128,128,0.12)",
-                                    zeroline=False,
-                                    title_font_color="#AAAAAA",
-                                    tickfont=dict(color='#AAAAAA'),
-                                    tickmode='array',
-                                    tickvals=[120,130,140,150,160,170,180,190,200],
-                                    ticktext=['120','130','140','150','160','170','180','190','200'],
-                                ),
+                                    zeroline=False, title_font_color="#AAAAAA",
+                                    tickfont=dict(color='#AAAAAA')),
                                 yaxis2=dict(
                                     title="Potência (W)",
-                                    type='log',
-                                    range=[np.log10(_w_min_log), np.log10(_w_max_plot * 1.1)],
+                                    range=[_w_min_plot, _w_max_plot],
                                     overlaying='y', side='right',
                                     showgrid=False, zeroline=False,
                                     title_font_color="#A855F7",
-                                    tickfont=dict(color='#A855F7', size=10),
-                                ),
+                                    tickfont=dict(color='#A855F7', size=10)),
                             )
                             st.plotly_chart(_fig_hr, use_container_width=True)
                             st.caption(
-                                "X = duração de referência (alta intensidade à esquerda). "
-                                "• Círculos = HR bpm (eixo esq). ◆ Diamantes = Potência W (eixo dir). "
-                                "Zonas horizontais com IQR histórico."
+                                "• Círculos = HR bpm (Y esq, por limiar fisiológico). "
+                                "◆ Diamantes = Potência W (Y dir, ordenados por intensidade crescente). "
+                                "Linhas horizontais = LT1/LT2 em Watts do gráfico de lactato."
                             )
 
                             # ── GRÁFICO B: Referência de Potência ─────────────
