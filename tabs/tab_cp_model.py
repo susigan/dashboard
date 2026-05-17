@@ -1928,32 +1928,60 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                                                  thickness=2,width=6),
                                     showlegend=False, yaxis='y2'))
 
-                            # Apenas linhas horizontais LT1 e LT2
-                            # vindas dos cruzamentos do gráfico de lactato estacionário
-                            _lt_hline_defs = [
-                                ('LT1', 'rgba(255,209,102,1.0)'),
-                                ('LT2', 'rgba(230,57,70,1.0)'),
-                            ]
+                            # Linhas horizontais LT1/LT2 (do lactato estacionário)
                             if '_la_crossings' in dir() and _la_crossings:
-                                for _lt_nm, _lt_col in _lt_hline_defs:
+                                for _lt_nm, _lt_col in [('LT1','rgba(255,209,102,1.0)'),
+                                                         ('LT2','rgba(230,57,70,1.0)')]:
                                     if _lt_nm in _la_crossings:
                                         _lt_w = _la_crossings[_lt_nm]
-                                        # Horizontal no eixo Y2 (Watts)
                                         _fig_hr.add_shape(
-                                            type='line',
-                                            yref='y2', xref='paper',
-                                            x0=0, x1=1,
-                                            y0=_lt_w, y1=_lt_w,
+                                            type='line', yref='y2', xref='paper',
+                                            x0=0, x1=1, y0=_lt_w, y1=_lt_w,
                                             line=dict(color=_lt_col, width=2, dash='dot'),
                                         )
                                         _fig_hr.add_annotation(
-                                            xref='paper', yref='y2',
-                                            x=1.0, y=_lt_w,
-                                            text=f"  {_lt_nm} {_lt_w:.0f}W",
+                                            xref='paper', yref='y2', x=1.01, y=_lt_w,
+                                            text=f"{_lt_nm} {_lt_w:.0f}W",
                                             showarrow=False,
                                             font=dict(size=9, color=_lt_col),
                                             xanchor='left',
                                         )
+
+                            # Linhas verticais: CP, MLSS, FatMax, PBP, Pvo2max
+                            # add_vline actua no eixo X (duração) — correcto
+                            _vlines_hr = []
+                            if _calc_cp:
+                                _vlines_hr.append((_calc_cp,    '#A855F7', f"CP {_calc_cp}W"))
+                            if _mb_W_AT and _mb_W_AT > 10:
+                                _vlines_hr.append((_mb_W_AT,   '#FFD166', f"MLSS {_mb_W_AT:.0f}W"))
+                            if _mb_W_FM and _mb_W_FM > 10:
+                                _vlines_hr.append((_mb_W_FM,   '#00C896', f"FatMax {_mb_W_FM:.0f}W"))
+                            if 'PBP' in _hr_zones:
+                                _vlines_hr.append((_hr_zones['PBP']['med'],
+                                                   '#FF6B35', f"PBP {_hr_zones['PBP']['med']:.0f}W"))
+                            if 'Pvo2max' in _hr_zones:
+                                _vlines_hr.append((_hr_zones['Pvo2max']['med'],
+                                                   '#60A5FA', f"Pvo2max {_hr_zones['Pvo2max']['med']:.0f}W"))
+
+                            # Converter watts → duração via W'/(P-CP) para posicionar no eixo X
+                            for _vw, _vc, _vl in _vlines_hr:
+                                if not _vw or _vw <= 0: continue
+                                # Posição X: duração de referência
+                                if _calc_cp and isinstance(_calc_wp, float) and _calc_wp > 0 and _vw > _calc_cp:
+                                    _vx = _calc_wp / (_vw - _calc_cp) / 60  # minutos
+                                elif _vw <= (_calc_cp or 0):
+                                    _vx = _x_max_t * 0.95  # muito à direita (baixa intensidade)
+                                else:
+                                    _vx = 30.0  # fallback
+                                _vx = float(np.clip(_vx, 1.0, _x_max_t - 1))
+                                _fig_hr.add_vline(
+                                    x=_vx, line_color=_vc,
+                                    line_width=1.8, line_dash='dot',
+                                    annotation_text=_vl,
+                                    annotation_font_color=_vc,
+                                    annotation_font_size=9,
+                                    annotation_position="top left",
+                                )
 
                             _fig_hr.update_layout(
                                 plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
