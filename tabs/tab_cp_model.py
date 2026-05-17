@@ -1002,22 +1002,23 @@ def tab_cp_model(ac_full=None):
             # Melhor modelo — menor SEE% entre os mostrados
             _best_mn  = sorted(_results_rank.items(), key=lambda x: x[1]['see_pct'])[0]
             _best_lbl, _best_gr = _best_mn
+            _best_res = _best_gr['result']
+            _best_cp  = _best_gr.get('cp')
+            _best_wp  = _best_res[1] if _best_res and len(_best_res) > 1 else None
 
-            # Para Row/Ski: melhor CP apenas entre M1/M2/M3
-            # Melhor CP = menor SEE% em _results_rank (já filtrado para Row/Ski = M1/M2/M3)
-            _best_cp_val  = _best_cp
-            _best_cp_res  = _best_res
-            _best_cp_lbl  = _best_lbl
-            _best_cp_gr   = _best_gr
+            _best_cp_val   = _best_cp
+            _best_cp_res   = _best_res
+            _best_cp_lbl   = _best_lbl
+            _best_cp_gr    = _best_gr
             _res_classicos = _results_rank
-            _M_CP_FILTER  = modalidade in ('Row', 'Ski')
+            _M_CP_FILTER   = modalidade in ('Row', 'Ski')
 
             # Guardar no session_state
             if _best_cp:
                 st.session_state[f"cp_model_{modalidade}"] = {
-                    'cp': float(_best_cp),
-                    'wp': float(_best_wp) if isinstance(_best_wp, float) else None,
-                    'modelo': _best_lbl,
+                    'cp':      float(_best_cp),
+                    'wp':      float(_best_wp) if isinstance(_best_wp, float) else None,
+                    'modelo':  _best_lbl,
                     'see_pct': _best_gr.get('see_pct'),
                 }
 
