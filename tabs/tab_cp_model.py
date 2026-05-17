@@ -2006,6 +2006,22 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                                     annotation_position="top left",
                                 )
 
+                            # Ranges automáticos baseados nos dados reais
+                            _all_w_vals = [v for v in [
+                                float(_calc_cp) if _calc_cp else None,
+                                float(_mb_W_AT) if _mb_W_AT and _mb_W_AT > 10 else None,
+                                float(_mb_W_FM) if _mb_W_FM and _mb_W_FM > 10 else None,
+                                float(_hr_zones['PBP']['med']) if 'PBP' in _hr_zones else None,
+                                float(_hr_zones['Pvo2max']['med']) if 'Pvo2max' in _hr_zones else None,
+                            ] if v and v > 0]
+                            _w_min_plot = max(50.0, min(_all_w_vals) * 0.85) if _all_w_vals else 50.0
+                            _w_max_plot = max(_all_w_vals) * 1.15 if _all_w_vals else _x_max_w
+
+                            # Ticks X nos MMPs reais
+                            _x_tick_vals = [t/60 for _,t in _mmp_anchors] if _mmp_anchors else [1,5,12,20]
+                            _x_tick_text = [f"{t/60:.0f}min" if t >= 120 else f"{t/60:.1f}min"
+                                            for _,t in _mmp_anchors] if _mmp_anchors else ['1','5','12','20']
+
                             # Ranges fixos com escala log
                             # X: 1min a 60min (log) — invertido
                             # Y1 HR: log com range dos dados
