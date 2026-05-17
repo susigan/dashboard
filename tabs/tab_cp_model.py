@@ -703,55 +703,54 @@ def tab_cp_model(ac_full=None):
 
     # Wrappers para o Ranking — testam os 3 weightings e retornam o melhor
     def _rank_m1(pts, **kw):
-        """M1 no Ranking: menor SEE entre weightings none/1/t/1/t²"""
+        """M1 no Ranking: CP médio dos 3 weightings — igual ao teste manual.
+        SEE calculado com o weighting none (baseline)."""
         t_obs = np.array([t for _,t in pts])
         p_obs = np.array([p for p,_ in pts])
-        best_see, best_res = 999, None
+        cp_vals, wp_vals = [], []
         for mode in ["none","1/t","1/t²"]:
             w = make_w(t_obs, mode)
             res = fit_m1(pts, w)
-            if res[0] is None or res[3] is None: continue
-            _, see = calc_see(list(p_obs), res[3], k=2)
-            if see is not None and see < best_see:
-                best_see, best_res = see, res
-        return best_res if best_res else fit_m1(pts, np.ones(len(pts)))
+            if res[0] is not None and res[1] is not None:
+                cp_vals.append(res[0]); wp_vals.append(res[1])
+        if not cp_vals: return fit_m1(pts, np.ones(len(pts)))
+        cp_mean = float(np.mean(cp_vals))
+        wp_mean = float(np.mean(wp_vals))
+        # pp calculado com CP médio
+        pp = [wp_mean/t + cp_mean for _,t in pts]
+        return cp_mean, wp_mean, None, pp, 0.0, 2
 
     def _rank_m2(pts, **kw):
-        """M2 no Ranking: menor SEE entre weightings none/1/t/1/t²"""
+        """M2 no Ranking: CP médio dos 3 weightings — igual ao teste manual."""
         t_obs = np.array([t for _,t in pts])
         p_obs = np.array([p for p,_ in pts])
-        best_see, best_res = 999, None
+        cp_vals, wp_vals = [], []
         for mode in ["none","1/t","1/t²"]:
             w = make_w(t_obs, mode)
             res = fit_m2(pts, w)
-            if res[0] is None or res[3] is None: continue
-            _, see = calc_see(list(p_obs), res[3], k=2)
-            if see is not None and see < best_see:
-                best_see, best_res = see, res
-        return best_res if best_res else fit_m2(pts, np.ones(len(pts)))
+            if res[0] is not None and res[1] is not None:
+                cp_vals.append(res[0]); wp_vals.append(res[1])
+        if not cp_vals: return fit_m2(pts, np.ones(len(pts)))
+        cp_mean = float(np.mean(cp_vals))
+        wp_mean = float(np.mean(wp_vals))
+        pp = [cp_mean + wp_mean/t for _,t in pts]
+        return cp_mean, wp_mean, None, pp, 0.0, 2
 
     def _rank_m3(pts, **kw):
-        """M3 no Ranking: menor SEE em espaço t entre weightings none/1/t/1/t²
-        SEE calculado em espaço t (consistente com a optimização do M3)."""
+        """M3 no Ranking: CP médio dos 3 weightings — igual ao teste manual."""
         t_obs = np.array([t for _,t in pts])
         p_obs = np.array([p for p,_ in pts])
-        best_see, best_res = 999, None
+        cp_vals, wp_vals = [], []
         for mode in ["none","1/t","1/t²"]:
             w = make_w(t_obs, mode)
             res = fit_m3(pts, w)
-            if res[0] is None: continue
-            cp, wp = res[0], res[1]
-            if cp <= 0 or wp <= 0: continue
-            # SEE em espaço t (onde M3 optimiza)
-            t_pred = [wp/(p-cp) for p,_ in pts if p > cp]
-            t_real = [t for p,t in pts if p > cp]
-            if len(t_pred) < 2: continue
-            see_t = float(np.sqrt(np.sum((np.array(t_real)-np.array(t_pred))**2)
-                                  / max(len(t_pred)-2, 1)))
-            see_t_pct = see_t / float(np.mean(t_real)) * 100
-            if see_t_pct < best_see:
-                best_see, best_res = see_t_pct, res
-        return best_res if best_res else fit_m3(pts, np.ones(len(pts)))
+            if res[0] is not None and res[1] is not None and res[0] > 0 and res[1] > 0:
+                cp_vals.append(res[0]); wp_vals.append(res[1])
+        if not cp_vals: return fit_m3(pts, np.ones(len(pts)))
+        cp_mean = float(np.mean(cp_vals))
+        wp_mean = float(np.mean(wp_vals))
+        pp = [wp_mean/t + cp_mean for _,t in pts]
+        return cp_mean, wp_mean, None, pp, 0.0, 2
 
     # Cada modelo usa exactamente 3 pontos (papers)
     _FIXED_N_PTS = 3
