@@ -15,7 +15,7 @@ from gspread.exceptions import WorksheetNotFound
 _SPREADSHEET_ID = "10pefcY6VI4Z45M8Y69D6JxIoqOkjzSlSpV1PMLXoYlI"
 
 _SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
+    "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive",
 ]
 
@@ -194,7 +194,7 @@ from gspread.exceptions import SpreadsheetNotFound, WorksheetNotFound
 
 _SHEET_NAME = "atheltica_db"
 _SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
+    "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive",
 ]
 
