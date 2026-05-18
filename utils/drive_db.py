@@ -1,242 +1,196 @@
 # ══════════════════════════════════════════════════════════════════════════════
 # utils/drive_db.py — ATHELTICA
-# Persistência via SQLite no Google Drive pessoal
-# Requer: google-api-python-client, google-auth
-# Service account partilhada como Editor na pasta do Drive
+# Storage via Google Sheets (Service Accounts não têm quota no Drive pessoal)
+# API idêntica — tab_cp_model.py não precisa de mudanças
 # ══════════════════════════════════════════════════════════════════════════════
 
-import os, io, sqlite3
 import streamlit as st
 import pandas as pd
 from datetime import datetime
 from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
-from googleapiclient.errors import HttpError
+import gspread
+from gspread.exceptions import SpreadsheetNotFound, WorksheetNotFound
 
-_DB_NAME   = "atheltica_cpmodel.db"
-_LOCAL     = f"/tmp/{_DB_NAME}"
-_SCOPES    = [
-    "https://www.googleapis.com/auth/drive",
+_SHEET_NAME = "atheltica_db"
+_SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
 ]
+
+_HEADERS = {
+    "cp_results": [
+        "saved_at","modalidade","modelo","cp_watts","wp_joules","see_pct",
+        "pontos","mmp1","mmp3","mmp5","mmp12","mmp20","pmax"
+    ],
+    "metab_results": [
+        "saved_at","modalidade","vo2max","vlamax","mlss_w","fatmax_w",
+        "lt1_w","lt2_w","fat_fatmax","glycogen_g","perfil"
+    ],
+    "hr_thresholds": [
+        "saved_at","modalidade","hrvt1_bpm","hrvt1plus_bpm","hrvtmss_bpm",
+        "hrvt2_bpm","aethr_bpm","pbp_w","pvo2max_w"
+    ],
+}
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 @st.cache_resource
-def _svc():
+def _gc():
     creds = Credentials.from_service_account_info(
         st.secrets["gcp_service_account"], scopes=_SCOPES)
-    return build("drive", "v3", credentials=creds)
+    return gspread.authorize(creds)
 
-def _folder() -> str:
-    return st.secrets.get("drive", {}).get("folder_id", "")
-
-# ── Drive helpers ─────────────────────────────────────────────────────────────
-def _find_id(svc, folder_id: str) -> str | None:
+def _spreadsheet():
+    gc = _gc()
     try:
-        r = svc.files().list(
-            q=f"name='{_DB_NAME}' and '{folder_id}' in parents and trashed=false",
-            fields="files(id)",
-            supportsAllDrives=True, includeItemsFromAllDrives=True,
-        ).execute()
-        files = r.get("files", [])
-        return files[0]["id"] if files else None
-    except HttpError:
-        return None
-
-def _download() -> bool:
-    svc = _svc(); fid = _folder()
-    if not fid: return False
-    file_id = _find_id(svc, fid)
-    if file_id:
+        return gc.open(_SHEET_NAME)
+    except SpreadsheetNotFound:
+        sh = gc.create(_SHEET_NAME)
+        # Partilhar com o email do utilizador (visível no Drive)
         try:
-            req = svc.files().get_media(fileId=file_id,
-                                        supportsAllDrives=True)
-            with open(_LOCAL, "wb") as f:
-                dl = MediaIoBaseDownload(f, req)
-                done = False
-                while not done: _, done = dl.next_chunk()
-            return True
-        except HttpError as e:
-            st.error(f"[drive_db] Download falhou: {e}")
-            return False
-    else:
-        # Primeira vez — criar DB local vazio
-        _init_db()
-        return True
+            email = st.secrets.get("owner_email", "")
+            if email:
+                sh.share(email, perm_type="user", role="writer")
+        except Exception:
+            pass
+        return sh
 
-def _upload() -> bool:
-    if not os.path.exists(_LOCAL): return False
-    svc = _svc(); fid = _folder()
-    if not fid: return False
-    file_id = _find_id(svc, fid)
-    media = MediaFileUpload(_LOCAL, mimetype="application/x-sqlite3",
-                            resumable=False)
+def _ws(name: str):
+    sh = _spreadsheet()
     try:
-        if file_id:
-            svc.files().update(
-                fileId=file_id, media_body=media,
-                supportsAllDrives=True,
-            ).execute()
-        else:
-            svc.files().create(
-                body={"name": _DB_NAME, "parents": [fid]},
-                media_body=media,
-                supportsAllDrives=True,
-                fields="id",
-            ).execute()
-        return True
-    except HttpError as e:
-        st.error(f"[drive_db] Upload falhou: {e}")
-        return False
-
-# ── Schema ────────────────────────────────────────────────────────────────────
-def _init_db():
-    conn = sqlite3.connect(_LOCAL)
-    conn.executescript("""
-    CREATE TABLE IF NOT EXISTS cp_results (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        saved_at TEXT, modalidade TEXT, modelo TEXT,
-        cp_watts REAL, wp_joules REAL, see_pct REAL, pontos TEXT,
-        mmp1 REAL, mmp3 REAL, mmp5 REAL, mmp12 REAL, mmp20 REAL, pmax REAL);
-    CREATE TABLE IF NOT EXISTS metab_results (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        saved_at TEXT, modalidade TEXT,
-        vo2max REAL, vlamax REAL, mlss_w REAL, fatmax_w REAL,
-        lt1_w REAL, lt2_w REAL, fat_fatmax REAL, glycogen_g REAL, perfil TEXT);
-    CREATE TABLE IF NOT EXISTS hr_thresholds (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        saved_at TEXT, modalidade TEXT,
-        hrvt1_bpm REAL, hrvt1plus_bpm REAL, hrvtmss_bpm REAL,
-        hrvt2_bpm REAL, aethr_bpm REAL, pbp_w REAL, pvo2max_w REAL);
-    """)
-    conn.commit(); conn.close()
-
-def _conn() -> sqlite3.Connection | None:
-    if not os.path.exists(_LOCAL):
-        if not _download(): return None
-    _init_db()
-    return sqlite3.connect(_LOCAL)
+        return sh.worksheet(name)
+    except WorksheetNotFound:
+        ws = sh.add_worksheet(title=name, rows=2000, cols=len(_HEADERS[name]))
+        ws.append_row(_HEADERS[name])
+        return ws
 
 # ── Deduplicação ──────────────────────────────────────────────────────────────
-def _exists(table: str, modalidade: str, checks: dict, tol=0.5) -> bool:
-    c = _conn()
-    if not c: return False
-    where = " AND ".join(
-        f"ABS(COALESCE({k},0)-COALESCE(?,0))<{tol}" for k in checks)
+def _exists(ws, modalidade: str, checks: dict, tol=0.5) -> bool:
+    """Só retorna True se existir uma linha com modalidade E todos os checks."""
     try:
-        n = c.execute(
-            f"SELECT COUNT(*) FROM {table} WHERE modalidade=? AND {where}",
-            (modalidade,) + tuple(checks.values())
-        ).fetchone()[0]
-        c.close(); return n > 0
+        records = ws.get_all_records()
+        if not records:
+            return False
+        for row in records:
+            # Verificar modalidade
+            if str(row.get("modalidade", "")).strip() != str(modalidade).strip():
+                continue
+            # Verificar que pelo menos o primeiro campo de checks tem valor real
+            first_key = list(checks.keys())[0]
+            if not row.get(first_key) and row.get(first_key) != 0:
+                continue
+            # Verificar todos os checks com tolerância
+            if all(
+                abs(float(row.get(k) or 0) - float(v or 0)) < tol
+                for k, v in checks.items()
+            ):
+                return True
+        return False
     except Exception:
-        c.close(); return False
+        return False
 
 # ── API pública ───────────────────────────────────────────────────────────────
 def save_cp_result(modalidade, modelo, cp_watts, wp_joules, see_pct,
                    combo_pts, mmp_dict=None, pmax=None) -> str:
-    """Retorna 'saved' | 'skipped' | 'error'"""
-    checks = {"cp_watts": round(cp_watts,1),
-              "wp_joules": round(wp_joules,0),
-              "see_pct": round(see_pct,2)}
-    if _exists("cp_results", modalidade, checks):
-        return "skipped"
-    c = _conn()
-    if not c: return "error"
-    mmp = mmp_dict or {}
-    pontos = ",".join([f"{int(t//60)}min={p:.0f}W" for p,t in combo_pts])
     try:
-        c.execute("""INSERT INTO cp_results
-            (saved_at,modalidade,modelo,cp_watts,wp_joules,see_pct,pontos,
-             mmp1,mmp3,mmp5,mmp12,mmp20,pmax) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (datetime.now().strftime("%Y-%m-%d %H:%M"), modalidade, modelo,
-             round(cp_watts,2), round(wp_joules,1), round(see_pct,3), pontos,
-             mmp.get("MMP1"), mmp.get("MMP3"), mmp.get("MMP5"),
-             mmp.get("MMP12"), mmp.get("MMP20"),
-             round(pmax,1) if pmax else None))
-        c.commit(); c.close()
-        return "saved" if _upload() else "error"
+        ws = _ws("cp_results")
+        records = ws.get_all_records()
+        exists = _exists(ws, modalidade, {
+            "cp_watts":  round(cp_watts, 1),
+            "wp_joules": round(wp_joules, 0),
+            "see_pct":   round(see_pct, 2),
+        })
+        # Debug temporário
+        st.caption(f"🔍 Debug CP: {len(records)} registos na sheet | exists={exists} | modalidade={modalidade}")
+        if exists: return "skipped"
+        mmp = mmp_dict or {}
+        pontos = ",".join([f"{int(t//60)}min={p:.0f}W" for p,t in combo_pts])
+        ws.append_row([
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            modalidade, modelo,
+            round(cp_watts,2), round(wp_joules,1), round(see_pct,3),
+            pontos,
+            mmp.get("MMP1",""), mmp.get("MMP3",""), mmp.get("MMP5",""),
+            mmp.get("MMP12",""), mmp.get("MMP20",""),
+            round(pmax,1) if pmax else "",
+        ])
+        return "saved"
     except Exception as e:
-        c.close(); st.error(f"[drive_db] {e}"); return "error"
+        st.error(f"[drive_db] save_cp: {e}")
+        return "error"
 
 def save_metab_result(modalidade, vo2max, vlamax, mlss_w, fatmax_w,
                       lt1_w=None, lt2_w=None, fat_fatmax=None,
                       glycogen_g=None, perfil=None) -> str:
-    checks = {"vo2max": round(vo2max,1), "vlamax": round(vlamax,3),
-              "mlss_w": round(mlss_w,1),
-              "fatmax_w": round(fatmax_w,1) if fatmax_w else 0}
-    if _exists("metab_results", modalidade, checks):
-        return "skipped"
-    c = _conn()
-    if not c: return "error"
     try:
-        c.execute("""INSERT INTO metab_results
-            (saved_at,modalidade,vo2max,vlamax,mlss_w,fatmax_w,
-             lt1_w,lt2_w,fat_fatmax,glycogen_g,perfil) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-            (datetime.now().strftime("%Y-%m-%d %H:%M"), modalidade,
-             round(vo2max,2), round(vlamax,4), round(mlss_w,1),
-             round(fatmax_w,1) if fatmax_w else None,
-             round(lt1_w,1) if lt1_w else None,
-             round(lt2_w,1) if lt2_w else None,
-             round(fat_fatmax,1) if fat_fatmax else None,
-             round(glycogen_g,0) if glycogen_g else None,
-             perfil))
-        c.commit(); c.close()
-        return "saved" if _upload() else "error"
+        ws = _ws("metab_results")
+        if _exists(ws, modalidade, {
+            "vo2max":   round(vo2max, 1),
+            "vlamax":   round(vlamax, 3),
+            "mlss_w":   round(mlss_w, 1),
+            "fatmax_w": round(fatmax_w, 1) if fatmax_w else 0,
+        }): return "skipped"
+        ws.append_row([
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            modalidade,
+            round(vo2max,2), round(vlamax,4),
+            round(mlss_w,1), round(fatmax_w,1) if fatmax_w else "",
+            round(lt1_w,1) if lt1_w else "",
+            round(lt2_w,1) if lt2_w else "",
+            round(fat_fatmax,1) if fat_fatmax else "",
+            round(glycogen_g,0) if glycogen_g else "",
+            perfil or "",
+        ])
+        return "saved"
     except Exception as e:
-        c.close(); st.error(f"[drive_db] {e}"); return "error"
+        st.error(f"[drive_db] save_metab: {e}")
+        return "error"
 
 def save_hr_thresholds(modalidade, hr_zones, pbp_w=None, pvo2max_w=None) -> str:
     def _g(k): return hr_zones.get(k, {}).get("med")
     mlss = _g("HRVTMSS")
     if not mlss: return "skipped"
-    checks = {"hrvtmss_bpm": round(mlss,0),
-              "hrvt1_bpm": round(_g("HRVT1") or 0, 0),
-              "hrvt2_bpm": round(_g("HRVT2") or 0, 0)}
-    if _exists("hr_thresholds", modalidade, checks):
-        return "skipped"
-    c = _conn()
-    if not c: return "error"
     try:
-        c.execute("""INSERT INTO hr_thresholds
-            (saved_at,modalidade,hrvt1_bpm,hrvt1plus_bpm,hrvtmss_bpm,
-             hrvt2_bpm,aethr_bpm,pbp_w,pvo2max_w) VALUES (?,?,?,?,?,?,?,?,?)""",
-            (datetime.now().strftime("%Y-%m-%d %H:%M"), modalidade,
-             _g("HRVT1"), _g("HRVT1PLUS"), mlss,
-             _g("HRVT2"), _g("AeTHR"), pbp_w, pvo2max_w))
-        c.commit(); c.close()
-        return "saved" if _upload() else "error"
+        ws = _ws("hr_thresholds")
+        if _exists(ws, modalidade, {
+            "hrvtmss_bpm": round(mlss, 0),
+            "hrvt1_bpm":   round(_g("HRVT1") or 0, 0),
+            "hrvt2_bpm":   round(_g("HRVT2") or 0, 0),
+        }): return "skipped"
+        ws.append_row([
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            modalidade,
+            round(_g("HRVT1") or 0, 0),
+            round(_g("HRVT1PLUS") or 0, 0),
+            round(mlss, 0),
+            round(_g("HRVT2") or 0, 0),
+            round(_g("AeTHR") or 0, 0),
+            round(pbp_w, 1) if pbp_w else "",
+            round(pvo2max_w, 1) if pvo2max_w else "",
+        ])
+        return "saved"
     except Exception as e:
-        c.close(); st.error(f"[drive_db] {e}"); return "error"
+        st.error(f"[drive_db] save_hr: {e}")
+        return "error"
 
 def load_cp_history(modalidade=None, n=20) -> pd.DataFrame:
-    c = _conn()
-    if not c: return pd.DataFrame()
-    q = "SELECT * FROM cp_results"
-    p = []
-    if modalidade: q += " WHERE modalidade=?"; p.append(modalidade)
-    q += " ORDER BY saved_at DESC LIMIT ?"
-    p.append(n)
     try:
-        df = pd.read_sql_query(q, c, params=p)
-        c.close(); return df
+        ws = _ws("cp_results")
+        df = pd.DataFrame(ws.get_all_records())
+        if df.empty: return df
+        if modalidade: df = df[df["modalidade"] == modalidade]
+        return df.sort_values("saved_at", ascending=False).head(n).reset_index(drop=True)
     except Exception:
-        c.close(); return pd.DataFrame()
+        return pd.DataFrame()
 
 def load_metab_history(modalidade=None, n=20) -> pd.DataFrame:
-    c = _conn()
-    if not c: return pd.DataFrame()
-    q = "SELECT * FROM metab_results"
-    p = []
-    if modalidade: q += " WHERE modalidade=?"; p.append(modalidade)
-    q += " ORDER BY saved_at DESC LIMIT ?"
-    p.append(n)
     try:
-        df = pd.read_sql_query(q, c, params=p)
-        c.close(); return df
+        ws = _ws("metab_results")
+        df = pd.DataFrame(ws.get_all_records())
+        if df.empty: return df
+        if modalidade: df = df[df["modalidade"] == modalidade]
+        return df.sort_values("saved_at", ascending=False).head(n).reset_index(drop=True)
     except Exception:
-        c.close(); return pd.DataFrame()
+        return pd.DataFrame()
 
 def load_latest_cp(modalidade: str) -> dict:
     df = load_cp_history(modalidade, n=1)
