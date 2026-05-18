@@ -34,14 +34,17 @@ _HEADERS = {
     ],
 }
 
-# ── Auth ──────────────────────────────────────────────────────────────────────
-@st.cache_resource
+# ── Auth — usa o mesmo get_gc() do data.py ───────────────────────────────────
 def _gc():
-    creds = Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"], scopes=_SCOPES)
-    return gspread.authorize(creds)
+    try:
+        from utils.data import get_gc
+        return get_gc()
+    except Exception:
+        # Fallback directo
+        creds = Credentials.from_service_account_info(
+            dict(st.secrets["gcp_service_account"]), scopes=_SCOPES)
+        return gspread.authorize(creds)
 
-@st.cache_resource(ttl=300)
 def _sh():
     return _gc().open_by_key(_SPREADSHEET_ID)
 
