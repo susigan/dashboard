@@ -39,6 +39,7 @@ def _gc():
         st.secrets["gcp_service_account"], scopes=_SCOPES)
     return gspread.authorize(creds)
 
+@st.cache_resource(ttl=300)
 def _spreadsheet():
     gc = _gc()
     try:
@@ -93,15 +94,11 @@ def save_cp_result(modalidade, modelo, cp_watts, wp_joules, see_pct,
                    combo_pts, mmp_dict=None, pmax=None) -> str:
     try:
         ws = _ws("cp_results")
-        records = ws.get_all_records()
-        exists = _exists(ws, modalidade, {
+        if _exists(ws, modalidade, {
             "cp_watts":  round(cp_watts, 1),
             "wp_joules": round(wp_joules, 0),
             "see_pct":   round(see_pct, 2),
-        })
-        # Debug temporário
-        st.caption(f"🔍 Debug CP: {len(records)} registos na sheet | exists={exists} | modalidade={modalidade}")
-        if exists: return "skipped"
+        }): return "skipped"
         mmp = mmp_dict or {}
         pontos = ",".join([f"{int(t//60)}min={p:.0f}W" for p,t in combo_pts])
         ws.append_row([
