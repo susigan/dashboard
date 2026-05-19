@@ -2288,6 +2288,78 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                             _conn_db.commit()
 
                         _conn_db.close()
+
+                        # Reabrir para metab e HR
+                        _conn_db2 = get_sqlite_conn()
+
+                        # Metab no SQLite
+                        if '_mb_W_AT' in dir() and _mb_W_AT and _mb_W_AT > 0:
+                            _dup_mb = _conn_db2.execute(
+                                "SELECT COUNT(*) FROM metab_results WHERE modalidade=? "
+                                "AND ABS(mlss_w-?)<0.5 AND ABS(vlamax-?)<0.001",
+                                (modalidade, float(_mb_W_AT), float(_mb_vlamax))
+                            ).fetchone()[0]
+                            if _dup_mb == 0:
+                                _vo2m3 = _mb_mmp3_in / _mb_peso * 10.8 + 7
+                                _vo2m5 = _mb_mmp5_in / _mb_peso * 10.8 + 7
+                                _conn_db2.execute("""
+                                    INSERT INTO metab_results
+                                    (saved_at,modalidade,vo2max_mmp3,vo2max_mmp5,vo2max_media,
+                                     vlamax,perfil,fatmax_w,mlss_w,lt1_w,lt2_w,cp_watts,
+                                     fat_fatmax_g_h,glycogen_total,fitness_level,
+                                     z1_w,z2_w,z3_w,peso_kg,altura_cm,idade)
+                                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                    (_now_db, modalidade,
+                                     round(_vo2m3,2), round(_vo2m5,2),
+                                     round((_vo2m3+_vo2m5)/2,2),
+                                     round(float(_mb_vlamax),4),
+                                     _mb_perfil if '_mb_perfil' in dir() else "",
+                                     round(float(_mb_W_FM),1) if _mb_W_FM else None,
+                                     round(float(_mb_W_AT),1),
+                                     _la_crossings.get('LT1'),
+                                     _la_crossings.get('LT2'),
+                                     round(float(_best_cp_val),1) if _best_cp_val else None,
+                                     round(float(_mb_fat_FM),1) if '_mb_fat_FM' in dir() and _mb_fat_FM else None,
+                                     round(float(_mb_gly_total),0) if '_mb_gly_total' in dir() and _mb_gly_total else None,
+                                     _mb_fitness if '_mb_fitness' in dir() else None,
+                                     f"< {_mb_W_FM:.0f} W" if _mb_W_FM else "",
+                                     f"{_mb_W_FM:.0f} – {_mb_W_AT:.0f} W" if _mb_W_FM and _mb_W_AT else "",
+                                     f"> {_mb_W_AT:.0f} W" if _mb_W_AT else "",
+                                     _mb_peso, _mb_altura, _mb_idade))
+                                _conn_db2.commit()
+
+                        # HR Thresholds no SQLite
+                        if '_hr_zones' in dir() and _hr_zones:
+                            _mlss_hr = _hr_zones.get('HRVTMSS',{}).get('med')
+                            if _mlss_hr:
+                                _dup_hr = _conn_db2.execute(
+                                    "SELECT COUNT(*) FROM hr_thresholds WHERE modalidade=? "
+                                    "AND ABS(hrvtmss_bpm-?)<0.5",
+                                    (modalidade, float(_mlss_hr))
+                                ).fetchone()[0]
+                                if _dup_hr == 0:
+                                    def _ghz(k): return _hr_zones.get(k,{}).get('med')
+                                    def _iqz(k): return f"[{_hr_zones.get(k,{}).get('q25',0):.0f}–{_hr_zones.get(k,{}).get('q75',0):.0f}]"
+                                    _conn_db2.execute("""
+                                        INSERT INTO hr_thresholds
+                                        (saved_at,modalidade,
+                                         hrvt1_bpm,hrvt1_iqr,hrvt1plus_bpm,hrvt1plus_iqr,
+                                         hrvtmss_bpm,hrvtmss_iqr,hrvt2_bpm,hrvt2_iqr,
+                                         aethr_bpm,aethr_iqr,pbp_w,pbp_iqr,pvo2max_w,pvo2max_iqr)
+                                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                        (_now_db, modalidade,
+                                         _ghz('HRVT1'),    _iqz('HRVT1'),
+                                         _ghz('HRVT1PLUS'),_iqz('HRVT1PLUS'),
+                                         _ghz('HRVTMSS'),  _iqz('HRVTMSS'),
+                                         _ghz('HRVT2'),    _iqz('HRVT2'),
+                                         _ghz('AeTHR'),    _iqz('AeTHR'),
+                                         _hr_zones.get('PBP',{}).get('med'),
+                                         f"[{_hr_zones.get('PBP',{}).get('q25',0):.0f}–{_hr_zones.get('PBP',{}).get('q75',0):.0f}]" if 'PBP' in _hr_zones else "",
+                                         _hr_zones.get('Pvo2max',{}).get('med'),
+                                         f"[{_hr_zones.get('Pvo2max',{}).get('q25',0):.0f}–{_hr_zones.get('Pvo2max',{}).get('q75',0):.0f}]" if 'Pvo2max' in _hr_zones else ""))
+                                    _conn_db2.commit()
+
+                        _conn_db2.close()
                         if _upload_db():
                             st.caption("📁 Também guardado em `.db` no Google Drive")
                     except Exception:
