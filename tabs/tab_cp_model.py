@@ -2302,26 +2302,64 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                             if _dup_mb == 0:
                                 _vo2m3 = _mb_mmp3_in / _mb_peso * 10.8 + 7
                                 _vo2m5 = _mb_mmp5_in / _mb_peso * 10.8 + 7
+                                _vo2med = (_vo2m3 + _vo2m5) / 2
+                                # % VO2max
+                                _fm_pct = float(_mb_VO2ss[_mb_argFM]/_vo2med*100) \
+                                          if '_mb_VO2ss' in dir() and _mb_argFM < len(_mb_VO2ss) else None
+                                _ml_pct = float(_mb_VO2ss[_mb_argAT]/_vo2med*100) \
+                                          if '_mb_VO2ss' in dir() and _mb_argAT < len(_mb_VO2ss) else None
+                                # CP vs MLSS
+                                _cp_vs_mlss_w   = round(float(_best_cp_val)-float(_mb_W_AT),1) \
+                                                  if _best_cp_val else None
+                                _cp_vs_mlss_pct = round((_cp_vs_mlss_w/float(_mb_W_AT))*100,1) \
+                                                  if _cp_vs_mlss_w and _mb_W_AT else None
+                                # CHO e Fat no MLSS
+                                _cho_mlss = float(_mb_CHO[min(_mb_argAT, len(_mb_CHO)-1)]) \
+                                            if '_mb_CHO' in dir() and len(_mb_CHO)>0 else None
+                                _fat_mlss = float(_mb_Fat[min(_mb_argAT-1, len(_mb_Fat)-1)]) \
+                                            if '_mb_Fat' in dir() and _mb_argAT>0 and len(_mb_Fat)>0 else None
+                                # Glicogénio detalhado
+                                _gly_liv = 90.0
+                                _gly_mus = float(_mb_muscle_kg * _mb_gly_kg) \
+                                           if '_mb_muscle_kg' in dir() and '_mb_gly_kg' in dir() else None
+                                # W' validação 60min
+                                _wp_val60 = None
+                                if _mmp60_val and _best_cp_val and isinstance(_calc_wp, float):
+                                    _wp_val60 = round((_mmp60_val - float(_best_cp_val)) * 3600, 0)
+
                                 _conn_db2.execute("""
                                     INSERT INTO metab_results
                                     (saved_at,modalidade,vo2max_mmp3,vo2max_mmp5,vo2max_media,
-                                     vlamax,perfil,fatmax_w,mlss_w,lt1_w,lt2_w,cp_watts,
-                                     fat_fatmax_g_h,glycogen_total,fitness_level,
-                                     z1_w,z2_w,z3_w,peso_kg,altura_cm,idade)
-                                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                     vlamax,perfil,
+                                     fatmax_w,fatmax_pct_vo2,mlss_w,mlss_pct_vo2,
+                                     lt1_w,lt2_w,cp_watts,
+                                     cp_vs_mlss_w,cp_vs_mlss_pct,
+                                     fat_fatmax_g_h,cho_mlss_g_h,fat_mlss_g_h,
+                                     glycogen_total,glycogen_liver,glycogen_muscle,
+                                     fitness_level,
+                                     z1_hr,z2_hr,z3_hr,z1_w,z2_w,z3_w,
+                                     peso_kg,altura_cm,idade)
+                                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                                     (_now_db, modalidade,
-                                     round(_vo2m3,2), round(_vo2m5,2),
-                                     round((_vo2m3+_vo2m5)/2,2),
+                                     round(_vo2m3,2), round(_vo2m5,2), round(_vo2med,2),
                                      round(float(_mb_vlamax),4),
                                      _mb_perfil if '_mb_perfil' in dir() else "",
                                      round(float(_mb_W_FM),1) if _mb_W_FM else None,
+                                     round(_fm_pct,1) if _fm_pct else None,
                                      round(float(_mb_W_AT),1),
-                                     _la_crossings.get('LT1'),
-                                     _la_crossings.get('LT2'),
+                                     round(_ml_pct,1) if _ml_pct else None,
+                                     _la_crossings.get('LT1'), _la_crossings.get('LT2'),
                                      round(float(_best_cp_val),1) if _best_cp_val else None,
+                                     _cp_vs_mlss_w, _cp_vs_mlss_pct,
                                      round(float(_mb_fat_FM),1) if '_mb_fat_FM' in dir() and _mb_fat_FM else None,
+                                     round(_cho_mlss,1) if _cho_mlss else None,
+                                     round(_fat_mlss,1) if _fat_mlss else None,
                                      round(float(_mb_gly_total),0) if '_mb_gly_total' in dir() and _mb_gly_total else None,
+                                     _gly_liv, round(_gly_mus,0) if _gly_mus else None,
                                      _mb_fitness if '_mb_fitness' in dir() else None,
+                                     f"< {_hr_zones.get('HRVT1',{}).get('med',0):.0f} bpm" if '_hr_zones' in dir() and 'HRVT1' in _hr_zones else "",
+                                     f"{_hr_zones.get('HRVT1',{}).get('med',0):.0f} – {_hr_zones.get('HRVTMSS',{}).get('med',0):.0f} bpm" if '_hr_zones' in dir() and 'HRVTMSS' in _hr_zones else "",
+                                     f"> {_hr_zones.get('HRVTMSS',{}).get('med',0):.0f} bpm" if '_hr_zones' in dir() and 'HRVTMSS' in _hr_zones else "",
                                      f"< {_mb_W_FM:.0f} W" if _mb_W_FM else "",
                                      f"{_mb_W_FM:.0f} – {_mb_W_AT:.0f} W" if _mb_W_FM and _mb_W_AT else "",
                                      f"> {_mb_W_AT:.0f} W" if _mb_W_AT else "",
