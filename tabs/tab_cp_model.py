@@ -2253,6 +2253,17 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                                 _see_db = _gr_db.get('see_pct',0)
                                 _combo_db = _gr_db.get('combo',[])
                                 _pts_db = ",".join([f"{int(t//60)}min={p:.0f}W" for p,t in _combo_db])
+
+                                # Verificar duplicado no SQLite
+                                _dup = _conn_db.execute(
+                                    "SELECT COUNT(*) FROM cp_results WHERE modalidade=? AND modelo=? "
+                                    "AND ABS(cp_watts-?)<0.5 AND ABS(see_pct-?)<0.01",
+                                    (modalidade, _mn_db, float(_cp_db), float(_see_db))
+                                ).fetchone()[0]
+                                if _dup > 0:
+                                    _rank_db += 1
+                                    continue
+
                                 def _mdb(k):
                                     d = _mmp_sb.get(k,{})
                                     return d.get('w'), d.get('data','')
