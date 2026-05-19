@@ -115,6 +115,14 @@ def _ws(name: str):
         ws.append_row(_HEADERS[name])
         return ws
 
+def _to_float(v) -> float:
+    """Converte valor da sheet (pode ter vírgula decimal) para float."""
+    try:
+        if v is None or v == "": return 0.0
+        return float(str(v).replace(",", "."))
+    except:
+        return 0.0
+
 def _exists(ws, modalidade: str, checks: dict, tol=0.5) -> bool:
     try:
         records = ws.get_all_records()
@@ -123,9 +131,10 @@ def _exists(ws, modalidade: str, checks: dict, tol=0.5) -> bool:
             if str(row.get("modalidade","")).strip() != str(modalidade).strip():
                 continue
             first_key = list(checks.keys())[0]
-            if not row.get(first_key) and row.get(first_key) != 0:
+            first_val = row.get(first_key)
+            if first_val == "" or first_val is None:
                 continue
-            if all(abs(float(row.get(k) or 0) - float(v or 0)) < tol
+            if all(abs(_to_float(row.get(k)) - _to_float(v)) < tol
                    for k, v in checks.items()):
                 return True
         return False
