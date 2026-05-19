@@ -2238,22 +2238,44 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                     )
                     # Tentar guardar também no .db do Drive (silencioso se falhar)
                     try:
-                        from utils.drive_db import _upload_db, get_sqlite_conn
+                        from utils.drive_db import _upload_db, get_sqlite_conn, _find_db_id, _drive_svc
                         _conn_db = get_sqlite_conn()
-                        # CP — melhor modelo
-                        if _best_cp_val and _best_cp_res:
-                            _conn_db.execute("""
-                                INSERT OR IGNORE INTO cp_results
-                                (saved_at,modalidade,modelo,cp_watts,wp_joules,see_pct,pontos,melhor_modelo)
-                                VALUES (?,?,?,?,?,?,?,1)""",
-                                (datetime.now().strftime("%Y-%m-%d %H:%M"),
-                                 modalidade, _best_cp_lbl,
-                                 round(float(_best_cp_val),2),
-                                 round(float(_best_cp_res[1]),1) if isinstance(_best_cp_res[1],float) else 0,
-                                 round(_best_cp_gr.get('see_pct',0),3),
-                                 ",".join([f"{int(t//60)}min={p:.0f}W"
-                                           for p,t in _best_cp_gr.get('combo',[])])))
+                        _now_db  = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+                        # CP — todos os modelos (igual à Sheet)
+                        if _results_rank:
+                            _rank_db = 1
+                            for _mn_db, _gr_db in sorted(_results_rank.items(),
+                                                          key=lambda x: x[1].get('see_pct',999)):
+                                _cp_db  = _gr_db.get('cp') or 0
+                                _res_db = _gr_db.get('result',[None,None])
+                                _wp_db  = _res_db[1] if _res_db and len(_res_db)>1 else None
+                                _see_db = _gr_db.get('see_pct',0)
+                                _combo_db = _gr_db.get('combo',[])
+                                _pts_db = ",".join([f"{int(t//60)}min={p:.0f}W" for p,t in _combo_db])
+                                def _mdb(k):
+                                    d = _mmp_sb.get(k,{})
+                                    return d.get('w'), d.get('data','')
+                                _conn_db.execute("""
+                                    INSERT INTO cp_results
+                                    (saved_at,modalidade,modelo,cp_watts,wp_joules,see_pct,
+                                     pontos,rank_see,melhor_modelo,
+                                     mmp1_w,mmp1_data,mmp3_w,mmp3_data,
+                                     mmp5_w,mmp5_data,mmp12_w,mmp12_data,
+                                     mmp20_w,mmp20_data,mmp60_w,mmp60_data,pmax)
+                                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                    (_now_db, modalidade, _mn_db,
+                                     round(float(_cp_db),2),
+                                     round(float(_wp_db),1) if _wp_db else None,
+                                     round(float(_see_db),3), _pts_db,
+                                     _rank_db, 1 if _rank_db==1 else 0,
+                                     *_mdb('MMP1'), *_mdb('MMP3'),
+                                     *_mdb('MMP5'), *_mdb('MMP12'),
+                                     *_mdb('MMP20'), *_mdb('MMP60'),
+                                     round(float(_pmax_global),1) if _pmax_global else None))
+                                _rank_db += 1
                             _conn_db.commit()
+
                         _conn_db.close()
                         if _upload_db():
                             st.caption("📁 Também guardado em `.db` no Google Drive")
