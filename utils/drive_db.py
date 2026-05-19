@@ -352,3 +352,133 @@ def load_latest_cp(modalidade: str) -> dict:
 def load_latest_metab(modalidade: str) -> dict:
     df = load_metab_history(modalidade, n=1)
     return df.iloc[0].to_dict() if not df.empty else {}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SQLite no Google Drive — funciona se a pasta estiver partilhada como Editor
+# ══════════════════════════════════════════════════════════════════════════════
+
+import os, io, sqlite3
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+from googleapiclient.errors import HttpError
+
+_DB_NAME     = "atheltica_cpmodel.db"
+_LOCAL_DB    = f"/tmp/{_DB_NAME}"
+_FOLDER_ID   = "11oXQPkFrG6ZBCsvjDqb8RAiE_VfwBSfV"
+_DRIVE_SCOPES = [
+    "https://spreadsheets.google.com/feeds",
+    "https://www.googleapis.com/auth/drive",
+]
+
+def _drive_svc():
+    creds = Credentials.from_service_account_info(
+        dict(st.secrets["gcp_service_account"]), scopes=_DRIVE_SCOPES)
+    return build("drive", "v3", credentials=creds)
+
+def _find_db_id(svc) -> str | None:
+    try:
+        r = svc.files().list(
+            q=f"name='{_DB_NAME}' and '{_FOLDER_ID}' in parents and trashed=false",
+            fields="files(id)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+        ).execute()
+        files = r.get("files", [])
+        return files[0]["id"] if files else None
+    except Exception:
+        return None
+
+def _init_sqlite():
+    conn = sqlite3.connect(_LOCAL_DB)
+    conn.executescript("""
+    CREATE TABLE IF NOT EXISTS cp_results (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        saved_at TEXT, modalidade TEXT, modelo TEXT,
+        cp_watts REAL, wp_joules REAL, see_pct REAL,
+        pontos TEXT, rank_see INTEGER, melhor_modelo INTEGER,
+        mmp1_w REAL, mmp1_data TEXT, mmp3_w REAL, mmp3_data TEXT,
+        mmp5_w REAL, mmp5_data TEXT, mmp12_w REAL, mmp12_data TEXT,
+        mmp20_w REAL, mmp20_data TEXT, mmp60_w REAL, mmp60_data TEXT,
+        pmax REAL, cp_pct_mmp5 REAL, cp_pct_mmp20 REAL);
+    CREATE TABLE IF NOT EXISTS metab_results (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        saved_at TEXT, modalidade TEXT,
+        vo2max_mmp3 REAL, vo2max_mmp5 REAL, vo2max_media REAL,
+        vlamax REAL, perfil TEXT,
+        fatmax_w REAL, fatmax_pct_vo2 REAL,
+        mlss_w REAL, mlss_pct_vo2 REAL,
+        lt1_w REAL, lt2_w REAL, cp_watts REAL,
+        cp_vs_mlss_w REAL, cp_vs_mlss_pct REAL, mlss_vs_fatmax_pct REAL,
+        fat_fatmax_g_h REAL, cho_mlss_g_h REAL, fat_mlss_g_h REAL,
+        glycogen_total REAL, glycogen_liver REAL, glycogen_muscle REAL,
+        fitness_level TEXT,
+        z1_hr TEXT, z2_hr TEXT, z3_hr TEXT,
+        z1_w TEXT, z2_w TEXT, z3_w TEXT,
+        peso_kg REAL, altura_cm INTEGER, idade INTEGER);
+    CREATE TABLE IF NOT EXISTS hr_thresholds (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        saved_at TEXT, modalidade TEXT,
+        hrvt1_bpm REAL, hrvt1_iqr TEXT,
+        hrvt1plus_bpm REAL, hrvt1plus_iqr TEXT,
+        hrvtmss_bpm REAL, hrvtmss_iqr TEXT,
+        hrvt2_bpm REAL, hrvt2_iqr TEXT,
+        aethr_bpm REAL, aethr_iqr TEXT,
+        pbp_w REAL, pbp_iqr TEXT,
+        pvo2max_w REAL, pvo2max_iqr TEXT,
+        n_sessions INTEGER);
+    """)
+    conn.commit()
+    conn.close()
+
+def _upload_db() -> bool:
+    """Tenta upload do .db para o Drive. Retorna True se OK."""
+    if not os.path.exists(_LOCAL_DB): return False
+    try:
+        svc = _drive_svc()
+        file_id = _find_db_id(svc)
+        media = MediaFileUpload(_LOCAL_DB, mimetype="application/x-sqlite3",
+                                resumable=False)
+        if file_id:
+            svc.files().update(
+                fileId=file_id, media_body=media,
+                supportsAllDrives=True,
+            ).execute()
+        else:
+            svc.files().create(
+                body={"name": _DB_NAME, "parents": [_FOLDER_ID]},
+                media_body=media,
+                supportsAllDrives=True,
+                fields="id",
+            ).execute()
+        return True
+    except HttpError as e:
+        # Não mostra erro — é opcional, o Sheets já guardou
+        return False
+    except Exception:
+        return False
+
+def _download_db() -> bool:
+    """Download do .db do Drive para /tmp/. Cria se não existir."""
+    try:
+        svc = _drive_svc()
+        file_id = _find_db_id(svc)
+        if file_id:
+            req = svc.files().get_media(fileId=file_id,
+                                        supportsAllDrives=True)
+            with open(_LOCAL_DB, "wb") as f:
+                dl = MediaIoBaseDownload(f, req)
+                done = False
+                while not done: _, done = dl.next_chunk()
+    except Exception:
+        pass
+    # Sempre inicializar (cria tabelas se não existirem)
+    _init_sqlite()
+    return True
+
+def get_sqlite_conn() -> sqlite3.Connection:
+    """Retorna conexão SQLite. Faz download se necessário."""
+    if not os.path.exists(_LOCAL_DB):
+        _download_db()
+    _init_sqlite()
+    return sqlite3.connect(_LOCAL_DB)
