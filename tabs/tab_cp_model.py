@@ -2099,7 +2099,7 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
             st.markdown("**💾 Guardar resultados**")
 
             if st.button("💾 Guardar no Drive", key="btn_save_cpmodel",
-                         help="Guarda CP, perfil metabólico e limiares HR no Google Drive"):
+                         help="Guarda CP (todos modelos), perfil metabólico e limiares HR"):
                 _saved_any = False
                 _skipped   = []
                 _errors    = []
@@ -2109,72 +2109,130 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                         save_cp_result, save_metab_result, save_hr_thresholds,
                     )
 
-                    # 1 — CP Result
-                    if _best_cp_val and _best_cp_res:
-                        _mmp_dict = {
-                            f"MMP{int(t//60)}": p
-                            for p, t in _all_mmp_pts
-                        }
-                        _r = save_cp_result(
-                            modalidade = modalidade,
-                            modelo     = _best_cp_lbl,
-                            cp_watts   = float(_best_cp_val),
-                            wp_joules  = float(_best_cp_res[1]) if isinstance(_best_cp_res[1], float) else 0.0,
-                            see_pct    = float(_best_cp_gr.get('see_pct', 0)),
-                            combo_pts  = _best_cp_gr.get('combo', []),
-                            mmp_dict   = _mmp_dict,
-                            pmax       = _pmax_global,
-                        )
-                        if   _r == "saved":   _saved_any = True
-                        elif _r == "skipped": _skipped.append("CP")
-                        else:                 _errors.append("CP")
+                    # ── 1. CP — todos os modelos ──────────────────────────────
+                    # Construir season bests com datas por MMP
+                    _mmp_sb = {}
+                    if ac_full is not None and _col_mod is not None:
+                        _ac_sb = ac_full[ac_full[_col_mod] == modalidade].copy()
+                        _col_d_sb = next((c for c in ['date','Data']
+                                          if c in _ac_sb.columns), None)
+                        for _mc_sb, _dur_sb in MMP_COLS.items():
+                            if _mc_sb not in _ac_sb.columns or not _col_d_sb:
+                                continue
+                            _s_sb = (_ac_sb[[_mc_sb, _col_d_sb]]
+                                     .dropna(subset=[_mc_sb])
+                                     .sort_values(_col_d_sb, ascending=False))
+                            if _s_sb.empty: continue
+                            for _, _rr_sb in _s_sb.iterrows():
+                                _v_sb = parse_mmp(str(_rr_sb[_mc_sb]))
+                                if _v_sb:
+                                    _mmp_sb[_mc_sb] = {
+                                        'w':    _v_sb,
+                                        'data': str(_rr_sb[_col_d_sb])[:10],
+                                    }
+                                    break
 
-                    # 2 — Metab Result
+                    _r_cp = save_cp_result(
+                        modalidade       = modalidade,
+                        resultados_rank  = _results_rank,
+                        all_mmp_pts      = _all_mmp_pts,
+                        mmp_season_bests = _mmp_sb,
+                        pmax             = _pmax_global,
+                    )
+                    if   _r_cp == "saved":   _saved_any = True
+                    elif _r_cp == "skipped": _skipped.append("CP")
+                    else:                    _errors.append("CP")
+
+                    # ── 2. Metab ──────────────────────────────────────────────
                     if '_mb_W_AT' in dir() and _mb_W_AT and _mb_W_AT > 0:
-                        _r = save_metab_result(
-                            modalidade = modalidade,
-                            vo2max     = float(_mb_vo2max),
-                            vlamax     = float(_mb_vlamax),
-                            mlss_w     = float(_mb_W_AT),
-                            fatmax_w   = float(_mb_W_FM) if _mb_W_FM else 0.0,
-                            lt1_w      = _la_crossings.get('LT1'),
-                            lt2_w      = _la_crossings.get('LT2'),
-                            fat_fatmax = float(_mb_fat_FM) if '_mb_fat_FM' in dir() and _mb_fat_FM else None,
-                            glycogen_g = float(_mb_gly_total) if '_mb_gly_total' in dir() and _mb_gly_total else None,
-                            perfil     = _mb_perfil if '_mb_perfil' in dir() else None,
-                        )
-                        if   _r == "saved":   _saved_any = True
-                        elif _r == "skipped": _skipped.append("Metab")
-                        else:                 _errors.append("Metab")
+                        # Zonas consolidadas
+                        _z1_hr = _z2_hr = _z3_hr = ""
+                        _z1_w  = _z2_w  = _z3_w  = ""
+                        if '_hr_zones' in dir() and _hr_zones:
+                            _h1 = _hr_zones.get('HRVT1',{}).get('med',0)
+                            _hm = _hr_zones.get('HRVTMSS',{}).get('med',0)
+                            _h2 = _hr_zones.get('HRVT2',{}).get('med',0)
+                            if _h1: _z1_hr = f"< {_h1:.0f} bpm"
+                            if _h1 and _hm: _z2_hr = f"{_h1:.0f} – {_hm:.0f} bpm"
+                            if _hm: _z3_hr = f"> {_hm:.0f} bpm"
+                        if _mb_W_FM: _z1_w = f"< {_mb_W_FM:.0f} W"
+                        if _mb_W_FM and _mb_W_AT:
+                            _z2_w = f"{_mb_W_FM:.0f} – {_mb_W_AT:.0f} W"
+                        if _mb_W_AT: _z3_w = f"> {_mb_W_AT:.0f} W"
 
-                    # 3 — HR Thresholds
+                        # CHO e Fat no MLSS
+                        _cho_at_mlss = float(_mb_CHO[min(_mb_argAT, len(_mb_CHO)-1)]) \
+                                       if '_mb_CHO' in dir() and len(_mb_CHO) > 0 else None
+                        _fat_at_mlss = float(_mb_Fat[min(_mb_argAT-1, len(_mb_Fat)-1)]) \
+                                       if '_mb_Fat' in dir() and _mb_argAT > 0 and len(_mb_Fat) > 0 else None
+
+                        _vo2_mmp3 = _mb_mmp3_in / _mb_peso * 10.8 + 7
+                        _vo2_mmp5 = _mb_mmp5_in / _mb_peso * 10.8 + 7
+                        _vo2_media = (_vo2_mmp3 + _vo2_mmp5) / 2
+
+                        _r_m = save_metab_result(
+                            modalidade       = modalidade,
+                            vo2max_mmp3      = _vo2_mmp3,
+                            vo2max_mmp5      = _vo2_mmp5,
+                            vlamax           = _mb_vlamax,
+                            perfil           = _mb_perfil if '_mb_perfil' in dir() else "",
+                            fatmax_w         = _mb_W_FM or 0,
+                            fatmax_pct_vo2max= _mb_W_FM / _mb_peso / _vo2_media * 100 if _mb_W_FM else 0,
+                            mlss_w           = _mb_W_AT,
+                            mlss_pct_vo2max  = _mb_VO2ss[_mb_argAT] / _vo2_media * 100
+                                               if '_mb_VO2ss' in dir() else 0,
+                            lt1_w            = _la_crossings.get('LT1'),
+                            lt2_w            = _la_crossings.get('LT2'),
+                            cp_watts         = float(_best_cp_val) if _best_cp_val else None,
+                            fat_fatmax_g_h   = _mb_fat_FM if '_mb_fat_FM' in dir() else None,
+                            cho_mlss_g_h     = _cho_at_mlss,
+                            fat_mlss_g_h     = _fat_at_mlss,
+                            glycogen_total   = _mb_gly_total if '_mb_gly_total' in dir() else None,
+                            glycogen_liver   = 90.0,
+                            glycogen_muscle  = _mb_muscle_kg * _mb_gly_kg
+                                               if '_mb_muscle_kg' in dir() and '_mb_gly_kg' in dir() else None,
+                            fitness_level    = _mb_fitness if '_mb_fitness' in dir() else None,
+                            z1_hr=_z1_hr, z2_hr=_z2_hr, z3_hr=_z3_hr,
+                            z1_w=_z1_w,   z2_w=_z2_w,   z3_w=_z3_w,
+                            peso_kg          = _mb_peso,
+                            altura_cm        = _mb_altura,
+                            idade            = _mb_idade,
+                        )
+                        if   _r_m == "saved":   _saved_any = True
+                        elif _r_m == "skipped": _skipped.append("Metab")
+                        else:                   _errors.append("Metab")
+
+                    # ── 3. HR Thresholds ──────────────────────────────────────
                     if '_hr_zones' in dir() and _hr_zones:
-                        _r = save_hr_thresholds(
+                        _n_sess = sum(
+                            _hr_zones.get(k, {}).get('n', 0)
+                            for k in ['HRVT1','HRVTMSS','HRVT2']
+                        )
+                        _r_h = save_hr_thresholds(
                             modalidade = modalidade,
                             hr_zones   = _hr_zones,
                             pbp_w      = _hr_zones.get('PBP', {}).get('med'),
                             pvo2max_w  = _hr_zones.get('Pvo2max', {}).get('med'),
+                            n_sessions = _n_sess or None,
                         )
-                        if   _r == "saved":   _saved_any = True
-                        elif _r == "skipped": _skipped.append("HR")
-                        else:                 _errors.append("HR")
+                        if   _r_h == "saved":   _saved_any = True
+                        elif _r_h == "skipped": _skipped.append("HR")
+                        else:                   _errors.append("HR")
 
                 except ImportError:
                     st.error("❌ `utils/drive_db.py` não encontrado no GitHub.")
-                    st.stop()
                 except Exception as _save_err:
                     st.error(f"❌ Erro: {_save_err}")
 
-                # Feedback
                 if _errors:
                     st.warning(f"⚠️ Falhou: {', '.join(_errors)}")
                 if _saved_any:
                     st.success(
-                        "✅ Guardado no Drive" +
-                        (f" | ignorados (igual): {', '.join(_skipped)}" if _skipped else "")
+                        "✅ Guardado" +
+                        (f" | ignorados: {', '.join(_skipped)}" if _skipped else "")
                     )
                 elif _skipped and not _errors:
-                    st.info(f"ℹ️ Todos os dados já existem — {', '.join(_skipped)}")
+                    st.info(f"ℹ️ Dados já existem — {', '.join(_skipped)}")
     with _tab_ompd:
         st.caption(
             "OmPD com os melhores 3 pontos MMP encontrados pelo grid search. "
