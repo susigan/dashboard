@@ -422,7 +422,7 @@ def _init_sqlite():
         fatmax_w REAL, fatmax_pct_vo2 REAL,
         mlss_w REAL, mlss_pct_vo2 REAL,
         lt1_w REAL, lt2_w REAL, cp_watts REAL,
-        cp_vs_mlss_w REAL, cp_vs_mlss_pct REAL, mlss_vs_fatmax_pct REAL,
+        cp_vs_mlss_w REAL, cp_vs_mlss_pct REAL,
         fat_fatmax_g_h REAL, cho_mlss_g_h REAL, fat_mlss_g_h REAL,
         glycogen_total REAL, glycogen_liver REAL, glycogen_muscle REAL,
         fitness_level TEXT,
