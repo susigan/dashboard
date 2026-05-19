@@ -109,11 +109,19 @@ def _sh():
 def _ws(name: str):
     sh = _sh()
     try:
-        return sh.worksheet(name)
+        ws = sh.worksheet(name)
     except WorksheetNotFound:
         ws = sh.add_worksheet(title=name, rows=2000, cols=len(_HEADERS[name]))
-        ws.append_row(_HEADERS[name])
-        return ws
+
+    # Verificar se a primeira linha tem os headers correctos
+    try:
+        first_row = ws.row_values(1)
+        if not first_row or first_row[0] != _HEADERS[name][0]:
+            # Inserir headers no topo
+            ws.insert_row(_HEADERS[name], index=1)
+    except Exception:
+        ws.insert_row(_HEADERS[name], index=1)
+    return ws
 
 def _to_float(v) -> float:
     """Converte valor da sheet (pode ter vírgula decimal) para float."""
