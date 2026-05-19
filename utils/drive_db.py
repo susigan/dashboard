@@ -155,44 +155,44 @@ def _r(v, n=1):
 
 def save_cp_result(
     modalidade: str,
-    resultados_rank: dict,      # {modelo: {cp, wp, see_pct, combo, result}} — todos
-    all_mmp_pts: list,          # [(watts, secs), ...] — pontos disponíveis
-    mmp_season_bests: dict,     # {"MMP1": {"w": 388, "data": "2025-03-12"}, ...}
+    resultados_rank: dict,
+    all_mmp_pts: list,
+    mmp_season_bests: dict,
     pmax: float = None,
 ) -> str:
-    """
-    Guarda TODOS os modelos do Ranking, um por linha.
-    O melhor (menor SEE%) é marcado como melhor_modelo=True.
-    """
     if not resultados_rank: return "skipped"
     try:
         ws = _ws("cp_results")
-
-        # Verificar se já existe (pelo melhor modelo desta sessão)
         melhor = min(resultados_rank.items(), key=lambda x: x[1].get('see_pct', 999))
         melhor_lbl, melhor_gr = melhor
-        melhor_cp = melhor_gr.get('cp', 0)
+        melhor_cp = float(melhor_gr.get('cp', 0))
+        melhor_see = float(melhor_gr.get('see_pct', 0))
 
-        if _exists(ws, modalidade, {
-            "cp_watts": _r(melhor_cp, 1),
-            "see_pct":  _r(melhor_gr.get('see_pct', 0), 2),
-        }): return "skipped"
+        # Verificar duplicado — comparar cp_watts E modalidade E modelo
+        records = ws.get_all_records()
+        for row in records:
+            if str(row.get("modalidade","")).strip() != str(modalidade).strip():
+                continue
+            if str(row.get("modelo","")).strip() != str(melhor_lbl).strip():
+                continue
+            row_cp  = _to_float(row.get("cp_watts", 0))
+            row_see = _to_float(row.get("see_pct", 0))
+            if abs(row_cp - melhor_cp) < 0.5 and abs(row_see - melhor_see) < 0.01:
+                return "skipped"
 
         sb = mmp_season_bests or {}
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-        # Uma linha por modelo
-        rows_to_add = []
         rank = 1
         for modelo, gr in sorted(resultados_rank.items(),
                                   key=lambda x: x[1].get('see_pct', 999)):
             cp  = gr.get('cp') or 0
-            wp  = gr.get('result', [None,None])[1] if gr.get('result') else None
+            res = gr.get('result', [None, None])
+            wp  = res[1] if res and len(res) > 1 else None
             see = gr.get('see_pct', 0)
             combo = gr.get('combo', [])
             pontos = ",".join([f"{int(t//60)}min={p:.0f}W" for p,t in combo])
 
-            # MMPs com datas
             def _mmp(k):
                 d = sb.get(k, {})
                 return _r(d.get('w')), d.get('data','')
@@ -204,22 +204,18 @@ def save_cp_result(
             m20w,m20d = _mmp('MMP20')
             m60w,m60d = _mmp('MMP60')
 
-            cp_pct_mmp5  = _r(cp / float(m5w)  * 100, 1) if m5w  else ""
-            cp_pct_mmp20 = _r(cp / float(m20w) * 100, 1) if m20w else ""
+            cp_pct_mmp5  = _r(float(cp)/float(m5w)*100, 1)  if m5w  else ""
+            cp_pct_mmp20 = _r(float(cp)/float(m20w)*100, 1) if m20w else ""
 
-            rows_to_add.append([
+            ws.append_row([
                 now, modalidade,
                 modelo, _r(cp,2), _r(wp,1), _r(see,3), pontos,
                 rank, str(rank == 1),
                 m1w, m1d, m3w, m3d, m5w, m5d,
                 m12w, m12d, m20w, m20d, m60w, m60d,
-                _r(pmax,1),
-                cp_pct_mmp5, cp_pct_mmp20,
+                _r(pmax,1), cp_pct_mmp5, cp_pct_mmp20,
             ])
             rank += 1
-
-        for row in rows_to_add:
-            ws.append_row(row)
         return "saved"
 
     except Exception as e:
