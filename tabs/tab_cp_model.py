@@ -1265,6 +1265,124 @@ def tab_cp_model(ac_full=None):
                             delta_color="off"
                         )
 
+            # ── Calculadora Row/Ski: Watts ↔ Split ───────────────────────────
+            if modalidade in ('Row', 'Ski'):
+                st.markdown("---")
+                st.markdown("**🚣 Calculadora de Performance — Row/Ski**")
+                st.caption(
+                    "Baseada no ergómetro Concept2. "
+                    "Insere os Watts de cada teste — o valor de **2km é a referência central**. "
+                    "Os outros são calculados automaticamente."
+                )
+
+                def _split_sec(w):
+                    """Watts → segundos por 500m (Concept2)."""
+                    if not w or w <= 0: return None
+                    return ((2.8 / w) ** (1/3)) / 86400 * 500 * 86400
+
+                def _fmt_split(t_sec):
+                    if t_sec is None: return "—"
+                    m = int(t_sec // 60)
+                    s = t_sec % 60
+                    return f"{m}:{s:05.2f}"
+
+                def _w_from_split(split_str):
+                    """MM:SS.ss → Watts."""
+                    try:
+                        parts = split_str.strip().replace(",",".").split(":")
+                        t = float(parts[0])*60 + float(parts[1])
+                        return 2.8 / (t/86400*86400/500)**3
+                    except:
+                        return None
+
+                # Percentagens ideais por teste
+                _pcts = {
+                    "Power Peak": 173,
+                    "60seg":      153,
+                    "2km":        100,
+                    "6km":         85,
+                    "60min":       76,
+                }
+
+                # Input de Watts por teste — todos vazios (utilizador preenche)
+                st.markdown("**Insere os Watts medidos (deixa 0 se não disponível):**")
+                _ci1, _ci2, _ci3, _ci4, _ci5 = st.columns(5)
+                _w_pp  = _ci1.number_input("Power Peak", 0, 3000, 0, 5, key="calc_w_pp")
+                _w_60  = _ci2.number_input("60 seg",     0, 2000, 0, 5, key="calc_w_60")
+                _w_2k  = _ci3.number_input("2km ★",     0, 1000, 0, 5, key="calc_w_2k",
+                                            help="Referência central — todos os outros são calculados a partir daqui")
+                _w_6k  = _ci4.number_input("6km",        0, 800,  0, 5, key="calc_w_6k")
+                _w_60m = _ci5.number_input("60 min",     0, 700,  0, 5, key="calc_w_60m")
+
+                _inputs = {
+                    "Power Peak": _w_pp  if _w_pp  > 0 else None,
+                    "60seg":      _w_60  if _w_60  > 0 else None,
+                    "2km":        _w_2k  if _w_2k  > 0 else None,
+                    "6km":        _w_6k  if _w_6k  > 0 else None,
+                    "60min":      _w_60m if _w_60m > 0 else None,
+                }
+
+                if _w_2k > 0:
+                    # Calcular tabela completa
+                    _rows_calc = []
+                    for _teste, _pct_ideal in _pcts.items():
+                        _w_in   = _inputs.get(_teste)
+                        _w_atual = _w_in or None
+
+                        # Actual% = w_atual / w_2km
+                        _pct_atual = (_w_atual / _w_2k * 100) if _w_atual else None
+
+                        # Watts objectivo = %ideal × w_2km
+                        _w_obj = _w_2k * _pct_ideal / 100
+
+                        # Split objectivo
+                        _split_obj = _fmt_split(_split_sec(_w_obj))
+
+                        # Split actual (se tiver watts actual)
+                        _split_atual = _fmt_split(_split_sec(_w_atual)) if _w_atual else "—"
+
+                        _rows_calc.append({
+                            "Teste":       _teste,
+                            "Watts (real)":f"{_w_atual:.0f}W" if _w_atual else "—",
+                            "Split (real)":_split_atual,
+                            "% Actual":    f"{_pct_atual:.0f}%" if _pct_atual else "—",
+                            "% Ideal":     f"{_pct_ideal}%",
+                            "Watts (obj)": f"{_w_obj:.0f}W",
+                            "Split (obj)": _split_obj,
+                        })
+
+                    _df_calc = pd.DataFrame(_rows_calc)
+
+                    # Destacar linha 2km
+                    st.dataframe(
+                        _df_calc,
+                        hide_index=True,
+                        use_container_width=True,
+                    )
+                    st.caption(
+                        "★ 2km = referência central (100%). "
+                        "**% Actual** = Watts reais / Watts 2km. "
+                        "**Watts (obj)** = % Ideal × Watts 2km. "
+                        "**Split** = fórmula Concept2: ((2.8/W)^(1/3)) × 500/86400 × 86400."
+                    )
+
+                    # Mini calculadora inversa: Split → Watts
+                    st.markdown("**Converter Split → Watts:**")
+                    _cs1, _cs2 = st.columns(2)
+                    with _cs1:
+                        _split_in = st.text_input("Split /500m (MM:SS.ss)", "2:00.00",
+                                                   key="calc_split_in")
+                    with _cs2:
+                        _w_from_s = _w_from_split(_split_in)
+                        if _w_from_s:
+                            st.metric(f"Watts para {_split_in}",
+                                      f"{_w_from_s:.1f} W",
+                                      f"{_w_from_s/_w_2k*100:.1f}% do 2km")
+                        else:
+                            st.caption("Formato: M:SS.ss (ex: 1:58.50)")
+                else:
+                    st.info("Insere o valor de Watts do **2km** para calcular a tabela.")
+
             # ── Perfil Metabólico (Mader / Hauser / INSCYD / konaendu) ──────────
             _la_crossings = {}  # inicializar — preenchido no gráfico de lactato
             st.markdown("---")
