@@ -2398,8 +2398,31 @@ Bias vs espirometria: -0.21 ml/min/kg, 95% CI: -2.46 a +2.0 (Van Schuylenbergh 2
                                     _conn_db2.commit()
 
                         _conn_db2.close()
+
+                        # Feedback do .db
+                        _db_saved   = []
+                        _db_skipped = []
+                        _db_failed  = False
+
+                        if _results_rank:
+                            _ck = _conn_db2  # já fechado — reabrir para verificar
+                            try:
+                                _ck2 = get_sqlite_conn()
+                                _n_cp = _ck2.execute(
+                                    "SELECT COUNT(*) FROM cp_results WHERE modalidade=? AND saved_at=?",
+                                    (modalidade, _now_db)).fetchone()[0]
+                                _ck2.close()
+                                if _n_cp > 0: _db_saved.append(f"CP ({_n_cp} modelos)")
+                                else: _db_skipped.append("CP (já existe)")
+                            except Exception: pass
+
                         if _upload_db():
-                            st.caption("📁 Também guardado em `.db` no Google Drive")
+                            _parts = []
+                            if _db_saved:    _parts.append(f"✅ guardado: {', '.join(_db_saved)}")
+                            if _db_skipped:  _parts.append(f"⏭️ ignorado: {', '.join(_db_skipped)}")
+                            st.caption(f"📁 `.db` Drive — {' | '.join(_parts) if _parts else '✅ actualizado'}")
+                        else:
+                            st.caption("📁 `.db` — upload falhou (Sheet já guardou)")
                     except Exception:
                         pass  # silencioso — Sheet já guardou
                 elif _skipped and not _errors:
