@@ -1968,21 +1968,32 @@ Recalcula automaticamente a cada carregamento de dados.
             # Sugestao integrada
             st.markdown("#### Sugestao para hoje — HRV x Monotonia x Markov")
 
-            # Zona HRV permitida
-            _hrv_recente_mk = None
-            if _hrv_col_mk and len(_mk_hrv) > 0 and _mk_hrv['hrv'].notna().any():
-                _hrv_recente_mk = float(_mk_hrv['hrv'].iloc[-1])
-            if _hrv_recente_mk is not None and _hrv_base > 0:
-                _ratio = _hrv_recente_mk / _hrv_base
-                if _ratio >= 0.97:
-                    _zona_perm  = ['Moderado', 'Forte']
-                    _hrv_guid   = "HIIT — Z2/Z3 permitido"
-                else:
-                    _zona_perm  = ['Leve']
-                    _hrv_guid   = "Recuperacao — Z1/Descanso"
-            else:
-                _zona_perm  = ['Leve', 'Moderado', 'Forte']
-                _hrv_guid   = "HRV sem dados — todas as zonas"
+            # Zona HRV permitida -- mesma logica do card principal (ln rMSSD banda 14d +-0.5SD)
+            _zona_perm = ['Leve', 'Moderado', 'Forte']
+            _hrv_guid  = "HRV sem dados -- todas as zonas"
+            if _hrv_col_mk and len(_mk_hrv) > 5:
+                try:
+                    _mk_hrv_s = _mk_hrv.copy().sort_values('Data')
+                    _mk_hrv_s['ln_hrv'] = np.where(
+                        _mk_hrv_s['hrv'] > 0, np.log(_mk_hrv_s['hrv']), np.nan)
+                    _mk_hrv_s = _mk_hrv_s.dropna(subset=['ln_hrv'])
+                    if len(_mk_hrv_s) >= 7:
+                        _mk_hrv_s['bm']   = _mk_hrv_s['ln_hrv'].rolling(14, min_periods=7).mean()
+                        _mk_hrv_s['bs']   = _mk_hrv_s['ln_hrv'].rolling(14, min_periods=7).std()
+                        _mk_hrv_s['linf'] = _mk_hrv_s['bm'] - 0.5 * _mk_hrv_s['bs']
+                        _mk_hrv_s['lsup'] = _mk_hrv_s['bm'] + 0.5 * _mk_hrv_s['bs']
+                        _last_mk = _mk_hrv_s.dropna(subset=['bm']).iloc[-1]
+                        if pd.notna(_last_mk['bm']) and pd.notna(_last_mk['ln_hrv']):
+                            if _last_mk['ln_hrv'] < _last_mk['linf']:
+                                # HRV abaixo da banda -- recuperacao
+                                _zona_perm = ['Leve']
+                                _hrv_guid  = "Recuperacao -- Z1/Descanso"
+                            else:
+                                # HRV normal ou acima -- HIIT permitido
+                                _zona_perm = ['Moderado', 'Forte']
+                                _hrv_guid  = "HIIT -- Z2/Z3 permitido"
+                except Exception:
+                    pass  # manter default
 
             # IM actual (reutilizar calculo da seccao monotonia)
             _im_mk = None
