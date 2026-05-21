@@ -1906,7 +1906,13 @@ def _nlss_cost_grad_vec(theta: np.ndarray,
 
 def calcular_nlss(df_act, df_wellness=None,
                   p0_frac: float = 0.5,
-                  window_l: int = 365) -> dict:
+                  window_l: int = 365,
+                  mod: str = 'Bike') -> dict:
+    """
+    mod: 'Bike'|'Run' → usa MMP20 (proxy CP, esforço 20min)
+         'Row'|'Ski'  → usa MMP5  (proxy MAP, esforço 5min típico no ergómetro)
+         'all'        → todas as modalidades combinadas (MMP20 Bike fallback)
+    """
     """
     Estima K1, K2, T1, T2 via Hierarchical Bayesian NLSS (Algorithm 1).
     Implementação vectorizada — tipicamente <5s para histórico de 3 anos.
@@ -1955,28 +1961,46 @@ def calcular_nlss(df_act, df_wellness=None,
     tss_arr = ld['tss_val'].values.astype(np.float64)
     n_days  = len(tss_arr)
 
-    # ── 2. Testes de potência — máximo anual de Bike (MMP20, MMP5, MMP3) ────
+    # ── 2. Testes de potência — selecção por modalidade ────────────────────────
     #
-    # Colunas na sheet: MMP20, MMP5, MMP3, MMP1, MMP12, MMP60
-    # Mapeadas em MAPA_TRAINING: mmp20_raw → parseadas para mmp20_w (todos)
-    # Types de Bike: VirtualRide, Ride → normalizados para Bike via norm_tipo()
+    # Bike / Run → MMP20 (proxy CP, esforço de 20 min)
+    # Row  / Ski → MMP5  (proxy MAP, esforço de 5 min típico no ergómetro)
+    # all        → MMP20 de todas as modalidades combinadas
     #
-    # ESTRATÉGIA: valor MÁXIMO de mmp20_w por ANO de Bike.
-    # O máximo anual é o PR real desse ano — sem depender de is_pr (que está
-    # True em quase todas as sessões no Intervals.icu).
-    # Fallback: MMP5 e MMP3 se MMP20 insuficiente.
+    # ESTRATÉGIA: máximo anual por modalidade — 1 âncora por ano.
+    # Escala consistente: não misturar MMP5 com MMP20 na mesma série.
     # ─────────────────────────────────────────────────────────────────────────
 
-    # Garantir type normalizado: VirtualRide→Bike, Ride→Bike, etc.
+    # Normalizar tipo
     _tipo_col = next((c for c in ['type', 'modality'] if c in df.columns), None)
     if _tipo_col:
         df['_type_norm'] = df[_tipo_col].apply(norm_tipo)
-        _df_bike = df[df['_type_norm'] == 'Bike'].copy()
     else:
-        _df_bike = df.copy()
+        df['_type_norm'] = 'Bike'
 
-    _df_bike['Data'] = pd.to_datetime(_df_bike['Data'])
-    _df_bike['_ano'] = _df_bike['Data'].dt.year
+    # Mapeamento modalidade → coluna MMP correcta
+    # Bike/Run: MMP20 = proxy CP (20min = esforço máximo sustentável)
+    # Row/Ski:  MMP5  = proxy MAP (5min = esforço máximo típico no ergómetro)
+    _MOD_MMP_MAP = {
+        'Bike': ('Bike', 'mmp20_w'),
+        'Run':  ('Run',  'mmp20_w'),
+        'Row':  ('Row',  'mmp5_w'),
+        'Ski':  ('Ski',  'mmp5_w'),
+    }
+    _mod_norm  = mod if mod in _MOD_MMP_MAP else 'Bike'
+    _mod_type, _mmp_col = _MOD_MMP_MAP[_mod_norm]
+
+    # Filtrar modalidade
+    if mod == 'all':
+        _df_mod    = df.copy()
+        _mmp_col   = 'mmp20_w'
+        _mod_label = 'Todas'
+    else:
+        _df_mod    = df[df['_type_norm'] == _mod_type].copy()
+        _mod_label = _mod_type
+
+    _df_mod['Data'] = pd.to_datetime(_df_mod['Data'])
+    _df_mod['_ano'] = _df_mod['Data'].dt.year
 
     def _max_anual_mmp(df_src, col_w):
         """Por ano: data da sessão com o MMP máximo nessa coluna."""
@@ -1984,7 +2008,7 @@ def calcular_nlss(df_act, df_wellness=None,
             return pd.DataFrame(columns=['Data', 'watts'])
         sub = df_src[['Data', '_ano', col_w]].copy()
         sub['watts'] = pd.to_numeric(sub[col_w], errors='coerce')
-        sub = sub[sub['watts'] > 50].dropna(subset=['watts'])
+        sub = sub[sub['watts'] > 30].dropna(subset=['watts'])
         if sub.empty:
             return pd.DataFrame(columns=['Data', 'watts'])
         idx_max = sub.groupby('_ano')['watts'].idxmax()
@@ -1992,30 +2016,39 @@ def calcular_nlss(df_act, df_wellness=None,
                    .sort_values('Data')
                    .reset_index(drop=True))
 
-    # Primário: MMP20 de Bike — 1 ponto por ano, escala consistente
-    # Usar APENAS MMP20 — misturar MMP3 (347W) com MMP20 (228W) cria
-    # inconsistência de escala: o optimizador interpreta a diferença como
-    # variação de performance quando são durações diferentes → fica no prior.
-    _tests_mmp20 = _max_anual_mmp(_df_bike, 'mmp20_w')
+    # Testes primários — coluna definida por modalidade
+    _tests_primary = _max_anual_mmp(_df_mod, _mmp_col)
 
-    if not _tests_mmp20.empty:
-        tests_df      = _tests_mmp20.copy()
-        _fonte_testes = f'Bike MMP20 — maximo anual ({len(_tests_mmp20)} pontos)'
+    if not _tests_primary.empty:
+        tests_df      = _tests_primary.copy()
+        _fonte_testes = f'{_mod_label} {_mmp_col.upper()} — max anual ({len(_tests_primary)} pts)'
     else:
         tests_df      = pd.DataFrame(columns=['Data', 'watts'])
-        _fonte_testes = 'Sem dados de Bike MMP20'
+        _fonte_testes = f'Sem dados de {_mod_label} {_mmp_col.upper()}'
 
-    # Fallback: todas as modalidades se Bike insuficiente
+    # Fallback 1: outra coluna MMP da mesma modalidade
     if len(tests_df) < 2:
-        _all = df.copy()
-        _all['Data'] = pd.to_datetime(_all['Data'])
-        _all['_ano'] = _all['Data'].dt.year
-        _t20_all = _max_anual_mmp(_all, 'mmp20_w')
-        if len(_t20_all) >= 2:
-            tests_df      = _t20_all
-            _fonte_testes = 'Todas modalidades MMP20 — maximo anual (fallback)'
+        _fallback_cols = ['mmp5_w', 'mmp20_w', 'mmp12_w', 'mmp3_w']
+        for _fc in _fallback_cols:
+            if _fc == _mmp_col:
+                continue
+            _tests_fb = _max_anual_mmp(_df_mod, _fc)
+            if len(_tests_fb) >= 2:
+                tests_df      = _tests_fb
+                _fonte_testes = f'{_mod_label} {_fc.upper()} fallback ({len(_tests_fb)} pts)'
+                break
+
+    # Fallback 2: Bike MMP20 global se modalidade não tem dados suficientes
+    if len(tests_df) < 2:
+        _df_bike_fb = df[df['_type_norm'] == 'Bike'].copy() if '_type_norm' in df.columns else df.copy()
+        _df_bike_fb['Data'] = pd.to_datetime(_df_bike_fb['Data'])
+        _df_bike_fb['_ano'] = _df_bike_fb['Data'].dt.year
+        _t20_fb = _max_anual_mmp(_df_bike_fb, 'mmp20_w')
+        if len(_t20_fb) >= 2:
+            tests_df      = _t20_fb
+            _fonte_testes = f'Bike MMP20 fallback global ({len(_t20_fb)} pts)'
         else:
-            _fonte_testes = 'Insuficiente'
+            _fonte_testes = 'Insuficiente — menos de 2 testes anuais'
 
     # ── Limitar TSS ao período relevante ────────────────────────────────────
     # Problema: sem testes em 2017-2023, p̂(t) extrapola sem âncora e cria
