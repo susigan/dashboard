@@ -612,7 +612,7 @@ a mudança de eFTP — adicionar κ como covariável melhora o modelo.
             # Merge with ld on date
             _ld_proj2 = _ld_proj.set_index('Data').join(_eftp_bike['eftp'], how='left')
             _ld_proj2['eftp_smooth'] = (_ld_proj2['eftp']
-                                        .fillna(method='ffill')
+                                        .ffill()
                                         .rolling(7, min_periods=2).mean())
             _ld_proj2['delta_ln_eftp'] = np.log(_ld_proj2['eftp_smooth']).diff(14)
 
@@ -632,7 +632,7 @@ a mudança de eFTP — adicionar κ como covariável melhora o modelo.
                 _ef_m = (_ef_m.rename(columns={col_date:'Data', col_eftp:'eftp_m'})
                          .sort_values('Data').set_index('Data'))
                 _ld_m = _ld_proj.set_index('Data').join(_ef_m['eftp_m'], how='left')
-                _ld_m['eftp_s'] = (_ld_m['eftp_m'].fillna(method='ffill')
+                _ld_m['eftp_s'] = (_ld_m['eftp_m'].ffill()
                                     .rolling(7, min_periods=2).mean())
                 _ld_m['dln']  = np.log(_ld_m['eftp_s']).diff(14)
                 _ld_m['sl']   = _ld_m['dCTLg_14d']
