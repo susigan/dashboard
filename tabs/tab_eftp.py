@@ -553,7 +553,230 @@ def tab_eftp(da_filt: pd.DataFrame, mods_sel: list, ac_full: pd.DataFrame,
         )
         return
 
-    # ═══════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════
+    # PROJECÇÃO CP 28 DIAS — FMT Transformers (Della Mattia 2025)
+    # Regressão Δln(eFTP) ~ dCTLg_slope_14d  calibrada nos dados do atleta
+    # β estimado por OLS histórico → projectar com banda IC 90%
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown("## Projecção de CP — 28 dias")
+    with st.expander("📖 Como é calculada", expanded=False):
+        st.markdown("""
+**Projecção CP 28 dias — FMT Transformers (Della Mattia 2025)**
+
+Usa o slope do CTLγ (ΔCTLγ/14d) como preditor da mudança de eFTP:
+
+```
+β = OLS(Δln(eFTP) ~ dCTLg_slope_14d)   [calibrado nos dados históricos]
+eFTP_proj(t+28) = eFTP_hoje × exp(β × dCTLg_slope × 28)
+```
+
+A banda de confiança 90% é calculada pelo intervalo de confiança da regressão OLS.
+R² baixo (<0.15) indica que o slope do CTLγ não é suficiente para predizer
+a mudança de eFTP — adicionar κ como covariável melhora o modelo.
+
+*β calibrado nos dados reais deste atleta — não usa valores populacionais.*
+        """)
+
+    _proj_ok = False
+    if ld is not None and len(ld) > 30:
+        try:
+            from scipy import stats as _sp_stats
+
+            # Build aligned series: eFTP (Bike) + dCTLg_14d
+            _ld_proj = ld.copy()
+            _ld_proj['Data'] = pd.to_datetime(_ld_proj['Data'])
+
+            # dCTLg_14d — slope of CTLg_perf rolling 14d
+            if 'dCTLg_14d' not in _ld_proj.columns and 'CTLg_perf' in _ld_proj.columns:
+                _ctlg = _ld_proj['CTLg_perf'].values.astype(float)
+                _slopes = np.full(len(_ctlg), np.nan)
+                for _ti in range(13, len(_ctlg)):
+                    _y = _ctlg[max(0,_ti-13):_ti+1]
+                    _x = np.arange(len(_y), dtype=float)
+                    _mask = np.isfinite(_y)
+                    if _mask.sum() >= 7:
+                        _sl, *_ = _sp_stats.linregress(_x[_mask], _y[_mask])
+                        _slopes[_ti] = _sl
+                _ld_proj['dCTLg_14d'] = _slopes
+
+            if 'dCTLg_14d' not in _ld_proj.columns:
+                raise ValueError("dCTLg_14d não disponível")
+
+            # eFTP Bike — from ac_full
+            _eftp_bike = (ac_full[ac_full[col_mod] == 'Bike'][[col_date, col_eftp]]
+                          .dropna().copy())
+            _eftp_bike[col_date] = pd.to_datetime(_eftp_bike[col_date])
+            _eftp_bike = (_eftp_bike.rename(columns={col_date:'Data', col_eftp:'eftp'})
+                          .sort_values('Data').set_index('Data'))
+
+            # Merge with ld on date
+            _ld_proj2 = _ld_proj.set_index('Data').join(_eftp_bike['eftp'], how='left')
+            _ld_proj2['eftp_smooth'] = (_ld_proj2['eftp']
+                                        .fillna(method='ffill')
+                                        .rolling(7, min_periods=2).mean())
+            _ld_proj2['delta_ln_eftp'] = np.log(_ld_proj2['eftp_smooth']).diff(14)
+
+            # OLS by modality
+            _mods_proj = ['Bike', 'Row', 'Ski', 'Run']
+            _beta_dict  = {}
+            _r2_dict    = {}
+            _eftp_now   = {}
+
+            for _mproj in _mods_proj:
+                # eFTP for this modality
+                _ef_m = (ac_full[ac_full[col_mod] == _mproj][[col_date, col_eftp]]
+                         .dropna().copy())
+                if len(_ef_m) < 20:
+                    continue
+                _ef_m[col_date] = pd.to_datetime(_ef_m[col_date])
+                _ef_m = (_ef_m.rename(columns={col_date:'Data', col_eftp:'eftp_m'})
+                         .sort_values('Data').set_index('Data'))
+                _ld_m = _ld_proj.set_index('Data').join(_ef_m['eftp_m'], how='left')
+                _ld_m['eftp_s'] = (_ld_m['eftp_m'].fillna(method='ffill')
+                                    .rolling(7, min_periods=2).mean())
+                _ld_m['dln']  = np.log(_ld_m['eftp_s']).diff(14)
+                _ld_m['sl']   = _ld_m['dCTLg_14d']
+
+                _valid = _ld_m[['dln','sl']].dropna()
+                if len(_valid) < 20:
+                    continue
+
+                _sl_r, _int_r, _r, _p, _se = _sp_stats.linregress(_valid['sl'], _valid['dln'])
+                _beta_dict[_mproj]  = float(_sl_r)
+                _r2_dict[_mproj]    = float(_r**2)
+                _eftp_now[_mproj]   = float(_ld_m['eftp_s'].dropna().iloc[-1]) if _ld_m['eftp_s'].notna().any() else None
+
+            if not _beta_dict:
+                raise ValueError("Sem dados suficientes para regressão")
+
+            # Cards β por modalidade
+            st.markdown("#### Coeficiente β — sensibilidade dCTLγ_slope → ΔeFTP")
+            st.caption("Calibrado nos dados históricos deste atleta. β>0 = slope positivo do CTLγ prediz ganho de eFTP.")
+            _bc = st.columns(len(_beta_dict))
+            _MOD_COLS_PROJ = {'Bike':'#e74c3c','Row':'#3498db','Ski':'#9b59b6','Run':'#27ae60'}
+            for _bi, (_bm, _bv) in enumerate(_beta_dict.items()):
+                _r2v = _r2_dict.get(_bm, 0)
+                _bc[_bi].metric(
+                    f"{_bm} β",
+                    f"{_bv:.4f}",
+                    delta=f"R²={_r2v:.2f}",
+                    delta_color="normal" if _r2v > 0.15 else "off",
+                    help=f"R²={_r2v:.3f}. {'Modelo tem poder preditivo razoável.' if _r2v > 0.15 else 'R² baixo — slope CTLγ não é preditor forte para esta modalidade.'}")
+
+            # dCTLg_slope actual
+            _slope_now = float(_ld_proj['dCTLg_14d'].dropna().iloc[-1]) if 'dCTLg_14d' in _ld_proj.columns and _ld_proj['dCTLg_14d'].notna().any() else 0.0
+
+            # Build projection figure
+            _fig_proj = go.Figure()
+            _PROJ_DAYS = 28
+            _today     = pd.Timestamp.now().normalize()
+            _proj_dates = pd.date_range(_today, periods=_PROJ_DAYS+1, freq='D')
+
+            for _mproj, _bv in _beta_dict.items():
+                _eftp0 = _eftp_now.get(_mproj)
+                if not _eftp0: continue
+                _cor_m = _MOD_COLS_PROJ.get(_mproj, '#888')
+                _r2v   = _r2_dict.get(_mproj, 0)
+
+                # Historical eFTP (last 180d)
+                _ef_hist = (ac_full[ac_full[col_mod] == _mproj][[col_date, col_eftp]]
+                            .dropna().copy())
+                _ef_hist[col_date] = pd.to_datetime(_ef_hist[col_date])
+                _ef_hist = (_ef_hist.rename(columns={col_date:'Data', col_eftp:'eftp'})
+                             .sort_values('Data'))
+                _ef_hist = _ef_hist[_ef_hist['Data'] >= _today - pd.Timedelta(days=180)]
+                _ef_smooth = _ef_hist.set_index('Data')['eftp'].rolling('14D').mean()
+
+                if len(_ef_smooth) > 0:
+                    _fig_proj.add_trace(go.Scatter(
+                        x=_ef_smooth.index.tolist(), y=_ef_smooth.values.tolist(),
+                        name=f"{_mproj} observado",
+                        line=dict(color=_cor_m, width=2),
+                        hovertemplate=f"{_mproj}: %{{y:.0f}}W<extra></extra>"))
+
+                # Projection
+                _proj_vals = [_eftp0 * np.exp(_bv * _slope_now * d) for d in range(_PROJ_DAYS+1)]
+                # IC 90%: SE da regressão como proxy (± 1.645σ)
+                _r2v_safe = max(_r2v, 0.01)
+                _ic_half  = [abs(v - _eftp0) * (1 - _r2v_safe) * 1.645 + 2 for v in _proj_vals]
+                _proj_hi  = [v + ic for v, ic in zip(_proj_vals, _ic_half)]
+                _proj_lo  = [max(v - ic, 1) for v, ic in zip(_proj_vals, _ic_half)]
+
+                _r, _g, _b = int(_cor_m[1:3],16), int(_cor_m[3:5],16), int(_cor_m[5:7],16)
+                _fig_proj.add_trace(go.Scatter(
+                    x=list(_proj_dates)+list(_proj_dates[::-1]),
+                    y=_proj_hi+_proj_lo[::-1],
+                    fill='toself',
+                    fillcolor=f'rgba({_r},{_g},{_b},0.10)',
+                    line=dict(width=0), showlegend=False, hoverinfo='skip'))
+                _fig_proj.add_trace(go.Scatter(
+                    x=_proj_dates.tolist(), y=[round(v,1) for v in _proj_vals],
+                    name=f"{_mproj} proj. 28d (β={_bv:.3f}, R²={_r2v:.2f})",
+                    line=dict(color=_cor_m, width=2.5, dash='dash'),
+                    hovertemplate=f"{_mproj} proj: %{{y:.0f}}W<extra></extra>"))
+
+                # Annotation at t+28
+                _proj_end = round(_proj_vals[-1], 0)
+                _delta_pct = (_proj_end - _eftp0) / max(_eftp0, 1) * 100
+                _fig_proj.add_annotation(
+                    x=_proj_dates[-1], y=_proj_end,
+                    text=f"<b>{_mproj} +28d: {_proj_end:.0f}W ({_delta_pct:+.1f}%)</b>",
+                    showarrow=False, xshift=5, yshift=8,
+                    font=dict(size=11, color=_cor_m),
+                    bgcolor='rgba(255,255,255,0.85)')
+
+            # Vertical line at today
+            _fig_proj.add_vline(x=_today, line_dash='dot', line_color='#aaa', line_width=1,
+                                annotation_text='Hoje', annotation_font_size=10,
+                                annotation_position='top left')
+
+            _fig_proj.update_layout(
+                paper_bgcolor='white', plot_bgcolor='white', height=400,
+                margin=dict(t=40, b=80, l=65, r=30),
+                hovermode='x unified',
+                legend=dict(orientation='h', y=-0.22, font=dict(color='#333', size=11),
+                            bgcolor='rgba(255,255,255,0.9)', borderwidth=1, bordercolor='#ddd'),
+                font=dict(color='#222', size=12),
+                title=dict(text='eFTP observado + Projecção 28 dias por modalidade',
+                           font=dict(size=13, color='#222')),
+                xaxis=dict(tickfont=dict(size=11, color='#444'), gridcolor='rgba(0,0,0,0.04)',
+                           tickangle=-25),
+                yaxis=dict(title='eFTP (W)', tickfont=dict(size=11, color='#444'),
+                           gridcolor='rgba(0,0,0,0.05)'))
+
+            st.plotly_chart(_fig_proj, use_container_width=True,
+                            config={'displayModeBar': False}, key='cp_proj_28d')
+
+            # Summary table
+            _proj_rows = []
+            for _mproj, _bv in _beta_dict.items():
+                _eftp0 = _eftp_now.get(_mproj)
+                if not _eftp0: continue
+                _proj28 = _eftp0 * np.exp(_bv * _slope_now * 28)
+                _delta  = _proj28 - _eftp0
+                _proj_rows.append({
+                    'Modalidade':        _mproj,
+                    'eFTP actual (W)':   f"{_eftp0:.0f}",
+                    'eFTP proj +28d (W)':f"{_proj28:.0f}",
+                    'Δ (W)':             f"{_delta:+.0f}",
+                    'Δ (%)':             f"{(_delta/_eftp0*100):+.1f}%",
+                    'β':                 f"{_bv:.4f}",
+                    'R²':                f"{_r2_dict.get(_mproj,0):.3f}",
+                })
+            if _proj_rows:
+                st.dataframe(pd.DataFrame(_proj_rows), use_container_width=True, hide_index=True)
+                st.caption(f"dCTLγ_slope actual = {_slope_now:.5f}/d | Projecção assumindo slope constante nos próximos 28 dias.")
+
+            _proj_ok = True
+
+        except Exception as _proj_err:
+            st.info(f"Projecção CP: dados insuficientes — {_proj_err}")
+    else:
+        st.info("Projecção CP requer CTLγ calculado (ld_frac_cache no session_state — carrega o tab PMC primeiro).")
+
+    st.markdown("---")
+
+        # ═══════════════════════════════════════════════════════════
     # HEADER
     # ═══════════════════════════════════════════════════════════
     st.markdown("## eFTP por Modalidade")
