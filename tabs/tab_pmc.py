@@ -1148,6 +1148,129 @@ ou a acumular sobrecarga não compensada (allostatic overload), comparando
         )
 
 
+
+    st.markdown("---")
+    with st.expander("📈 CTL/ATL — Polynomial Fit (Overall e por Modalidade)", expanded=False):
+        st.caption(
+            "Ajuste polinomial grau 2 e 3 sobre CTL/ATL. "
+            "Movido de Análises para PMC — mesma métrica de carga."
+        )
+        # ── Secção 3: Polynomial CTL/ATL ────────────────────────────────────────
+        st.subheader("📈 CTL/ATL — Polynomial Fit (Overall e por Modalidade)")
+        with st.spinner("Calculando polynomial fits..."):
+            poli = calcular_polinomios_carga(da_full)
+
+        if poli is None:
+            st.warning("Sem dados suficientes para polynomial analysis.")
+        else:
+            _ld = poli['_ld']
+            _MC_ANA = {'displayModeBar': False, 'responsive': True, 'scrollZoom': False}
+            _POLY_COLORS = {'CTL': CORES['azul'], 'ATL': CORES['vermelho']}
+            _POLY_DASH   = {2: 'dash', 3: 'dot'}
+
+            def _poly_fig(res_met, ld_df, title):
+                dates = pd.to_datetime(ld_df['Data']).tolist()
+                fp = go.Figure()
+                for met, cor in _POLY_COLORS.items():
+                    y_raw = ld_df[met].tolist() if met in ld_df.columns else []
+                    if y_raw:
+                        fp.add_trace(go.Scatter(
+                            x=dates, y=y_raw, mode='lines', name=met,
+                            line=dict(color=cor, width=2), opacity=0.45,
+                            hovertemplate=f'{met}: %{{y:.1f}}<extra></extra>'))
+                    for grau_k, gd in res_met.get(met, {}).items():
+                        grau_n = int(grau_k[-1])
+                        r2 = gd['r2']; xarr = gd['x']; poly = gd['poly']
+                        fp.add_trace(go.Scatter(
+                            x=dates[:len(xarr)], y=poly(xarr).tolist(),
+                            mode='lines',
+                            name=f'{met} G{grau_n} R²={r2:.3f}',
+                            line=dict(color=cor, width=2.5,
+                                      dash=_POLY_DASH.get(grau_n, 'solid')),
+                            hovertemplate=f'{met} poly: %{{y:.1f}}<extra></extra>'))
+                fp.update_layout(
+                    paper_bgcolor='white', plot_bgcolor='white',
+                    font=dict(color='#111', size=11), height=380,
+                    margin=dict(t=55, b=80, l=55, r=20), hovermode='x unified',
+                    title=dict(text=title, font=dict(size=13, color='#111')),
+                    legend=dict(orientation='h', y=-0.28, font=dict(color='#111', size=10)),
+                    xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')),
+                    yaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111'),
+                               title='CTL / ATL'))
+                return fp
+
+            # Overall
+            _fonte_lbl = poli['_ld'].get('_fonte', poli['_ld']['_fonte'].iloc[0] if '_fonte' in poli['_ld'].columns else 'session_rpe')
+            st.markdown(f"**Overall CTL vs ATL** — fonte: `{_fonte_lbl}`")
+            st.caption("Mesma métrica de carga do PMC — valores comparáveis.")
+            st.plotly_chart(
+                _poly_fig(poli['overall'], _ld, 'CTL/ATL Overall — Polynomial Fit'),
+                use_container_width=True, config=_MC_ANA, key="pmc_poly_overall")
+
+            # ── Download Overall ──────────────────────────────────────────────────
+            _dl_ov = _ld[['Data', 'CTL', 'ATL']].copy()
+            _dl_ov['Data'] = _dl_ov['Data'].astype(str)
+            for _m_ov in ['CTL', 'ATL']:
+                for _gk_ov, _gd_ov in poli['overall'].get(_m_ov, {}).items():
+                    _col_ov = f'{_m_ov}_poly_G{_gk_ov[-1]}'
+                    _yp_ov  = _gd_ov['poly'](_gd_ov['x'])
+                    _dl_ov[_col_ov] = np.nan
+                    _dl_ov.iloc[:len(_yp_ov), _dl_ov.columns.get_loc(_col_ov)] = _yp_ov
+            st.download_button(
+                label="📥 Download Overall CTL/ATL + Polynomial (.csv)",
+                data=_dl_ov.round(3).to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
+                file_name="atheltica_poly_overall.csv",
+                mime="text/csv",
+                key="pmc_poly_dl_overall",
+            )
+
+            # Per modality — 2-column grid
+            tipos_poli = {k.replace('tipo_', ''): k for k in poli if k.startswith('tipo_')}
+            if tipos_poli:
+                st.markdown("**Por Modalidade**")
+                _mods_ord = [m for m in ['Bike', 'Row', 'Ski', 'Run'] if m in tipos_poli]
+                for _mi in range(0, len(_mods_ord), 2):
+                    _cols = st.columns(2)
+                    for _ci, mod in enumerate(_mods_ord[_mi:_mi+2]):
+                        res_mod = poli[tipos_poli[mod]]
+                        # Get x range from first available metric
+                        _xarr = None
+                        for _m in ['CTL', 'ATL']:
+                            for _gd in res_mod.get(_m, {}).values():
+                                _xarr = _gd['x']; break
+                            if _xarr is not None: break
+                        if _xarr is None: continue
+                        # Build ld_mod with raw CTL/ATL values from stored 'y'
+                        _ld_mod = _ld[['Data']].iloc[:len(_xarr)].copy().reset_index(drop=True)
+                        for _m in ['CTL', 'ATL']:
+                            _best = (res_mod.get(_m, {}).get('grau2') or
+                                     res_mod.get(_m, {}).get('grau3'))
+                            _ld_mod[_m] = pd.Series(_best['y'][:len(_xarr)] if _best else
+                                                      np.zeros(len(_xarr)))
+                        with _cols[_ci]:
+                            st.plotly_chart(
+                                _poly_fig(res_mod, _ld_mod,
+                                          f'{mod} — CTL/ATL Polynomial Fit'),
+                                use_container_width=True,
+                                config=_MC_ANA, key=f"pmc_poly_{mod}")
+                            # Download per modality
+                            _dl_mod = _ld_mod[['Data', 'CTL', 'ATL']].copy()
+                            _dl_mod['Data'] = _dl_mod['Data'].astype(str)
+                            for _m2 in ['CTL', 'ATL']:
+                                for _gk2, _gd2 in res_mod.get(_m2, {}).items():
+                                    _col2 = f'{_m2}_poly_{_gk2[-1]}'
+                                    _yp2 = _gd2['poly'](_gd2['x'])
+                                    _dl_mod[_col2] = np.nan
+                                    _dl_mod.iloc[:len(_yp2), _dl_mod.columns.get_loc(_col2)] = _yp2
+                            st.download_button(
+                                label=f"📥 {mod} (.csv)",
+                                data=_dl_mod.round(3).to_csv(
+                                    index=False, sep=';', decimal=',').encode('utf-8'),
+                                file_name=f"atheltica_poly_{mod.lower()}.csv",
+                                mime="text/csv",
+                                key=f"pmc_poly_dl_{mod}",
+                            )
+
     st.subheader("📊 Resumo PMC")
     tsb_v = u['TSB']
     atl_v = u['ATL']
