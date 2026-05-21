@@ -507,7 +507,7 @@ def tab_volume(da, dw):
     # ── Training Load Mensal por Modalidade (movido de tab_analises) ──────────
     # ── Secção 2: Training Load Mensal Stacked ──────────────────────────────
     st.subheader("📊 Training Load Mensal por Modalidade (TRIMP = min × RPE)")
-    df_tl = filtrar_principais(da_full).copy()
+    df_tl = filtrar_principais(da).copy()  # da = variável correcta em tab_volume
     df_tl = add_tempo(df_tl)
     if 'moving_time' in df_tl.columns and 'rpe' in df_tl.columns:
         df_tl['rpe_fill']    = df_tl['rpe'].fillna(df_tl['rpe'].median())
