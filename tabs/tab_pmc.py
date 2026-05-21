@@ -925,6 +925,18 @@ ou a acumular sobrecarga não compensada (allostatic overload), comparando
                     "ajuste Savitzky-Golay · banda ±1 SD · pontos = testes reais."
                 )
 
+                # Insight automático (só disponível no modo individual)
+                _delta_pico = _rec_pico - _ant_pico
+                _delta_pct  = (_delta_pico / max(abs(_ant_pico), 1)) * 100
+                _insight = (
+                    f"O pico de reserva {'subiu' if _delta_pico >= 0 else 'desceu'} "
+                    f"{abs(_delta_pico):.0f}W entre fases "
+                    f"({_ant_pico:.0f} → {_rec_pico:.0f}W, {_delta_pct:+.0f}%). "
+                    + ("Melhor adaptação na fase recente." if _delta_pico >= 0
+                       else "Fadiga acumulada a comprimir a reserva.")
+                )
+                st.info(f"💡 {_insight}")
+
             # Layout comum — fundo branco, como na foto
             _fig_phat.update_layout(
                 paper_bgcolor="white", plot_bgcolor="white",
@@ -956,17 +968,10 @@ ou a acumular sobrecarga não compensada (allostatic overload), comparando
             st.plotly_chart(_fig_phat, use_container_width=True,
                             config={"displayModeBar": False}, key="nlss_phat_chart")
 
-            # Insight automático
-            _delta_pico = _rec_pico - _ant_pico
-            _delta_pct  = (_delta_pico / max(abs(_ant_pico), 1)) * 100
-            _insight = (
-                f"O pico de reserva {'subiu' if _delta_pico >= 0 else 'desceu'} "
-                f"{abs(_delta_pico):.0f}W entre fases "
-                f"({_ant_pico:.0f} → {_rec_pico:.0f}W, {_delta_pct:+.0f}%). "
-                + ("Melhor adaptação na fase recente." if _delta_pico >= 0
-                   else "Fadiga acumulada a comprimir a reserva.")
-            )
-            st.info(f"💡 {_insight}")
+            # Insight automático — só disponível no modo individual (picos definidos)
+            if _mod_sel != "Todas" and '_ant_pico' in dir():
+                pass  # calculado abaixo no bloco else
+            # (o insight é gerado dentro do bloco else abaixo)
 
             # ── ÍNDICE ALOSTÁTICO ─────────────────────────────────────────────
             st.markdown("---")
