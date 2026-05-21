@@ -610,6 +610,7 @@ a mudança de eFTP — adicionar κ como covariável melhora o modelo.
                           .sort_values('Data').set_index('Data'))
 
             # Merge with ld on date
+            _ld_proj['Data'] = pd.to_datetime(_ld_proj['Data'])
             _ld_proj2 = _ld_proj.set_index('Data').join(_eftp_bike['eftp'], how='left')
             _ld_proj2['eftp_smooth'] = (_ld_proj2['eftp']
                                         .ffill()
@@ -631,6 +632,7 @@ a mudança de eFTP — adicionar κ como covariável melhora o modelo.
                 _ef_m[col_date] = pd.to_datetime(_ef_m[col_date])
                 _ef_m = (_ef_m.rename(columns={col_date:'Data', col_eftp:'eftp_m'})
                          .sort_values('Data').set_index('Data'))
+                _ld_proj['Data'] = pd.to_datetime(_ld_proj['Data'])
                 _ld_m = _ld_proj.set_index('Data').join(_ef_m['eftp_m'], how='left')
                 _ld_m['eftp_s'] = (_ld_m['eftp_m'].ffill()
                                     .rolling(7, min_periods=2).mean())
@@ -685,7 +687,8 @@ a mudança de eFTP — adicionar κ como covariável melhora o modelo.
                 _ef_hist = (_ef_hist.rename(columns={col_date:'Data', col_eftp:'eftp'})
                              .sort_values('Data'))
                 _ef_hist = _ef_hist[_ef_hist['Data'] >= _today - pd.Timedelta(days=180)]
-                _ef_smooth = _ef_hist.set_index('Data')['eftp'].rolling('14D').mean()
+                _ef_s_idx = _ef_hist.set_index('Data')['eftp']
+                _ef_smooth = _ef_s_idx.rolling(14, min_periods=3).mean()
 
                 if len(_ef_smooth) > 0:
                     _fig_proj.add_trace(go.Scatter(
@@ -703,14 +706,16 @@ a mudança de eFTP — adicionar κ como covariável melhora o modelo.
                 _proj_lo  = [max(v - ic, 1) for v, ic in zip(_proj_vals, _ic_half)]
 
                 _r, _g, _b = int(_cor_m[1:3],16), int(_cor_m[3:5],16), int(_cor_m[5:7],16)
+                # Convert DatetimeIndex to str for Plotly compatibility
+                _proj_dates_str = [str(d.date()) for d in _proj_dates]
                 _fig_proj.add_trace(go.Scatter(
-                    x=list(_proj_dates)+list(_proj_dates[::-1]),
+                    x=_proj_dates_str + _proj_dates_str[::-1],
                     y=_proj_hi+_proj_lo[::-1],
                     fill='toself',
                     fillcolor=f'rgba({_r},{_g},{_b},0.10)',
                     line=dict(width=0), showlegend=False, hoverinfo='skip'))
                 _fig_proj.add_trace(go.Scatter(
-                    x=_proj_dates.tolist(), y=[round(v,1) for v in _proj_vals],
+                    x=_proj_dates_str, y=[round(v,1) for v in _proj_vals],
                     name=f"{_mproj} proj. 28d (β={_bv:.3f}, R²={_r2v:.2f})",
                     line=dict(color=_cor_m, width=2.5, dash='dash'),
                     hovertemplate=f"{_mproj} proj: %{{y:.0f}}W<extra></extra>"))
@@ -719,14 +724,14 @@ a mudança de eFTP — adicionar κ como covariável melhora o modelo.
                 _proj_end = round(_proj_vals[-1], 0)
                 _delta_pct = (_proj_end - _eftp0) / max(_eftp0, 1) * 100
                 _fig_proj.add_annotation(
-                    x=_proj_dates[-1], y=_proj_end,
+                    x=str(_proj_dates[-1].date()), y=_proj_end,
                     text=f"<b>{_mproj} +28d: {_proj_end:.0f}W ({_delta_pct:+.1f}%)</b>",
                     showarrow=False, xshift=5, yshift=8,
                     font=dict(size=11, color=_cor_m),
                     bgcolor='rgba(255,255,255,0.85)')
 
             # Vertical line at today
-            _fig_proj.add_vline(x=_today, line_dash='dot', line_color='#aaa', line_width=1,
+            _fig_proj.add_vline(x=str(_today.date()), line_dash='dot', line_color='#aaa', line_width=1,
                                 annotation_text='Hoje', annotation_font_size=10,
                                 annotation_position='top left')
 
