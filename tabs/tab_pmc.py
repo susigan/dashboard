@@ -554,6 +554,404 @@ def tab_pmc(da, wc=None):
                    f"Thresholds: percentil rolante 60d | ΔCTLγ slope 14d")
 
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # MODELO HOMEOSTÁTICO & ÍNDICE ALOSTÁTICO
+    # K1/K2/T1/T2 Hierarchical Bayesian NLSS — Della Mattia 2026
+    # p̂(t) = p0 + K1·EWM(T1) − K2·EWM(T2)
+    # Índice Alostático: delta normalizado de 6 dimensões entre dois períodos
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.subheader("🏠 Modelo Homeostático — Reserva de Performance")
+    with st.expander("📖 O que é este modelo?", expanded=False):
+        st.markdown("""
+**Modelo Homeostático (K₁K₂T₁T₂ — Hierarchical Bayesian NLSS)**
+
+Ao contrário do PMC clássico (CTL/ATL com τ fixos 42/7 dias), este modelo estima
+os parâmetros **individualizados** para este atleta via regressão Bayesiana nos
+testes de potência reais (Bike MMP20 por ano):
+- **K₁** — ganho de fitness (magnitude da resposta adaptativa)
+- **K₂** — ganho de fadiga (custo acumulado por sessão)
+- **T₁** — τ fitness em dias (velocidade de absorção da adaptação)
+- **T₂** — τ fadiga em dias (velocidade de dissipação da fadiga)
+
+A **reserva de performance** p̂(t) é a diferença escalada entre fitness e fadiga:
+```
+p̂(t) = p₀ + K₁ · EWM(carga, T₁) − K₂ · EWM(carga, T₂)
+```
+O **Índice Alostático** mede se o atleta está a adaptar-se (homeostasia positiva)
+ou a acumular sobrecarga não compensada (allostatic overload), comparando
+6 dimensões fisiológicas entre dois períodos configuráveis.
+        """)
+
+    @st.cache_data(show_spinner="A estimar K₁K₂T₁T₂ (Bayesian NLSS)...", ttl=7200)
+    def _cached_nlss(_key_da, _key_wc, da_arg, wc_arg):
+        from utils.data import calcular_nlss
+        return calcular_nlss(da_arg, df_wellness=wc_arg)
+
+    _nlss_key_da = (str(da_full['Data'].max()) if 'Data' in da_full.columns else '', len(da_full))
+    _nlss_key_wc = (str(wc['Data'].max()) if wc is not None and 'Data' in wc.columns else '',
+                    len(wc) if wc is not None else 0)
+    try:
+        _nlss = _cached_nlss(_nlss_key_da, _nlss_key_wc, da_full, wc)
+    except Exception as _ne:
+        st.warning(f"NLSS indisponível: {_ne}")
+        _nlss = None
+
+    if _nlss and _nlss.get('error') is None and 'p_hat_series' in _nlss:
+        _K1  = _nlss['K1'];  _K2 = _nlss['K2']
+        _T1  = _nlss['T1'];  _T2 = _nlss['T2']
+        _ph_s       = _nlss['p_hat_series'].copy()
+        _ctl_n      = _nlss['CTL_nlss'].copy()
+        _atl_n      = _nlss['ATL_nlss'].copy()
+        _tsb_n      = _nlss['TSB_nlss'].copy()
+        _test_dates = _nlss.get('test_dates', [])
+        _test_watts = _nlss.get('test_watts', [])
+        _n_tests    = _nlss.get('n_tests', 0)
+        _fonte_t    = _nlss.get('fonte_testes', '—')
+        _p0         = _nlss.get('p0', 200.0)
+
+        # ── Cards K1 K2 T1 T2 ────────────────────────────────────────────────
+        _pop_mu = [2.87, 4.09, 40.64, 6.584]
+        _kc1, _kc2, _kc3, _kc4 = st.columns(4)
+        def _dpop(val, mu):
+            d = (val - mu) / max(abs(mu), 1e-9) * 100
+            return f"{d:+.0f}% vs pop."
+        _kc1.metric("K₁ (ganho fitness)",  f"{_K1:.3f}", delta=_dpop(_K1, _pop_mu[0]),
+                    help=f"Prior pop.: {_pop_mu[0]}. Alto=resposta rápida ao treino.")
+        _kc2.metric("K₂ (ganho fadiga)",   f"{_K2:.3f}", delta=_dpop(_K2, _pop_mu[1]),
+                    help=f"Prior pop.: {_pop_mu[1]}. Alto=fadiga acumula mais rápido.")
+        _kc3.metric("T₁ (τ fitness, dias)", f"{_T1:.1f}d", delta=_dpop(_T1, _pop_mu[2]),
+                    help=f"Prior pop.: {_pop_mu[2]}d. Meia-vida do fitness.")
+        _kc4.metric("T₂ (τ fadiga, dias)",  f"{_T2:.1f}d", delta=_dpop(_T2, _pop_mu[3]),
+                    help=f"Prior pop.: {_pop_mu[3]}d. Meia-vida da fadiga.")
+        st.caption(
+            f"Estimado via Hierarchical Bayesian NLSS | "
+            f"Testes: {_n_tests} ({_fonte_t}) | p₀={_p0:.0f}W"
+        )
+
+        # ── Selectores de período ────────────────────────────────────────────
+        st.markdown("---")
+        _ph_index = pd.DatetimeIndex(_ph_s.index)
+        _ph_min   = _ph_index.min().date()
+        _ph_max   = _ph_index.max().date()
+
+        _col_p1, _col_p2 = st.columns(2)
+        with _col_p1:
+            st.markdown("**Período Anterior**")
+            _pa_start = st.date_input("Início", key="nlss_pa_start",
+                value=max(_ph_min, (_ph_max - pd.Timedelta(days=120)).date()),
+                min_value=_ph_min, max_value=_ph_max)
+            _pa_end = st.date_input("Fim", key="nlss_pa_end",
+                value=max(_ph_min, (_ph_max - pd.Timedelta(days=61)).date()),
+                min_value=_ph_min, max_value=_ph_max)
+        with _col_p2:
+            st.markdown("**Período Recente**")
+            _pr_start = st.date_input("Início", key="nlss_pr_start",
+                value=max(_ph_min, (_ph_max - pd.Timedelta(days=60)).date()),
+                min_value=_ph_min, max_value=_ph_max)
+            _pr_end = st.date_input("Fim", key="nlss_pr_end",
+                value=_ph_max, min_value=_ph_min, max_value=_ph_max)
+
+        if _pa_start > _pa_end:   _pa_start, _pa_end = _pa_end, _pa_start
+        if _pr_start > _pr_end:   _pr_start, _pr_end = _pr_end, _pr_start
+
+        _pa_mask = (_ph_index.date >= _pa_start) & (_ph_index.date <= _pa_end)
+        _pr_mask = (_ph_index.date >= _pr_start) & (_ph_index.date <= _pr_end)
+        _ph_ant  = _ph_s[_pa_mask]
+        _ph_rec  = _ph_s[_pr_mask]
+
+        if len(_ph_ant) < 5 or len(_ph_rec) < 5:
+            st.warning("Período(s) com menos de 5 dias — alarga o intervalo.")
+        else:
+            # ── GRÁFICO: Reserva de Performance p̂(t) ─────────────────────────
+            st.markdown("##### Reserva de Performance p̂(t) — dois períodos")
+            st.caption(
+                "p̂(t) = p₀ + K₁·fitness(T₁) − K₂·fadiga(T₂). "
+                "Linha = rolling mean 14d · banda = ±1 SD · pontos = testes reais."
+            )
+            _win = max(7, min(14, len(_ph_ant)//3, len(_ph_rec)//3))
+
+            def _rolling_band(s, w):
+                mu = s.rolling(w, min_periods=3, center=True).mean()
+                sd = s.rolling(w, min_periods=3, center=True).std().fillna(0)
+                return mu, mu + sd, mu - sd
+
+            _ant_mu, _ant_hi, _ant_lo = _rolling_band(_ph_ant, _win)
+            _rec_mu, _rec_hi, _rec_lo = _rolling_band(_ph_rec, _win)
+
+            _fig_phat = go.Figure()
+            # Banda anterior
+            _fig_phat.add_trace(go.Scatter(
+                x=list(_ph_ant.index) + list(_ph_ant.index[::-1]),
+                y=list(_ant_hi.values) + list(_ant_lo.values[::-1]),
+                fill='toself', fillcolor='rgba(39,174,96,0.12)',
+                line=dict(width=0), showlegend=False, hoverinfo='skip'))
+            # Linha anterior
+            _fig_phat.add_trace(go.Scatter(
+                x=list(_ph_ant.index), y=list(_ant_mu.values),
+                name=f"Anterior ({_pa_start.strftime('%d/%m')}→{_pa_end.strftime('%d/%m')}) n={len(_ph_ant)}",
+                line=dict(color='#27ae60', width=2.5),
+                hovertemplate='p̂ ant: %{y:.1f}W<extra></extra>'))
+            # Banda recente
+            _fig_phat.add_trace(go.Scatter(
+                x=list(_ph_rec.index) + list(_ph_rec.index[::-1]),
+                y=list(_rec_hi.values) + list(_rec_lo.values[::-1]),
+                fill='toself', fillcolor='rgba(231,76,60,0.12)',
+                line=dict(width=0), showlegend=False, hoverinfo='skip'))
+            # Linha recente
+            _fig_phat.add_trace(go.Scatter(
+                x=list(_ph_rec.index), y=list(_rec_mu.values),
+                name=f"Recente ({_pr_start.strftime('%d/%m')}→{_pr_end.strftime('%d/%m')}) n={len(_ph_rec)}",
+                line=dict(color='#e74c3c', width=2.5),
+                hovertemplate='p̂ rec: %{y:.1f}W<extra></extra>'))
+
+            # Testes reais
+            if _test_dates and _test_watts:
+                _td_dt = pd.to_datetime(_test_dates)
+                for _t_mask, _t_col, _t_name in [
+                    ((_td_dt.date >= _pa_start) & (_td_dt.date <= _pa_end),
+                     '#27ae60', 'Testes anteriores'),
+                    ((_td_dt.date >= _pr_start) & (_td_dt.date <= _pr_end),
+                     '#e74c3c', 'Testes recentes'),
+                ]:
+                    _td_sub = [(d, w) for d, w, m in
+                               zip(_td_dt, _test_watts, _t_mask) if m]
+                    if _td_sub:
+                        _fig_phat.add_trace(go.Scatter(
+                            x=[d for d, _ in _td_sub],
+                            y=[w for _, w in _td_sub],
+                            mode='markers', name=_t_name,
+                            marker=dict(color=_t_col, size=9,
+                                        line=dict(color='white', width=1.5)),
+                            hovertemplate='Teste: %{y:.0f}W — %{x|%d/%m/%Y}<extra></extra>'))
+
+            # Anotações de pico
+            _ant_pico    = float(_ant_mu.max()) if _ant_mu.notna().any() else float(_ph_ant.max())
+            _rec_pico    = float(_rec_mu.max()) if _rec_mu.notna().any() else float(_ph_rec.max())
+            _ant_pico_dt = _ant_mu.idxmax()     if _ant_mu.notna().any() else _ph_ant.idxmax()
+            _rec_pico_dt = _rec_mu.idxmax()     if _rec_mu.notna().any() else _ph_rec.idxmax()
+            _fig_phat.add_annotation(x=_ant_pico_dt, y=_ant_pico,
+                text=f"Anterior · pico {_ant_pico:.0f}W",
+                showarrow=True, arrowhead=2, arrowcolor='#27ae60',
+                font=dict(size=11, color='#27ae60'),
+                bgcolor='rgba(39,174,96,0.10)', bordercolor='#27ae60', borderwidth=1)
+            _fig_phat.add_annotation(x=_rec_pico_dt, y=_rec_pico,
+                text=f"Recente · pico {_rec_pico:.0f}W",
+                showarrow=True, arrowhead=2, arrowcolor='#e74c3c',
+                font=dict(size=11, color='#e74c3c'),
+                bgcolor='rgba(231,76,60,0.10)', bordercolor='#e74c3c', borderwidth=1)
+
+            _fig_phat.update_layout(
+                paper_bgcolor='white', plot_bgcolor='white', height=340,
+                margin=dict(t=30, b=65, l=65, r=20),
+                hovermode='x unified',
+                legend=dict(orientation='h', y=-0.22,
+                            font=dict(color='#222', size=11),
+                            bgcolor='rgba(255,255,255,0.85)', borderwidth=0),
+                font=dict(color='#222', size=12),
+                xaxis=dict(tickfont=dict(size=11, color='#333'), linecolor='#555',
+                           tickangle=-30, gridcolor='rgba(0,0,0,0.04)'),
+                yaxis=dict(title=dict(text='p̂(t) — Reserva de performance (W)',
+                                      font=dict(size=12, color='#333')),
+                           tickfont=dict(size=11, color='#333'),
+                           linecolor='#555', gridcolor='rgba(0,0,0,0.06)'))
+            st.plotly_chart(_fig_phat, use_container_width=True,
+                            config={'displayModeBar': False}, key='nlss_phat_chart')
+
+            # Insight automático
+            _delta_pico = _rec_pico - _ant_pico
+            _delta_pct  = (_delta_pico / max(abs(_ant_pico), 1)) * 100
+            _insight = (
+                f"O pico de reserva {'subiu' if _delta_pico >= 0 else 'desceu'} "
+                f"{abs(_delta_pico):.0f}W entre fases "
+                f"({_ant_pico:.0f} → {_rec_pico:.0f}W, {_delta_pct:+.0f}%). "
+                + ("Melhor adaptação na fase recente." if _delta_pico >= 0
+                   else "Fadiga acumulada a comprimir a reserva.")
+            )
+            st.info(f"💡 {_insight}")
+
+            # ── ÍNDICE ALOSTÁTICO ─────────────────────────────────────────────
+            st.markdown("---")
+            st.markdown("#### 📊 Índice Alostático")
+            st.caption(
+                "6 dimensões · adaptação vs allostatic overload. "
+                "Score normalizado ±1: positivo = adaptação / negativo = sobrecarga."
+            )
+
+            # Wellness helper
+            _wc2 = None
+            if wc is not None and len(wc) > 0:
+                _wc2 = wc.copy()
+                _wc2['Data'] = pd.to_datetime(_wc2['Data'])
+
+            def _wc_period_mean(col_candidates, pa_s, pa_e, pr_s, pr_e):
+                if _wc2 is None: return np.nan, np.nan
+                _col = next((c for c in col_candidates if c in _wc2.columns), None)
+                if _col is None: return np.nan, np.nan
+                _a = _wc2[(_wc2['Data'].dt.date >= pa_s) &
+                           (_wc2['Data'].dt.date <= pa_e)][_col].dropna()
+                _r = _wc2[(_wc2['Data'].dt.date >= pr_s) &
+                           (_wc2['Data'].dt.date <= pr_e)][_col].dropna()
+                return (float(_a.mean()) if len(_a) > 2 else np.nan,
+                        float(_r.mean()) if len(_r) > 2 else np.nan)
+
+            # 6 dimensões
+            _alo_dims_raw = [
+                {'dim': 'Reserva pico',  'ant': float(_ph_ant.mean()),
+                 'rec': float(_ph_rec.mean()), 'uni': 'W',  'bom_positivo': True},
+                {'dim': 'CTL fitness',   'ant': float(_ctl_n[_pa_mask].mean()) if _pa_mask.any() else np.nan,
+                 'rec': float(_ctl_n[_pr_mask].mean()) if _pr_mask.any() else np.nan,
+                 'uni': 'au', 'bom_positivo': True},
+                {'dim': 'Recovery TSB',  'ant': float(_tsb_n[_pa_mask].mean()) if _pa_mask.any() else np.nan,
+                 'rec': float(_tsb_n[_pr_mask].mean()) if _pr_mask.any() else np.nan,
+                 'uni': 'au', 'bom_positivo': True},
+                {'dim': 'HRV matinal',
+                 'ant': _wc_period_mean(['hrv','HRV'], _pa_start, _pa_end, _pr_start, _pr_end)[0],
+                 'rec': _wc_period_mean(['hrv','HRV'], _pa_start, _pa_end, _pr_start, _pr_end)[1],
+                 'uni': 'ms', 'bom_positivo': True},
+                {'dim': 'HR repouso',
+                 'ant': _wc_period_mean(['rhr','RHR'], _pa_start, _pa_end, _pr_start, _pr_end)[0],
+                 'rec': _wc_period_mean(['rhr','RHR'], _pa_start, _pa_end, _pr_start, _pr_end)[1],
+                 'uni': 'bpm', 'bom_positivo': False},
+                {'dim': 'Sono',
+                 'ant': _wc_period_mean(['sleep_quality','sleep_hours'], _pa_start, _pa_end, _pr_start, _pr_end)[0],
+                 'rec': _wc_period_mean(['sleep_quality','sleep_hours'], _pa_start, _pa_end, _pr_start, _pr_end)[1],
+                 'uni': '/5', 'bom_positivo': True},
+            ]
+
+            # Calcular scores
+            _alo_scores = []
+            _alo_rows   = []
+            _n_dims_ok  = 0
+            for _d in _alo_dims_raw:
+                _a = _d['ant']; _r = _d['rec']
+                if np.isnan(_a) or np.isnan(_r) or abs(_a) < 0.001:
+                    _alo_rows.append({'Dimensão': _d['dim'], 'ant_v': np.nan,
+                                      'rec_v': np.nan, 'delta_pct': np.nan,
+                                      'uni': _d['uni'], 'score': np.nan})
+                    continue
+                _dp  = (_r - _a) / abs(_a) * 100
+                _sgn = 1 if _d['bom_positivo'] else -1
+                _sc  = _sgn * float(np.clip(_dp / 50.0, -1.0, 1.0))
+                _alo_scores.append(_sc)
+                _n_dims_ok += 1
+                _alo_rows.append({'Dimensão': _d['dim'], 'ant_v': _a,
+                                   'rec_v': _r, 'delta_pct': _dp,
+                                   'uni': _d['uni'], 'score': _sc})
+
+            _alo_total = float(np.clip(np.nanmean(_alo_scores) if _alo_scores else 0.0, -1.0, 1.0))
+
+            # Classificação
+            if _alo_total > 0.20:
+                _alo_lbl = "GOOD ADAPTATION"; _alo_emoji = "🚀"; _alo_cor = '#27ae60'
+                _alo_desc = "Adaptação alostática clara — o corpo responde positivamente à carga"
+            elif _alo_total > -0.10:
+                _alo_lbl = "ESTÁVEL";          _alo_emoji = "⚖️"; _alo_cor = '#f39c12'
+                _alo_desc = "Sistema em equilíbrio — sem adaptação clara nem sobrecarga"
+            else:
+                _alo_lbl = "OVERLOAD";         _alo_emoji = "⚠️"; _alo_cor = '#e74c3c'
+                _alo_desc = "Allostatic overload — o corpo não está a compensar a carga"
+
+            _slider_pct = int((_alo_total + 1.0) / 2.0 * 100)
+
+            # Card visual
+            st.markdown(
+                f"<div style='background:rgba(0,0,0,0.03);border:0.5px solid #ddd;"
+                f"border-radius:10px;padding:16px 20px;margin-bottom:12px'>"
+                f"<div style='font-size:13px;font-weight:500;color:#555;margin-bottom:6px'>"
+                f"ÍNDICE ALOSTÁTICO · {_n_dims_ok}/6 dimensões · adaptação vs allostatic overload</div>"
+                f"<div style='font-size:32px;font-weight:500;color:{_alo_cor};margin-bottom:4px'>"
+                f"{_alo_emoji} {_alo_total:+.2f} "
+                f"<span style='font-size:14px;color:#888'>/±1.00</span>"
+                f"&nbsp;&nbsp;<span style='font-size:14px'>{_n_dims_ok}/6 dimensões</span></div>"
+                f"<div style='font-size:13px;font-weight:500;color:{_alo_cor};margin-bottom:14px'>"
+                f"{_alo_lbl}</div>"
+                f"<div style='display:flex;justify-content:space-between;font-size:11px;"
+                f"color:#888;margin-bottom:4px'>"
+                f"<span>OVERLOAD</span><span>ESTÁVEL</span><span>ADAPTAÇÃO</span></div>"
+                f"<div style='position:relative;height:10px;border-radius:5px;"
+                f"background:linear-gradient(to right,#e74c3c,#f39c12 45%,#27ae60);"
+                f"margin-bottom:8px'>"
+                f"<div style='position:absolute;left:{_slider_pct}%;top:50%;"
+                f"transform:translate(-50%,-50%);width:16px;height:16px;"
+                f"border-radius:50%;background:{_alo_cor};"
+                f"border:2px solid white;box-shadow:0 0 0 2px {_alo_cor}'></div>"
+                f"</div>"
+                f"<div style='font-size:12px;color:#555;margin-top:6px'>{_alo_desc}</div>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+
+            # Badges de período
+            st.markdown(
+                f"<div style='display:flex;gap:10px;margin-bottom:10px'>"
+                f"<span style='font-size:12px;padding:3px 10px;border-radius:12px;"
+                f"background:#27ae6022;color:#27ae60;border:1px solid #27ae6055'>"
+                f"● Anterior · {_pa_start.strftime('%d/%m')}→{_pa_end.strftime('%d/%m')}</span>"
+                f"<span style='font-size:12px;padding:3px 10px;border-radius:12px;"
+                f"background:#e74c3c22;color:#e74c3c;border:1px solid #e74c3c55'>"
+                f"● Recente · {_pr_start.strftime('%d/%m')}→{_pr_end.strftime('%d/%m')}</span>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+
+            # Gráfico de barras horizontal
+            _alo_df_plot = pd.DataFrame([r for r in _alo_rows if not np.isnan(r['delta_pct'])])
+            if len(_alo_df_plot) > 0:
+                _alo_df_plot['cor'] = _alo_df_plot['score'].apply(
+                    lambda s: '#27ae60' if s > 0.05 else ('#e74c3c' if s < -0.05 else '#95a5a6'))
+                _fig_alo = go.Figure()
+                _fig_alo.add_trace(go.Bar(
+                    y=_alo_df_plot['Dimensão'].tolist(),
+                    x=_alo_df_plot['delta_pct'].tolist(),
+                    orientation='h',
+                    marker_color=_alo_df_plot['cor'].tolist(),
+                    text=[f"{v:+.0f}%" for v in _alo_df_plot['delta_pct'].tolist()],
+                    textposition='outside',
+                    hovertemplate='%{y}: %{x:+.1f}%<extra></extra>'))
+                _fig_alo.add_vline(x=0, line_color='#888', line_width=1)
+                _fig_alo.update_layout(
+                    paper_bgcolor='white', plot_bgcolor='white',
+                    height=max(220, len(_alo_df_plot) * 44),
+                    margin=dict(t=10, b=40, l=140, r=80),
+                    font=dict(color='#222', size=12),
+                    xaxis=dict(
+                        title=dict(text='Variação % (Recente vs Anterior)',
+                                   font=dict(size=12, color='#333')),
+                        tickfont=dict(size=11, color='#333'),
+                        linecolor='#555', gridcolor='rgba(0,0,0,0.05)',
+                        ticksuffix='%'),
+                    yaxis=dict(tickfont=dict(size=12, color='#222')),
+                    showlegend=False)
+                st.plotly_chart(_fig_alo, use_container_width=True,
+                                config={'displayModeBar': False}, key='nlss_alo_bar')
+
+                # Tabela resumo
+                _tbl = []
+                for r in _alo_rows:
+                    if np.isnan(r['ant_v']):
+                        _tbl.append({'Dimensão': r['Dimensão'], 'Anterior → Recente': 'sem dados', 'Δ': '—'})
+                    else:
+                        _a_f = f"{r['ant_v']:.0f}" if abs(r['ant_v']) >= 10 else f"{r['ant_v']:.1f}"
+                        _r_f = f"{r['rec_v']:.0f}" if abs(r['rec_v']) >= 10 else f"{r['rec_v']:.1f}"
+                        _tbl.append({'Dimensão': r['Dimensão'],
+                                     'Anterior → Recente': f"{_a_f} → {_r_f} {r['uni']}",
+                                     'Δ': f"{r['delta_pct']:+.0f}%"})
+                st.dataframe(pd.DataFrame(_tbl), use_container_width=True, hide_index=True)
+
+                if _alo_total < -0.10:
+                    st.caption("◄ peor en fase reciente")
+                elif _alo_total > 0.10:
+                    st.caption("mejor en fase reciente ►")
+
+    else:
+        _err = _nlss.get('error', 'erro desconhecido') if _nlss else 'não executado'
+        st.info(
+            f"ℹ️ Modelo Homeostático indisponível: {_err}. "
+            "São necessários pelo menos 2 testes anuais de Bike MMP20."
+        )
+
+
     st.subheader("📊 Resumo PMC")
     tsb_v = u['TSB']
     atl_v = u['ATL']
