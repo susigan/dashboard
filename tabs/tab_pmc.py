@@ -634,20 +634,23 @@ ou a acumular sobrecarga não compensada (allostatic overload), comparando
         _ph_index = pd.DatetimeIndex(_ph_s.index)
         _ph_min   = _ph_index.min().date()
         _ph_max   = _ph_index.max().date()
+        # Converter para datetime para aritmética, depois voltar a date
+        _ph_max_dt = pd.Timestamp(_ph_max)
+        _ph_min_dt = pd.Timestamp(_ph_min)
 
         _col_p1, _col_p2 = st.columns(2)
         with _col_p1:
             st.markdown("**Período Anterior**")
             _pa_start = st.date_input("Início", key="nlss_pa_start",
-                value=max(_ph_min, (_ph_max - pd.Timedelta(days=120)).date()),
+                value=max(_ph_min, (_ph_max_dt - pd.Timedelta(days=120)).date()),
                 min_value=_ph_min, max_value=_ph_max)
             _pa_end = st.date_input("Fim", key="nlss_pa_end",
-                value=max(_ph_min, (_ph_max - pd.Timedelta(days=61)).date()),
+                value=max(_ph_min, (_ph_max_dt - pd.Timedelta(days=61)).date()),
                 min_value=_ph_min, max_value=_ph_max)
         with _col_p2:
             st.markdown("**Período Recente**")
             _pr_start = st.date_input("Início", key="nlss_pr_start",
-                value=max(_ph_min, (_ph_max - pd.Timedelta(days=60)).date()),
+                value=max(_ph_min, (_ph_max_dt - pd.Timedelta(days=60)).date()),
                 min_value=_ph_min, max_value=_ph_max)
             _pr_end = st.date_input("Fim", key="nlss_pr_end",
                 value=_ph_max, min_value=_ph_min, max_value=_ph_max)
