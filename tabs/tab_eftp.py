@@ -697,35 +697,44 @@ a mudança de eFTP — adicionar κ como covariável melhora o modelo.
                         line=dict(color=_cor_m, width=2),
                         hovertemplate=f"{_mproj}: %{{y:.0f}}W<extra></extra>"))
 
-                # Projection
-                _proj_vals = [_eftp0 * np.exp(_bv * _slope_now * d) for d in range(_PROJ_DAYS+1)]
-                # IC 90%: SE da regressão como proxy (± 1.645σ)
-                _r2v_safe = max(_r2v, 0.01)
-                _ic_half  = [abs(v - _eftp0) * (1 - _r2v_safe) * 1.645 + 2 for v in _proj_vals]
-                _proj_hi  = [v + ic for v, ic in zip(_proj_vals, _ic_half)]
-                _proj_lo  = [max(v - ic, 1) for v, ic in zip(_proj_vals, _ic_half)]
+                # Projection — all types explicit float/str, no numpy ambiguity
+                _slope_f   = float(_slope_now)
+                _bv_f      = float(_bv)
+                _eftp0_f   = float(_eftp0)
+                _r2v_safe  = float(max(_r2v, 0.01))
+                _proj_vals = [float(_eftp0_f * np.exp(_bv_f * _slope_f * d))
+                              for d in range(_PROJ_DAYS + 1)]
+                _ic_half   = [float(abs(v - _eftp0_f) * (1.0 - _r2v_safe) * 1.645 + 2.0)
+                              for v in _proj_vals]
+                _proj_hi   = [float(v + ic) for v, ic in zip(_proj_vals, _ic_half)]
+                _proj_lo   = [float(max(v - ic, 1.0)) for v, ic in zip(_proj_vals, _ic_half)]
+                _proj_hi_r = list(reversed(_proj_hi))
+                _proj_lo_r = list(reversed(_proj_lo))
 
-                _r, _g, _b = int(_cor_m[1:3],16), int(_cor_m[3:5],16), int(_cor_m[5:7],16)
-                # Convert DatetimeIndex to str for Plotly compatibility
+                _r, _g, _b = int(_cor_m[1:3], 16), int(_cor_m[3:5], 16), int(_cor_m[5:7], 16)
                 _proj_dates_str = [str(d.date()) for d in _proj_dates]
+                _proj_dates_rev = list(reversed(_proj_dates_str))
+
                 _fig_proj.add_trace(go.Scatter(
-                    x=_proj_dates_str + _proj_dates_str[::-1],
-                    y=_proj_hi+_proj_lo[::-1],
+                    x=_proj_dates_str + _proj_dates_rev,
+                    y=_proj_hi + _proj_lo_r,
                     fill='toself',
                     fillcolor=f'rgba({_r},{_g},{_b},0.10)',
                     line=dict(width=0), showlegend=False, hoverinfo='skip'))
                 _fig_proj.add_trace(go.Scatter(
-                    x=_proj_dates_str, y=[round(v,1) for v in _proj_vals],
-                    name=f"{_mproj} proj. 28d (β={_bv:.3f}, R²={_r2v:.2f})",
+                    x=_proj_dates_str,
+                    y=[float(round(v, 1)) for v in _proj_vals],
+                    name=f"{_mproj} proj. 28d (b={_bv_f:.3f}, R2={_r2v:.2f})",
                     line=dict(color=_cor_m, width=2.5, dash='dash'),
                     hovertemplate=f"{_mproj} proj: %{{y:.0f}}W<extra></extra>"))
 
                 # Annotation at t+28
-                _proj_end = round(_proj_vals[-1], 0)
-                _delta_pct = (_proj_end - _eftp0) / max(_eftp0, 1) * 100
+                _proj_end  = float(round(_proj_vals[-1], 0))
+                _delta_pct = float((_proj_end - _eftp0_f) / max(_eftp0_f, 1.0) * 100.0)
+                _proj_x28  = str(_proj_dates[-1].date())
                 _fig_proj.add_annotation(
-                    x=str(_proj_dates[-1].date()), y=_proj_end,
-                    text=f"<b>{_mproj} +28d: {_proj_end:.0f}W ({_delta_pct:+.1f}%)</b>",
+                    x=_proj_x28, y=_proj_end,
+                    text=f"{_mproj} +28d: {_proj_end:.0f}W ({_delta_pct:+.1f}%)",
                     showarrow=False, xshift=5, yshift=8,
                     font=dict(size=11, color=_cor_m),
                     bgcolor='rgba(255,255,255,0.85)')
