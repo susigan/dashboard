@@ -501,3 +501,29 @@ def tab_volume(da, dw):
                          use_container_width=True, hide_index=True)
     else:
         st.info("Colunas aerobic/glycolytic/pmax não disponíveis.")
+
+    st.markdown("---")
+
+    # ── Training Load Mensal por Modalidade (movido de tab_analises) ──────────
+    # ── Secção 2: Training Load Mensal Stacked ──────────────────────────────
+    st.subheader("📊 Training Load Mensal por Modalidade (TRIMP = min × RPE)")
+    df_tl = filtrar_principais(da_full).copy()
+    df_tl = add_tempo(df_tl)
+    if 'moving_time' in df_tl.columns and 'rpe' in df_tl.columns:
+        df_tl['rpe_fill']    = df_tl['rpe'].fillna(df_tl['rpe'].median())
+        df_tl['session_rpe'] = (pd.to_numeric(df_tl['moving_time'], errors='coerce') / 60) * df_tl['rpe_fill']
+        df_tl = df_tl[df_tl['type'].isin(['Bike', 'Run', 'Row', 'Ski', 'WeightTraining'])]
+        pivot_tl = df_tl.pivot_table(index='mes', columns='type', values='session_rpe', aggfunc='sum', fill_value=0).sort_index()
+        CORES_MOD = {'Bike': CORES['vermelho'], 'Run': CORES['verde'], 'Row': CORES['azul'], 'Ski': CORES['roxo'], 'WeightTraining': CORES['laranja']}
+        _fig_sb = go.Figure()
+        if len(pivot_tl) > 0:
+            for _tc in [c for c in pivot_tl.columns if c in CORES_MOD]:
+                _fig_sb.add_trace(go.Bar(x=[str(x) for x in pivot_tl.index],
+                    y=pivot_tl[_tc].tolist(), name=_tc,
+                    marker_color=CORES_MOD.get(_tc,'gray'),
+                    marker_line_width=0, opacity=0.85))
+        _fig_sb.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), barmode='stack', height=340,
+            legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),
+            xaxis=dict(tickangle=-45, showgrid=False, gridcolor='#eee', tickfont=dict(color='#111')),
+            yaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')))
+        st.plotly_chart(_fig_sb, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, key="volume_training_load_mensal")
