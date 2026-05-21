@@ -178,22 +178,40 @@ do p75 histórico sinalizam necessidade de repleção activa (CHO strategy).
     _z1_col = next((c for c in ['z1_kj','Z1KJ','z1kj'] if c in _gly_df.columns), None)
     _z2_col = next((c for c in ['z2_kj','Z2KJ','z2kj'] if c in _gly_df.columns), None)
     _z3_col = next((c for c in ['z3_kj','Z3KJ','z3kj'] if c in _gly_df.columns), None)
-    _wt_col = next((c for c in ['icu_weight','weight'] if c in _gly_df.columns), None)
-
     if _z1_col and _z2_col and _z3_col:
         _gly_df['_z1'] = pd.to_numeric(_gly_df[_z1_col], errors='coerce').fillna(0)
         _gly_df['_z2'] = pd.to_numeric(_gly_df[_z2_col], errors='coerce').fillna(0)
         _gly_df['_z3'] = pd.to_numeric(_gly_df[_z3_col], errors='coerce').fillna(0)
 
-        # Peso: rolling 30d ou mediana global
-        if _wt_col:
-            _gly_df['_peso'] = (pd.to_numeric(_gly_df[_wt_col], errors='coerce')
-                                  .replace(0, np.nan)
-                                  .fillna(method='ffill')
-                                  .fillna(method='bfill')
-                                  .fillna(75.0))
-        else:
-            _gly_df['_peso'] = 75.0
+        # Peso: puxar do wellness sheet (dw) — coluna 'peso', igual à tab_corporal
+        # Fallback: icu_weight das actividades → mediana global → 75 kg
+        _peso_wc = None
+        if dw is not None and len(dw) > 0:
+            _peso_col_wc = next((c for c in ['peso','Peso','weight','Weight']
+                                  if c in dw.columns and pd.to_numeric(
+                                      dw[c], errors='coerce').notna().any()), None)
+            if _peso_col_wc:
+                _wc_peso = dw[['Data', _peso_col_wc]].copy()
+                _wc_peso['Data'] = pd.to_datetime(_wc_peso['Data']).dt.normalize()
+                _wc_peso['_pw'] = pd.to_numeric(_wc_peso[_peso_col_wc], errors='coerce').replace(0, np.nan)
+                _wc_peso = _wc_peso.dropna(subset=['_pw']).sort_values('Data')
+                if len(_wc_peso) > 0:
+                    # rolling 30d da média do wellness, reindexado para datas das actividades
+                    _wc_daily = (_wc_peso.set_index('Data')['_pw']
+                                          .rolling('30D', min_periods=1).mean())
+                    _peso_wc = _wc_daily  # Series indexed by date
+
+        def _get_peso(data):
+            if _peso_wc is not None:
+                # Pegar o valor mais recente até essa data
+                _sub = _peso_wc[_peso_wc.index <= pd.Timestamp(data)]
+                if len(_sub) > 0:
+                    return float(_sub.iloc[-1])
+            return 75.0  # fallback
+
+        _gly_df['_peso'] = _gly_df['Data'].apply(_get_peso)
+        # Garantir sem zeros ou NaN
+        _gly_df['_peso'] = _gly_df['_peso'].replace(0, np.nan).fillna(75.0)
 
         # Custo glicogénico por sessão (g CHO) — normalizado por peso
         _gly_df['G_dep']      = (_K_ZONES['z1'] * _gly_df['_z1'] +
