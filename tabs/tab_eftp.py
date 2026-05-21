@@ -784,7 +784,9 @@ a mudança de eFTP — adicionar κ como covariável melhora o modelo.
             _proj_ok = True
 
         except Exception as _proj_err:
+            import traceback as _tb
             st.info(f"Projecção CP: dados insuficientes — {_proj_err}")
+            st.code(_tb.format_exc())
     else:
         st.info("Projecção CP requer CTLγ calculado (ld_frac_cache no session_state — carrega o tab PMC primeiro).")
 
