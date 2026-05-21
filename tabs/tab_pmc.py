@@ -668,298 +668,280 @@ ou a acumular sobrecarga não compensada (allostatic overload), comparando
             st.warning("Período(s) com menos de 5 dias — alarga o intervalo.")
         else:
             # ── GRÁFICO: Reserva de Performance p̂(t) ─────────────────────────
-            # Botões de modalidade — Todas ou por modalidade individual
-            _mod_opts = ["Todas"] + [m for m in ["Bike","Row","Ski","Run"]
-                                      if da_full is not None and "type" in da_full.columns
-                                      and m in da_full["type"].unique()]
-            _mod_sel = st.radio(
-                "Modalidade",
-                _mod_opts,
-                horizontal=True,
-                key="nlss_mod_radio",
-                help="'Todas' usa a p̂(t) global. Por modalidade, recalcula "
-                     "o NLSS só com as sessões dessa modalidade."
-            )
+            # ── GRÁFICO: Reserva de Performance — igual à foto ────────────────
+            # Título + subtitle no topo; curvas sobrepostas; legenda integrada no gráfico
+            # Botões Todo / Fit+banda / Só fits + modalidade
 
-            # Função para suavizar com Savitzky-Golay (como na foto)
+            _col_btns1, _col_btns2 = st.columns([2, 3])
+            with _col_btns1:
+                _mod_sel = st.radio(
+                    "Modalidade",
+                    ["Todas"] + [m for m in ["Bike","Row","Ski","Run"]
+                                  if da_full is not None and "type" in da_full.columns
+                                  and m in da_full["type"].unique()],
+                    horizontal=True, key="nlss_mod_radio",
+                    help="Todas = curva global. Por modalidade = NLSS recalculado.")
+            with _col_btns2:
+                _view_mode = st.radio(
+                    "Visualização",
+                    ["Todo", "Fit + banda", "Só fits"],
+                    horizontal=True, key="nlss_view_mode",
+                    help="Todo = dados brutos + fit + banda | Fit+banda = sem pontos brutos | Só fits = linhas limpas")
+
+            # Suavização Savitzky-Golay
             def _smooth_sg(s, window=21, poly=3):
-                """Savitzky-Golay — preserva picos, mais suave que rolling mean."""
                 try:
                     from scipy.signal import savgol_filter
                     arr = s.fillna(method="ffill").fillna(method="bfill").values
-                    w = min(window, len(arr) if len(arr) % 2 == 1 else len(arr)-1)
-                    w = max(w, poly+2) if w % 2 == 0 else max(w, poly+1)
-                    return pd.Series(
-                        savgol_filter(arr, window_length=w, polyorder=poly),
-                        index=s.index)
+                    w   = min(window, len(arr) if len(arr) % 2 == 1 else len(arr)-1)
+                    w   = max(w, poly+2) if w % 2 == 0 else max(w, poly+1)
+                    return pd.Series(savgol_filter(arr, window_length=w, polyorder=poly), index=s.index)
                 except Exception:
                     return s.rolling(14, min_periods=3, center=True).mean()
 
             def _band_sg(s, window=21):
-                """Smooth + banda ±1SD em janela 14d."""
                 mu = _smooth_sg(s, window)
                 sd = s.rolling(14, min_periods=3, center=True).std().fillna(0)
                 return mu, mu + sd, mu - sd
 
-            # ── Construir séries p̂ para a modalidade seleccionada ─────────────
+            # Função para obter p̂ por modalidade
             def _get_phat_for_mod(mod):
-                """Retorna (ph_ant, ph_rec) para uma modalidade ou 'Todas'."""
                 if mod == "Todas":
                     return _ph_s[_pa_mask], _ph_s[_pr_mask]
-                # Filtrar actividades da modalidade e recalcular NLSS
-                if da_full is None or "type" not in da_full.columns:
-                    return _ph_s[_pa_mask], _ph_s[_pr_mask]
+                if da_full is None or "type" not in da_full.columns: return _ph_s[_pa_mask], _ph_s[_pr_mask]
                 _da_mod = da_full[da_full["type"] == mod].copy()
                 if len(_da_mod) < 30:
-                    st.warning(f"Poucos dados para {mod} ({len(_da_mod)} sessões).")
+                    st.caption(f"Poucos dados para {mod} ({len(_da_mod)} sessões) — usando global.")
                     return _ph_s[_pa_mask], _ph_s[_pr_mask]
                 try:
                     from utils.data import calcular_nlss
-                    _nlss_mod = calcular_nlss(_da_mod, df_wellness=wc, mod=mod)
-                    if _nlss_mod and _nlss_mod.get("error") is None and "p_hat_series" in _nlss_mod:
-                        _ph_mod = _nlss_mod["p_hat_series"]
-                        _ph_idx = pd.DatetimeIndex(_ph_mod.index)
-                        _ma = (_ph_idx.date >= _pa_start) & (_ph_idx.date <= _pa_end)
-                        _mr = (_ph_idx.date >= _pr_start) & (_ph_idx.date <= _pr_end)
-                        return _ph_mod[_ma], _ph_mod[_mr]
+                    _nlss_m = calcular_nlss(_da_mod, df_wellness=wc, mod=mod)
+                    if _nlss_m and not _nlss_m.get("error") and "p_hat_series" in _nlss_m:
+                        _ph_m = _nlss_m["p_hat_series"]
+                        _ph_i = pd.DatetimeIndex(_ph_m.index)
+                        return _ph_m[(_ph_i.date >= _pa_start) & (_ph_i.date <= _pa_end)],                                _ph_m[(_ph_i.date >= _pr_start) & (_ph_i.date <= _pr_end)]
                 except Exception as _em:
-                    st.caption(f"⚠️ NLSS {mod}: {_em} — usando série global.")
+                    st.caption(f"NLSS {mod}: {_em}")
                 return _ph_s[_pa_mask], _ph_s[_pr_mask]
 
-            # Cores por modalidade
-            _cores_mod_nlss = {
-                "Todas":  ("#27ae60", "#e74c3c"),
-                "Bike":   ("#c0392b", "#e74c3c"),
-                "Row":    ("#1a6fa8", "#3498db"),
-                "Ski":    ("#6c3483", "#9b59b6"),
-                "Run":    ("#1e8449", "#27ae60"),
-            }
-            _cor_ant, _cor_rec = _cores_mod_nlss.get(_mod_sel, ("#27ae60","#e74c3c"))
+            # Cores: anterior = verde, recente = laranja/vermelho (igual à foto)
+            _COR_ANT = "#27ae60"   # verde — Anterior
+            _COR_REC = "#e67e22"   # laranja — Recente (como na foto)
+            _MOD_CORES = {"Bike":"#e74c3c","Row":"#3498db","Ski":"#9b59b6","Run":"#27ae60"}
+
+            # Construir figura
+            _fig_phat = go.Figure()
+
+            # Título e subtitle no topo (como na foto)
+            _pa_lbl = f"Anterior · {_pa_start.strftime('%d/%m/%y')}→{_pa_end.strftime('%d/%m/%y')}"
+            _pr_lbl = f"Recente · {_pr_start.strftime('%d/%m/%y')}→{_pr_end.strftime('%d/%m/%y')}"
 
             if _mod_sel == "Todas":
-                # Mostrar todas as modalidades sobrepostas num único gráfico
-                _fig_phat = go.Figure()
-                _cores_all = {"Bike":"#e74c3c","Row":"#3498db","Ski":"#9b59b6","Run":"#27ae60"}
-
-                # Primeiro: curva global (cinza, fundo)
+                # ── Modo Todas: todas as modalidades sobrepostas ─────────────
+                # Global como referência cinza
                 _ant_mu_g, _ant_hi_g, _ant_lo_g = _band_sg(_ph_s[_pa_mask])
                 _rec_mu_g, _rec_hi_g, _rec_lo_g = _band_sg(_ph_s[_pr_mask])
+                _ant_pico = float(_ant_mu_g.max()) if _ant_mu_g.notna().any() else float(_ph_s[_pa_mask].max())
+                _rec_pico = float(_rec_mu_g.max()) if _rec_mu_g.notna().any() else float(_ph_s[_pr_mask].max())
 
-                for _period_s, _period_mask, _p_mu, _p_hi, _p_lo, _p_col, _p_lbl, _p_fill in [
-                    (_ph_s, _pa_mask, _ant_mu_g, _ant_hi_g, _ant_lo_g,
-                     "#555", f"Global Anterior ({_pa_start.strftime('%d/%m')}→{_pa_end.strftime('%d/%m')})",
-                     "rgba(100,100,100,0.08)"),
-                    (_ph_s, _pr_mask, _rec_mu_g, _rec_hi_g, _rec_lo_g,
-                     "#222", f"Global Recente ({_pr_start.strftime('%d/%m')}→{_pr_end.strftime('%d/%m')})",
-                     "rgba(50,50,50,0.10)"),
-                ]:
-                    _fig_phat.add_trace(go.Scatter(
-                        x=list(_period_s[_period_mask].index) + list(_period_s[_period_mask].index[::-1]),
-                        y=list(_p_hi.values) + list(_p_lo.values[::-1]),
-                        fill="toself", fillcolor=_p_fill,
-                        line=dict(width=0), showlegend=False, hoverinfo="skip"))
-                    _fig_phat.add_trace(go.Scatter(
-                        x=list(_period_s[_period_mask].index), y=list(_p_mu.values),
-                        name=_p_lbl, line=dict(color=_p_col, width=1.5, dash="dot"),
-                        opacity=0.6, hovertemplate=f"Global: %{{y:.1f}}W<extra></extra>"))
+                if _view_mode != "Só fits":
+                    # Banda global cinza
+                    for _s_g, _hi_g, _lo_g, _fill_g in [
+                        (_ph_s[_pa_mask], _ant_hi_g, _ant_lo_g, "rgba(100,100,100,0.08)"),
+                        (_ph_s[_pr_mask], _rec_hi_g, _rec_lo_g, "rgba(50,50,50,0.10)"),
+                    ]:
+                        _fig_phat.add_trace(go.Scatter(
+                            x=list(_s_g.index)+list(_s_g.index[::-1]),
+                            y=list(_hi_g.values)+list(_lo_g.values[::-1]),
+                            fill="toself", fillcolor=_fill_g,
+                            line=dict(width=0), showlegend=False, hoverinfo="skip"))
+
+                # Linhas global
+                _fig_phat.add_trace(go.Scatter(
+                    x=list(_ph_s[_pa_mask].index), y=list(_ant_mu_g.values),
+                    name=f"Global {_pa_lbl} n={len(_ph_s[_pa_mask])}",
+                    line=dict(color="#666", width=1.5, dash="dash"), opacity=0.7,
+                    hovertemplate="Global ant: %{y:.0f}<extra></extra>"))
+                _fig_phat.add_trace(go.Scatter(
+                    x=list(_ph_s[_pr_mask].index), y=list(_rec_mu_g.values),
+                    name=f"Global {_pr_lbl} n={len(_ph_s[_pr_mask])}",
+                    line=dict(color="#333", width=1.5, dash="dash"), opacity=0.7,
+                    hovertemplate="Global rec: %{y:.0f}<extra></extra>"))
 
                 # Modalidades individuais sobrepostas
-                for _mod_i, _col_i in _cores_all.items():
+                for _mod_i, _col_i in _MOD_CORES.items():
                     try:
+                        if da_full is None or "type" not in da_full.columns: continue
+                        _da_i = da_full[da_full["type"] == _mod_i]
+                        if len(_da_i) < 20: continue
                         from utils.data import calcular_nlss
-                        _da_i = da_full[da_full["type"] == _mod_i] if da_full is not None else None
-                        if _da_i is None or len(_da_i) < 20:
-                            continue
-                        # Row/Ski usam MMP5; Bike/Run usam MMP20
                         _nlss_i = calcular_nlss(_da_i, df_wellness=wc, mod=_mod_i)
-                        if not _nlss_i or _nlss_i.get("error") or "p_hat_series" not in _nlss_i:
-                            continue
-                        _ph_i    = _nlss_i["p_hat_series"]
-                        _ph_i_ix = pd.DatetimeIndex(_ph_i.index)
-                        _ma_i = (_ph_i_ix.date >= _pa_start) & (_ph_i_ix.date <= _pa_end)
-                        _mr_i = (_ph_i_ix.date >= _pr_start) & (_ph_i_ix.date <= _pr_end)
-
-                        for _mask_i, _dash_i, _lbl_sfx in [
-                            (_ma_i, "dash",  f"Ant"),
-                            (_mr_i, "solid", f"Rec"),
+                        if not _nlss_i or _nlss_i.get("error") or "p_hat_series" not in _nlss_i: continue
+                        _ph_i   = _nlss_i["p_hat_series"]
+                        _ph_ix  = pd.DatetimeIndex(_ph_i.index)
+                        _ma_i   = (_ph_ix.date >= _pa_start) & (_ph_ix.date <= _pa_end)
+                        _mr_i   = (_ph_ix.date >= _pr_start) & (_ph_ix.date <= _pr_end)
+                        for _mask_i, _dash_i, _sfx, _w in [
+                            (_ma_i, "dot",   "ant", 1.8),
+                            (_mr_i, "solid", "rec", 2.2),
                         ]:
                             _s_i = _ph_i[_mask_i]
-                            if len(_s_i) < 5:
-                                continue
+                            if len(_s_i) < 5: continue
                             _mu_i = _smooth_sg(_s_i)
                             _fig_phat.add_trace(go.Scatter(
                                 x=list(_s_i.index), y=list(_mu_i.values),
-                                name=f"{_mod_i} {_lbl_sfx}",
-                                line=dict(color=_col_i, width=2.0, dash=_dash_i),
-                                hovertemplate=f"{_mod_i}: %{{y:.1f}}W<extra></extra>"))
-                    except Exception:
-                        continue
-
-                # Testes reais (global)
-                if _test_dates and _test_watts:
-                    _td_dt2 = pd.to_datetime(_test_dates)
-                    for _t_m2, _t_c2, _t_n2 in [
-                        ((_td_dt2.normalize().dt.date >= _pa_start) & (_td_dt2.normalize().dt.date <= _pa_end),
-                         "#555", "Testes ant"),
-                        ((_td_dt2.normalize().dt.date >= _pr_start) & (_td_dt2.normalize().dt.date <= _pr_end),
-                         "#222", "Testes rec"),
-                    ]:
-                        _td_s2 = [(d,w) for d,w,m in zip(_td_dt2,_test_watts,_t_m2) if m]
-                        if _td_s2:
-                            _fig_phat.add_trace(go.Scatter(
-                                x=[d for d,_ in _td_s2], y=[w for _,w in _td_s2],
-                                mode="markers", name=_t_n2,
-                                marker=dict(color=_t_c2, size=8, symbol="diamond",
-                                            line=dict(color="white",width=1.5)),
-                                hovertemplate="Teste: %{y:.0f}W — %{x|%d/%m/%Y}<extra></extra>"))
-
-                st.caption(
-                    "Todas as modalidades sobrepostas. "
-                    "Tracejado = Período Anterior · Sólido = Período Recente. "
-                    "Cinza = curva global."
-                )
+                                name=f"{_mod_i} {_sfx}",
+                                line=dict(color=_col_i, width=_w, dash=_dash_i),
+                                hovertemplate=f"{_mod_i}: %{{y:.0f}}<extra></extra>"))
+                    except Exception: continue
 
             else:
-                # Modalidade individual — estética da foto
+                # ── Modo individual — fiel à foto ────────────────────────────
                 _ph_ant_m, _ph_rec_m = _get_phat_for_mod(_mod_sel)
-
                 if len(_ph_ant_m) < 5 or len(_ph_rec_m) < 5:
-                    st.warning(f"Dados insuficientes para {_mod_sel} no(s) período(s).")
+                    st.warning(f"Dados insuficientes para {_mod_sel}.")
                     _ph_ant_m, _ph_rec_m = _ph_s[_pa_mask], _ph_s[_pr_mask]
+
+                _cor_a = _MOD_CORES.get(_mod_sel, _COR_ANT) if _mod_sel != "Todas" else _COR_ANT
+                # Anterior sempre verde, recente sempre laranja (como na foto)
+                _cor_a = _COR_ANT
+                _cor_r = _COR_REC
 
                 _ant_mu, _ant_hi, _ant_lo = _band_sg(_ph_ant_m)
                 _rec_mu, _rec_hi, _rec_lo = _band_sg(_ph_rec_m)
-
-                _fig_phat = go.Figure()
-
-                # Banda ±1SD anterior
-                _fig_phat.add_trace(go.Scatter(
-                    x=list(_ph_ant_m.index) + list(_ph_ant_m.index[::-1]),
-                    y=list(_ant_hi.values)  + list(_ant_lo.values[::-1]),
-                    fill="toself",
-                    fillcolor=f"rgba({int(_cor_ant[1:3],16)},{int(_cor_ant[3:5],16)},{int(_cor_ant[5:7],16)},0.15)",
-                    line=dict(width=0), showlegend=True,
-                    name=f"±1 SD Anterior",
-                    hoverinfo="skip"))
-                # Linha anterior — Savitzky-Golay
-                _fig_phat.add_trace(go.Scatter(
-                    x=list(_ph_ant_m.index), y=list(_ant_mu.values),
-                    name=f"Anterior fit  ({_pa_start.strftime('%d/%m')}→{_pa_end.strftime('%d/%m')})  n={len(_ph_ant_m)}",
-                    line=dict(color=_cor_ant, width=3),
-                    hovertemplate="p̂ ant: %{y:.1f}W<extra></extra>"))
-
-                # Banda ±1SD recente
-                _fig_phat.add_trace(go.Scatter(
-                    x=list(_ph_rec_m.index) + list(_ph_rec_m.index[::-1]),
-                    y=list(_rec_hi.values)  + list(_rec_lo.values[::-1]),
-                    fill="toself",
-                    fillcolor=f"rgba({int(_cor_rec[1:3],16)},{int(_cor_rec[3:5],16)},{int(_cor_rec[5:7],16)},0.15)",
-                    line=dict(width=0), showlegend=True,
-                    name=f"±1 SD Recente",
-                    hoverinfo="skip"))
-                # Linha recente — Savitzky-Golay
-                _fig_phat.add_trace(go.Scatter(
-                    x=list(_ph_rec_m.index), y=list(_rec_mu.values),
-                    name=f"Recente fit  ({_pr_start.strftime('%d/%m')}→{_pr_end.strftime('%d/%m')})  n={len(_ph_rec_m)}",
-                    line=dict(color=_cor_rec, width=3),
-                    hovertemplate="p̂ rec: %{y:.1f}W<extra></extra>"))
-
-                # Testes reais
-                if _test_dates and _test_watts:
-                    _td_dt = pd.to_datetime(_test_dates)
-                    for _t_m3, _t_c3, _t_n3 in [
-                        ((_td_dt.normalize().dt.date >= _pa_start) & (_td_dt.normalize().dt.date <= _pa_end),
-                         _cor_ant, "Testes anteriores"),
-                        ((_td_dt.normalize().dt.date >= _pr_start) & (_td_dt.normalize().dt.date <= _pr_end),
-                         _cor_rec, "Testes recentes"),
-                    ]:
-                        _td_s3 = [(d,w) for d,w,m in zip(_td_dt,_test_watts,_t_m3) if m]
-                        if _td_s3:
-                            _fig_phat.add_trace(go.Scatter(
-                                x=[d for d,_ in _td_s3], y=[w for _,w in _td_s3],
-                                mode="markers", name=_t_n3,
-                                marker=dict(color=_t_c3, size=10, symbol="circle",
-                                            line=dict(color="white", width=2)),
-                                hovertemplate="Teste: %{y:.0f}W — %{x|%d/%m/%Y}<extra></extra>"))
-
-                # Anotação de pico — estilo da foto
                 _ant_pico    = float(_ant_mu.max()) if _ant_mu.notna().any() else float(_ph_ant_m.max())
                 _rec_pico    = float(_rec_mu.max()) if _rec_mu.notna().any() else float(_ph_rec_m.max())
-                _ant_pico_dt = _ant_mu.idxmax()     if _ant_mu.notna().any() else _ph_ant_m.idxmax()
-                _rec_pico_dt = _rec_mu.idxmax()     if _rec_mu.notna().any() else _ph_rec_m.idxmax()
+                _ant_pico_dt = _ant_mu.idxmax() if _ant_mu.notna().any() else _ph_ant_m.idxmax()
+                _rec_pico_dt = _rec_mu.idxmax() if _rec_mu.notna().any() else _ph_rec_m.idxmax()
 
-                # Ponto de pico (círculo aberto, como na foto)
-                _fig_phat.add_trace(go.Scatter(
-                    x=[_ant_pico_dt], y=[_ant_pico],
-                    mode="markers", showlegend=False,
-                    marker=dict(color="white", size=12, symbol="circle",
-                                line=dict(color=_cor_ant, width=2.5)),
-                    hovertemplate=f"Pico ant: {_ant_pico:.0f}W<extra></extra>"))
-                _fig_phat.add_trace(go.Scatter(
-                    x=[_rec_pico_dt], y=[_rec_pico],
-                    mode="markers", showlegend=False,
-                    marker=dict(color="white", size=12, symbol="circle",
-                                line=dict(color=_cor_rec, width=2.5)),
-                    hovertemplate=f"Pico rec: {_rec_pico:.0f}W<extra></extra>"))
+                _ra, _ga, _ba = int(_cor_a[1:3],16), int(_cor_a[3:5],16), int(_cor_a[5:7],16)
+                _rr, _gr, _br = int(_cor_r[1:3],16), int(_cor_r[3:5],16), int(_cor_r[5:7],16)
 
-                # Anotações de texto de pico — posição à direita do ponto
+                if _view_mode != "Só fits":
+                    # Banda ±1SD Anterior
+                    _fig_phat.add_trace(go.Scatter(
+                        x=list(_ph_ant_m.index)+list(_ph_ant_m.index[::-1]),
+                        y=list(_ant_hi.values)+list(_ant_lo.values[::-1]),
+                        fill="toself", fillcolor=f"rgba({_ra},{_ga},{_ba},0.15)",
+                        line=dict(width=0), showlegend=True, name="±1 SD",
+                        legendgroup="ant", hoverinfo="skip"))
+                    # Banda ±1SD Recente
+                    _fig_phat.add_trace(go.Scatter(
+                        x=list(_ph_rec_m.index)+list(_ph_rec_m.index[::-1]),
+                        y=list(_rec_hi.values)+list(_rec_lo.values[::-1]),
+                        fill="toself", fillcolor=f"rgba({_rr},{_gr},{_br},0.15)",
+                        line=dict(width=0), showlegend=True, name="±1 SD ",
+                        legendgroup="rec", hoverinfo="skip"))
+
+                # Linha Anterior fit
+                _fig_phat.add_trace(go.Scatter(
+                    x=list(_ph_ant_m.index), y=list(_ant_mu.values),
+                    name=f"Anterior fit  n={len(_ph_ant_m)}",
+                    legendgroup="ant",
+                    line=dict(color=_cor_a, width=3),
+                    hovertemplate="Anterior: %{y:.0f}<extra></extra>"))
+                # Linha Recente fit
+                _fig_phat.add_trace(go.Scatter(
+                    x=list(_ph_rec_m.index), y=list(_rec_mu.values),
+                    name=f"Recente fit  n={len(_ph_rec_m)}",
+                    legendgroup="rec",
+                    line=dict(color=_cor_r, width=3),
+                    hovertemplate="Recente: %{y:.0f}<extra></extra>"))
+
+                # Testes reais (só em "Todo")
+                if _view_mode == "Todo" and _test_dates and _test_watts:
+                    _td_dt = pd.to_datetime(_test_dates)
+                    for _t_m, _t_c, _t_n, _t_grp in [
+                        ((_td_dt.normalize().dt.date >= _pa_start) & (_td_dt.normalize().dt.date <= _pa_end),
+                         _cor_a, "Testes ant", "ant"),
+                        ((_td_dt.normalize().dt.date >= _pr_start) & (_td_dt.normalize().dt.date <= _pr_end),
+                         _cor_r, "Testes rec", "rec"),
+                    ]:
+                        _td_s = [(d,w) for d,w,m in zip(_td_dt,_test_watts,_t_m) if m]
+                        if _td_s:
+                            _fig_phat.add_trace(go.Scatter(
+                                x=[d for d,_ in _td_s], y=[w for _,w in _td_s],
+                                mode="markers", name=_t_n, legendgroup=_t_grp,
+                                marker=dict(color=_t_c, size=10, symbol="circle",
+                                            line=dict(color="white", width=2)),
+                                hovertemplate="Teste: %{y:.0f}W<extra></extra>"))
+
+                # Círculo aberto no pico (como na foto)
+                _fig_phat.add_trace(go.Scatter(
+                    x=[_ant_pico_dt], y=[_ant_pico], mode="markers",
+                    showlegend=False, legendgroup="ant",
+                    marker=dict(color="white", size=13, symbol="circle",
+                                line=dict(color=_cor_a, width=2.5)),
+                    hoverinfo="skip"))
+                _fig_phat.add_trace(go.Scatter(
+                    x=[_rec_pico_dt], y=[_rec_pico], mode="markers",
+                    showlegend=False, legendgroup="rec",
+                    marker=dict(color="white", size=13, symbol="circle",
+                                line=dict(color=_cor_r, width=2.5)),
+                    hoverinfo="skip"))
+
+                # Anotações de pico — texto inline sem seta (como na foto)
                 _fig_phat.add_annotation(
                     x=_ant_pico_dt, y=_ant_pico,
-                    text=f"Anterior · pico {_ant_pico:.0f}",
-                    xshift=12, yshift=10,
-                    showarrow=False,
-                    font=dict(size=12, color=_cor_ant, family="Arial"),
-                    bgcolor="rgba(255,255,255,0.85)",
-                    bordercolor=_cor_ant, borderwidth=1, borderpad=3)
+                    text=f"<b>Anterior · pico {_ant_pico:.0f}</b>",
+                    xshift=8, yshift=16, showarrow=False,
+                    font=dict(size=12, color=_cor_a),
+                    bgcolor="rgba(255,255,255,0.0)")
                 _fig_phat.add_annotation(
                     x=_rec_pico_dt, y=_rec_pico,
-                    text=f"Recente · pico {_rec_pico:.0f}",
-                    xshift=12, yshift=10,
-                    showarrow=False,
-                    font=dict(size=12, color=_cor_rec, family="Arial"),
-                    bgcolor="rgba(255,255,255,0.85)",
-                    bordercolor=_cor_rec, borderwidth=1, borderpad=3)
+                    text=f"<b>Recente · pico {_rec_pico:.0f}</b>",
+                    xshift=8, yshift=16, showarrow=False,
+                    font=dict(size=12, color=_cor_r),
+                    bgcolor="rgba(255,255,255,0.0)")
 
-                st.caption(
-                    f"Modelado Homeostático — {_mod_sel} · "
-                    "ajuste Savitzky-Golay · banda ±1 SD · pontos = testes reais."
-                )
-
-                # Insight automático (só disponível no modo individual)
+                # Insight
                 _delta_pico = _rec_pico - _ant_pico
                 _delta_pct  = (_delta_pico / max(abs(_ant_pico), 1)) * 100
-                _insight = (
-                    f"O pico de reserva {'subiu' if _delta_pico >= 0 else 'desceu'} "
-                    f"{abs(_delta_pico):.0f}W entre fases "
-                    f"({_ant_pico:.0f} → {_rec_pico:.0f}W, {_delta_pct:+.0f}%). "
-                    + ("Melhor adaptação na fase recente." if _delta_pico >= 0
-                       else "Fadiga acumulada a comprimir a reserva.")
-                )
-                st.info(f"💡 {_insight}")
 
-            # Layout comum — fundo branco, como na foto
+            # Legenda dos badges de período (como na foto — em cima do gráfico)
+            _fig_phat.add_annotation(
+                x=0, y=1.08, xref="paper", yref="paper",
+                text=(f"<span style='color:{_COR_ANT}'>● {_pa_lbl}  n={len(_ph_s[_pa_mask])}</span>"
+                      f"   <span style='color:{_COR_REC}'>● {_pr_lbl}  n={len(_ph_s[_pr_mask])}</span>"),
+                showarrow=False, font=dict(size=11, color="#555"),
+                xanchor="left", yanchor="bottom", align="left")
+
+            # Subtitle (como na foto)
+            _fig_phat.add_annotation(
+                x=0, y=1.15, xref="paper", yref="paper",
+                text="<b>MODELADO HOMEOSTÁTICO</b>",
+                showarrow=False, font=dict(size=13, color="#222"),
+                xanchor="left", yanchor="bottom")
+            _fig_phat.add_annotation(
+                x=0, y=1.095, xref="paper", yref="paper",
+                text="Ciclo diário da reserva · ajuste Savitzky-Golay · banda ±1 SD",
+                showarrow=False, font=dict(size=10, color="#888"),
+                xanchor="left", yanchor="top")
+
+            # Layout — fundo branco, legenda horizontal integrada em baixo
             _fig_phat.update_layout(
                 paper_bgcolor="white", plot_bgcolor="white",
-                height=380,
-                margin=dict(t=20, b=70, l=65, r=30),
+                height=400,
+                margin=dict(t=80, b=80, l=60, r=20),
                 hovermode="x unified",
                 legend=dict(
                     orientation="h", y=-0.22,
-                    font=dict(color="#222", size=11),
-                    bgcolor="rgba(255,255,255,0.9)",
-                    bordercolor="#ddd", borderwidth=1),
+                    font=dict(color="#333", size=11),
+                    bgcolor="rgba(255,255,255,0.95)",
+                    bordercolor="#ddd", borderwidth=1,
+                    itemsizing="constant",
+                    traceorder="normal"),
                 font=dict(color="#222", size=12),
                 xaxis=dict(
-                    tickfont=dict(size=11, color="#333"),
+                    tickfont=dict(size=11, color="#444"),
                     linecolor="#ccc", linewidth=1,
-                    tickangle=-30,
+                    tickangle=-25,
                     gridcolor="rgba(0,0,0,0.04)",
                     showgrid=True),
                 yaxis=dict(
-                    title=dict(
-                        text="p̂(t) — Reserva de performance",
-                        font=dict(size=12, color="#555")),
-                    tickfont=dict(size=11, color="#333"),
+                    title=dict(text="p̂(t) — Reserva (u.a.)",
+                               font=dict(size=11, color="#666")),
+                    tickfont=dict(size=11, color="#444"),
                     linecolor="#ccc", linewidth=1,
                     gridcolor="rgba(0,0,0,0.05)",
                     showgrid=True,
@@ -968,10 +950,17 @@ ou a acumular sobrecarga não compensada (allostatic overload), comparando
             st.plotly_chart(_fig_phat, use_container_width=True,
                             config={"displayModeBar": False}, key="nlss_phat_chart")
 
-            # Insight automático — só disponível no modo individual (picos definidos)
-            if _mod_sel != "Todas" and '_ant_pico' in dir():
-                pass  # calculado abaixo no bloco else
-            # (o insight é gerado dentro do bloco else abaixo)
+            # Insight — só no modo individual
+            if _mod_sel != "Todas":
+                _insight = (
+                    f"O pico de reserva {'subiu' if _delta_pico >= 0 else 'desceu'} "
+                    f"{abs(_delta_pico):.0f} unidades entre fases "
+                    f"({_ant_pico:.0f} → {_rec_pico:.0f}, {_delta_pct:+.0f}%). "
+                    + ("Melhor adaptação na fase recente." if _delta_pico >= 0
+                       else "Fadiga acumulada a comprimir a reserva.")
+                )
+                st.info(f"💡 {_insight}")
+
 
             # ── ÍNDICE ALOSTÁTICO ─────────────────────────────────────────────
             st.markdown("---")
@@ -998,10 +987,14 @@ ou a acumular sobrecarga não compensada (allostatic overload), comparando
                 return (float(_a.mean()) if len(_a) > 2 else np.nan,
                         float(_r.mean()) if len(_r) > 2 else np.nan)
 
-            # 6 dimensões
+            # 6 dimensões — SEMPRE dados globais (independente da modalidade seleccionada)
+            # Reserva pico: media da p̂(t) global no período (não por modalidade)
+            # CTL/TSB: NLSS global (K1/K2/T1/T2 Bike MMP20)
             _alo_dims_raw = [
-                {'dim': 'Reserva pico',  'ant': float(_ph_ant.mean()),
-                 'rec': float(_ph_rec.mean()), 'uni': 'W',  'bom_positivo': True},
+                {'dim': 'Reserva pico',
+                 'ant': float(_ph_s[_pa_mask].mean()) if _pa_mask.any() else np.nan,
+                 'rec': float(_ph_s[_pr_mask].mean()) if _pr_mask.any() else np.nan,
+                 'uni': 'u.a.', 'bom_positivo': True},
                 {'dim': 'CTL fitness',   'ant': float(_ctl_n[_pa_mask].mean()) if _pa_mask.any() else np.nan,
                  'rec': float(_ctl_n[_pr_mask].mean()) if _pr_mask.any() else np.nan,
                  'uni': 'au', 'bom_positivo': True},
