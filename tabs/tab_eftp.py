@@ -640,52 +640,70 @@ a mudança de eFTP — adicionar κ como covariável melhora o modelo.
             _ld_proj_idx = _ld_proj.set_index('Data')
 
             for _mproj in _mods_proj:
-                # 1. eFTP desta modalidade — todas as sessões
+                # Abordagem por sessão: um ponto por sessão de Row/Bike/etc.
+                # Evita o problema de diff() sobre série diária com muitos NaN
+
+                # 1. eFTP desta modalidade — sessões com valor válido
                 _ef_m = (ac_full[ac_full[col_mod] == _mproj][[col_date, col_eftp]]
                          .dropna().copy())
-                if len(_ef_m) < 5:
+                if len(_ef_m) < 10:
                     continue
                 _ef_m[col_date] = pd.to_datetime(_ef_m[col_date])
-                _ef_m = (_ef_m.rename(columns={col_date:'Data', col_eftp:'eftp_m'})
+                _ef_m = (_ef_m.rename(columns={col_date:'Data', col_eftp:'eftp'})
                          .sort_values('Data')
                          .drop_duplicates('Data')
-                         .set_index('Data'))
+                         .reset_index(drop=True))
 
-                # 2. Juntar com ld_frac
-                _ld_m = _ld_proj_idx.join(_ef_m['eftp_m'], how='left').copy()
+                # 2. eFTP relativo: variação vs mediana rolling 60d anterior
+                # Usa as datas reais das sessões — sem série diária
+                _ef_m['eftp_base'] = (_ef_m['eftp']
+                                       .rolling(60, min_periods=5).median()
+                                       .shift(1))
+                _ef_m['dln'] = np.log(
+                    (_ef_m['eftp'] / _ef_m['eftp_base'].clip(lower=1)).clip(lower=0.5, upper=2)
+                )
 
-                # 3. eFTP suavizado: ffill 90d (Row/Ski têm gaps longos) + rolling
-                _ld_m['eftp_s'] = (_ld_m['eftp_m']
-                                    .ffill(limit=90)
-                                    .bfill(limit=90)
-                                    .rolling(14, min_periods=2).mean())
-
-                # 4. Δln(eFTP): janela 21d para todas (compromisso Bike/Row/Ski/Run)
-                _ld_m['dln'] = np.log(_ld_m['eftp_s'].clip(lower=1)).diff(21)
-
-                # 5. Slope do CTLg desta modalidade (nunca global)
+                # 3. CTLg desta modalidade na data de cada sessão
                 _ctlg_col = f'CTLg_{_mproj}'
-                if _ctlg_col in _ld_m.columns:
-                    _ctlg_vals = _ld_m[_ctlg_col].fillna(method='pad').fillna(0).values.astype(float)
-                    _ld_m['sl'] = _rolling_slope_14(_ctlg_vals)
-                elif 'dCTLg_14d' in _ld_m.columns:
-                    _ld_m['sl'] = _ld_m['dCTLg_14d']
+                _ld_idx   = _ld_proj_idx  # já indexado por Data
+
+                if _ctlg_col in _ld_idx.columns:
+                    # Mapear CTLg para cada data de sessão (valor do dia)
+                    _ef_m['ctlg'] = _ef_m['Data'].map(
+                        _ld_idx[_ctlg_col].ffill().to_dict()
+                    )
+                    # Slope 14d do CTLg na data da sessão
+                    _ctlg_daily = _ld_idx[_ctlg_col].ffill().values.astype(float)
+                    _sl_daily   = _rolling_slope_14(_ctlg_daily)
+                    _sl_series  = pd.Series(_sl_daily, index=_ld_idx.index)
+                    _ef_m['sl'] = _ef_m['Data'].map(_sl_series.to_dict())
+                elif 'dCTLg_14d' in _ld_idx.columns:
+                    _sl_series  = _ld_idx['dCTLg_14d'].ffill()
+                    _ef_m['sl'] = _ef_m['Data'].map(_sl_series.to_dict())
                 else:
                     continue
 
-                # 6. Regressão OLS
-                _valid = _ld_m[['dln', 'sl']].replace([np.inf, -np.inf], np.nan).dropna()
+                # 4. OLS: dln ~ sl (um ponto por sessão)
+                _valid = _ef_m[['dln', 'sl']].replace([np.inf, -np.inf], np.nan).dropna()
                 if len(_valid) < 8:
                     continue
 
-                _sl_r, _, _r, _, _ = _sp_stats.linregress(_valid['sl'].values,
-                                                            _valid['dln'].values)
+                _sl_r, _, _r, _, _ = _sp_stats.linregress(
+                    _valid['sl'].values.astype(float),
+                    _valid['dln'].values.astype(float)
+                )
                 _beta_dict[_mproj]      = float(_sl_r)
                 _r2_dict[_mproj]        = float(_r ** 2)
-                _eftp_now[_mproj]       = (float(_ld_m['eftp_s'].dropna().iloc[-1])
-                                            if _ld_m['eftp_s'].notna().any() else None)
-                _slope_now_dict[_mproj] = (float(_ld_m['sl'].dropna().iloc[-1])
-                                            if _ld_m['sl'].notna().any() else 0.0)
+
+                # eFTP actual (última sessão)
+                _ef_last = float(_ef_m['eftp'].iloc[-1])
+                _eftp_now[_mproj] = _ef_last
+
+                # Slope actual do CTLg (último valor)
+                _slope_now_dict[_mproj] = (
+                    float(_sl_series.dropna().iloc[-1])
+                    if _sl_series.notna().any() else 0.0
+                )
 
             if not _beta_dict:
                 raise ValueError("Sem dados suficientes para regressão")
