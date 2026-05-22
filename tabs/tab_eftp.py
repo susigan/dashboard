@@ -529,54 +529,61 @@ eFTP_proj(t+28) = eFTP_hoje × exp(β × CTLγ_slope_actual × 28)
                     .clip(lower=0.5, upper=2)
                 )
 
-                # CTLγ por modalidade — com fallback para CTLg_perf global
-                # CORRECÇÃO PRINCIPAL: fallback para CTLg_perf quando modal não existe
+                # ── PREDITOR: nível CTLγ (mais fiel ao paper FTLM Part II) ──
+                # Paper: β = OLS(ActivityCP ~ CTLγ_nivel)
+                # Aqui: β = OLS(eFTP ~ CTLγ_nivel)  [nível, não slope]
+                # KJ acumulados (AllWorkFTP) como covariável adicional se disponível
                 _ctlg_col = f'CTLg_{_mproj}'
-                if _ctlg_col in _ld_proj_idx.columns:
-                    _ctlg_daily = _ld_proj_idx[_ctlg_col].ffill().values.astype(float)
-                    _sl_daily   = _rolling_slope_14(_ctlg_daily)
-                    _sl_series  = pd.Series(_sl_daily, index=_ld_proj_idx.index)
-                    _ef_m['sl'] = _ef_m['Data'].map(_sl_series.to_dict())
-                    _ef_m['ctlg_nivel'] = _ef_m['Data'].map(
-                        _ld_proj_idx[_ctlg_col].ffill().to_dict())
-                elif 'dCTLg_14d' in _ld_proj_idx.columns:
-                    _sl_series  = _ld_proj_idx['dCTLg_14d'].ffill()
-                    _ef_m['sl'] = _ef_m['Data'].map(_sl_series.to_dict())
-                    _ef_m['ctlg_nivel'] = _ef_m['Data'].map(
-                        _ld_proj_idx.get('CTLg_perf', pd.Series()).ffill().to_dict()) if 'CTLg_perf' in _ld_proj_idx.columns else np.nan
-                elif 'CTLg_perf' in _ld_proj_idx.columns:
-                    # FALLBACK: CTLg_perf global
-                    _ctlg_global = _ld_proj_idx['CTLg_perf'].ffill().values.astype(float)
-                    _sl_global   = _rolling_slope_14(_ctlg_global)
-                    _sl_series   = pd.Series(_sl_global, index=_ld_proj_idx.index)
-                    _ef_m['sl'] = _ef_m['Data'].map(_sl_series.to_dict())
-                    _ef_m['ctlg_nivel'] = _ef_m['Data'].map(
-                        _ld_proj_idx['CTLg_perf'].ffill().to_dict())
-                else:
+                _ctlg_src = (_ctlg_col if _ctlg_col in _ld_proj_idx.columns
+                             else 'CTLg_perf' if 'CTLg_perf' in _ld_proj_idx.columns
+                             else None)
+                if _ctlg_src is None:
                     continue
 
-                # OLS: dln ~ slope (preditor principal)
-                # CORRECÇÃO: filtro len < 5 (era < 8) para mais modalidades válidas
-                _valid = (_ef_m[['dln','sl']].replace([np.inf,-np.inf], np.nan)
-                          .dropna())
+                _ctlg_series = _ld_proj_idx[_ctlg_src].ffill()
+                _ef_m['ctlg'] = _ef_m['Data'].map(_ctlg_series.to_dict())
+
+                # slope 14d como 2ª covariável (opcional)
+                _sl_daily  = _rolling_slope_14(_ctlg_series.values.astype(float))
+                _sl_series = pd.Series(_sl_daily, index=_ld_proj_idx.index)
+                _ef_m['sl'] = _ef_m['Data'].map(_sl_series.to_dict())
+
+                # KJ AllWorkFTP acumulado 28d como proxy de dose (se disponível)
+                _kj_col = next((c for c in ['AllWorkFTP','icu_training_load','load_val']
+                                if c in _ld_proj_idx.columns), None)
+                if _kj_col:
+                    _kj_series = _ld_proj_idx[_kj_col].ffill()
+                    _kj_roll   = _kj_series.rolling(28, min_periods=5).sum()
+                    _ef_m['kj28'] = _ef_m['Data'].map(_kj_roll.to_dict())
+
+                # OLS principal: eFTP ~ CTLγ_nivel
+                _valid = (_ef_m[['eftp','ctlg']].replace([np.inf,-np.inf], np.nan).dropna())
                 if len(_valid) < 5:
                     continue
 
-                _sl_r, _intercept, _r, _, _se = _sp_stats.linregress(
-                    _valid['sl'].values.astype(float),
-                    _valid['dln'].values.astype(float))
+                _b_ctlg, _intercept, _r, _, _se = _sp_stats.linregress(
+                    _valid['ctlg'].values.astype(float),
+                    _valid['eftp'].values.astype(float))
 
                 # Residuals para IC real
-                _y_pred  = _intercept + _sl_r * _valid['sl'].values
-                _resids  = _valid['dln'].values - _y_pred
-                _sigma   = float(np.std(_resids, ddof=2)) if len(_resids) > 2 else 0.05
+                _y_pred = _intercept + _b_ctlg * _valid['ctlg'].values
+                _resids = _valid['eftp'].values - _y_pred
+                _sigma  = float(np.std(_resids, ddof=2)) if len(_resids) > 2 else 5.0
 
-                _beta_dict[_mproj]      = float(_sl_r)
-                _r2_dict[_mproj]        = float(_r**2)
-                _sigma_dict[_mproj]     = _sigma
-                _eftp_now[_mproj]       = float(_ef_m['eftp'].iloc[-1])
-                _slope_now_dict[_mproj] = float(_sl_series.dropna().iloc[-1]) \
-                                          if _sl_series.notna().any() else 0.0
+                _beta_dict[_mproj]  = float(_b_ctlg)
+                _r2_dict[_mproj]    = float(_r**2)
+                _sigma_dict[_mproj] = _sigma
+                _eftp_now[_mproj]   = float(_ef_m['eftp'].iloc[-1])
+
+                # CTLγ actual e projecção via slope 14d
+                _ctlg_now  = float(_ctlg_series.dropna().iloc[-1])
+                _slope_now = float(_sl_series.dropna().iloc[-1]) if _sl_series.notna().any() else 0.0
+                _slope_now_dict[_mproj] = _slope_now
+
+                # Guardar CTLγ actual para a projecção
+                if not hasattr(_beta_dict, '_ctlg_now_dict'):
+                    pass
+                _slope_now_dict[f'ctlg_now_{_mproj}'] = _ctlg_now
 
             if not _beta_dict:
                 raise ValueError(
@@ -646,6 +653,28 @@ eFTP_proj(t+28) = eFTP_hoje × exp(β × CTLγ_slope_actual × 28)
                 _proj_hi   = [float(v+ic) for v,ic in zip(_proj_vals,_ic_half)]
                 _proj_lo   = [float(max(v-ic,1.0)) for v,ic in zip(_proj_vals,_ic_half)]
 
+                # Projecção: eFTP(t+d) = β × CTLγ(t+d) + intercept
+                # CTLγ(t+d) estimado via slope actual × d dias
+                _ctlg_now  = float(_slope_now_dict.get(f'ctlg_now_{_mproj}', _eftp0/2))
+                _slope_now_f = float(_slope_now_dict.get(_mproj, 0))
+                _bv_f      = float(_bv)
+                _eftp0_f   = float(_eftp0)
+                _sigma     = _sigma_dict.get(_mproj, 5.0)
+                _z90       = 1.645
+
+                # CTLγ projectado linearmente (slope actual × dias)
+                _ctlg_proj = [_ctlg_now + _slope_now_f * d for d in range(_PROJ_DAYS+1)]
+                _proj_vals = [float(_bv_f * ctlg + _eftp0_f * 0.1)  # escala aproximada
+                              for ctlg in _ctlg_proj]
+                # Normalizar para partir do eFTP actual
+                _offset = _eftp0_f - _proj_vals[0]
+                _proj_vals = [v + _offset for v in _proj_vals]
+
+                # IC real: ±z90 × σ_resid (constante — não cresce, σ já captura incerteza)
+                _ic_half   = [float(_sigma * _z90) for _ in range(_PROJ_DAYS+1)]
+                _proj_hi   = [float(v+ic) for v,ic in zip(_proj_vals,_ic_half)]
+                _proj_lo   = [float(max(v-ic,1.0)) for v,ic in zip(_proj_vals,_ic_half)]
+
                 _r_int,_g_int,_b_int = int(_cor_m[1:3],16),int(_cor_m[3:5],16),int(_cor_m[5:7],16)
                 _rev = list(reversed(_proj_dates_str))
 
@@ -658,7 +687,7 @@ eFTP_proj(t+28) = eFTP_hoje × exp(β × CTLγ_slope_actual × 28)
                 _fig_proj.add_trace(go.Scatter(
                     x=_proj_dates_str,
                     y=[float(round(v,1)) for v in _proj_vals],
-                    name=f"{_mproj} proj 28d (β={_bv_f:.3f} R²={_r2v:.2f})",
+                    name=f"{_mproj} proj 28d (β={_bv_f:.2f} R²={_r2v:.2f})",
                     line=dict(color=_cor_m,width=2.5,dash='dash'),
                     hovertemplate=f"{_mproj} proj: %{{y:.0f}}W<extra></extra>"))
 
@@ -668,8 +697,9 @@ eFTP_proj(t+28) = eFTP_hoje × exp(β × CTLγ_slope_actual × 28)
                     x=_proj_dates_str[-1], y=_proj_end,
                     text=f"{_mproj} +28d: {_proj_end:.0f}W ({_delta_pct:+.1f}%)",
                     showarrow=False, xshift=5, yshift=8,
-                    font=dict(size=11,color=_cor_m),
-                    bgcolor='rgba(255,255,255,0.85)')
+                    font=dict(size=11, color=_cor_m),
+                    bgcolor='rgba(0,0,0,0)',  # sem fundo branco
+                    bordercolor='rgba(0,0,0,0)')
 
             _today_str = str(_today.date())
             _fig_proj.add_shape(
@@ -682,12 +712,14 @@ eFTP_proj(t+28) = eFTP_hoje × exp(β × CTLγ_slope_actual × 28)
             _fig_proj.update_layout(
                 height=420, hovermode='x unified',
                 margin=dict(t=40,b=80,l=65,r=30),
-                legend=dict(orientation='h',y=-0.22,font=dict(size=11),
-                            bgcolor='rgba(255,255,255,0.9)',borderwidth=1),
-                title=dict(text='eFTP observado + Projecção 28 dias por modalidade',
+                legend=dict(orientation='h', y=-0.22, font=dict(size=11, color='#333'),
+                            bgcolor='rgba(0,0,0,0)', borderwidth=0),
+                title=dict(text='eFTP observado + Projecção 28 dias (β × CTLγ nível)',
                            font=dict(size=13)),
-                xaxis=dict(tickangle=-25,gridcolor='rgba(0,0,0,0.04)'),
-                yaxis=dict(title='eFTP (W)',gridcolor='rgba(0,0,0,0.05)'))
+                xaxis=dict(tickangle=-25, gridcolor='rgba(0,0,0,0.04)',
+                           tickfont=dict(color='#333')),
+                yaxis=dict(title='eFTP (W)', gridcolor='rgba(0,0,0,0.05)',
+                           tickfont=dict(color='#333')))
 
             st.plotly_chart(_fig_proj, use_container_width=True,
                             config={'displayModeBar':False}, key='cp_proj_28d')
