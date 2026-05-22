@@ -624,47 +624,58 @@ a mudança de eFTP — adicionar κ como covariável melhora o modelo.
             _eftp_now   = {}
 
             for _mproj in _mods_proj:
-                # eFTP for this modality
+                # eFTP for this modality — usar TODAS as sessões com ffill agressivo
                 _ef_m = (ac_full[ac_full[col_mod] == _mproj][[col_date, col_eftp]]
                          .dropna().copy())
-                if len(_ef_m) < 10:  # threshold baixo — Row/Ski têm menos sessões
+                if len(_ef_m) < 5:
                     continue
                 _ef_m[col_date] = pd.to_datetime(_ef_m[col_date])
                 _ef_m = (_ef_m.rename(columns={col_date:'Data', col_eftp:'eftp_m'})
                          .sort_values('Data').set_index('Data'))
+
+                # Juntar ld_frac (que tem CTLg_mod) com eFTP da modalidade
                 _ld_proj['Data'] = pd.to_datetime(_ld_proj['Data'])
                 _ld_m = _ld_proj.set_index('Data').join(_ef_m['eftp_m'], how='left')
-                _ld_m['eftp_s'] = (_ld_m['eftp_m'].ffill()
-                                    .rolling(7, min_periods=2).mean())
-                _ld_m['dln']  = np.log(_ld_m['eftp_s']).diff(14)
-                # Usar dCTLg por modalidade se disponível, senão global
-                _slope_col = f'dCTLg_{_mproj}' if f'dCTLg_{_mproj}' in _ld_m.columns else 'dCTLg_14d'
-                if _slope_col not in _ld_m.columns:
-                    # Calcular slope 14d do CTLg_mod se existir
-                    _ctlg_col = f'CTLg_{_mproj}'
-                    if _ctlg_col in _ld_m.columns and _ld_m[_ctlg_col].notna().sum() > 14:
-                        _ctlg_arr = _ld_m[_ctlg_col].values.astype(float)
-                        _sl_arr   = np.full(len(_ctlg_arr), np.nan)
-                        for _ti in range(13, len(_ctlg_arr)):
-                            _yy = _ctlg_arr[max(0, _ti-13):_ti+1]
-                            _xx = np.arange(len(_yy), dtype=float)
-                            _mm = np.isfinite(_yy)
-                            if _mm.sum() >= 7:
-                                _sl_arr[_ti], *_ = _sp_stats.linregress(_xx[_mm], _yy[_mm])
-                        _ld_m['_slope_mod'] = _sl_arr
-                        _slope_col = '_slope_mod'
-                    else:
-                        _slope_col = 'dCTLg_14d'
-                _ld_m['sl'] = _ld_m[_slope_col]
 
-                _valid = _ld_m[['dln','sl']].dropna()
-                if len(_valid) < 10:  # threshold baixo
+                # eFTP: ffill até 60d (Row/Ski têm sessões espaçadas) + smooth 14d
+                _ld_m['eftp_s'] = (_ld_m['eftp_m']
+                                    .ffill(limit=60)   # propagar até 60 dias
+                                    .rolling(14, min_periods=3).mean())
+
+                # Δln(eFTP) com janela 28d para Row/Ski (mais espaçadas que Bike)
+                _diff_w = 28 if _mproj in ('Row', 'Ski') else 14
+                _ld_m['dln'] = np.log(_ld_m['eftp_s']).diff(_diff_w)
+
+                # Slope do CTLg desta modalidade — calcular a partir de CTLg_{mod}
+                _ctlg_col = f'CTLg_{_mproj}'
+                if _ctlg_col in _ld_m.columns and _ld_m[_ctlg_col].notna().sum() > 14:
+                    _ctlg_arr = _ld_m[_ctlg_col].fillna(0).values.astype(float)
+                    _sl_arr   = np.full(len(_ctlg_arr), np.nan)
+                    _win      = 14
+                    for _ti in range(_win - 1, len(_ctlg_arr)):
+                        _yy = _ctlg_arr[max(0, _ti - _win + 1):_ti + 1]
+                        _xx = np.arange(len(_yy), dtype=float)
+                        _mm = np.isfinite(_yy) & (_yy != 0)
+                        if _mm.sum() >= 5:
+                            _sl_arr[_ti], *_ = _sp_stats.linregress(_xx[_mm], _yy[_mm])
+                    _ld_m['sl'] = _sl_arr
+                elif 'dCTLg_14d' in _ld_m.columns:
+                    _ld_m['sl'] = _ld_m['dCTLg_14d']
+                else:
+                    continue
+
+                _valid = _ld_m[['dln', 'sl']].dropna()
+                if len(_valid) < 8:
                     continue
 
                 _sl_r, _int_r, _r, _p, _se = _sp_stats.linregress(_valid['sl'], _valid['dln'])
                 _beta_dict[_mproj]  = float(_sl_r)
                 _r2_dict[_mproj]    = float(_r**2)
                 _eftp_now[_mproj]   = float(_ld_m['eftp_s'].dropna().iloc[-1]) if _ld_m['eftp_s'].notna().any() else None
+                # Store modal slope_now for projection
+                if '_slope_now_dict' not in dir():
+                    _slope_now_dict = {}
+                _slope_now_dict[_mproj] = float(_ld_m['sl'].dropna().iloc[-1]) if _ld_m['sl'].notna().any() else 0.0
 
             if not _beta_dict:
                 raise ValueError("Sem dados suficientes para regressão")
@@ -683,8 +694,9 @@ a mudança de eFTP — adicionar κ como covariável melhora o modelo.
                     delta_color="normal" if _r2v > 0.15 else "off",
                     help=f"R²={_r2v:.3f}. {'Modelo tem poder preditivo razoável.' if _r2v > 0.15 else 'R² baixo — slope CTLγ não é preditor forte para esta modalidade.'}")
 
-            # dCTLg_slope actual
+            # dCTLg_slope actual (global fallback; modal overridden per modality below)
             _slope_now = float(_ld_proj['dCTLg_14d'].dropna().iloc[-1]) if 'dCTLg_14d' in _ld_proj.columns and _ld_proj['dCTLg_14d'].notna().any() else 0.0
+            if '_slope_now_dict' not in dir(): _slope_now_dict = {}
 
             # Build projection figure
             _fig_proj = go.Figure()
@@ -716,7 +728,7 @@ a mudança de eFTP — adicionar κ como covariável melhora o modelo.
                         hovertemplate=f"{_mproj}: %{{y:.0f}}W<extra></extra>"))
 
                 # Projection — all types explicit float/str, no numpy ambiguity
-                _slope_f   = float(_slope_now)
+                _slope_f   = float(_slope_now_dict.get(_mproj, _slope_now))
                 _bv_f      = float(_bv)
                 _eftp0_f   = float(_eftp0)
                 _r2v_safe  = float(max(_r2v, 0.01))
@@ -791,7 +803,7 @@ a mudança de eFTP — adicionar κ como covariável melhora o modelo.
             for _mproj, _bv in _beta_dict.items():
                 _eftp0 = _eftp_now.get(_mproj)
                 if not _eftp0: continue
-                _proj28 = _eftp0 * np.exp(_bv * _slope_now * 28)
+                _proj28 = _eftp0 * np.exp(_bv * float(_slope_now_dict.get(_mproj, _slope_now)) * 28)
                 _delta  = _proj28 - _eftp0
                 _proj_rows.append({
                     'Modalidade':        _mproj,
