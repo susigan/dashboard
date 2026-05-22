@@ -431,22 +431,34 @@ eFTP_proj(t+28) = eFTP_hoje × exp(β × CTLγ_slope_actual × 28)
 
     _proj_ok = False
 
+    # Debug temporário — mostrar colunas disponíveis
+    with st.expander("🔍 Debug — colunas ac_full (remover após resolver)", expanded=False):
+        st.write("Colunas ac_full:", list(ac_full.columns))
+        st.write("ld_frac_cache colunas:", list(ld.columns) if ld is not None else "None")
+        if ld is not None:
+            st.write("Primeiras linhas ld:", ld.head(3))
+
     # Tentar obter ld do session_state — se não existir, calcular CTLγ simples aqui
     ld_for_proj = ld  # pode ser None
 
     if ld_for_proj is None or len(ld_for_proj) < 30:
-        # Calcular CTLγ simples (EWM τ=42d) directamente de ac_full
-        # Não requer o fitting de γ completo do PMC — usa τ fixo como aproximação
         try:
             _col_d_p = next((c for c in ["date","Data"] if c in ac_full.columns), None)
-            _col_kj  = next((c for c in ["icu_trimp","trimp","AllWorkFTP"] if c in ac_full.columns), None)
+            # Ampliar lista de colunas de carga possíveis
+            _col_kj  = next((c for c in [
+                "icu_trimp","trimp","AllWorkFTP","icu_training_load",
+                "training_load","load","icu_load","ctl","icu_ctl",
+                "z1_kj","total_kj","icu_total_kj"
+            ] if c in ac_full.columns), None)
+
+            st.caption(f"Debug: col_date={_col_d_p}, col_load={_col_kj}")
+
             if _col_d_p and _col_kj:
                 _df_ld = ac_full[[_col_d_p, _col_kj, col_mod]].copy()
                 _df_ld[_col_d_p] = pd.to_datetime(_df_ld[_col_d_p])
                 _df_ld = _df_ld.rename(columns={_col_d_p:'Data', _col_kj:'load'})
                 _df_ld['load'] = pd.to_numeric(_df_ld['load'], errors='coerce').fillna(0)
 
-                # Série diária global
                 _daily = (_df_ld.groupby('Data')['load'].sum()
                           .reindex(pd.date_range(_df_ld['Data'].min(),
                                                  _df_ld['Data'].max(), freq='D'), fill_value=0))
@@ -459,16 +471,19 @@ eFTP_proj(t+28) = eFTP_hoje × exp(β × CTLγ_slope_actual × 28)
                     'ATL':        _atl_global.values,
                 })
 
-                # CTLγ por modalidade (EWM simples)
                 for _mp in ['Bike','Row','Ski','Run']:
                     _df_m = _df_ld[_df_ld[col_mod]==_mp].groupby('Data')['load'].sum()
                     if len(_df_m) >= 5:
                         _df_m_daily = _df_m.reindex(_ctl_global.index, fill_value=0)
                         ld_for_proj[f'CTLg_{_mp}'] = _df_m_daily.ewm(span=42).mean().values
 
-                st.caption("ℹ️ CTLγ calculado com τ=42d fixo (EWM). Para fitting γ completo, visita a tab PMC primeiro.")
+                st.caption(f"✅ CTLγ calculado localmente (τ=42d EWM) com coluna '{_col_kj}'. {len(ld_for_proj)} dias.")
+            else:
+                st.warning(f"Nenhuma coluna de carga encontrada em ac_full. Disponíveis: {list(ac_full.columns)}")
         except Exception as _ld_err:
-            pass  # continuar sem ld — erro será capturado abaixo
+            st.warning(f"Fallback CTLγ falhou: {_ld_err}")
+            import traceback
+            st.code(traceback.format_exc())
 
     if ld_for_proj is not None and len(ld_for_proj) > 30:
         try:
