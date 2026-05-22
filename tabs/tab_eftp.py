@@ -431,15 +431,8 @@ eFTP_proj(t+28) = eFTP_hoje × exp(β × CTLγ_slope_actual × 28)
 
     _proj_ok = False
 
-    # Debug temporário — mostrar colunas disponíveis
-    with st.expander("🔍 Debug — colunas ac_full (remover após resolver)", expanded=False):
-        st.write("Colunas ac_full:", list(ac_full.columns))
-        st.write("ld_frac_cache colunas:", list(ld.columns) if ld is not None else "None")
-        if ld is not None:
-            st.write("Primeiras linhas ld:", ld.head(3))
-
-    # Tentar obter ld do session_state — se não existir, calcular CTLγ simples aqui
-    ld_for_proj = ld  # pode ser None
+    # Tentar obter ld do session_state — se não existir, calcular CTLγ simples
+    ld_for_proj = ld
 
     if ld_for_proj is None or len(ld_for_proj) < 30:
         try:
@@ -506,6 +499,8 @@ eFTP_proj(t+28) = eFTP_hoje × exp(β × CTLγ_slope_actual × 28)
                 _ld_proj['dCTLg_14d'] = _slopes
 
             _ld_proj_idx = _ld_proj.set_index('Data')
+            # Normalizar índice para date (sem hora) — resolve mismatch datetime vs date
+            _ld_proj_idx.index = pd.to_datetime(_ld_proj_idx.index).normalize()
 
             _mods_proj      = ['Bike','Row','Ski','Run']
             _beta_dict      = {}
@@ -520,7 +515,7 @@ eFTP_proj(t+28) = eFTP_hoje × exp(β × CTLγ_slope_actual × 28)
                          .dropna().copy())
                 if len(_ef_m) < 8:
                     continue
-                _ef_m[col_date] = pd.to_datetime(_ef_m[col_date])
+                _ef_m[col_date] = pd.to_datetime(_ef_m[col_date]).dt.normalize()
                 _ef_m = (_ef_m.rename(columns={col_date:'Data',col_eftp:'eftp'})
                          .sort_values('Data').drop_duplicates('Data').reset_index(drop=True))
 
