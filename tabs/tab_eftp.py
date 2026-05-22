@@ -740,9 +740,16 @@ a mudança de eFTP — adicionar κ como covariável melhora o modelo.
                     bgcolor='rgba(255,255,255,0.85)')
 
             # Vertical line at today
-            _fig_proj.add_vline(x=str(_today.date()), line_dash='dot', line_color='#aaa', line_width=1,
-                                annotation_text='Hoje', annotation_font_size=10,
-                                annotation_position='top left')
+            _today_str = str(_today.date())
+            _fig_proj.add_shape(
+                type='line', x0=_today_str, x1=_today_str,
+                y0=0, y1=1, xref='x', yref='paper',
+                line=dict(dash='dot', color='#aaa', width=1))
+            _fig_proj.add_annotation(
+                x=_today_str, y=1.02, xref='x', yref='paper',
+                text='Hoje', showarrow=False,
+                font=dict(size=10, color='#aaa'),
+                xanchor='left')
 
             _fig_proj.update_layout(
                 paper_bgcolor='white', plot_bgcolor='white', height=400,
@@ -784,9 +791,7 @@ a mudança de eFTP — adicionar κ como covariável melhora o modelo.
             _proj_ok = True
 
         except Exception as _proj_err:
-            import traceback as _tb
             st.info(f"Projecção CP: dados insuficientes — {_proj_err}")
-            st.code(_tb.format_exc())
     else:
         st.info("Projecção CP requer CTLγ calculado (ld_frac_cache no session_state — carrega o tab PMC primeiro).")
 
