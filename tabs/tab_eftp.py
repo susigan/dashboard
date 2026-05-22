@@ -617,65 +617,75 @@ a mudança de eFTP — adicionar κ como covariável melhora o modelo.
                                         .rolling(7, min_periods=2).mean())
             _ld_proj2['delta_ln_eftp'] = np.log(_ld_proj2['eftp_smooth']).diff(14)
 
-            # OLS by modality
-            _mods_proj = ['Bike', 'Row', 'Ski', 'Run']
-            _beta_dict  = {}
-            _r2_dict    = {}
-            _eftp_now   = {}
+            # OLS by modality — β calibrado nos dados reais do atleta
+            _mods_proj      = ['Bike', 'Row', 'Ski', 'Run']
+            _beta_dict      = {}
+            _r2_dict        = {}
+            _eftp_now       = {}
+            _slope_now_dict = {}  # slope actual por modalidade
+
+            def _rolling_slope_14(series_arr):
+                """Rolling slope 14d sobre array numpy. Retorna array de slopes."""
+                n   = len(series_arr)
+                out = np.full(n, np.nan)
+                for _i in range(13, n):
+                    _y = series_arr[max(0, _i-13):_i+1].astype(float)
+                    _x = np.arange(len(_y), dtype=float)
+                    _m = np.isfinite(_y)
+                    if _m.sum() >= 5:
+                        out[_i], *_ = _sp_stats.linregress(_x[_m], _y[_m])
+                return out
+
+            _ld_proj['Data'] = pd.to_datetime(_ld_proj['Data'])
+            _ld_proj_idx = _ld_proj.set_index('Data')
 
             for _mproj in _mods_proj:
-                # eFTP for this modality — usar TODAS as sessões com ffill agressivo
+                # 1. eFTP desta modalidade — todas as sessões
                 _ef_m = (ac_full[ac_full[col_mod] == _mproj][[col_date, col_eftp]]
                          .dropna().copy())
                 if len(_ef_m) < 5:
                     continue
                 _ef_m[col_date] = pd.to_datetime(_ef_m[col_date])
                 _ef_m = (_ef_m.rename(columns={col_date:'Data', col_eftp:'eftp_m'})
-                         .sort_values('Data').set_index('Data'))
+                         .sort_values('Data')
+                         .drop_duplicates('Data')
+                         .set_index('Data'))
 
-                # Juntar ld_frac (que tem CTLg_mod) com eFTP da modalidade
-                _ld_proj['Data'] = pd.to_datetime(_ld_proj['Data'])
-                _ld_m = _ld_proj.set_index('Data').join(_ef_m['eftp_m'], how='left')
+                # 2. Juntar com ld_frac
+                _ld_m = _ld_proj_idx.join(_ef_m['eftp_m'], how='left').copy()
 
-                # eFTP: ffill até 60d (Row/Ski têm sessões espaçadas) + smooth 14d
+                # 3. eFTP suavizado: ffill 90d (Row/Ski têm gaps longos) + rolling
                 _ld_m['eftp_s'] = (_ld_m['eftp_m']
-                                    .ffill(limit=60)   # propagar até 60 dias
-                                    .rolling(14, min_periods=3).mean())
+                                    .ffill(limit=90)
+                                    .bfill(limit=90)
+                                    .rolling(14, min_periods=2).mean())
 
-                # Δln(eFTP) com janela 28d para Row/Ski (mais espaçadas que Bike)
-                _diff_w = 28 if _mproj in ('Row', 'Ski') else 14
-                _ld_m['dln'] = np.log(_ld_m['eftp_s']).diff(_diff_w)
+                # 4. Δln(eFTP): janela 21d para todas (compromisso Bike/Row/Ski/Run)
+                _ld_m['dln'] = np.log(_ld_m['eftp_s'].clip(lower=1)).diff(21)
 
-                # Slope do CTLg desta modalidade — calcular a partir de CTLg_{mod}
+                # 5. Slope do CTLg desta modalidade (nunca global)
                 _ctlg_col = f'CTLg_{_mproj}'
-                if _ctlg_col in _ld_m.columns and _ld_m[_ctlg_col].notna().sum() > 14:
-                    _ctlg_arr = _ld_m[_ctlg_col].fillna(0).values.astype(float)
-                    _sl_arr   = np.full(len(_ctlg_arr), np.nan)
-                    _win      = 14
-                    for _ti in range(_win - 1, len(_ctlg_arr)):
-                        _yy = _ctlg_arr[max(0, _ti - _win + 1):_ti + 1]
-                        _xx = np.arange(len(_yy), dtype=float)
-                        _mm = np.isfinite(_yy) & (_yy != 0)
-                        if _mm.sum() >= 5:
-                            _sl_arr[_ti], *_ = _sp_stats.linregress(_xx[_mm], _yy[_mm])
-                    _ld_m['sl'] = _sl_arr
+                if _ctlg_col in _ld_m.columns:
+                    _ctlg_vals = _ld_m[_ctlg_col].fillna(method='pad').fillna(0).values.astype(float)
+                    _ld_m['sl'] = _rolling_slope_14(_ctlg_vals)
                 elif 'dCTLg_14d' in _ld_m.columns:
                     _ld_m['sl'] = _ld_m['dCTLg_14d']
                 else:
                     continue
 
-                _valid = _ld_m[['dln', 'sl']].dropna()
+                # 6. Regressão OLS
+                _valid = _ld_m[['dln', 'sl']].replace([np.inf, -np.inf], np.nan).dropna()
                 if len(_valid) < 8:
                     continue
 
-                _sl_r, _int_r, _r, _p, _se = _sp_stats.linregress(_valid['sl'], _valid['dln'])
-                _beta_dict[_mproj]  = float(_sl_r)
-                _r2_dict[_mproj]    = float(_r**2)
-                _eftp_now[_mproj]   = float(_ld_m['eftp_s'].dropna().iloc[-1]) if _ld_m['eftp_s'].notna().any() else None
-                # Store modal slope_now for projection
-                if '_slope_now_dict' not in dir():
-                    _slope_now_dict = {}
-                _slope_now_dict[_mproj] = float(_ld_m['sl'].dropna().iloc[-1]) if _ld_m['sl'].notna().any() else 0.0
+                _sl_r, _, _r, _, _ = _sp_stats.linregress(_valid['sl'].values,
+                                                            _valid['dln'].values)
+                _beta_dict[_mproj]      = float(_sl_r)
+                _r2_dict[_mproj]        = float(_r ** 2)
+                _eftp_now[_mproj]       = (float(_ld_m['eftp_s'].dropna().iloc[-1])
+                                            if _ld_m['eftp_s'].notna().any() else None)
+                _slope_now_dict[_mproj] = (float(_ld_m['sl'].dropna().iloc[-1])
+                                            if _ld_m['sl'].notna().any() else 0.0)
 
             if not _beta_dict:
                 raise ValueError("Sem dados suficientes para regressão")
