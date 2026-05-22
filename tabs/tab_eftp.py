@@ -627,7 +627,7 @@ a mudança de eFTP — adicionar κ como covariável melhora o modelo.
                 # eFTP for this modality
                 _ef_m = (ac_full[ac_full[col_mod] == _mproj][[col_date, col_eftp]]
                          .dropna().copy())
-                if len(_ef_m) < 20:
+                if len(_ef_m) < 10:  # threshold baixo — Row/Ski têm menos sessões
                     continue
                 _ef_m[col_date] = pd.to_datetime(_ef_m[col_date])
                 _ef_m = (_ef_m.rename(columns={col_date:'Data', col_eftp:'eftp_m'})
@@ -637,10 +637,28 @@ a mudança de eFTP — adicionar κ como covariável melhora o modelo.
                 _ld_m['eftp_s'] = (_ld_m['eftp_m'].ffill()
                                     .rolling(7, min_periods=2).mean())
                 _ld_m['dln']  = np.log(_ld_m['eftp_s']).diff(14)
-                _ld_m['sl']   = _ld_m['dCTLg_14d']
+                # Usar dCTLg por modalidade se disponível, senão global
+                _slope_col = f'dCTLg_{_mproj}' if f'dCTLg_{_mproj}' in _ld_m.columns else 'dCTLg_14d'
+                if _slope_col not in _ld_m.columns:
+                    # Calcular slope 14d do CTLg_mod se existir
+                    _ctlg_col = f'CTLg_{_mproj}'
+                    if _ctlg_col in _ld_m.columns and _ld_m[_ctlg_col].notna().sum() > 14:
+                        _ctlg_arr = _ld_m[_ctlg_col].values.astype(float)
+                        _sl_arr   = np.full(len(_ctlg_arr), np.nan)
+                        for _ti in range(13, len(_ctlg_arr)):
+                            _yy = _ctlg_arr[max(0, _ti-13):_ti+1]
+                            _xx = np.arange(len(_yy), dtype=float)
+                            _mm = np.isfinite(_yy)
+                            if _mm.sum() >= 7:
+                                _sl_arr[_ti], *_ = _sp_stats.linregress(_xx[_mm], _yy[_mm])
+                        _ld_m['_slope_mod'] = _sl_arr
+                        _slope_col = '_slope_mod'
+                    else:
+                        _slope_col = 'dCTLg_14d'
+                _ld_m['sl'] = _ld_m[_slope_col]
 
                 _valid = _ld_m[['dln','sl']].dropna()
-                if len(_valid) < 20:
+                if len(_valid) < 10:  # threshold baixo
                     continue
 
                 _sl_r, _int_r, _r, _p, _se = _sp_stats.linregress(_valid['sl'], _valid['dln'])
