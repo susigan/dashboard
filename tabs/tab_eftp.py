@@ -911,6 +911,7 @@ IC 90% via σ_resid em ln-escala → convertido para Watts. Cap ±25% em 28d.
                 for _mi in ['Bike','Row','Ski','Run']:
                     _gamma_from_ld[_mi] = (_ld_info.get('mods',{}).get(_mi,{})
                                             .get('gamma_perf', 0.5))
+                _polar_rows = []  # inicializar antes do try
                 _alpha_result = calcular_alpha_polar(ac_full, gamma_map=_gamma_from_ld)
                 st.session_state['alpha_polar_cache'] = _alpha_result
             except Exception as _ae:
