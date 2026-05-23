@@ -902,6 +902,35 @@ IC 90% via σ_resid em ln-escala → convertido para Watts. Cap ±25% em 28d.
                     "β adimensional. IC 90% σ_ln×z₀.₉₀. 🟢 R²≥0.20 | 🟡 R²=0.08–0.20 | 🔴 R²<0.08")
             _proj_ok = True
 
+            # ── Guardar α no session_state para tab_visao_geral ──────────────
+            # Formato: {'Bike': {'ok':True,'alpha_z3':0.94,...}, ...}
+            try:
+                from utils.data import calcular_alpha_polar
+                _gamma_from_ld = {}
+                _ld_info = st.session_state.get('ld_frac_info', {})
+                for _mi in ['Bike','Row','Ski','Run']:
+                    _gamma_from_ld[_mi] = (_ld_info.get('mods',{}).get(_mi,{})
+                                            .get('gamma_perf', 0.5))
+                _alpha_result = calcular_alpha_polar(ac_full, gamma_map=_gamma_from_ld)
+                st.session_state['alpha_polar_cache'] = _alpha_result
+            except Exception as _ae:
+                # Fallback: usar os α já calculados no Modelo 2
+                _alpha_result = {}
+                for _pr in _polar_rows:
+                    _mp2x = _pr['Modalidade']
+                    _alpha_result[_mp2x] = {
+                        'ok': True,
+                        'alpha_z3': float(_pr['α_Z3 (intenso)']),
+                        'alpha_z2': float(_pr['α_Z2 (limiar)']),
+                        'alpha_z1': float(_pr['α_Z1 (base)']),
+                        'r2': float(_pr['R² Modelo 2']),
+                        'eftp_now': _eftp_z_now.get(_mp2x, 0),
+                        'cz3_now': _ctlg_z_now.get(_mp2x, {}).get('Z3', 0),
+                        'cz2_now': _ctlg_z_now.get(_mp2x, {}).get('Z2', 0),
+                        'cz1_now': _ctlg_z_now.get(_mp2x, {}).get('Z1', 0),
+                    }
+                st.session_state['alpha_polar_cache'] = _alpha_result
+
         except Exception as _pe:
             import traceback as _tb
             st.info(f"Projecção CP: {_pe}")
