@@ -1936,9 +1936,15 @@ def calcular_alpha_polar(ac_full, gamma_map=None, session_state_key='alpha_polar
     col_mod  = next((c for c in ['type','modality','sport'] if c in ac_full.columns), None)
     col_eftp = next((c for c in ['icu_eftp','eFTP','eftp'] if c in ac_full.columns), None)
     col_date = next((c for c in ['date','Data','data'] if c in ac_full.columns), None)
-    col_z1   = next((c for c in ['z1_kj','Z1KJ','z1kj'] if c in ac_full.columns), None)
-    col_z2   = next((c for c in ['z2_kj','Z2KJ','z2kj'] if c in ac_full.columns), None)
-    col_z3   = next((c for c in ['z3_kj','Z3KJ','z3kj'] if c in ac_full.columns), None)
+    col_z1   = next((c for c in ['z1_kj','Z1KJ','z1kj',
+                                  'icu_zone_1_kj','zone_1_kj','z1kJ',
+                                  'zone1_kj','kj_z1','trimp_z1'] if c in ac_full.columns), None)
+    col_z2   = next((c for c in ['z2_kj','Z2KJ','z2kj',
+                                  'icu_zone_2_kj','zone_2_kj','z2kJ',
+                                  'zone2_kj','kj_z2','trimp_z2'] if c in ac_full.columns), None)
+    col_z3   = next((c for c in ['z3_kj','Z3KJ','z3kj',
+                                  'icu_zone_3_kj','zone_3_kj','z3kJ',
+                                  'zone3_kj','kj_z3','trimp_z3'] if c in ac_full.columns), None)
 
     if not all([col_mod, col_eftp, col_date]):
         return {}
