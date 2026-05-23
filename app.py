@@ -154,12 +154,31 @@ def main():
                     _sl1  = _zslope(_cz1)
                     _eftp_now_v = float(_ef["eftp"].iloc[-1])
 
-                    # Projecção 3m (90d) via slope actual de cada zona
-                    # Mantém cz2 e cz1 estáveis (só extrapola cz3 via slope)
-                    _cz3_3m = _cz3n + _sl3*90
-                    _eftp_3m = float(_a3*_cz3_3m +
-                                     _a2*_cz2n +
-                                     _a1*_cz1n + _intc)
+                    # ── Alvos por zona — distribuídos pelo prazo ────────────
+                    # Lógica:
+                    # 1. eFTP alvo 3m = eFTP actual + tendência (slope 14d × 90d)
+                    #    limitado a +15W máximo (realista para 3 meses)
+                    # 2. ΔeFTP necessário = eFTP_alvo - eFTP_actual
+                    # 3. ΔCTL_Z3 necessário = ΔeFTP / α_Z3
+                    # 4. CTLγ_Z3 alvo = CTLγ_Z3_actual + ΔCTL_Z3
+                    # 5. kJ_Z3/dia necessário ≈ CTLγ_Z3_alvo (estado estacionário EWM)
+                    # 6. Progressão semanal = rampa linear de actual → alvo em 12 semanas
+                    #    kJ_Z3_sem_esta_semana = actual + (alvo-actual) * semana/12
+
+                    # eFTP alvo realista (máximo +15W em 3m, ou tendência se menor)
+                    _delta_eftp_tendencia = _sl3 * 90 * _a3  # contribuição Z3
+                    _delta_eftp_alvo = min(max(_delta_eftp_tendencia, 5.0), 15.0)
+                    _eftp_alvo = _eftp_now_v + _delta_eftp_alvo
+                    _eftp_3m   = _eftp_alvo
+
+                    # CTLγ_Z3 necessário para atingir eFTP_alvo
+                    # eFTP = α_Z3*cz3 + α_Z2*cz2 + α_Z1*cz1 + intc
+                    # → cz3_alvo = (eFTP_alvo - α_Z2*cz2n - α_Z1*cz1n - intc) / α_Z3
+                    if abs(_a3) > 0.01:
+                        _cz3_alvo = (_eftp_alvo - _a2*_cz2n - _a1*_cz1n - _intc) / _a3
+                        _cz3_alvo = max(_cz3_alvo, _cz3n)  # nunca recuar
+                    else:
+                        _cz3_alvo = _cz3n * 1.10  # fallback +10%
 
                     # kJ/sem actual (últimas 4 semanas)
                     _l4w = _ef[_ef["Data"] >= pd.Timestamp.now().normalize()-pd.Timedelta(weeks=4)]
@@ -167,19 +186,19 @@ def main():
                     _kj2 = float(_l4w["z2"].sum()/4) if len(_l4w) > 0 else 0
                     _kj1 = float(_l4w["z1"].sum()/4) if len(_l4w) > 0 else 0
 
-                    # kJ/sem Z3 necessário:
-                    # CTLγ_Z3 alvo = cz3_3m (via slope)
-                    # CTLγ_Z3 = EWM(kJ_Z3_diário, τ)
-                    # Em regime estacionário: CTLγ_Z3 ≈ kJ_Z3_diário
-                    # → kJ_Z3_dia_necessário = cz3_3m
-                    # → kJ_Z3_semana = cz3_3m * 7
-                    # Mas cz3_3m pode ser irrealista — usar crescimento relativo
-                    # máximo de 50% sobre o actual (cap seguro)
-                    if _cz3n > 0:
-                        _cz3_tgt = min(_cz3_3m, _cz3n * 1.50)  # cap +50%
-                    else:
-                        _cz3_tgt = _cz3_3m
-                    _kj3_need = max(0, float(_cz3_tgt * 7))  # kJ/sem = kJ/dia * 7
+                    # kJ/sem Z3 alvo (em regime estacionário EWM: CTLγ ≈ kJ/dia médio)
+                    # kJ/dia alvo = cz3_alvo → kJ/sem = cz3_alvo * 7
+                    _kj3_sem_alvo = float(_cz3_alvo * 7)
+
+                    # Progressão esta semana (semana 1 de 12)
+                    # Rampa linear: actual + (alvo-actual)/12 na semana 1
+                    _kj3_esta_sem = _kj3 + (_kj3_sem_alvo - _kj3) / 12.0
+                    _kj3_esta_sem = max(0, _kj3_esta_sem)
+
+                    # Z2 e Z1: manter proporção actual, escalar ligeiramente
+                    _total_act = _kj3 + _kj2 + _kj1
+                    _kj2_esta_sem = _kj2 * 1.05 if _total_act > 0 else _kj2
+                    _kj1_esta_sem = _kj1 * 1.05 if _total_act > 0 else _kj1
 
                     _alpha_cache[_mv] = {
                         'ok': True,
@@ -191,11 +210,16 @@ def main():
                         'kj_z2_semana_actual': _kj2,
                         'kj_z1_semana_actual': _kj1,
                         'alvos': {'3m': {
-                            'eftp_proj':    _eftp_3m,
-                            'delta_w':      _eftp_3m - _eftp_now_v,
-                            'kj_z3_semana': _kj3_need,
-                            'kj_z2_semana': _kj2 * 1.05,
-                            'kj_z1_semana': _kj1 * 1.05,
+                            'eftp_proj':       _eftp_3m,
+                            'delta_w':         _eftp_3m - _eftp_now_v,
+                            # kJ/sem ESTA semana (semana 1 de 12)
+                            'kj_z3_semana':    _kj3_esta_sem,
+                            'kj_z2_semana':    _kj2_esta_sem,
+                            'kj_z1_semana':    _kj1_esta_sem,
+                            # kJ/sem alvo final (semana 12)
+                            'kj_z3_sem_alvo':  _kj3_sem_alvo,
+                            # CTLγ necessário
+                            'cz3_alvo':        _cz3_alvo,
                         }},
                     }
                 except Exception:
