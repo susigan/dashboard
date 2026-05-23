@@ -2149,7 +2149,8 @@ def calcular_alpha_polar(ac_full, gamma_map=None, session_state_key='alpha_polar
 
 def calcular_nlss(df_act, df_wellness=None,
                   p0_frac: float = 0.5,
-                  window_l: int = 365) -> dict:
+                  window_l: int = 365,
+                  mod: str = None) -> dict:
     """
     Estima K1, K2, T1, T2 via Hierarchical Bayesian NLSS (Algorithm 1).
     Implementação vectorizada — tipicamente <5s para histórico de 3 anos.
@@ -2212,9 +2213,15 @@ def calcular_nlss(df_act, df_wellness=None,
 
     # Garantir type normalizado: VirtualRide→Bike, Ride→Bike, etc.
     _tipo_col = next((c for c in ['type', 'modality'] if c in df.columns), None)
+    # Modalidade alvo — usa mod se passado, senão Bike por defeito
+    _mod_target = mod if mod else 'Bike'
+    # MMP preferido: MMP5 para Row/Ski, MMP20 para Bike/Run
+    _mmp_pref = 'mmp5_w' if _mod_target in ('Row', 'Ski') else 'mmp20_w'
+    _mmp_fallbacks = ['mmp5_w', 'mmp3_w'] if _mod_target in ('Row', 'Ski') else ['mmp5_w', 'mmp3_w']
+
     if _tipo_col:
         df['_type_norm'] = df[_tipo_col].apply(norm_tipo)
-        _df_bike = df[df['_type_norm'] == 'Bike'].copy()
+        _df_bike = df[df['_type_norm'] == _mod_target].copy()
     else:
         _df_bike = df.copy()
 
@@ -2235,28 +2242,34 @@ def calcular_nlss(df_act, df_wellness=None,
                    .sort_values('Data')
                    .reset_index(drop=True))
 
-    # Primário: MMP20 de Bike — 1 ponto por ano, escala consistente
-    # Usar APENAS MMP20 — misturar MMP3 (347W) com MMP20 (228W) cria
-    # inconsistência de escala: o optimizador interpreta a diferença como
-    # variação de performance quando são durações diferentes → fica no prior.
-    _tests_mmp20 = _max_anual_mmp(_df_bike, 'mmp20_w')
+    # Primário: MMP preferido da modalidade — 1 ponto por ano, escala consistente
+    _tests_mmp20 = _max_anual_mmp(_df_bike, _mmp_pref)
 
     if not _tests_mmp20.empty:
         tests_df      = _tests_mmp20.copy()
-        _fonte_testes = f'Bike MMP20 — maximo anual ({len(_tests_mmp20)} pontos)'
+        _fonte_testes = f'{_mod_target} {_mmp_pref} — maximo anual ({len(_tests_mmp20)} pontos)'
     else:
         tests_df      = pd.DataFrame(columns=['Data', 'watts'])
-        _fonte_testes = 'Sem dados de Bike MMP20'
+        _fonte_testes = f'Sem dados de {_mod_target} {_mmp_pref}'
 
-    # Fallback: todas as modalidades se Bike insuficiente
+    # Fallback: MMP alternativos se insuficiente
+    if len(tests_df) < 2:
+        for _mmp_fb in _mmp_fallbacks:
+            _t_fb = _max_anual_mmp(_df_bike, _mmp_fb)
+            if len(_t_fb) >= 2:
+                tests_df      = _t_fb
+                _fonte_testes = f'{_mod_target} {_mmp_fb} — fallback ({len(_t_fb)} pontos)'
+                break
+
+    # Fallback final: todas as modalidades
     if len(tests_df) < 2:
         _all = df.copy()
         _all['Data'] = pd.to_datetime(_all['Data'])
         _all['_ano'] = _all['Data'].dt.year
-        _t20_all = _max_anual_mmp(_all, 'mmp20_w')
+        _t20_all = _max_anual_mmp(_all, _mmp_pref)
         if len(_t20_all) >= 2:
             tests_df      = _t20_all
-            _fonte_testes = 'Todas modalidades MMP20 — maximo anual (fallback)'
+            _fonte_testes = f'Todas modalidades {_mmp_pref} — fallback'
         else:
             _fonte_testes = 'Insuficiente'
 
