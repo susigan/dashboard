@@ -1296,6 +1296,9 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
         # ── Carregar α do Modelo 2 (FTLM Polar) do session_state ──────────────
         _alpha_p = st.session_state.get('alpha_polar_cache', {})
 
+        # ac_full completo para cálculo — sempre disponível
+        _ac_full_vg = st.session_state.get('da_full', da_full)
+
         # Se não calculado ainda, calcular agora com ac_full (histórico completo)
         if not _alpha_p:
             try:
