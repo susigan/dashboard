@@ -652,7 +652,9 @@ IC 90% via σ_resid em ln-escala → convertido para Watts. Cap ±25% em 28d.
                 _ef = _ef.dropna(subset=["eftp_ref","ctlg_norm"])
                 if len(_ef) < 8:
                     continue
-                _ef["dln"] = np.log((_ef["eftp"]/_ef["eftp_ref"]).clip(lower=0.7, upper=1.5))
+                # No clip on dln — let OLS see real variance (outliers handled by R²)
+                _ratio = _ef["eftp"] / _ef["eftp_ref"].clip(lower=1.0)
+                _ef["dln"] = np.log(_ratio.clip(lower=0.5, upper=2.0))  # ±100% max plausível fisiologicamente
 
                 _v = _ef[["dln","ctlg_norm"]].replace([np.inf,-np.inf],np.nan).dropna()
                 if len(_v) < 8:
@@ -737,13 +739,13 @@ IC 90% via σ_resid em ln-escala → convertido para Watts. Cap ±25% em 28d.
                     _cad = _ca*(1.0+_spc*_d)
                     _cnd = (_cad/max(_cm,0.01))-1.0
                     _dn  = _cnd-_cn
-                    _ev  = float(np.clip(_e0*np.exp(float(_bv)*_dn),_e0*0.75,_e0*1.25))
+                    _ev  = float(_e0 * np.exp(float(_bv) * _dn))
                     _pvs.append(_ev)
 
                 _z90  = 1.645
                 _icw  = float(min(_e0*(np.exp(_sln*_z90)-1.0), _e0*0.20))
-                _phi  = [min(v+_icw, _e0*1.30) for v in _pvs]
-                _plo  = [max(v-_icw, _e0*0.70) for v in _pvs]
+                _phi  = [v + _icw for v in _pvs]
+                _plo  = [max(v - _icw, 1.0) for v in _pvs]
 
                 _ri,_gi,_bi2 = int(_cor[1:3],16),int(_cor[3:5],16),int(_cor[5:7],16)
                 _fig_p.add_trace(go.Scatter(
@@ -808,7 +810,7 @@ IC 90% via σ_resid em ln-escala → convertido para Watts. Cap ±25% em 28d.
                 _sln = _sigma_ln_d.get(_mp,0.05)
                 _ca28= _ca*(1.0+_spc*28)
                 _cn28= (_ca28/max(_cm,0.01))-1.0
-                _p28 = float(np.clip(_e0*np.exp(float(_bv)*(_cn28-_cn)),_e0*0.75,_e0*1.25))
+                _p28 = float(_e0 * np.exp(float(_bv) * (_cn28 - _cn)))
                 _dw  = _p28-_e0
                 _icw = float(min(_e0*(np.exp(_sln*1.645)-1.0),_e0*0.20))
                 _rows.append({
@@ -897,8 +899,7 @@ IC 90% via σ_resid em ln-escala → convertido para Watts. Cap ±25% em 28d.
                         "Projecção tem poder preditivo razoável para essas modalidades.")
 
                 st.caption(
-                    "β adimensional. Cap ±25% em 28d. IC 90% σ_ln×z₀.₉₀. "
-                    "🟢 R²≥0.20 | 🟡 R²=0.08–0.20 | 🔴 R²<0.08")
+                    "β adimensional. IC 90% σ_ln×z₀.₉₀. 🟢 R²≥0.20 | 🟡 R²=0.08–0.20 | 🔴 R²<0.08")
             _proj_ok = True
 
         except Exception as _pe:
@@ -1075,9 +1076,7 @@ eFTP ~ α_Z3·CTLγ_Z3 + α_Z2·CTLγ_Z2 + α_Z1·CTLγ_Z1   [OLS múltipla]
 
                 # eFTP proj(t+28) = α_Z3·(cz3+sl_z3×28) + α_Z2·(cz2+sl_z2×28) + α_Z1·(cz1+sl_z1×28) + intc
                 _cz3_28 = _cz3_now + _sl_z3*28; _cz2_28 = _cz2_now + _sl_z2*28; _cz1_28 = _cz1_now + _sl_z1*28
-                _eftp_28 = float(np.clip(
-                    _a_z3*_cz3_28 + _a_z2*_cz2_28 + _a_z1*_cz1_28 + _intc,
-                    _eftp_z_now[_mp]*0.75, _eftp_z_now[_mp]*1.25))
+                _eftp_28 = float(_a_z3*_cz3_28 + _a_z2*_cz2_28 + _a_z1*_cz1_28 + _intc)
                 _proj_z_28d[_mp] = _eftp_28
 
                 # R² comparison with model 1
@@ -1143,7 +1142,7 @@ eFTP ~ α_Z3·CTLγ_Z3 + α_Z2·CTLγ_Z2 + α_Z1·CTLγ_Z1   [OLS múltipla]
                 for _pr in _polar_rows:
                     _mp2  = _pr["Modalidade"]
                     _e0   = _eftp_z_now.get(_mp2,0)
-                    _p28z = _proj_z_28d.get(_mp2,_e0)
+                    _p28z = _proj_z_28d.get(_mp2, _e0)
                     _cor2 = _MCOLS.get(_mp2,"#888")
                     _r2z  = float(_pr["R² Modelo 2"])
 
@@ -1265,7 +1264,7 @@ eFTP ~ α_Z3·CTLγ_Z3 + α_Z2·CTLγ_Z2 + α_Z1·CTLγ_Z1   [OLS múltipla]
                 st.caption(
                     "M1 (···) = Modelo 1 CTLγ total | M2 (- - -) = FTLM Polar por zona. "
                     "🟢 R²≥0.20 | 🟡 R²=0.08–0.20 | 🔴 R²<0.08. "
-                    "Cap ±25% em 28 dias. γ modal calibrado no tab PMC.")
+                    "γ modal calibrado no tab PMC. Sem cap — projecção reflecte o modelo sem truncagem.")
 
         except Exception as _ze:
             import traceback as _ztb
