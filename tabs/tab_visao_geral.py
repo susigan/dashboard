@@ -1303,17 +1303,28 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 _alpha_p = calcular_alpha_polar(da_full)
                 if _alpha_p:
                     st.session_state['alpha_polar_cache'] = _alpha_p
-            except Exception:
+            except Exception as _ap_err:
                 pass
 
-        # Diagnóstico silencioso — mostrar razão se ok=False
-        _alpha_reasons = {m: _alpha_p.get(m, {}).get('reason','') 
-                          for m in ['Bike','Row','Ski','Run']
-                          if not _alpha_p.get(m, {}).get('ok', False)}
+        # Diagnóstico — mostrar razão se ok=False ou vazio
+        _alpha_reasons = {}
+        for _m_ap in ['Bike','Row','Ski','Run']:
+            _m_data = _alpha_p.get(_m_ap, {})
+            if not _m_data.get('ok', False):
+                _alpha_reasons[_m_ap] = _m_data.get('reason', 'não calculado')
+
         if _alpha_reasons:
             with st.expander("ℹ️ KJ Alvo / eFTP Alvo — diagnóstico", expanded=False):
-                for m, reason in _alpha_reasons.items():
-                    st.caption(f"{m}: {reason or 'sem dados'}")
+                # Mostrar colunas disponíveis em da_full para diagnóstico
+                _cols_da = list(da_full.columns) if da_full is not None else []
+                _z_cols = [c for c in _cols_da if any(x in c.lower() for x in ['z1','z2','z3','zone','kj'])]
+                st.caption(f"Colunas zona/kj em da_full: {_z_cols[:20]}")
+                _col_mod_chk  = next((c for c in ['type','modality'] if c in _cols_da), None)
+                _col_eftp_chk = next((c for c in ['icu_eftp','eFTP','eftp'] if c in _cols_da), None)
+                _col_date_chk = next((c for c in ['date','Data'] if c in _cols_da), None)
+                st.caption(f"col_mod={_col_mod_chk} | col_eftp={_col_eftp_chk} | col_date={_col_date_chk}")
+                for _m_ap, _reason in _alpha_reasons.items():
+                    st.caption(f"{_m_ap}: {_reason}")
 
         for mod in ['Bike','Row','Ski','Run']:
             _sub = _pf[_pf['type'].apply(norm_tipo)==mod].copy()
