@@ -753,65 +753,7 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                             font=dict(color='#111111', size=11)))
             st.plotly_chart(fig_kj, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
 
-        # ── Tabela comparativa mensal — 2 blocos com cores ──────────────
-        if all_mods_m:
-            st.subheader("📊 Comparação Mensal por Modalidade")
-
-            def _di(vc, vp, lim=3.0):
-                # icon + color delta
-                if not vp or vp == 0: return '—', '#888'
-                pct = (vc - vp) / vp * 100
-                if   pct >  lim: return f'↗ +{pct:.0f}%', '#27ae60'
-                elif pct < -lim: return f'↘ {pct:.0f}%',  '#e74c3c'
-                else:             return f'→ {pct:+.0f}%', '#7f8c8d'
-
-            def _mes_rows(mod_list, mc, mr):
-                rows = []
-                for mod in mod_list:
-                    dc_ = mc.get(mod, {}); dp_ = mr.get(mod, {})
-                    kj_i, _ = _di(dc_.get('kj',0),    dp_.get('kj',0))
-                    km_i, _ = _di(dc_.get('km',0),    dp_.get('km',0))
-                    h_i,  _ = _di(dc_.get('horas',0), dp_.get('horas',0))
-                    rows.append({
-                        'Modal.': mod,
-                        'KJ':    f"{dc_.get('kj',0):.0f}"    if dc_.get('kj',0)>0    else '—',
-                        'ΔKJ':   kj_i,
-                        'KM':    f"{dc_.get('km',0):.0f}"    if dc_.get('km',0)>0    else '—',
-                        'ΔKM':   km_i,
-                        'Horas': fmt_dur(dc_.get('horas',0)) if dc_.get('horas',0)>0 else '—',
-                        'ΔH':    h_i,
-                    })
-                return rows
-
-            def _color_df(df_s):
-                def _c(v):
-                    v = str(v)
-                    if '↗' in v: return 'color:#27ae60;font-weight:bold'
-                    if '↘' in v: return 'color:#e74c3c;font-weight:bold'
-                    if '→' in v: return 'color:#7f8c8d'
-                    return ''
-                dcols = [c for c in df_s.columns if c.startswith('Δ')]
-                return df_s.style.map(_c, subset=dcols) if dcols else df_s.style
-
-            all_mods_pp = sorted(set(list(mes_p.keys()) + list(mes_pp.keys())))
-            _cb1, _cb2 = st.columns(2)
-            with _cb1:
-                st.caption(f"**{mes_p_ini.strftime('%b %Y')}** vs {mes_p_p_ini.strftime('%b %Y')}")
-                _rb1 = _mes_rows(all_mods_pp, mes_p, mes_pp)
-                if _rb1:
-                    st.dataframe(_color_df(pd.DataFrame(_rb1)),
-                                 hide_index=True, use_container_width=True)
-                else:
-                    st.info("Sem dados para mês anterior")
-            with _cb2:
-                st.caption(f"**{mes_c_ini.strftime('%b %Y')} ▶** vs {mes_p_ini.strftime('%b %Y')}")
-                _rb2 = _mes_rows(all_mods_m, mes_c, mes_p)
-                if _rb2:
-                    st.dataframe(_color_df(pd.DataFrame(_rb2)),
-                                 hide_index=True, use_container_width=True)
-                else:
-                    st.info("Sem dados para mês corrente")
-
+        # ── Tabela comparativa mensal removida ──────────────────────────
 
     # ── Camada de Progressão de Carga ────────────────────────────────────
     if da_full is not None and len(da_full) > 0:
@@ -1542,49 +1484,59 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             df_prog = pd.DataFrame(_rows_prog_display)
 
             # ── Deload / Taper detector ───────────────────────────────────
-            # baseline = mediana últimas 3 semanas com dados (KJ ou Horas)
-            _sem_ini_det  = hoje_pf - pd.Timedelta(weeks=1)
-            _sem3_ini_det = hoje_pf - pd.Timedelta(weeks=4)
+            # baseline = soma de TODAS modalidades, últimas 3 semanas completas
+            # usando a semana actual como referência (não data max por modalidade)
+            _semana_atual_period = sem_ini_pf.to_period('W')
             _kj_total_cur = 0.0
-            _kj_total_b3  = []
-            for _m3 in ['Bike','Row','Ski','Run']:
-                _s3 = _pf[_pf['type'].apply(norm_tipo)==_m3].copy()
-                if len(_s3) == 0: continue
-                _s3['_ksem'] = _s3['Data'].dt.to_period('W')
-                _agg3 = _s3.groupby('_ksem')['_kj'].sum()
-                # Últimas 3 semanas completas (antes da actual)
-                _prev3 = _agg3[_agg3.index < _s3['Data'].max().to_period('W')].tail(3)
-                _kj_total_b3.extend(_prev3.values)
-                # Semana actual desta modalidade
-                _kj_total_cur += float(_s3[_s3['Data'] >= sem_ini_pf]['_kj'].sum())
+            _kj_b3_por_sem = {}  # {period: kj_total}
 
-            _kj_b3_mean = float(np.mean(_kj_total_b3)) if _kj_total_b3 else 0.0
+            # Colunas Z1/Z2/Z3
+            _col_z1_det = next((c for c in ['Z1KJ','z1_kj','z1kj'] if c in _pf.columns), None)
+            _col_z2_det = next((c for c in ['Z2KJ','z2_kj','z2kj'] if c in _pf.columns), None)
+            _col_z3_det = next((c for c in ['Z3KJ','z3_kj','z3kj'] if c in _pf.columns), None)
 
-            # ── Semana anterior KJ (para guard início de semana) ──────────
-            _sem_ant_ini_det = sem_ini_pf - pd.Timedelta(weeks=1)
-            _sem_ant_fim_det = sem_ini_pf - pd.Timedelta(days=1)
-            _kj_sem_ant_det  = 0.0
-            for _m3 in ['Bike','Row','Ski','Run']:
-                _s3b = _pf[_pf['type'].apply(norm_tipo)==_m3]
-                _kj_sem_ant_det += float(_s3b[
-                    (_s3b['Data'] >= _sem_ant_ini_det) &
-                    (_s3b['Data'] <= _sem_ant_fim_det)
-                ]['_kj'].sum())
+            _pf2 = _pf.copy()
+            _pf2['_ksem'] = _pf2['Data'].dt.to_period('W')
+            # Filtrar só modalidades relevantes
+            _pf2 = _pf2[_pf2['type'].apply(norm_tipo).isin(['Bike','Row','Ski','Run'])]
+
+            # Semana actual
+            _pf_cur = _pf2[_pf2['_ksem'] == _semana_atual_period]
+            _kj_total_cur = float(_pf_cur['_kj'].sum())
+
+            # Últimas 3 semanas completas (excluindo a actual)
+            _pf_prev = _pf2[_pf2['_ksem'] < _semana_atual_period]
+            _agg_sem = _pf_prev.groupby('_ksem')['_kj'].sum()
+            _prev3_sems = _agg_sem.tail(3)
+            _kj_b3_mean = float(_prev3_sems.mean()) if len(_prev3_sems) > 0 else 0.0
+
+            # Z1/Z2/Z3 semana actual e baseline
+            def _sum_zone(df, col):
+                if col and col in df.columns:
+                    return float(pd.to_numeric(df[col], errors='coerce').fillna(0).sum())
+                return 0.0
+
+            _z1_cur = _sum_zone(_pf_cur, _col_z1_det)
+            _z2_cur = _sum_zone(_pf_cur, _col_z2_det)
+            _z3_cur = _sum_zone(_pf_cur, _col_z3_det)
+
+            # Baseline Z1/Z2/Z3 (média das 3 semanas)
+            _z1_b3 = _sum_zone(_pf_prev.tail(3*20), _col_z1_det) / max(len(_prev3_sems),1) if _col_z1_det else 0.0
+            _z2_b3 = _sum_zone(_pf_prev.tail(3*20), _col_z2_det) / max(len(_prev3_sems),1) if _col_z2_det else 0.0
+            _z3_b3 = _sum_zone(_pf_prev.tail(3*20), _col_z3_det) / max(len(_prev3_sems),1) if _col_z3_det else 0.0
+
+            # Semana anterior
+            _sem_ant_period = _semana_atual_period - 1
+            _pf_ant = _pf2[_pf2['_ksem'] == _sem_ant_period]
+            _kj_sem_ant_det = float(_pf_ant['_kj'].sum())
             _ratio_sem_ant = (_kj_sem_ant_det / _kj_b3_mean) if _kj_b3_mean > 0 else 1.0
 
-            # Guard: dias decorridos desta semana (Seg=0, Dom=6)
-            _dias_semana = hoje_pf.weekday() + 1   # 1=seg, 7=dom
-            # KJ projectado para semana completa (pro-rata)
+            # Guard início de semana
+            _dias_semana = hoje_pf.weekday() + 1
             _kj_proj_semana = (_kj_total_cur / _dias_semana * 7) if _dias_semana > 0 else 0
-
-            # Guard início de semana: se <3 dias decorridos E semana anterior Normal → não julgar
             _semana_iniciando = _dias_semana < 3
-
-            # Ratio a usar: projectado se início de semana, actual se ≥3 dias
             _load_ratio = ((_kj_proj_semana / _kj_b3_mean) if (_kj_b3_mean > 0 and _semana_iniciando)
                            else (_kj_total_cur / _kj_b3_mean) if _kj_b3_mean > 0 else 1.0)
-
-            # Se semana anterior já era Taper/Deload → não alarmar novamente
             _sem_ant_era_taper = _ratio_sem_ant < 0.80
 
             # Limiares
@@ -1617,6 +1569,19 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                     else:
                         _fase = "⚠️ Muito baixo"
                     st.metric("Fase detectada", _fase, f"ratio={_load_ratio:.2f}")
+
+                # Z1/Z2/Z3 esta semana vs baseline
+                if any([_z1_cur, _z2_cur, _z3_cur, _z1_b3, _z2_b3, _z3_b3]):
+                    _cz1, _cz2, _cz3 = st.columns(3)
+                    with _cz1:
+                        st.metric("Z1 esta sem (kJ)", f"{_z1_cur:.0f}",
+                                  f"baseline: {_z1_b3:.0f} kJ/sem")
+                    with _cz2:
+                        st.metric("Z2 esta sem (kJ)", f"{_z2_cur:.0f}",
+                                  f"baseline: {_z2_b3:.0f} kJ/sem")
+                    with _cz3:
+                        st.metric("Z3 esta sem (kJ)", f"{_z3_cur:.0f}",
+                                  f"baseline: {_z3_b3:.0f} kJ/sem")
 
                 # Ranges informativos
                 st.caption(
