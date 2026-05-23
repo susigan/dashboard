@@ -64,6 +64,22 @@ def main():
     st.session_state['da_full']  = ac_full
     st.session_state['mods_sel'] = mods_sel
 
+    # ── Calcular α FTLM Polar no arranque — disponível em todas as tabs ──
+    # Feito aqui para não depender da visita ao tab_eftp
+    # Usa gamma do ld_frac_cache se disponível, senão usa defaults calibrados
+    try:
+        from utils.data import calcular_alpha_polar
+        _gamma_app = {}
+        _ld_info_app = st.session_state.get('ld_frac_info', {})
+        for _mi_app in ['Bike','Row','Ski','Run']:
+            _gamma_app[_mi_app] = (_ld_info_app.get('mods', {})
+                                   .get(_mi_app, {})
+                                   .get('gamma_perf', 0.5))
+        _alpha_result_app = calcular_alpha_polar(ac_full, gamma_map=_gamma_app)
+        st.session_state['alpha_polar_cache'] = _alpha_result_app
+    except Exception as _alpha_err:
+        pass  # silencioso — tab_eftp recalcula se necessário
+
     dw      = filtrar_datas(wc, di, df_)
     da      = filtrar_datas(ac, di, df_)
     da_filt = (da[da['type'].isin(mods_sel + ['WeightTraining'])]
