@@ -1291,19 +1291,8 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
         # Contém: alpha_z3/z2/z1, r2, ctz_now, alvos por horizonte, kJ_zona_semana
         _alpha_p = st.session_state.get('alpha_polar_cache', {})
 
-        # Se não disponível, calcular agora (pode demorar alguns segundos)
-        if not _alpha_p:
-            try:
-                from utils.data import calcular_alpha_polar
-                _gamma_ss = {}
-                _ld_info_ss = st.session_state.get('ld_frac_info', {})
-                for _mi2 in ['Bike','Row','Ski','Run']:
-                    _gamma_ss[_mi2] = (_ld_info_ss.get('mods',{}).get(_mi2,{})
-                                        .get('gamma_perf', 0.5))
-                _alpha_p = calcular_alpha_polar(da_full, gamma_map=_gamma_ss)
-                st.session_state['alpha_polar_cache'] = _alpha_p
-            except Exception:
-                _alpha_p = {}
+        # α calculado no arranque (app.py) — sem recálculo aqui
+        # Se ainda vazio após recarregamento, mostrar mensagem informativa
 
         for mod in ['Bike','Row','Ski','Run']:
             _sub = _pf[_pf['type'].apply(norm_tipo)==mod].copy()
@@ -1511,7 +1500,7 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             else:         fl = "↑ 1.02"
 
             # Zone targets for row display
-            _z3_lbl = 'visita tab eFTP'; _z_alvo_eftp = 'visita tab eFTP'; _z_zona_rec = _hrv_note if '_hrv_note' in dir() else '—'
+            _z3_lbl = 'a calcular...'; _z_alvo_eftp = 'a calcular...'; _z_zona_rec = '—'
             if _zone_prescription:
                 _zp = _zone_prescription
                 _r2_z = _zp.get('r2', 0)
