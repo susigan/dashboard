@@ -1964,9 +1964,9 @@ def calcular_alpha_polar(ac_full, gamma_map=None, session_state_key='alpha_polar
 
         has_zones = col_z1 and col_z2 and col_z3
         if has_zones:
-            _ef['z1'] = pd.to_numeric(_ef.get(col_z1, 0), errors='coerce').fillna(0)
-            _ef['z2'] = pd.to_numeric(_ef.get(col_z2, 0), errors='coerce').fillna(0)
-            _ef['z3'] = pd.to_numeric(_ef.get(col_z3, 0), errors='coerce').fillna(0)
+            _ef['z1'] = pd.to_numeric(_ef[col_z1], errors='coerce').fillna(0)
+            _ef['z2'] = pd.to_numeric(_ef[col_z2], errors='coerce').fillna(0)
+            _ef['z3'] = pd.to_numeric(_ef[col_z3], errors='coerce').fillna(0)
         else:
             result[mod] = {'ok': False, 'reason': 'sem colunas z1/z2/z3_kj'}
             continue
