@@ -751,17 +751,24 @@ IC 90% via σ_resid em ln-escala → convertido para Watts. Cap ±25% em 28d.
                     y=[float(v) for v in _phi]+[float(v) for v in reversed(_plo)],
                     fill="toself",fillcolor=f"rgba({_ri},{_gi},{_bi2},0.10)",
                     line=dict(width=0),showlegend=False,hoverinfo="skip"))
+                # Estilo da linha baseado na fiabilidade (R²)
+                _line_opacity = 1.0 if _r2v >= 0.20 else (0.7 if _r2v >= 0.08 else 0.4)
+                _line_dash    = "dash" if _r2v >= 0.08 else "dot"
+                _line_width   = 2.5 if _r2v >= 0.20 else 2.0
                 _fig_p.add_trace(go.Scatter(
                     x=_pdstr, y=[float(round(v,1)) for v in _pvs],
                     name=f"{_mp} proj 28d (β={_bv:.2f} R²={_r2v:.2f})",
-                    line=dict(color=_cor,width=2.5,dash="dash"),
+                    opacity=_line_opacity,
+                    line=dict(color=_cor, width=_line_width, dash=_line_dash),
                     hovertemplate=f"{_mp} proj: %{{y:.0f}}W<extra></extra>"))
 
                 _pe   = float(round(_pvs[-1],0))
                 _dpct = float((_pe-_e0)/max(_e0,1)*100)
+                # Fiabilidade no texto da anotação
+                _fiab_icon = "🟢" if _r2v >= 0.20 else ("🟡" if _r2v >= 0.08 else "🔴")
                 _fig_p.add_annotation(
                     x=_pdstr[-1],y=_pe,
-                    text=f"<b>{_mp} +28d: {_pe:.0f}W ({_dpct:+.1f}%)</b>",
+                    text=f"{_fiab_icon} <b>{_mp} +28d: {_pe:.0f}W ({_dpct:+.1f}%)</b>",
                     showarrow=False,xshift=4,yshift=10,
                     font=dict(size=11,color=_cor),
                     bgcolor="rgba(255,255,255,0.88)",
@@ -817,8 +824,81 @@ IC 90% via σ_resid em ln-escala → convertido para Watts. Cap ±25% em 28d.
                     "slope %/d":f"{_spc*100:+.3f}%",
                 })
             if _rows:
-                st.dataframe(pd.DataFrame(_rows),use_container_width=True,hide_index=True)
-                st.caption("β adimensional. Cap ±25% em 28d. IC 90% σ_ln×z₀.₉₀.")
+                _df_rows = pd.DataFrame(_rows)
+                st.dataframe(_df_rows, use_container_width=True, hide_index=True)
+
+                # ── Sinalização de fiabilidade por modalidade ──────────────────
+                st.markdown("##### Diagnóstico de fiabilidade da projecção")
+                _diag_cols = st.columns(len(_rows))
+                for _di, _row in enumerate(_rows):
+                    _r2v    = float(_row["R²"])
+                    _bv_abs = abs(float(_row["β"]))
+                    _mp     = _row["Modalidade"]
+                    _dw     = float(_row["Δ (W)"].replace("+",""))
+                    _dpct   = float(_row["Δ (%)"].replace("%","").replace("+",""))
+                    _ca     = float(_row["CTLγ"])
+                    _spc    = float(_row["slope %/d"].replace("%","").replace("+",""))
+
+                    # Classificação de fiabilidade
+                    if _r2v >= 0.20:
+                        _fcolor = "#27ae60"; _flabel = "🟢 Fiável"
+                        _fdesc  = f"R²={_r2v:.2f} — modelo tem poder preditivo."
+                    elif _r2v >= 0.08:
+                        _fcolor = "#f39c12"; _flabel = "🟡 Incerto"
+                        _fdesc  = f"R²={_r2v:.2f} — direcção indicativa, magnitude incerta."
+                    else:
+                        _fcolor = "#e74c3c"; _flabel = "🔴 Baixa"
+                        _fdesc  = f"R²={_r2v:.2f} — CTLγ não explica variação de eFTP."
+
+                    # Consistência β vs direcção
+                    _beta_v = float(_row["β"])
+                    if abs(_beta_v) < 0.01:
+                        _fdesc += " β≈0 — sem sensibilidade detectada."
+
+                    # CTLγ slope: está a crescer ou cair?
+                    if abs(_spc) < 0.001:
+                        _slope_txt = "CTLγ estável"
+                    elif _spc > 0:
+                        _slope_txt = f"CTLγ ↑ +{_spc:.3f}%/d"
+                    else:
+                        _slope_txt = f"CTLγ ↓ {_spc:.3f}%/d"
+
+                    with _diag_cols[_di]:
+                        _hx = _fcolor.lstrip("#")
+                        _rr,_gg,_bb = int(_hx[0:2],16),int(_hx[2:4],16),int(_hx[4:6],16)
+                        st.markdown(
+                            f"<div style='border:1.5px solid {_fcolor};"
+                            f"border-radius:8px;padding:10px 12px;"
+                            f"background:rgba({_rr},{_gg},{_bb},0.06)'>"
+                            f"<div style='font-size:13px;font-weight:600;"
+                            f"color:{_fcolor};margin-bottom:4px'>{_flabel}</div>"
+                            f"<div style='font-size:14px;font-weight:500;"
+                            f"color:#222;margin-bottom:2px'>{_mp}</div>"
+                            f"<div style='font-size:12px;color:#555'>{_fdesc}</div>"
+                            f"<div style='font-size:11px;color:#888;margin-top:4px'>"
+                            f"{_slope_txt} | CTLγ={_ca:.1f}"
+                            f"</div></div>",
+                            unsafe_allow_html=True)
+
+                # Nota interpretativa global
+                _n_fiaveis = sum(1 for r in _rows if float(r["R²"]) >= 0.20)
+                _n_incertos = sum(1 for r in _rows if 0.08 <= float(r["R²"]) < 0.20)
+                if _n_fiaveis == 0:
+                    st.warning(
+                        "⚠️ **Nenhuma modalidade com R²≥0.20.** "
+                        "O CTLγ não é um preditor forte do eFTP para este atleta neste período. "
+                        "Possíveis causas: (1) composição do treino mudou recentemente "
+                        "(ex: mudança de intensidade sem mudança de volume), "
+                        "(2) poucos testes de eFTP para calibração, "
+                        "(3) outros factores dominam (sono, nutrição, viagens).")
+                elif _n_fiaveis >= 2:
+                    st.success(
+                        f"✅ {_n_fiaveis} modalidade(s) com R²≥0.20. "
+                        "Projecção tem poder preditivo razoável para essas modalidades.")
+
+                st.caption(
+                    "β adimensional. Cap ±25% em 28d. IC 90% σ_ln×z₀.₉₀. "
+                    "🟢 R²≥0.20 | 🟡 R²=0.08–0.20 | 🔴 R²<0.08")
             _proj_ok = True
 
         except Exception as _pe:
