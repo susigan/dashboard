@@ -911,6 +911,366 @@ IC 90% via σ_resid em ln-escala → convertido para Watts. Cap ±25% em 28d.
 
     st.markdown("---")
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # MODELO 2 — FTLM POLAR: CTLγ decomposto por zonas de intensidade
+    # Extensão do FTLM Part II (Della Mattia 2025) — não foge ao paper:
+    # o mesmo γ modal é aplicado separadamente a kJ_Z1, kJ_Z2, kJ_Z3
+    # eFTP ~ α_Z3·CTLγ_Z3 + α_Z2·CTLγ_Z2 + α_Z1·CTLγ_Z1   (OLS por modalidade)
+    # Espírito do paper: "carga fraccionária por domínio de intensidade"
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("### Modelo 2 — FTLM Polar (CTLγ por zona de intensidade)")
+    st.caption(
+        "Extensão do FTLM Part II (Della Mattia 2025): o mesmo γ modal é aplicado "
+        "separadamente a kJ_Z1 / kJ_Z2 / kJ_Z3, decompondo a carga por domínio de intensidade. "
+        "Permite distinguir 'muito volume Z1' de 'muito estímulo Z3' — o CTLγ total não distingue.")
+
+    with st.expander("📖 Diferenças vs Modelo 1 e ligação ao paper", expanded=False):
+        st.markdown("""
+**Modelo 1 (CTLγ total)** — fiel ao paper FTLM Part II §2.1:
+```
+CTLγ(t) = EWM(carga_total, τ=42d/γ)
+eFTP ~ β × CTLγ_norm     [R² tipicamente baixo: 0.01–0.31]
+```
+
+**Modelo 2 (FTLM Polar)** — extensão natural do mesmo paper:
+```
+CTLγ_Z3(t) = EWM(kJ_Z3, τ=42d/γ_modal)   ← estímulo de alta intensidade
+CTLγ_Z2(t) = EWM(kJ_Z2, τ=42d/γ_modal)   ← zona de limiar
+CTLγ_Z1(t) = EWM(kJ_Z1, τ=42d/γ_modal)   ← base aeróbica
+eFTP ~ α_Z3·CTLγ_Z3 + α_Z2·CTLγ_Z2 + α_Z1·CTLγ_Z1   [OLS múltipla]
+```
+
+**Porquê não foge ao paper:**
+- Usa o mesmo γ modal já calibrado (não inventa novos parâmetros)
+- É a mesma decomposição fraccionária do FTLM, agora por zona em vez de modalidade
+- O paper §3.2 menciona explicitamente que CTLγ subestima o impacto de sessões Z3 isoladas
+
+**Interpretação dos coeficientes α:**
+- α_Z3 > 0, grande → treino intenso prediz ganho de eFTP (resposta anaeróbica)
+- α_Z1 > 0, pequeno → base aeróbica contribui mas menos
+- α_Z2 ≈ 0 → zona de limiar tem contribuição ambígua (zona "lixo" para eFTP)
+        """)
+
+    # Verificar disponibilidade das colunas z1/z2/z3_kj
+    _z1c = next((c for c in ["z1_kj","Z1KJ","z1kj"] if c in ac_full.columns), None)
+    _z2c = next((c for c in ["z2_kj","Z2KJ","z2kj"] if c in ac_full.columns), None)
+    _z3c = next((c for c in ["z3_kj","Z3KJ","z3kj"] if c in ac_full.columns), None)
+
+    if not (_z1c and _z2c and _z3c):
+        st.info(
+            f"Modelo 2 requer colunas z1_kj, z2_kj, z3_kj. "
+            f"Disponíveis em ac_full: {[c for c in ac_full.columns if 'kj' in c.lower() or 'KJ' in c]}. "
+            "Verifica que as colunas Z1KJ/Z2KJ/Z3KJ estão na sheet de actividades.")
+    else:
+        try:
+            from scipy import stats as _sp_stats
+
+            # Gamma por modalidade (do ld_frac_cache se disponível)
+            _gamma_map = {}
+            if ld is not None and len(ld) > 0:
+                # Tentar extrair info de gamma do session_state
+                _info = st.session_state.get("ld_frac_info", {})
+                _mods_info = _info.get("mods", {})
+                for _mp in ["Bike","Row","Ski","Run"]:
+                    _gamma_map[_mp] = _mods_info.get(_mp, {}).get("gamma_perf", 0.5)
+
+            # Fallback gammas calibrados (do tab_pmc)
+            _gamma_defaults = {"Bike":0.250,"Row":0.900,"Ski":0.600,"Run":0.900}
+            for _mp in ["Bike","Row","Ski","Run"]:
+                if _mp not in _gamma_map or _gamma_map[_mp] == 0.5:
+                    _gamma_map[_mp] = _gamma_defaults[_mp]
+
+            _mods_z     = ["Bike","Row","Ski","Run"]
+            _alpha_dict = {}   # {mod: {"Z1":α1,"Z2":α2,"Z3":α3}}
+            _r2_z_dict  = {}   # R² do modelo polar
+            _eftp_z_now = {}   # eFTP actual por modal
+            _ctlg_z_now = {}   # CTLγ_Z3/Z2/Z1 actuais
+            _proj_z_28d = {}   # projecção 28d por modal
+
+            _polar_rows = []   # para tabela comparativa
+
+            for _mp in _mods_z:
+                # Sessões desta modalidade
+                _ef = (ac_full[ac_full[col_mod]==_mp]
+                       [[col_date, col_eftp, _z1c, _z2c, _z3c]]
+                       .copy())
+                _ef[col_date] = pd.to_datetime(_ef[col_date]).dt.normalize()
+                _ef = (_ef.rename(columns={col_date:"Data", col_eftp:"eftp",
+                                           _z1c:"z1", _z2c:"z2", _z3c:"z3"})
+                        .sort_values("Data").drop_duplicates("Data").reset_index(drop=True))
+                _ef[["eftp","z1","z2","z3"]] = _ef[["eftp","z1","z2","z3"]].apply(
+                    pd.to_numeric, errors="coerce")
+                _ef = _ef.dropna(subset=["eftp"])
+                _ef[["z1","z2","z3"]] = _ef[["z1","z2","z3"]].fillna(0)
+
+                if len(_ef) < 10:
+                    continue
+
+                # γ modal
+                _gam = _gamma_map.get(_mp, 0.5)
+                _tau = max(42.0 * (1.0 - _gam) + 7.0 * _gam, 7.0)  # interpola entre 42d e 7d
+                _span = int(round(_tau))
+
+                # Construir série diária de kJ por zona
+                _date_range = pd.date_range(_ef["Data"].min(), pd.Timestamp.now().normalize(), freq="D")
+                _ef_idx = _ef.set_index("Data")
+
+                _z1_daily = _ef_idx["z1"].reindex(_date_range, fill_value=0)
+                _z2_daily = _ef_idx["z2"].reindex(_date_range, fill_value=0)
+                _z3_daily = _ef_idx["z3"].reindex(_date_range, fill_value=0)
+
+                # CTLγ por zona — EWM com span modal
+                _ctlg_z1 = _z1_daily.ewm(span=_span).mean()
+                _ctlg_z2 = _z2_daily.ewm(span=_span).mean()
+                _ctlg_z3 = _z3_daily.ewm(span=_span).mean()
+
+                # Mapear CTLγ de cada zona para as datas das sessões
+                _ef["cz1"] = _ef["Data"].map(_ctlg_z1.to_dict())
+                _ef["cz2"] = _ef["Data"].map(_ctlg_z2.to_dict())
+                _ef["cz3"] = _ef["Data"].map(_ctlg_z3.to_dict())
+                _ef = _ef.dropna(subset=["cz1","cz2","cz3"])
+
+                if len(_ef) < 10:
+                    continue
+
+                # OLS múltipla: eFTP ~ α_Z3·cz3 + α_Z2·cz2 + α_Z1·cz1
+                _X = np.column_stack([
+                    _ef["cz3"].values.astype(float),
+                    _ef["cz2"].values.astype(float),
+                    _ef["cz1"].values.astype(float),
+                    np.ones(len(_ef))  # intercept
+                ])
+                _y = _ef["eftp"].values.astype(float)
+
+                # OLS via lstsq (mais robusto que linregress para multi-variável)
+                _coef, _res, _rank, _ = np.linalg.lstsq(_X, _y, rcond=None)
+                _a_z3, _a_z2, _a_z1, _intc = float(_coef[0]), float(_coef[1]), float(_coef[2]), float(_coef[3])
+
+                _y_pred = _X @ _coef
+                _ss_res = float(np.sum((_y - _y_pred)**2))
+                _ss_tot = float(np.sum((_y - _y.mean())**2))
+                _r2_z   = float(1 - _ss_res / _ss_tot) if _ss_tot > 0 else 0.0
+                _sigma_w = float(np.std(_y - _y_pred, ddof=4))
+
+                _alpha_dict[_mp] = {"Z3":_a_z3,"Z2":_a_z2,"Z1":_a_z1,"intc":_intc}
+                _r2_z_dict[_mp]  = _r2_z
+                _eftp_z_now[_mp] = float(_ef["eftp"].iloc[-1])
+
+                # CTLγ actual por zona
+                _cz3_now = float(_ctlg_z3.iloc[-1])
+                _cz2_now = float(_ctlg_z2.iloc[-1])
+                _cz1_now = float(_ctlg_z1.iloc[-1])
+                _ctlg_z_now[_mp] = {"Z3":_cz3_now,"Z2":_cz2_now,"Z1":_cz1_now}
+
+                # Projecção 28d: assume CTLγ de cada zona estável (slope 14d)
+                def _zone_slope(series, n=14):
+                    s = series.dropna().tail(n)
+                    if len(s) < 5: return 0.0
+                    xx = np.arange(len(s), dtype=float)
+                    sl, *_ = _sp_stats.linregress(xx, s.values.astype(float))
+                    return float(sl)
+
+                _sl_z3 = _zone_slope(_ctlg_z3); _sl_z2 = _zone_slope(_ctlg_z2); _sl_z1 = _zone_slope(_ctlg_z1)
+
+                # eFTP proj(t+28) = α_Z3·(cz3+sl_z3×28) + α_Z2·(cz2+sl_z2×28) + α_Z1·(cz1+sl_z1×28) + intc
+                _cz3_28 = _cz3_now + _sl_z3*28; _cz2_28 = _cz2_now + _sl_z2*28; _cz1_28 = _cz1_now + _sl_z1*28
+                _eftp_28 = float(np.clip(
+                    _a_z3*_cz3_28 + _a_z2*_cz2_28 + _a_z1*_cz1_28 + _intc,
+                    _eftp_z_now[_mp]*0.75, _eftp_z_now[_mp]*1.25))
+                _proj_z_28d[_mp] = _eftp_28
+
+                # R² comparison with model 1
+                _r2_m1 = _r2_d.get(_mp, 0.0) if "_r2_d" in dir() else _r2_dict.get(_mp, 0.0)
+
+                _polar_rows.append({
+                    "Modalidade":          _mp,
+                    "γ modal":             f"{_gam:.3f}",
+                    "α_Z3 (intenso)":      f"{_a_z3:.3f}",
+                    "α_Z2 (limiar)":       f"{_a_z2:.3f}",
+                    "α_Z1 (base)":         f"{_a_z1:.3f}",
+                    "R² Modelo 2":         f"{_r2_z:.3f}",
+                    "R² Modelo 1 (CTLγ)":  f"{_r2_m1:.3f}",
+                    "ΔR²":                 f"{(_r2_z-_r2_m1):+.3f}",
+                    "eFTP proj +28d (W)":  f"{_eftp_28:.0f}",
+                    "eFTP M1 proj (W)":    _rows[_mods_z.index(_mp)]["eFTP proj +28d (W)"] if "_rows" in dir() and _mp in _mods_z and _mods_z.index(_mp) < len(_rows) else "—",
+                    "CTLγ_Z3 actual":      f"{_cz3_now:.2f}",
+                    "slope Z3 (%/sem)":    f"{_sl_z3*7:+.3f}",
+                })
+
+            if not _polar_rows:
+                st.info("Modelo 2: dados insuficientes (requer z1_kj/z2_kj/z3_kj por sessão).")
+            else:
+                # ── Cards α por modalidade ─────────────────────────────────────
+                st.markdown("#### Coeficientes α por zona — sensibilidade ao estímulo")
+                _ac = st.columns(len(_polar_rows))
+                for _pi, _pr in enumerate(_polar_rows):
+                    _mp2  = _pr["Modalidade"]
+                    _r2z  = float(_pr["R² Modelo 2"])
+                    _r2m1 = float(_pr["R² Modelo 1 (CTLγ)"])
+                    _a3   = float(_pr["α_Z3 (intenso)"])
+                    _a2   = float(_pr["α_Z2 (limiar)"])
+                    _a1   = float(_pr["α_Z1 (base)"])
+                    _cor2 = _MC.get(_mp2, "#888") if "_MC" in dir() else {"Bike":"#e74c3c","Row":"#3498db","Ski":"#9b59b6","Run":"#27ae60"}.get(_mp2,"#888")
+                    _hx2  = _cor2.lstrip("#"); _rr2,_gg2,_bb2 = int(_hx2[0:2],16),int(_hx2[2:4],16),int(_hx2[4:6],16)
+
+                    _flab = ("🟢 Fiável" if _r2z>=0.20 else ("🟡 Incerto" if _r2z>=0.08 else "🔴 Baixa"))
+                    _imp  = ("🟢 Melhora" if _r2z > _r2m1+0.02 else ("⚖️ Igual" if abs(_r2z-_r2m1)<=0.02 else "🔴 Piora"))
+
+                    with _ac[_pi]:
+                        st.markdown(
+                            f"<div style='border:1.5px solid {_cor2};border-radius:8px;"
+                            f"padding:10px 12px;background:rgba({_rr2},{_gg2},{_bb2},0.06)'>"
+                            f"<div style='font-size:13px;font-weight:600;color:{_cor2}'>{_mp2}</div>"
+                            f"<div style='font-size:11px;color:#555;margin:4px 0'>"
+                            f"α_Z3={_a3:.3f} | α_Z2={_a2:.3f} | α_Z1={_a1:.3f}</div>"
+                            f"<div style='font-size:11px;color:#555'>"
+                            f"R²={_r2z:.3f} {_flab}</div>"
+                            f"<div style='font-size:11px;color:#888;margin-top:3px'>"
+                            f"vs M1: {_imp} (ΔR²={_r2z-_r2m1:+.3f})</div>"
+                            f"</div>",
+                            unsafe_allow_html=True)
+
+                # ── Gráfico comparativo M1 vs M2 ──────────────────────────────
+                st.markdown("#### Projecção: Modelo 1 (CTLγ) vs Modelo 2 (FTLM Polar)")
+
+                _fig_z = go.Figure()
+                _MCOLS = {"Bike":"#e74c3c","Row":"#3498db","Ski":"#9b59b6","Run":"#27ae60"}
+                _pdates_z    = pd.date_range(pd.Timestamp.now().normalize(), periods=29, freq="D")
+                _pdates_z_str= [str(d.date()) for d in _pdates_z]
+                _today_z     = str(pd.Timestamp.now().date())
+
+                for _pr in _polar_rows:
+                    _mp2  = _pr["Modalidade"]
+                    _e0   = _eftp_z_now.get(_mp2,0)
+                    _p28z = _proj_z_28d.get(_mp2,_e0)
+                    _cor2 = _MCOLS.get(_mp2,"#888")
+                    _r2z  = float(_pr["R² Modelo 2"])
+
+                    # Histórico 90d
+                    _eh2 = (ac_full[ac_full[col_mod]==_mp2][[col_date,col_eftp]].dropna().copy())
+                    _eh2[col_date] = pd.to_datetime(_eh2[col_date])
+                    _eh2 = _eh2.rename(columns={col_date:"Data",col_eftp:"eftp"}).sort_values("Data")
+                    _eh2 = _eh2[_eh2["Data"] >= pd.Timestamp.now()-pd.Timedelta(days=90)]
+                    _es2 = _eh2.set_index("Data")["eftp"].rolling(14,min_periods=2).mean()
+                    if len(_es2) > 0:
+                        _fig_z.add_trace(go.Scatter(
+                            x=_es2.index.tolist(), y=[float(v) for v in _es2.values],
+                            name=f"{_mp2} obs",
+                            line=dict(color=_cor2, width=2),
+                            hovertemplate=f"{_mp2}: %{{y:.0f}}W<extra></extra>"))
+
+                    # M1 proj (já calculado)
+                    _p28m1 = _eftp_now.get(_mp2,_e0)  # eFTP_now usado como fallback
+                    # Tentar pegar o proj28 do modelo 1 se disponível
+                    if "_rows" in dir():
+                        for _rr2x in (_rows if isinstance(_rows,list) else []):
+                            if isinstance(_rr2x,dict) and _rr2x.get("Modalidade")==_mp2:
+                                try: _p28m1 = float(_rr2x["eFTP proj +28d (W)"])
+                                except: pass
+
+                    # Linha M1 (tracejada, 50% opacidade)
+                    _ri2,_gi2,_bi2x = int(_cor2[1:3],16),int(_cor2[3:5],16),int(_cor2[5:7],16)
+                    _proj_m1_vals = [float(_e0 + (_p28m1-_e0)*d/28) for d in range(29)]
+                    _fig_z.add_trace(go.Scatter(
+                        x=_pdates_z_str, y=[round(v,1) for v in _proj_m1_vals],
+                        name=f"{_mp2} M1",
+                        line=dict(color=_cor2, width=1.5, dash="dot"), opacity=0.5,
+                        hovertemplate=f"{_mp2} M1: %{{y:.0f}}W<extra></extra>"))
+
+                    # Linha M2 (tracejada sólida, mais proeminente)
+                    _proj_m2_vals = [float(_e0 + (_p28z-_e0)*d/28) for d in range(29)]
+                    _opac2 = 1.0 if _r2z>=0.20 else (0.75 if _r2z>=0.08 else 0.5)
+                    _fig_z.add_trace(go.Scatter(
+                        x=_pdates_z_str, y=[round(v,1) for v in _proj_m2_vals],
+                        name=f"{_mp2} M2",
+                        line=dict(color=_cor2, width=2.5, dash="dash"), opacity=_opac2,
+                        hovertemplate=f"{_mp2} M2: %{{y:.0f}}W<extra></extra>"))
+
+                    # Anotação M2 no dia 28
+                    _d28 = _p28z-_e0
+                    _icon = "🟢" if _r2z>=0.20 else ("🟡" if _r2z>=0.08 else "🔴")
+                    _fig_z.add_annotation(
+                        x=_pdates_z_str[-1], y=_p28z,
+                        text=f"{_icon}<b>{_mp2} M2: {_p28z:.0f}W ({_d28:+.0f}W)</b>",
+                        showarrow=False, xshift=4, yshift=10,
+                        font=dict(size=11,color=_cor2),
+                        bgcolor="rgba(255,255,255,0.88)",
+                        bordercolor=_cor2,borderwidth=1,borderpad=3)
+
+                # Linha Hoje
+                _fig_z.add_shape(type="line",x0=_today_z,x1=_today_z,y0=0,y1=1,
+                    xref="x",yref="paper",line=dict(dash="dot",color="#888",width=1))
+                _fig_z.add_annotation(x=_today_z,y=1.02,xref="x",yref="paper",
+                    text="Hoje",showarrow=False,font=dict(size=10,color="#555"),
+                    bgcolor="rgba(255,255,255,0.88)",xanchor="left")
+
+                _fig_z.update_layout(
+                    height=440, hovermode="x unified",
+                    paper_bgcolor="white", plot_bgcolor="white",
+                    margin=dict(t=40,b=90,l=65,r=150),
+                    legend=dict(orientation="h",y=-0.22,
+                        font=dict(size=11,color="#333"),
+                        bgcolor="rgba(255,255,255,0.95)",
+                        bordercolor="#ddd",borderwidth=1),
+                    title=dict(text="M1 (···) vs M2 FTLM Polar (- - -) — Projecção 28 dias",
+                        font=dict(size=13,color="#222")),
+                    xaxis=dict(tickangle=-25,gridcolor="rgba(0,0,0,0.04)",
+                        tickfont=dict(color="#333")),
+                    yaxis=dict(title="eFTP (W)",gridcolor="rgba(0,0,0,0.05)",
+                        tickfont=dict(color="#333"),zeroline=False))
+
+                st.plotly_chart(_fig_z,use_container_width=True,
+                    config={"displayModeBar":False},key="cp_proj_polar")
+
+                # ── Tabela comparativa ──────────────────────────────────────────
+                st.markdown("#### Tabela comparativa — Modelo 1 vs Modelo 2")
+                _df_polar = pd.DataFrame(_polar_rows)[[
+                    "Modalidade","γ modal",
+                    "α_Z3 (intenso)","α_Z2 (limiar)","α_Z1 (base)",
+                    "R² Modelo 2","R² Modelo 1 (CTLγ)","ΔR²",
+                    "eFTP proj +28d (W)","CTLγ_Z3 actual","slope Z3 (%/sem)"]]
+                st.dataframe(_df_polar,use_container_width=True,hide_index=True)
+
+                # Insight automático
+                _best_mod = max(_polar_rows, key=lambda x: float(x["R² Modelo 2"]))
+                _worst_mod= min(_polar_rows, key=lambda x: float(x["R² Modelo 2"]))
+                _improved = [r["Modalidade"] for r in _polar_rows if float(r["ΔR²"])>0.02]
+                _worse    = [r["Modalidade"] for r in _polar_rows if float(r["ΔR²"])<-0.02]
+
+                _insight_parts = [
+                    f"**{_best_mod['Modalidade']}** tem o melhor ajuste do Modelo 2 "
+                    f"(R²={float(_best_mod['R² Modelo 2']):.3f})."]
+                if _improved:
+                    _insight_parts.append(
+                        f"O modelo polar **melhora** vs CTLγ em: {', '.join(_improved)} — "
+                        "a decomposição por zona captura variação que o volume total não capta.")
+                if _worse:
+                    _insight_parts.append(
+                        f"O modelo polar **não melhora** em: {', '.join(_worse)} — "
+                        "possível que nessas modalidades o volume total seja mais consistente "
+                        "que a composição de zonas.")
+
+                _a3_max = max(_polar_rows, key=lambda x: float(x["α_Z3 (intenso)"]))
+                if float(_a3_max["α_Z3 (intenso)"]) > 1.0:
+                    _insight_parts.append(
+                        f"**{_a3_max['Modalidade']}** mostra alta sensibilidade ao treino "
+                        f"intenso (α_Z3={float(_a3_max['α_Z3 (intenso)']):.2f}): "
+                        "sessões Z3 têm impacto desproporcional no eFTP.")
+
+                st.info("💡 " + " ".join(_insight_parts))
+                st.caption(
+                    "M1 (···) = Modelo 1 CTLγ total | M2 (- - -) = FTLM Polar por zona. "
+                    "🟢 R²≥0.20 | 🟡 R²=0.08–0.20 | 🔴 R²<0.08. "
+                    "Cap ±25% em 28 dias. γ modal calibrado no tab PMC.")
+
+        except Exception as _ze:
+            import traceback as _ztb
+            st.info(f"Modelo 2 (FTLM Polar): {_ze}")
+            with st.expander("Traceback"):
+                st.code(_ztb.format_exc())
+
+
     st.markdown("## eFTP por Modalidade")
     st.caption(
         "Estimativa de FTP funcional por modalidade ao longo do tempo. "
