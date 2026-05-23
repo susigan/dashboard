@@ -1904,15 +1904,227 @@ def _nlss_cost_grad_vec(theta: np.ndarray,
     return L_data + lam * L_prior, g_data + lam * g_prior
 
 
+
+def calcular_alpha_polar(ac_full, gamma_map=None, session_state_key='alpha_polar_cache'):
+    """
+    Calcula e guarda os coeficientes α do FTLM Polar por modalidade.
+
+    Modelo: eFTP ~ α_Z3·CTLγ_Z3 + α_Z2·CTLγ_Z2 + α_Z1·CTLγ_Z1 + intercept
+    Onde cada CTLγ_Zi = EWM(kJ_Zi, τ=f(γ_modal))
+
+    Também calcula alvos de eFTP a 3/6/12 meses baseados em:
+    - MMP5 (Row/Ski) ou MMP20 (Bike/Run) — máximo histórico por ano
+    - Tendência dos últimos 2 anos (realista, não optimista)
+
+    Guarda no session_state para partilha entre tabs.
+    Retorna dict com α por modalidade + alvos eFTP + CTLγ_Zi actuais.
+    """
+    import streamlit as st
+    from scipy import stats as _sp_stats
+
+    MODS = ['Bike', 'Row', 'Ski', 'Run']
+
+    # Gamma defaults (calibrados no tab_pmc)
+    _gamma_defaults = {'Bike': 0.250, 'Row': 0.900, 'Ski': 0.600, 'Run': 0.900}
+    if gamma_map is None:
+        gamma_map = {}
+    for m in MODS:
+        if m not in gamma_map:
+            gamma_map[m] = _gamma_defaults[m]
+
+    # Colunas necessárias
+    col_mod  = next((c for c in ['type','modality','sport'] if c in ac_full.columns), None)
+    col_eftp = next((c for c in ['icu_eftp','eFTP','eftp'] if c in ac_full.columns), None)
+    col_date = next((c for c in ['date','Data','data'] if c in ac_full.columns), None)
+    col_z1   = next((c for c in ['z1_kj','Z1KJ','z1kj'] if c in ac_full.columns), None)
+    col_z2   = next((c for c in ['z2_kj','Z2KJ','z2kj'] if c in ac_full.columns), None)
+    col_z3   = next((c for c in ['z3_kj','Z3KJ','z3kj'] if c in ac_full.columns), None)
+
+    if not all([col_mod, col_eftp, col_date]):
+        return {}
+
+    result = {}
+
+    for mod in MODS:
+        gam  = gamma_map.get(mod, 0.5)
+        tau  = max(42.0 * (1.0 - gam) + 7.0 * gam, 7.0)
+        span = int(round(tau))
+
+        # Sessões com eFTP e zonas
+        _ef = ac_full[ac_full[col_mod] == mod].copy()
+        _ef[col_date] = pd.to_datetime(_ef[col_date]).dt.normalize()
+        _ef = (_ef.rename(columns={col_date: 'Data', col_eftp: 'eftp'})
+                  .sort_values('Data').drop_duplicates('Data').reset_index(drop=True))
+        _ef['eftp'] = pd.to_numeric(_ef['eftp'], errors='coerce')
+        _ef = _ef.dropna(subset=['eftp'])
+
+        if len(_ef) < 10:
+            result[mod] = {'ok': False, 'reason': 'menos de 10 sessões com eFTP'}
+            continue
+
+        has_zones = col_z1 and col_z2 and col_z3
+        if has_zones:
+            _ef['z1'] = pd.to_numeric(_ef.get(col_z1, 0), errors='coerce').fillna(0)
+            _ef['z2'] = pd.to_numeric(_ef.get(col_z2, 0), errors='coerce').fillna(0)
+            _ef['z3'] = pd.to_numeric(_ef.get(col_z3, 0), errors='coerce').fillna(0)
+        else:
+            result[mod] = {'ok': False, 'reason': 'sem colunas z1/z2/z3_kj'}
+            continue
+
+        # CTLγ por zona
+        _date_range = pd.date_range(_ef['Data'].min(), pd.Timestamp.now().normalize(), freq='D')
+        _ef_idx     = _ef.set_index('Data')
+        _z1d = _ef_idx['z1'].reindex(_date_range, fill_value=0)
+        _z2d = _ef_idx['z2'].reindex(_date_range, fill_value=0)
+        _z3d = _ef_idx['z3'].reindex(_date_range, fill_value=0)
+
+        _cz1 = _z1d.ewm(span=span).mean()
+        _cz2 = _z2d.ewm(span=span).mean()
+        _cz3 = _z3d.ewm(span=span).mean()
+
+        # Mapear para datas das sessões
+        _ef['cz1'] = _ef['Data'].map(_cz1.to_dict())
+        _ef['cz2'] = _ef['Data'].map(_cz2.to_dict())
+        _ef['cz3'] = _ef['Data'].map(_cz3.to_dict())
+        _ef = _ef.dropna(subset=['cz1', 'cz2', 'cz3'])
+
+        if len(_ef) < 10:
+            result[mod] = {'ok': False, 'reason': 'insuficientes após join CTLγ_Z'}
+            continue
+
+        # OLS múltipla
+        _X = np.column_stack([
+            _ef['cz3'].values.astype(float),
+            _ef['cz2'].values.astype(float),
+            _ef['cz1'].values.astype(float),
+            np.ones(len(_ef))
+        ])
+        _y = _ef['eftp'].values.astype(float)
+
+        _coef, _res, _rank, _ = np.linalg.lstsq(_X, _y, rcond=None)
+        _a_z3, _a_z2, _a_z1, _intc = [float(c) for c in _coef]
+
+        _y_pred  = _X @ _coef
+        _ss_res  = float(np.sum((_y - _y_pred) ** 2))
+        _ss_tot  = float(np.sum((_y - _y.mean()) ** 2))
+        _r2      = float(1 - _ss_res / _ss_tot) if _ss_tot > 0 else 0.0
+        _sigma_w = float(np.std(_y - _y_pred, ddof=4))
+
+        # CTLγ actuais por zona
+        _cz1_now = float(_cz1.iloc[-1])
+        _cz2_now = float(_cz2.iloc[-1])
+        _cz3_now = float(_cz3.iloc[-1])
+
+        # Slope 14d de cada zona (kJ/d)
+        def _zone_slope_kj(series, n=14):
+            s = series.dropna().tail(n)
+            if len(s) < 5: return 0.0
+            xx = np.arange(len(s), dtype=float)
+            sl, *_ = _sp_stats.linregress(xx, s.values.astype(float))
+            return float(sl)
+
+        _sl_z1 = _zone_slope_kj(_cz1); _sl_z2 = _zone_slope_kj(_cz2); _sl_z3 = _zone_slope_kj(_cz3)
+
+        # eFTP actual (último valor)
+        _eftp_now = float(_ef['eftp'].iloc[-1])
+
+        # ── Alvos de eFTP por horizonte (3/6/12 meses) ──────────────────────
+        # Usa MMP5 (Row/Ski) ou MMP20 (Bike/Run) — máximo histórico por ano
+        _mmp_col = 'mmp5_w' if mod in ('Row', 'Ski') else 'mmp20_w'
+        _mmp_label = 'MMP5' if mod in ('Row', 'Ski') else 'MMP20'
+
+        _alvos = {}
+        _mmp_hist = None
+
+        if _mmp_col in ac_full.columns:
+            _mmp_df = (ac_full[ac_full[col_mod] == mod][['Data', _mmp_col]]
+                       .copy().dropna(subset=[_mmp_col]))
+            if len(_mmp_df) >= 5:
+                _mmp_df['Data'] = pd.to_datetime(_mmp_df['Data'])
+                _mmp_df[_mmp_col] = pd.to_numeric(_mmp_df[_mmp_col], errors='coerce')
+                _mmp_df = _mmp_df.dropna(subset=[_mmp_col])
+                _mmp_df['ano'] = _mmp_df['Data'].dt.year
+                _picos_ano = _mmp_df.groupby('ano')[_mmp_col].max()
+                _mmp_hist  = _picos_ano
+
+        # Projecção por horizonte: usa slope actual de CTLγ_Z3 + α calibrado
+        # Se MMP histórico disponível, calibra o alvo pelo pico anterior
+        for _horizon_days, _horizon_lbl in [(90, '3m'), (180, '6m'), (365, '12m')]:
+            _cz3_proj = _cz3_now + _sl_z3 * _horizon_days
+            _cz2_proj = _cz2_now + _sl_z2 * _horizon_days
+            _cz1_proj = _cz1_now + _sl_z1 * _horizon_days
+
+            _eftp_proj = float(
+                _a_z3 * _cz3_proj + _a_z2 * _cz2_proj + _a_z1 * _cz1_proj + _intc
+            )
+            _delta_w   = _eftp_proj - _eftp_now
+            _delta_pct = _delta_w / max(_eftp_now, 1) * 100
+
+            # Ajuste com MMP histórico: pico dos últimos 2 anos como referência
+            _mmp_ref = None
+            if _mmp_hist is not None and len(_mmp_hist) >= 2:
+                _ano_ref = sorted(_mmp_hist.index)[-2:]  # últimos 2 anos
+                _mmp_ref = float(_mmp_hist[_ano_ref].max())
+
+            _alvos[_horizon_lbl] = {
+                'eftp_proj':  round(_eftp_proj, 0),
+                'delta_w':    round(_delta_w, 0),
+                'delta_pct':  round(_delta_pct, 1),
+                'mmp_ref':    round(_mmp_ref, 0) if _mmp_ref else None,
+                'mmp_label':  _mmp_label,
+                'cz3_needed': round(_cz3_proj, 2),
+                'cz2_needed': round(_cz2_proj, 2),
+                'cz1_needed': round(_cz1_proj, 2),
+            }
+
+        # ── kJ por zona necessário para alvo de eFTP (inversão do EWM) ──────
+        # Para subir CTLγ_Z3 de cz3_now para cz3_target em N dias:
+        # CTLγ_EWM(t) ≈ kJ_diário × τ  (steady state)
+        # → kJ_Z3_semana = cz3_target × 7 / τ × (1 / (1 - exp(-1/τ)))
+        # Simplificação: kJ_Z3_semana ≈ cz3_target × 7 (para τ médios)
+        def _kj_semana_needed(ctlg_target, span_val):
+            # Inversão EWM: kJ_diário = CTLγ_target × (1 - exp(-1/span))
+            # kJ_semana = kJ_diário × 7
+            _alpha_ewm = 2.0 / (span_val + 1)  # EWM α
+            _kj_daily  = ctlg_target * _alpha_ewm
+            return float(_kj_daily * 7)
+
+        for _hl in _alvos:
+            _a = _alvos[_hl]
+            _a['kj_z3_semana'] = round(_kj_semana_needed(_a['cz3_needed'], span), 0)
+            _a['kj_z2_semana'] = round(_kj_semana_needed(_a['cz2_needed'], span), 0)
+            _a['kj_z1_semana'] = round(_kj_semana_needed(_a['cz1_needed'], span), 0)
+
+        result[mod] = {
+            'ok':       True,
+            'alpha_z3': _a_z3,
+            'alpha_z2': _a_z2,
+            'alpha_z1': _a_z1,
+            'intercept': _intc,
+            'r2':       _r2,
+            'sigma_w':  _sigma_w,
+            'gamma':    gam,
+            'span':     span,
+            'eftp_now': _eftp_now,
+            'cz3_now':  _cz3_now,
+            'cz2_now':  _cz2_now,
+            'cz1_now':  _cz1_now,
+            'sl_z3_kj_day':  _sl_z3,
+            'sl_z2_kj_day':  _sl_z2,
+            'sl_z1_kj_day':  _sl_z1,
+            'kj_z3_semana_actual': round(_kj_semana_needed(_cz3_now, span), 0),
+            'kj_z2_semana_actual': round(_kj_semana_needed(_cz2_now, span), 0),
+            'kj_z1_semana_actual': round(_kj_semana_needed(_cz1_now, span), 0),
+            'alvos':    _alvos,
+            'mmp_label': _mmp_label,
+        }
+
+    return result
+
+
 def calcular_nlss(df_act, df_wellness=None,
                   p0_frac: float = 0.5,
-                  window_l: int = 365,
-                  mod: str = 'Bike') -> dict:
-    """
-    mod: 'Bike'|'Run' → usa MMP20 (proxy CP, esforço 20min)
-         'Row'|'Ski'  → usa MMP5  (proxy MAP, esforço 5min típico no ergómetro)
-         'all'        → todas as modalidades combinadas (MMP20 Bike fallback)
-    """
+                  window_l: int = 365) -> dict:
     """
     Estima K1, K2, T1, T2 via Hierarchical Bayesian NLSS (Algorithm 1).
     Implementação vectorizada — tipicamente <5s para histórico de 3 anos.
@@ -1961,46 +2173,28 @@ def calcular_nlss(df_act, df_wellness=None,
     tss_arr = ld['tss_val'].values.astype(np.float64)
     n_days  = len(tss_arr)
 
-    # ── 2. Testes de potência — selecção por modalidade ────────────────────────
+    # ── 2. Testes de potência — máximo anual de Bike (MMP20, MMP5, MMP3) ────
     #
-    # Bike / Run → MMP20 (proxy CP, esforço de 20 min)
-    # Row  / Ski → MMP5  (proxy MAP, esforço de 5 min típico no ergómetro)
-    # all        → MMP20 de todas as modalidades combinadas
+    # Colunas na sheet: MMP20, MMP5, MMP3, MMP1, MMP12, MMP60
+    # Mapeadas em MAPA_TRAINING: mmp20_raw → parseadas para mmp20_w (todos)
+    # Types de Bike: VirtualRide, Ride → normalizados para Bike via norm_tipo()
     #
-    # ESTRATÉGIA: máximo anual por modalidade — 1 âncora por ano.
-    # Escala consistente: não misturar MMP5 com MMP20 na mesma série.
+    # ESTRATÉGIA: valor MÁXIMO de mmp20_w por ANO de Bike.
+    # O máximo anual é o PR real desse ano — sem depender de is_pr (que está
+    # True em quase todas as sessões no Intervals.icu).
+    # Fallback: MMP5 e MMP3 se MMP20 insuficiente.
     # ─────────────────────────────────────────────────────────────────────────
 
-    # Normalizar tipo
+    # Garantir type normalizado: VirtualRide→Bike, Ride→Bike, etc.
     _tipo_col = next((c for c in ['type', 'modality'] if c in df.columns), None)
     if _tipo_col:
         df['_type_norm'] = df[_tipo_col].apply(norm_tipo)
+        _df_bike = df[df['_type_norm'] == 'Bike'].copy()
     else:
-        df['_type_norm'] = 'Bike'
+        _df_bike = df.copy()
 
-    # Mapeamento modalidade → coluna MMP correcta
-    # Bike/Run: MMP20 = proxy CP (20min = esforço máximo sustentável)
-    # Row/Ski:  MMP5  = proxy MAP (5min = esforço máximo típico no ergómetro)
-    _MOD_MMP_MAP = {
-        'Bike': ('Bike', 'mmp20_w'),
-        'Run':  ('Run',  'mmp20_w'),
-        'Row':  ('Row',  'mmp5_w'),
-        'Ski':  ('Ski',  'mmp5_w'),
-    }
-    _mod_norm  = mod if mod in _MOD_MMP_MAP else 'Bike'
-    _mod_type, _mmp_col = _MOD_MMP_MAP[_mod_norm]
-
-    # Filtrar modalidade
-    if mod == 'all':
-        _df_mod    = df.copy()
-        _mmp_col   = 'mmp20_w'
-        _mod_label = 'Todas'
-    else:
-        _df_mod    = df[df['_type_norm'] == _mod_type].copy()
-        _mod_label = _mod_type
-
-    _df_mod['Data'] = pd.to_datetime(_df_mod['Data'])
-    _df_mod['_ano'] = _df_mod['Data'].dt.year
+    _df_bike['Data'] = pd.to_datetime(_df_bike['Data'])
+    _df_bike['_ano'] = _df_bike['Data'].dt.year
 
     def _max_anual_mmp(df_src, col_w):
         """Por ano: data da sessão com o MMP máximo nessa coluna."""
@@ -2008,7 +2202,7 @@ def calcular_nlss(df_act, df_wellness=None,
             return pd.DataFrame(columns=['Data', 'watts'])
         sub = df_src[['Data', '_ano', col_w]].copy()
         sub['watts'] = pd.to_numeric(sub[col_w], errors='coerce')
-        sub = sub[sub['watts'] > 30].dropna(subset=['watts'])
+        sub = sub[sub['watts'] > 50].dropna(subset=['watts'])
         if sub.empty:
             return pd.DataFrame(columns=['Data', 'watts'])
         idx_max = sub.groupby('_ano')['watts'].idxmax()
@@ -2016,39 +2210,30 @@ def calcular_nlss(df_act, df_wellness=None,
                    .sort_values('Data')
                    .reset_index(drop=True))
 
-    # Testes primários — coluna definida por modalidade
-    _tests_primary = _max_anual_mmp(_df_mod, _mmp_col)
+    # Primário: MMP20 de Bike — 1 ponto por ano, escala consistente
+    # Usar APENAS MMP20 — misturar MMP3 (347W) com MMP20 (228W) cria
+    # inconsistência de escala: o optimizador interpreta a diferença como
+    # variação de performance quando são durações diferentes → fica no prior.
+    _tests_mmp20 = _max_anual_mmp(_df_bike, 'mmp20_w')
 
-    if not _tests_primary.empty:
-        tests_df      = _tests_primary.copy()
-        _fonte_testes = f'{_mod_label} {_mmp_col.upper()} — max anual ({len(_tests_primary)} pts)'
+    if not _tests_mmp20.empty:
+        tests_df      = _tests_mmp20.copy()
+        _fonte_testes = f'Bike MMP20 — maximo anual ({len(_tests_mmp20)} pontos)'
     else:
         tests_df      = pd.DataFrame(columns=['Data', 'watts'])
-        _fonte_testes = f'Sem dados de {_mod_label} {_mmp_col.upper()}'
+        _fonte_testes = 'Sem dados de Bike MMP20'
 
-    # Fallback 1: outra coluna MMP da mesma modalidade
+    # Fallback: todas as modalidades se Bike insuficiente
     if len(tests_df) < 2:
-        _fallback_cols = ['mmp5_w', 'mmp20_w', 'mmp12_w', 'mmp3_w']
-        for _fc in _fallback_cols:
-            if _fc == _mmp_col:
-                continue
-            _tests_fb = _max_anual_mmp(_df_mod, _fc)
-            if len(_tests_fb) >= 2:
-                tests_df      = _tests_fb
-                _fonte_testes = f'{_mod_label} {_fc.upper()} fallback ({len(_tests_fb)} pts)'
-                break
-
-    # Fallback 2: Bike MMP20 global se modalidade não tem dados suficientes
-    if len(tests_df) < 2:
-        _df_bike_fb = df[df['_type_norm'] == 'Bike'].copy() if '_type_norm' in df.columns else df.copy()
-        _df_bike_fb['Data'] = pd.to_datetime(_df_bike_fb['Data'])
-        _df_bike_fb['_ano'] = _df_bike_fb['Data'].dt.year
-        _t20_fb = _max_anual_mmp(_df_bike_fb, 'mmp20_w')
-        if len(_t20_fb) >= 2:
-            tests_df      = _t20_fb
-            _fonte_testes = f'Bike MMP20 fallback global ({len(_t20_fb)} pts)'
+        _all = df.copy()
+        _all['Data'] = pd.to_datetime(_all['Data'])
+        _all['_ano'] = _all['Data'].dt.year
+        _t20_all = _max_anual_mmp(_all, 'mmp20_w')
+        if len(_t20_all) >= 2:
+            tests_df      = _t20_all
+            _fonte_testes = 'Todas modalidades MMP20 — maximo anual (fallback)'
         else:
-            _fonte_testes = 'Insuficiente — menos de 2 testes anuais'
+            _fonte_testes = 'Insuficiente'
 
     # ── Limitar TSS ao período relevante ────────────────────────────────────
     # Problema: sem testes em 2017-2023, p̂(t) extrapola sem âncora e cria
