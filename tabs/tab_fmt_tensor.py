@@ -555,11 +555,13 @@ def tab_fmt_tensor(da, wc=None):
         "⚠️ Regime 'intense' tem CV% mais baixo do que 'recovery' — carga bem gerida "
         "estabiliza o HRV; recuperação incompleta aumenta a variabilidade."
     )
-    if 'hrv' in ld.columns and ld['hrv'].notna().sum() >= 20:
+    if ('HRV_trend' in ld.columns or 'hrv' in ld.columns) and \
+       ld.get('HRV_trend', ld.get('hrv', pd.Series())).notna().sum() >= 20:
+        _hrv_col_cv = 'HRV_trend' if 'HRV_trend' in ld.columns else 'hrv'
         _ld_cv = ld.copy()
         _ld_cv['_hrv_cv28'] = (
-            _ld_cv['hrv'].rolling(28, min_periods=14).std() /
-            _ld_cv['hrv'].rolling(28, min_periods=14).mean() * 100
+            _ld_cv[_hrv_col_cv].rolling(28, min_periods=14).std() /
+            _ld_cv[_hrv_col_cv].rolling(28, min_periods=14).mean() * 100
         )
         _ld_cv['_regime'] = (regimes + ['none'] * max(0, len(_ld_cv) - len(regimes)))[:len(_ld_cv)]
         _cv_por_regime = []
@@ -572,7 +574,7 @@ def tab_fmt_tensor(da, wc=None):
                 'N dias': len(_sub_cv),
                 'CV% HRV (médio)': f"{_sub_cv.mean():.1f}%",
                 'CV% HRV (mediana)': f"{_sub_cv.median():.1f}%",
-                'HRV médio': f"{_ld_cv[_ld_cv['_regime']==_rk_cv]['hrv'].dropna().mean():.1f}ms",
+                'HRV médio': f"{_ld_cv[_ld_cv['_regime']==_rk_cv][_hrv_col_cv].dropna().mean():.1f}ms",
                 'Estabilidade': ('🟢 Melhor' if _sub_cv.mean() < 40 else
                                  '🟡 Médio' if _sub_cv.mean() < 46 else '🔴 Alta variabilidade'),
             })
