@@ -1161,11 +1161,14 @@ eFTP ~ α_Z3·CTLγ_Z3 + α_Z2·CTLγ_Z2 + α_Z1·CTLγ_Z1   [OLS múltipla]
                             hovertemplate=f"{_mp2}: %{{y:.0f}}W<extra></extra>"))
 
                     # M1 proj (já calculado)
-                    _p28m1 = _eftp_now.get(_mp2,_e0)  # eFTP_now usado como fallback
-                    # Tentar pegar o proj28 do modelo 1 se disponível
-                    if "_rows" in dir():
-                        for _rr2x in (_rows if isinstance(_rows,list) else []):
-                            if isinstance(_rr2x,dict) and _rr2x.get("Modalidade")==_mp2:
+                    # eFTP actual da modalidade — usar _eftp_z_now (calculado no M2)
+                    # ou _eftp_now_d (do Modelo 1, se disponível)
+                    _p28m1 = (_eftp_now_d.get(_mp2) if "_eftp_now_d" in dir() and _eftp_now_d.get(_mp2)
+                              else _eftp_z_now.get(_mp2, _e0))
+                    # Projecção M1 do mesmo modelo se disponível via _rows
+                    if "_rows" in dir() and isinstance(_rows, list):
+                        for _rr2x in _rows:
+                            if isinstance(_rr2x, dict) and _rr2x.get("Modalidade") == _mp2:
                                 try: _p28m1 = float(_rr2x["eFTP proj +28d (W)"])
                                 except: pass
 
