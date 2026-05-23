@@ -647,17 +647,17 @@ IC 90% via σ_resid em ln-escala → convertido para Watts. Cap ±25% em 28d.
                 _cn = (_cr / _cmed) - 1.0
                 _ef["ctlg_norm"] = _ef["Data"].map(_cn.to_dict())
 
-                # Δln(eFTP) vs mediana rolling 90d anterior
-                _ef["eftp_ref"] = _ef["eftp"].rolling(90, min_periods=5).median().shift(1)
+                # Δln(eFTP) vs mediana rolling 60d anterior (era 90d — muito restritivo)
+                _ef["eftp_ref"] = _ef["eftp"].rolling(60, min_periods=3).median().shift(1)
                 _ef = _ef.dropna(subset=["eftp_ref","ctlg_norm"])
-                if len(_ef) < 8:
+                if len(_ef) < 5:  # era 8 — reduzir para aceitar mais modalidades
                     continue
                 # No clip on dln — let OLS see real variance (outliers handled by R²)
                 _ratio = _ef["eftp"] / _ef["eftp_ref"].clip(lower=1.0)
                 _ef["dln"] = np.log(_ratio.clip(lower=0.5, upper=2.0))  # ±100% max plausível fisiologicamente
 
                 _v = _ef[["dln","ctlg_norm"]].replace([np.inf,-np.inf],np.nan).dropna()
-                if len(_v) < 8:
+                if len(_v) < 5:  # era 8
                     continue
 
                 _bv, _ic_ols, _r, _, _ = _sp_stats.linregress(
