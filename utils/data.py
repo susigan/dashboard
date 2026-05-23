@@ -1938,13 +1938,24 @@ def calcular_alpha_polar(ac_full, gamma_map=None, session_state_key='alpha_polar
     col_date = next((c for c in ['date','Data','data'] if c in ac_full.columns), None)
     col_z1   = next((c for c in ['z1_kj','Z1KJ','z1kj',
                                   'icu_zone_1_kj','zone_1_kj','z1kJ',
-                                  'zone1_kj','kj_z1','trimp_z1'] if c in ac_full.columns), None)
+                                  'zone1_kj','kj_z1','trimp_z1',
+                                  'Z1KJ'] if c in ac_full.columns), None)
     col_z2   = next((c for c in ['z2_kj','Z2KJ','z2kj',
                                   'icu_zone_2_kj','zone_2_kj','z2kJ',
-                                  'zone2_kj','kj_z2','trimp_z2'] if c in ac_full.columns), None)
+                                  'zone2_kj','kj_z2','trimp_z2',
+                                  'Z2KJ'] if c in ac_full.columns), None)
     col_z3   = next((c for c in ['z3_kj','Z3KJ','z3kj',
                                   'icu_zone_3_kj','zone_3_kj','z3kJ',
-                                  'zone3_kj','kj_z3','trimp_z3'] if c in ac_full.columns), None)
+                                  'zone3_kj','kj_z3','trimp_z3',
+                                  'Z3KJ'] if c in ac_full.columns), None)
+
+    # Diagnóstico se colunas não encontradas
+    if not (col_z1 and col_z2 and col_z3):
+        import streamlit as _st
+        _avail = [c for c in ac_full.columns if any(x in c.lower() for x in ['kj','zone','z1','z2','z3'])]
+        # Retornar com razão em vez de {} silencioso
+        return {m: {'ok': False, 'reason': f'sem colunas z1/z2/z3_kj (disponíveis: {_avail[:10]})'} 
+                for m in ['Bike','Row','Ski','Run']}
 
     if not all([col_mod, col_eftp, col_date]):
         return {}
