@@ -1637,15 +1637,10 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                                   (f"{km_feito:.0f} km | {fmt_dur(h_feito)}" if has_km
                                    else fmt_dur(h_feito)),
                 'Restante':      _restante_display,
-                'Proj. Horas 2026': fmt_dur(h_proj) if h_proj>0 else "—",
-                'Range Horas (+3–12%)': (
-                    f"{fmt_dur(h_2025)} → {fmt_dur(h_2025*1.03)}–{fmt_dur(h_2025*1.12)}"
-                    if h_2025 > 0 else "—"),
-                'Status Horas':  status_ano,
-                '_sug_df': _sug_df, '_sug_ref': _sug_ref, '_sug_ol': _sug_ol,
                 'Zona (esta sem)': _z_zona_rec,
                 'kJ Z3 act→alvo': _z3_lbl,
                 'eFTP alvo 3m':  _z_alvo_eftp,
+                '_sug_df': _sug_df, '_sug_ref': _sug_ref, '_sug_ol': _sug_ol,
             }
             rows_prog.append(row)
 
