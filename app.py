@@ -155,9 +155,11 @@ def main():
                     _eftp_now_v = float(_ef["eftp"].iloc[-1])
 
                     # Projecção 3m (90d) via slope actual de cada zona
-                    _eftp_3m = float(_a3*(_cz3n+_sl3*90) +
-                                     _a2*(_cz2n+_sl2*90) +
-                                     _a1*(_cz1n+_sl1*90) + _intc)
+                    # Mantém cz2 e cz1 estáveis (só extrapola cz3 via slope)
+                    _cz3_3m = _cz3n + _sl3*90
+                    _eftp_3m = float(_a3*_cz3_3m +
+                                     _a2*_cz2n +
+                                     _a1*_cz1n + _intc)
 
                     # kJ/sem actual (últimas 4 semanas)
                     _l4w = _ef[_ef["Data"] >= pd.Timestamp.now().normalize()-pd.Timedelta(weeks=4)]
@@ -165,8 +167,19 @@ def main():
                     _kj2 = float(_l4w["z2"].sum()/4) if len(_l4w) > 0 else 0
                     _kj1 = float(_l4w["z1"].sum()/4) if len(_l4w) > 0 else 0
 
-                    # kJ/sem Z3 necessário para atingir CTLγ_Z3 em 3m
-                    _kj3_need = max(0, float((_cz3n+_sl3*90-_cz3n*0.7)*_span))
+                    # kJ/sem Z3 necessário:
+                    # CTLγ_Z3 alvo = cz3_3m (via slope)
+                    # CTLγ_Z3 = EWM(kJ_Z3_diário, τ)
+                    # Em regime estacionário: CTLγ_Z3 ≈ kJ_Z3_diário
+                    # → kJ_Z3_dia_necessário = cz3_3m
+                    # → kJ_Z3_semana = cz3_3m * 7
+                    # Mas cz3_3m pode ser irrealista — usar crescimento relativo
+                    # máximo de 50% sobre o actual (cap seguro)
+                    if _cz3n > 0:
+                        _cz3_tgt = min(_cz3_3m, _cz3n * 1.50)  # cap +50%
+                    else:
+                        _cz3_tgt = _cz3_3m
+                    _kj3_need = max(0, float(_cz3_tgt * 7))  # kJ/sem = kJ/dia * 7
 
                     _alpha_cache[_mv] = {
                         'ok': True,
