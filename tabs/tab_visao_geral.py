@@ -464,10 +464,17 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             _wc['bs']  = _wc['LnrMSSD'].rolling(14, min_periods=7).std()
             _wc['linf']= _wc['bm'] - 0.5 * _wc['bs']
             _wc['lsup']= _wc['bm'] + 0.5 * _wc['bs']
-            last = _wc.dropna(subset=['bm']).iloc[-1]
-            hrv_hoje = last['hrv'] if 'hrv' in last else None
-            if pd.notna(last['bm']) and pd.notna(last['LnrMSSD']):
-                if last['linf'] <= last['LnrMSSD'] <= last['lsup']:
+            # Use last row for hrv_hoje; use last row WITH bm for classification
+            # This ensures today's HRV is classified even if bm not yet propagated
+            last_hrv = _wc.iloc[-1]   # actual last HRV entry (today if measured)
+            last_bm  = _wc.dropna(subset=['bm']).iloc[-1]  # last with rolling bm
+            hrv_hoje = float(last_hrv['hrv']) if pd.notna(last_hrv.get('hrv')) else None
+            # Classify using today's LnrMSSD vs the most recent baseline
+            _lnr_today = float(last_hrv['LnrMSSD']) if pd.notna(last_hrv.get('LnrMSSD')) else None
+            _linf_ref  = float(last_bm['linf']) if pd.notna(last_bm.get('linf')) else None
+            _lsup_ref  = float(last_bm['lsup']) if pd.notna(last_bm.get('lsup')) else None
+            if _lnr_today is not None and _linf_ref is not None:
+                if _linf_ref <= _lnr_today <= _lsup_ref:
                     hrv_class = "HIIT"; hrv_emoji = "🟢"
                 else:
                     hrv_class = "Recuperação"; hrv_emoji = "🔴"
@@ -1989,7 +1996,15 @@ Recalcula sem cache a cada carregamento.
             _prob = {(_ei,_ej): cnt/_ei_counts[_ei]
                      for (_ei,_ej),cnt in _trans.items() if _ei_counts[_ei] > 0}
 
-            _estado_hoje = _mk_estados.iloc[-1]['estado']
+            # Check today's state directly from da_full (more reliable than reindex)
+            _hoje_mk = pd.Timestamp.now().normalize()
+            _today_sessions = _mk_da[_mk_da['Data'] == _hoje_mk]
+            if len(_today_sessions) > 0:
+                # Today has training — use the highest RPE session
+                _best_today = _today_sessions.sort_values('rpe_n', ascending=False).iloc[0]
+                _estado_hoje = str(_best_today['estado'])
+            else:
+                _estado_hoje = _mk_estados.iloc[-1]['estado']
 
             _CORES_MK = {'Bike':'#e74c3c','Run':'#27ae60','Row':'#3498db',
                          'Ski':'#9b59b6','WeightTraining':'#f39c12','Descanso':'#95a5a6'}
@@ -2030,31 +2045,17 @@ Recalcula sem cache a cada carregamento.
             # Sugestao integrada
             st.markdown("#### Sugestao — HRV x Monotonia x Markov")
 
-            # HRV-Guided (mesma logica do card principal: ln rMSSD banda 14d)
-            _zona_perm_mk = ['Leve','Moderado','Forte']
-            _hrv_guid_mk  = "HRV sem dados"
-            if _hrv_col_mk and len(_mk_hrv) > 5:
-                try:
-                    _mk_hrv_s = _mk_hrv.copy().sort_values('Data')
-                    _mk_hrv_s['ln_hrv'] = np.where(_mk_hrv_s['hrv']>0, np.log(_mk_hrv_s['hrv']), np.nan)
-                    _mk_hrv_s = _mk_hrv_s.dropna(subset=['ln_hrv'])
-                    if len(_mk_hrv_s) >= 7:
-                        _mk_hrv_s['bm']   = _mk_hrv_s['ln_hrv'].rolling(14,min_periods=7).mean()
-                        _mk_hrv_s['bs']   = _mk_hrv_s['ln_hrv'].rolling(14,min_periods=7).std()
-                        _mk_hrv_s['linf'] = _mk_hrv_s['bm'] - 0.5*_mk_hrv_s['bs']
-                        _last_mk = _mk_hrv_s.dropna(subset=['bm']).iloc[-1]
-                        if pd.notna(_last_mk['bm']) and pd.notna(_last_mk['ln_hrv']):
-                            if _last_mk['ln_hrv'] < _last_mk['linf']:
-                                # HRV abaixo da banda → Recuperacao
-                                # Recuperacao: Leve(Z1), ou Moderado(Z2) curto, ou Descanso
-                                _zona_perm_mk = ['Leve','Moderado']
-                                _hrv_guid_mk  = "Recuperacao — Z1/Descanso, Z2 curto se necessario"
-                            else:
-                                # HRV normal ou acima → HIIT
-                                # HIIT: Moderado(Z2) ou Forte(Z3)
-                                _zona_perm_mk = ['Moderado','Forte']
-                                _hrv_guid_mk  = "HIIT — Z2 (threshold/sweetspot) ou Z3 (VO2max)"
-                except Exception: pass
+            # HRV-Guided — reutilizar hrv_class já calculado no topo da função
+            # (mesmo valor que aparece no card HRV-Guided, consistência garantida)
+            if hrv_class == 'Recuperação':
+                _zona_perm_mk = ['Leve', 'Moderado']
+                _hrv_guid_mk  = "Recuperação — Z1/Descanso, Z2 curto se necessário"
+            elif hrv_class == 'HIIT':
+                _zona_perm_mk = ['Moderado', 'Forte']
+                _hrv_guid_mk  = "HIIT — Z2 (threshold/sweetspot) ou Z3 (VO2max)"
+            else:
+                _zona_perm_mk = ['Leve', 'Moderado', 'Forte']
+                _hrv_guid_mk  = "HRV sem dados — todas as zonas permitidas" 
 
             # IM actual
             _im_mk = None
