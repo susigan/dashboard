@@ -65,11 +65,14 @@ def main():
     st.session_state['mods_sel'] = mods_sel
 
     # ── Calcular α Modelo M2 (CTLγ por zona → eFTP) no arranque ─────────────
-    # Garante que alpha_polar_cache está disponível para tab_visao_geral
-    # sem depender da visita à tab_eftp.
-    # Usa os mesmos dados e algoritmo do Modelo 2 da tab_eftp.
-    if 'alpha_polar_cache' not in st.session_state or \
-       not st.session_state['alpha_polar_cache']:
+    # Invalida cache antigo (M1) se não tiver o formato M2 correcto
+    _existing_cache = st.session_state.get('alpha_polar_cache', {})
+    _cache_is_m2 = (
+        _existing_cache and
+        any(v.get('alpha_z3') is not None for v in _existing_cache.values()
+            if isinstance(v, dict))
+    )
+    if not _cache_is_m2:
         try:
             _col_mod_ap  = next((c for c in ['type','modality'] if c in ac_full.columns), None)
             _col_eftp_ap = next((c for c in ['icu_eftp','eFTP','eftp'] if c in ac_full.columns), None)
