@@ -64,21 +64,114 @@ def main():
     st.session_state['da_full']  = ac_full
     st.session_state['mods_sel'] = mods_sel
 
-    # ── Calcular α FTLM Polar no arranque — disponível em todas as tabs ──
-    # Feito aqui para não depender da visita ao tab_eftp
-    # Usa gamma do ld_frac_cache se disponível, senão usa defaults calibrados
-    try:
-        from utils.data import calcular_alpha_polar
-        _gamma_app = {}
-        _ld_info_app = st.session_state.get('ld_frac_info', {})
-        for _mi_app in ['Bike','Row','Ski','Run']:
-            _gamma_app[_mi_app] = (_ld_info_app.get('mods', {})
-                                   .get(_mi_app, {})
-                                   .get('gamma_perf', 0.5))
-        _alpha_result_app = calcular_alpha_polar(ac_full, gamma_map=_gamma_app)
-        st.session_state['alpha_polar_cache'] = _alpha_result_app
-    except Exception as _alpha_err:
-        pass  # silencioso — tab_eftp recalcula se necessário
+    # ── Calcular α Modelo M2 (CTLγ por zona → eFTP) no arranque ─────────────
+    # Garante que alpha_polar_cache está disponível para tab_visao_geral
+    # sem depender da visita à tab_eftp.
+    # Usa os mesmos dados e algoritmo do Modelo 2 da tab_eftp.
+    if 'alpha_polar_cache' not in st.session_state or \
+       not st.session_state['alpha_polar_cache']:
+        try:
+            _col_mod_ap  = next((c for c in ['type','modality'] if c in ac_full.columns), None)
+            _col_eftp_ap = next((c for c in ['icu_eftp','eFTP','eftp'] if c in ac_full.columns), None)
+            _col_date_ap = next((c for c in ['date','Data'] if c in ac_full.columns), None)
+            _col_z1_ap   = next((c for c in ['Z1KJ','z1_kj','z1kj'] if c in ac_full.columns), None)
+            _col_z2_ap   = next((c for c in ['Z2KJ','z2_kj','z2kj'] if c in ac_full.columns), None)
+            _col_z3_ap   = next((c for c in ['Z3KJ','z3_kj','z3kj'] if c in ac_full.columns), None)
+
+            if all([_col_mod_ap, _col_eftp_ap, _col_date_ap, _col_z1_ap, _col_z2_ap, _col_z3_ap]):
+                import numpy as np
+                _alpha_cache = {}
+                _cutoff_ap = pd.Timestamp.now().normalize() - pd.Timedelta(days=730)
+
+                for _mv_ap in ['Bike','Row','Ski','Run']:
+                    _ef_ap = ac_full[ac_full[_col_mod_ap] == _mv_ap].copy()
+                    _ef_ap[_col_date_ap] = pd.to_datetime(_ef_ap[_col_date_ap]).dt.normalize()
+                    _ef_ap = _ef_ap[_ef_ap[_col_date_ap] >= _cutoff_ap]
+                    _rename_ap = {}
+                    if _col_date_ap != 'Data':  _rename_ap[_col_date_ap] = 'Data'
+                    if _col_eftp_ap != 'eftp':  _rename_ap[_col_eftp_ap] = 'eftp'
+                    if _col_z1_ap != 'z1':      _rename_ap[_col_z1_ap]   = 'z1'
+                    if _col_z2_ap != 'z2':      _rename_ap[_col_z2_ap]   = 'z2'
+                    if _col_z3_ap != 'z3':      _rename_ap[_col_z3_ap]   = 'z3'
+                    if _rename_ap: _ef_ap = _ef_ap.rename(columns=_rename_ap)
+                    _ef_ap = _ef_ap.loc[:, ~_ef_ap.columns.duplicated()]
+                    for _c_ap in ['eftp','z1','z2','z3']:
+                        _ef_ap[_c_ap] = pd.to_numeric(_ef_ap.get(_c_ap, pd.Series(0)), errors='coerce').fillna(0)
+                    _ef_ap = _ef_ap.dropna(subset=['eftp'])
+                    _ef_ap = _ef_ap.sort_values('Data').drop_duplicates('Data').reset_index(drop=True)
+                    if len(_ef_ap) < 10:
+                        _alpha_cache[_mv_ap] = {'ok': False, 'reason': f'{len(_ef_ap)} sessões (<10)'}
+                        continue
+
+                    # CTLγ por zona (τ=30d EWM)
+                    _dr_ap = pd.date_range(_ef_ap['Data'].min(), pd.Timestamp.now().normalize(), freq='D')
+                    _ei_ap = _ef_ap.set_index('Data')
+                    _cz1_ap = _ei_ap['z1'].reindex(_dr_ap, fill_value=0).ewm(span=30).mean()
+                    _cz2_ap = _ei_ap['z2'].reindex(_dr_ap, fill_value=0).ewm(span=30).mean()
+                    _cz3_ap = _ei_ap['z3'].reindex(_dr_ap, fill_value=0).ewm(span=30).mean()
+                    _ef_ap['cz1'] = _ef_ap['Data'].map(_cz1_ap.to_dict())
+                    _ef_ap['cz2'] = _ef_ap['Data'].map(_cz2_ap.to_dict())
+                    _ef_ap['cz3'] = _ef_ap['Data'].map(_cz3_ap.to_dict())
+                    _ef_ap = _ef_ap.dropna(subset=['cz1','cz2','cz3'])
+                    if len(_ef_ap) < 8:
+                        _alpha_cache[_mv_ap] = {'ok': False, 'reason': 'insuficientes após CTLγ'}
+                        continue
+
+                    # OLS: eFTP ~ α_Z3×cz3 + α_Z2×cz2 + α_Z1×cz1 + intercept
+                    _Xap = np.column_stack([
+                        _ef_ap['cz3'].values.astype(float),
+                        _ef_ap['cz2'].values.astype(float),
+                        _ef_ap['cz1'].values.astype(float),
+                        np.ones(len(_ef_ap))
+                    ])
+                    _yap = _ef_ap['eftp'].values.astype(float)
+                    _cap, _, _, _ = np.linalg.lstsq(_Xap, _yap, rcond=None)
+                    _ypap = _Xap @ _cap
+                    _r2ap = float(1 - np.sum((_yap-_ypap)**2) / max(np.sum((_yap-_yap.mean())**2), 1e-9))
+
+                    _eftp_now_ap = float(_ef_ap['eftp'].iloc[-1])
+                    _cz3_now_ap  = float(_cz3_ap.iloc[-1])
+                    _cz2_now_ap  = float(_cz2_ap.iloc[-1])
+                    _cz1_now_ap  = float(_cz1_ap.iloc[-1])
+
+                    # KJ/semana actual das últimas 4 semanas
+                    _last4w_ap = _ef_ap[_ef_ap['Data'] >= pd.Timestamp.now().normalize() - pd.Timedelta(weeks=4)]
+                    _kj_z3_act = float(_last4w_ap['z3'].sum() / 4) if len(_last4w_ap) > 0 else 0
+                    _kj_z2_act = float(_last4w_ap['z2'].sum() / 4) if len(_last4w_ap) > 0 else 0
+                    _kj_z1_act = float(_last4w_ap['z1'].sum() / 4) if len(_last4w_ap) > 0 else 0
+
+                    # Alvo 3m: slope actual do CTLγ_Z3
+                    _slope_z3_ap = float(np.polyfit(np.arange(min(14,len(_cz3_ap))),
+                                                     _cz3_ap.tail(14).values, 1)[0]) if len(_cz3_ap) >= 5 else 0
+                    _cz3_3m = _cz3_now_ap + _slope_z3_ap * 90
+                    _eftp_3m = float(_cap[0]*_cz3_3m + _cap[1]*_cz2_now_ap + _cap[2]*_cz1_now_ap + _cap[3])
+
+                    _alpha_cache[_mv_ap] = {
+                        'ok': True,
+                        'alpha_z3': float(_cap[0]),
+                        'alpha_z2': float(_cap[1]),
+                        'alpha_z1': float(_cap[2]),
+                        'r2': _r2ap,
+                        'eftp_now': _eftp_now_ap,
+                        'cz3_now': _cz3_now_ap,
+                        'cz2_now': _cz2_now_ap,
+                        'cz1_now': _cz1_now_ap,
+                        'kj_z3_semana_actual': _kj_z3_act,
+                        'kj_z2_semana_actual': _kj_z2_act,
+                        'kj_z1_semana_actual': _kj_z1_act,
+                        'alvos': {'3m': {
+                            'eftp_proj':    _eftp_3m,
+                            'delta_w':      _eftp_3m - _eftp_now_ap,
+                            'kj_z3_semana': max(0, float((_cz3_3m - _cz3_now_ap * 0.7) * 7)),
+                            'kj_z2_semana': _kj_z2_act * 1.05,
+                            'kj_z1_semana': _kj_z1_act * 1.05,
+                        }},
+                    }
+
+                if any(v.get('ok') for v in _alpha_cache.values()):
+                    st.session_state['alpha_polar_cache'] = _alpha_cache
+        except Exception:
+            pass  # silencioso — tab_eftp M2 sobrescreve com versão mais precisa
 
     dw      = filtrar_datas(wc, di, df_)
     da      = filtrar_datas(ac, di, df_)
