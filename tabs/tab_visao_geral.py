@@ -1293,47 +1293,118 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 f"({_KAPPA_P87:.2f})."
             )
 
-        # ── Carregar α do Modelo 2 (FTLM Polar) do session_state ──────────────
+        # ── Calcular α inline (sem depender de calcular_alpha_polar) ──────────
         _alpha_p = st.session_state.get('alpha_polar_cache', {})
-
-        # ac_full completo para cálculo — sempre disponível
         _ac_full_vg = st.session_state.get('da_full', da_full)
 
-        # Se não calculado ainda, calcular agora com ac_full (histórico completo)
-        if not _alpha_p:
+        if not _alpha_p and _ac_full_vg is not None and len(_ac_full_vg) > 0:
             try:
-                from utils.data import calcular_alpha_polar
-                # Usar da_full (ac_full passado como argumento) — histórico completo
-                _ac_full_vg = st.session_state.get('da_full', da_full)
-                _alpha_p = calcular_alpha_polar(_ac_full_vg)
-                if _alpha_p:
-                    st.session_state['alpha_polar_cache'] = _alpha_p
-            except Exception as _ap_err:
+                _col_mod_vg  = next((c for c in ['type','modality'] if c in _ac_full_vg.columns), None)
+                _col_eftp_vg = next((c for c in ['icu_eftp','eFTP','eftp'] if c in _ac_full_vg.columns), None)
+                _col_date_vg = next((c for c in ['date','Data'] if c in _ac_full_vg.columns), None)
+                _col_z1_vg   = next((c for c in ['Z1KJ','z1_kj','z1kj'] if c in _ac_full_vg.columns), None)
+                _col_z2_vg   = next((c for c in ['Z2KJ','z2_kj','z2kj'] if c in _ac_full_vg.columns), None)
+                _col_z3_vg   = next((c for c in ['Z3KJ','z3_kj','z3kj'] if c in _ac_full_vg.columns), None)
+
+                if all([_col_mod_vg, _col_eftp_vg, _col_date_vg, _col_z1_vg, _col_z2_vg, _col_z3_vg]):
+                    _alpha_p_new = {}
+                    _cutoff_vg = pd.Timestamp.now().normalize() - pd.Timedelta(days=730)
+
+                    for _mv in ['Bike','Row','Ski','Run']:
+                        _ef_vg = _ac_full_vg[_ac_full_vg[_col_mod_vg] == _mv].copy()
+                        _ef_vg[_col_date_vg] = pd.to_datetime(_ef_vg[_col_date_vg]).dt.normalize()
+                        _ef_vg = _ef_vg[_ef_vg[_col_date_vg] >= _cutoff_vg]
+                        _ef_vg = _ef_vg.rename(columns={
+                            _col_date_vg: 'Data', _col_eftp_vg: 'eftp',
+                            _col_z1_vg: 'z1', _col_z2_vg: 'z2', _col_z3_vg: 'z3',
+                        })
+                        _ef_vg = _ef_vg.loc[:, ~_ef_vg.columns.duplicated()]
+                        for _c in ['eftp','z1','z2','z3']:
+                            _ef_vg[_c] = pd.to_numeric(_ef_vg[_c], errors='coerce').fillna(0)
+                        _ef_vg = _ef_vg.dropna(subset=['eftp']).sort_values('Data').drop_duplicates('Data')
+                        if len(_ef_vg) < 8:
+                            _alpha_p_new[_mv] = {'ok': False, 'reason': f'{len(_ef_vg)} sessões (<8)'}
+                            continue
+
+                        # CTLγ por zona (τ=30d fixo — simples e rápido)
+                        _dr = pd.date_range(_ef_vg['Data'].min(), pd.Timestamp.now().normalize(), freq='D')
+                        _ei = _ef_vg.set_index('Data')
+                        _cz1 = _ei['z1'].reindex(_dr, fill_value=0).ewm(span=30).mean()
+                        _cz2 = _ei['z2'].reindex(_dr, fill_value=0).ewm(span=30).mean()
+                        _cz3 = _ei['z3'].reindex(_dr, fill_value=0).ewm(span=30).mean()
+                        _ef_vg['cz1'] = _ef_vg['Data'].map(_cz1.to_dict())
+                        _ef_vg['cz2'] = _ef_vg['Data'].map(_cz2.to_dict())
+                        _ef_vg['cz3'] = _ef_vg['Data'].map(_cz3.to_dict())
+                        _ef_vg = _ef_vg.dropna(subset=['cz1','cz2','cz3'])
+                        if len(_ef_vg) < 8:
+                            _alpha_p_new[_mv] = {'ok': False, 'reason': 'insuficientes após CTLγ'}
+                            continue
+
+                        # OLS: eFTP ~ cz3 + cz2 + cz1 + 1
+                        _Xv = np.column_stack([
+                            _ef_vg['cz3'].values.astype(float),
+                            _ef_vg['cz2'].values.astype(float),
+                            _ef_vg['cz1'].values.astype(float),
+                            np.ones(len(_ef_vg))
+                        ])
+                        _yv = _ef_vg['eftp'].values.astype(float)
+                        _cv, _, _, _ = np.linalg.lstsq(_Xv, _yv, rcond=None)
+                        _ypv = _Xv @ _cv
+                        _r2v = float(1 - np.sum((_yv-_ypv)**2) / max(np.sum((_yv-_yv.mean())**2), 1e-9))
+
+                        # eFTP actual e CTLγ actual
+                        _eftp_now_v = float(_ef_vg['eftp'].iloc[-1])
+                        _cz3_now_v  = float(_cz3.iloc[-1])
+                        _cz2_now_v  = float(_cz2.iloc[-1])
+                        _cz1_now_v  = float(_cz1.iloc[-1])
+
+                        # KJ/semana actual de cada zona (últimas 4 semanas)
+                        _last4w = _ef_vg[_ef_vg['Data'] >= pd.Timestamp.now().normalize() - pd.Timedelta(weeks=4)]
+                        _kj_z3_act = float(_last4w['z3'].sum() / 4) if len(_last4w) > 0 else 0
+                        _kj_z2_act = float(_last4w['z2'].sum() / 4) if len(_last4w) > 0 else 0
+                        _kj_z1_act = float(_last4w['z1'].sum() / 4) if len(_last4w) > 0 else 0
+
+                        # Projecção 3m simples
+                        _slope_z3 = float(np.polyfit(np.arange(min(14,len(_cz3))), _cz3.tail(14).values, 1)[0]) if len(_cz3) >= 5 else 0
+                        _cz3_3m = _cz3_now_v + _slope_z3 * 90
+                        _cz2_3m = _cz2_now_v
+                        _cz1_3m = _cz1_now_v
+                        _eftp_3m = float(_cv[0]*_cz3_3m + _cv[1]*_cz2_3m + _cv[2]*_cz1_3m + _cv[3])
+                        _delta_3m = _eftp_3m - _eftp_now_v
+
+                        # KJ/semana necessário para atingir _cz3_3m
+                        _kj_z3_need = max(0, float((_cz3_3m - _cz3_now_v * 0.7) * 7))
+
+                        _alpha_p_new[_mv] = {
+                            'ok': True,
+                            'alpha_z3': float(_cv[0]),
+                            'alpha_z2': float(_cv[1]),
+                            'alpha_z1': float(_cv[2]),
+                            'r2': _r2v,
+                            'eftp_now': _eftp_now_v,
+                            'cz3_now': _cz3_now_v,
+                            'cz2_now': _cz2_now_v,
+                            'cz1_now': _cz1_now_v,
+                            'kj_z3_semana_actual': _kj_z3_act,
+                            'kj_z2_semana_actual': _kj_z2_act,
+                            'kj_z1_semana_actual': _kj_z1_act,
+                            'alvos': {
+                                '3m': {
+                                    'eftp_proj': _eftp_3m,
+                                    'delta_w':   _delta_3m,
+                                    'kj_z3_semana': _kj_z3_need,
+                                    'kj_z2_semana': _kj_z2_act * 1.05,
+                                    'kj_z1_semana': _kj_z1_act * 1.05,
+                                }
+                            },
+                            'mmp_label': 'MMP5' if _mv in ('Row','Ski') else 'MMP20',
+                        }
+
+                    if any(v.get('ok') for v in _alpha_p_new.values()):
+                        _alpha_p = _alpha_p_new
+                        st.session_state['alpha_polar_cache'] = _alpha_p
+            except Exception:
                 pass
-
-        # Diagnóstico — mostrar razão se ok=False ou vazio
-        _alpha_reasons = {}
-        for _m_ap in ['Bike','Row','Ski','Run']:
-            _m_data = _alpha_p.get(_m_ap, {})
-            if not _m_data.get('ok', False):
-                _alpha_reasons[_m_ap] = _m_data.get('reason', 'não calculado')
-
-        if _alpha_reasons:
-            with st.expander("ℹ️ KJ Alvo / eFTP Alvo — diagnóstico", expanded=False):
-                # Mostrar colunas disponíveis em da_full para diagnóstico
-                _cols_da = list(da_full.columns) if da_full is not None else []
-                _z_cols = [c for c in _cols_da if any(x in c.lower() for x in ['z1','z2','z3','zone','kj'])]
-                st.caption(f"Colunas zona/kj em ac_full: {_z_cols[:20]}")
-                _col_mod_chk  = next((c for c in ['type','modality'] if c in _cols_da), None)
-                _col_eftp_chk = next((c for c in ['icu_eftp','eFTP','eftp'] if c in _cols_da), None)
-                _col_date_chk = next((c for c in ['date','Data'] if c in _cols_da), None)
-                st.caption(f"col_mod={_col_mod_chk} | col_eftp={_col_eftp_chk} | col_date={_col_date_chk}")
-                if _col_mod_chk and _col_eftp_chk:
-                    for _m_diag in ['Bike','Row','Ski','Run']:
-                        _n_sess = len(_ac_full_vg[_ac_full_vg[_col_mod_chk]==_m_diag].dropna(subset=[_col_eftp_chk]))
-                        st.caption(f"  {_m_diag}: {_n_sess} sessões com eFTP")
-                for _m_ap, _reason in _alpha_reasons.items():
-                    st.caption(f"  ❌ {_m_ap}: {_reason}")
 
         for mod in ['Bike','Row','Ski','Run']:
             _sub = _pf[_pf['type'].apply(norm_tipo)==mod].copy()
