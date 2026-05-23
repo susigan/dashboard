@@ -1433,20 +1433,23 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             if _ap_mod.get('ok'):
                 # HRV-Guided define o tecto de intensidade
                 _hrv_class_local = hrv_class if 'hrv_class' in dir() else 'Sem dados'
-                if _hrv_class_local in ('Recuperação',):
-                    # Z1 ou Descanso ou Z2 curto
-                    _zona_max      = 'Z2'
-                    _zona_primaria = 'Z1'
-                    _hrv_note      = "HRV↓ — priorizar Z1/Descanso, Z2 curto se necessário"
-                elif _hrv_class_local in ('HIIT',):
-                    # Z2 ou Z3
-                    _zona_max      = 'Z3'
-                    _zona_primaria = 'Z2' if ni < 60 else 'Z3'
-                    _hrv_note      = "HRV✓ — Z2 (threshold/sweet spot) ou Z3 (VO2max) permitido"
+                # Recuperação → Z1, Z2 curto, ou Descanso (nao Z3)
+                # HIIT        → Z2 (threshold/sweetspot) ou Z3 (VO2max/anaer)
+                if _hrv_class_local == 'Recuperação':
+                    _zona_permitidas = ['Z1', 'Z2']
+                    _zona_max        = 'Z2'
+                    _zona_primaria   = 'Z1'
+                    _hrv_note        = "HRV↓ Recuperação — Z1 prioritário, Z2 curto ou Descanso"
+                elif _hrv_class_local == 'HIIT':
+                    _zona_permitidas = ['Z2', 'Z3']
+                    _zona_max        = 'Z3'
+                    _zona_primaria   = 'Z2' if ni < 60 else 'Z3'
+                    _hrv_note        = "HRV✓ HIIT — Z2 (threshold/sweetspot) ou Z3 (VO2max)"
                 else:
-                    _zona_max      = 'Z3' if ni >= 70 else 'Z2'
-                    _zona_primaria = 'Z2'
-                    _hrv_note      = "HRV sem dados — Z2 por defeito"
+                    _zona_permitidas = ['Z1', 'Z2', 'Z3']
+                    _zona_max        = 'Z3' if ni >= 70 else 'Z2'
+                    _zona_primaria   = 'Z2'
+                    _hrv_note        = "HRV sem dados — Z2 por defeito"
 
                 # kJ actuais vs kJ necessários (alvo 3 meses)
                 _alvo_3m = _ap_mod.get('alvos', {}).get('3m', {})
@@ -1468,19 +1471,19 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 # Se κ alto → reduzir Z3, manter Z1/Z2
                 if ol or (_kappa_now is not None and _kappa_now > _KAPPA_P87):
                     _zona_semana = 'Z1'
-                    _zona_note   = "κ alto / overload → apenas Z1 esta semana"
-                elif _zona_max == 'Z1':
-                    _zona_semana = 'Z1'
-                    _zona_note   = _hrv_note
-                elif _gap_z3 > 5 and _zona_max == 'Z3':
+                    _zona_note   = "κ alto/overload → Z1 (independente HRV)"
+                elif _gap_z3 > 5 and 'Z3' in _zona_permitidas:
                     _zona_semana = 'Z3'
-                    _zona_note   = f"Gap Z3: {_gap_z3:.0f} kJ/sem abaixo do alvo"
-                elif _gap_z2 > 5:
+                    _zona_note   = f"Gap Z3: {_gap_z3:.0f} kJ/sem | {_hrv_note}"
+                elif _gap_z3 > 5 and 'Z3' not in _zona_permitidas:
+                    _zona_semana = 'Z2' if 'Z2' in _zona_permitidas else 'Z1'
+                    _zona_note   = f"Gap Z3 ({_gap_z3:.0f} kJ) mas HRV→{_zona_semana} | {_hrv_note}"
+                elif _gap_z2 > 5 and 'Z2' in _zona_permitidas:
                     _zona_semana = 'Z2'
-                    _zona_note   = f"Gap Z2: {_gap_z2:.0f} kJ/sem abaixo do alvo"
+                    _zona_note   = f"Gap Z2: {_gap_z2:.0f} kJ/sem | {_hrv_note}"
                 else:
-                    _zona_semana = 'Z1'
-                    _zona_note   = "Zonas no alvo — manutenção Z1 esta semana"
+                    _zona_semana = _zona_primaria
+                    _zona_note   = f"Zonas no alvo — {_hrv_note}"
 
                 _zone_prescription = {
                     'zona_primaria': _zona_semana,
@@ -1508,7 +1511,7 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             else:         fl = "↑ 1.02"
 
             # Zone targets for row display
-            _z3_lbl = '—'; _z_alvo_eftp = '—'; _z_zona_rec = '—'
+            _z3_lbl = 'visita tab eFTP'; _z_alvo_eftp = 'visita tab eFTP'; _z_zona_rec = _hrv_note if '_hrv_note' in dir() else '—'
             if _zone_prescription:
                 _zp = _zone_prescription
                 _r2_z = _zp.get('r2', 0)
@@ -1901,6 +1904,281 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             st.info("Coluna kJ não disponível para cálculo de monotonia.")
     else:
         st.info("Sem dados de actividades para cálculo.")
+
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # MARKOV CHAIN + SUGESTAO HRV-GUIDED x MONOTONIA x PADRAO HISTORICO
+    # Estado = Modalidade x Zona RPE (Leve/Moderado/Forte) + Descanso
+    # Recalcula a cada carregamento sem cache
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("### 🔗 Markov Chain — Padrão e Sugestão HRV-Guided")
+    with st.expander("Como funciona", expanded=False):
+        st.markdown("""
+**Markov Chain 1a e 2a ordem — calibrada nos dados deste atleta**
+
+Estado = Modalidade_Zona (ex: Bike_Moderado, Row_Forte) ou Descanso.
+A cadeia aprende a probabilidade de cada transição e o HRV médio t+1 e t+2.
+
+**Sugestão integrada:**
+1. HRV-Guided: Recuperação → Z1/Z2/Descanso | HIIT → Z2/Z3
+2. Monotonia (IM): se IM>1.5 forçar variação de zona/modalidade
+3. Markov: selecciona a transição com melhor HRV histórico dentro das opcoes permitidas
+
+Recalcula sem cache a cada carregamento.
+        """)
+
+    if da_full is not None and len(da_full) > 0 and wc_full is not None and len(wc_full) > 0:
+        try:
+            _mk_da = filtrar_principais(da_full).copy()
+            _mk_da['Data'] = pd.to_datetime(_mk_da['Data']).dt.normalize()
+            _mk_da['type'] = _mk_da['type'].apply(norm_tipo)
+            _mk_da = _mk_da[_mk_da['type'].isin(['Bike','Run','Row','Ski','WeightTraining'])]
+
+            _mk_wc = wc_full.copy()
+            _mk_wc['Data'] = pd.to_datetime(_mk_wc['Data']).dt.normalize()
+
+            def _zona_rpe(rpe_val):
+                try:
+                    r = float(rpe_val)
+                    if r <= 4.0:   return 'Leve'
+                    elif r <= 7.0: return 'Moderado'
+                    else:          return 'Forte'
+                except: return 'Moderado'
+
+            _mk_da['rpe_n']  = pd.to_numeric(
+                _mk_da.get('rpe', pd.Series(dtype=float)), errors='coerce').fillna(5)
+            _mk_da['zona']   = _mk_da['rpe_n'].apply(_zona_rpe)
+            _mk_da['estado'] = _mk_da['type'] + '_' + _mk_da['zona']
+
+            _mk_daily = (_mk_da.sort_values('rpe_n', ascending=False)
+                               .groupby('Data')['estado'].first().reset_index())
+
+            _mk_idx = pd.date_range(
+                _mk_daily['Data'].min(), pd.Timestamp.now().normalize(), freq='D')
+            _mk_estados = (_mk_daily.set_index('Data')
+                                    .reindex(_mk_idx).fillna('Descanso').reset_index())
+            _mk_estados.columns = ['Data', 'estado']
+
+            _hrv_col_mk = next((c for c in ['hrv','HRV'] if c in _mk_wc.columns), None)
+            if _hrv_col_mk:
+                _mk_hrv   = _mk_wc[['Data', _hrv_col_mk]].copy()
+                _mk_hrv.columns = ['Data', 'hrv']
+                _hrv_base = float(_mk_hrv['hrv'].median()) if len(_mk_hrv) > 5 else 50.0
+            else:
+                _mk_hrv   = pd.DataFrame(columns=['Data','hrv'])
+                _hrv_base = 50.0
+
+            def _hrv_delta_str(val):
+                if val is None or (isinstance(val,float) and np.isnan(val)): return '—'
+                d = (val - _hrv_base) / max(_hrv_base,1) * 100
+                return f"{d:+.1f}%"
+
+            from collections import defaultdict
+            _trans  = defaultdict(int)
+            _hrv1   = defaultdict(list)
+            _trans2 = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+
+            _estados_list = _mk_estados['estado'].tolist()
+            _datas_list   = _mk_estados['Data'].tolist()
+            _hrv_dict     = dict(zip(_mk_hrv['Data'], _mk_hrv['hrv'])) if len(_mk_hrv) > 0 else {}
+
+            for _i in range(len(_estados_list)-2):
+                _ei = _estados_list[_i]; _ej = _estados_list[_i+1]; _ek = _estados_list[_i+2]
+                _d_next = _datas_list[_i+1]; _d_next2 = _datas_list[_i+2]
+                _trans[(_ei,_ej)] += 1
+                _h1 = _hrv_dict.get(_d_next)
+                if _h1 is not None and not np.isnan(float(_h1)):
+                    _hrv1[(_ei,_ej)].append(float(_h1))
+                _h2 = _hrv_dict.get(_d_next2)
+                if _h2 is not None and not np.isnan(float(_h2)):
+                    _trans2[_ei][_ej][_ek].append(float(_h2))
+
+            _ei_counts = defaultdict(int)
+            for (_ei,_ej), cnt in _trans.items():
+                _ei_counts[_ei] += cnt
+            _prob = {(_ei,_ej): cnt/_ei_counts[_ei]
+                     for (_ei,_ej),cnt in _trans.items() if _ei_counts[_ei] > 0}
+
+            _estado_hoje = _mk_estados.iloc[-1]['estado']
+
+            _CORES_MK = {'Bike':'#e74c3c','Run':'#27ae60','Row':'#3498db',
+                         'Ski':'#9b59b6','WeightTraining':'#f39c12','Descanso':'#95a5a6'}
+
+            _mc1, _mc2 = st.columns([1,2])
+            with _mc1:
+                _partes_h = _estado_hoje.split('_'); _mod_h = _partes_h[0]
+                _zona_h   = '_'.join(_partes_h[1:]) if len(_partes_h) > 1 else ''
+                _cor_h    = _CORES_MK.get(_mod_h,'#888')
+                _hx = _cor_h.lstrip('#'); _rh,_gh,_bh = int(_hx[0:2],16),int(_hx[2:4],16),int(_hx[4:6],16)
+                st.markdown(
+                    f"<div style='background:rgba({_rh},{_gh},{_bh},0.10);"
+                    f"border-left:4px solid {_cor_h};border-radius:6px;padding:10px 14px;'>"
+                    f"<div style='font-size:11px;color:#666;margin-bottom:2px'>Estado actual</div>"
+                    f"<div style='font-size:18px;font-weight:500;color:{_cor_h}'>{_mod_h}</div>"
+                    f"<div style='font-size:12px;color:#555'>{_zona_h}</div>"
+                    f"</div>", unsafe_allow_html=True)
+
+            with _mc2:
+                st.caption("Top transicoes a partir do estado actual (por HRV t+1)")
+                _rows_1 = []
+                for (_ei,_ej),_p in _prob.items():
+                    if _ei != _estado_hoje or _p < 0.04: continue
+                    _hvals = _hrv1.get((_ei,_ej),[])
+                    _hmed  = float(np.mean(_hvals)) if len(_hvals) >= 2 else None
+                    _rows_1.append({'Proxima sessao':_ej,'Probabilidade':f"{_p*100:.0f}%",
+                                    'HRV t+1':_hrv_delta_str(_hmed),'n obs':len(_hvals),
+                                    '_hmed':_hmed if _hmed else -999,'_prob':_p})
+                _rows_1.sort(key=lambda x: x['_hmed'], reverse=True)
+                if _rows_1:
+                    st.dataframe(pd.DataFrame([
+                        {k:v for k,v in r.items() if not k.startswith('_')}
+                        for r in _rows_1[:6]
+                    ]), hide_index=True, use_container_width=True)
+                else:
+                    st.info("Sem historico de transicoes a partir deste estado.")
+
+            # Sugestao integrada
+            st.markdown("#### Sugestao — HRV x Monotonia x Markov")
+
+            # HRV-Guided (mesma logica do card principal: ln rMSSD banda 14d)
+            _zona_perm_mk = ['Leve','Moderado','Forte']
+            _hrv_guid_mk  = "HRV sem dados"
+            if _hrv_col_mk and len(_mk_hrv) > 5:
+                try:
+                    _mk_hrv_s = _mk_hrv.copy().sort_values('Data')
+                    _mk_hrv_s['ln_hrv'] = np.where(_mk_hrv_s['hrv']>0, np.log(_mk_hrv_s['hrv']), np.nan)
+                    _mk_hrv_s = _mk_hrv_s.dropna(subset=['ln_hrv'])
+                    if len(_mk_hrv_s) >= 7:
+                        _mk_hrv_s['bm']   = _mk_hrv_s['ln_hrv'].rolling(14,min_periods=7).mean()
+                        _mk_hrv_s['bs']   = _mk_hrv_s['ln_hrv'].rolling(14,min_periods=7).std()
+                        _mk_hrv_s['linf'] = _mk_hrv_s['bm'] - 0.5*_mk_hrv_s['bs']
+                        _last_mk = _mk_hrv_s.dropna(subset=['bm']).iloc[-1]
+                        if pd.notna(_last_mk['bm']) and pd.notna(_last_mk['ln_hrv']):
+                            if _last_mk['ln_hrv'] < _last_mk['linf']:
+                                # HRV abaixo da banda → Recuperacao
+                                # Recuperacao: Leve(Z1), ou Moderado(Z2) curto, ou Descanso
+                                _zona_perm_mk = ['Leve','Moderado']
+                                _hrv_guid_mk  = "Recuperacao — Z1/Descanso, Z2 curto se necessario"
+                            else:
+                                # HRV normal ou acima → HIIT
+                                # HIIT: Moderado(Z2) ou Forte(Z3)
+                                _zona_perm_mk = ['Moderado','Forte']
+                                _hrv_guid_mk  = "HIIT — Z2 (threshold/sweetspot) ou Z3 (VO2max)"
+                except Exception: pass
+
+            # IM actual
+            _im_mk = None
+            try:
+                _kj_c_mk = next((c for c in ['icu_joules','joules','kj_total']
+                                  if c in _mk_da.columns and _mk_da[c].notna().any()), None)
+                if _kj_c_mk:
+                    _kj_d2 = _mk_da.groupby('Data')[_kj_c_mk].sum()
+                    if _kj_c_mk == 'icu_joules': _kj_d2 = _kj_d2/1000
+                    _kj_i2 = pd.date_range(_kj_d2.index.min(),pd.Timestamp.now().normalize(),freq='D')
+                    _kj_f2 = _kj_d2.reindex(_kj_i2,fill_value=0)
+                    _m7_2  = _kj_f2.rolling(7,min_periods=4).mean()
+                    _s7_2  = _kj_f2.rolling(7,min_periods=4).std()
+                    _im_s2 = _m7_2/_s7_2.replace(0,np.nan)
+                    _im_mk = float(_im_s2.iloc[-1]) if _im_s2.notna().any() else None
+            except Exception: pass
+
+            _forcar_var = _im_mk is not None and _im_mk > 1.5
+
+            # Filtrar candidatos
+            _cands = []
+            for r in _rows_1:
+                _ej2    = r['Proxima sessao']
+                _partes = _ej2.split('_')
+                _zona_c = '_'.join(_partes[1:]) if len(_partes) > 1 else ''
+                # Mapear zona RPE para zona_perm
+                _zona_rpe_map = {'Leve':'Leve','Moderado':'Moderado','Forte':'Forte'}
+                if _ej2 != 'Descanso' and _zona_c not in _zona_perm_mk:
+                    continue
+                if _forcar_var and _ej2 == _estado_hoje:
+                    continue
+                _cands.append(r)
+            _cands.sort(key=lambda x: x['_hmed'], reverse=True)
+
+            _sc1,_sc2,_sc3 = st.columns(3)
+            _sc1.metric("HRV-Guided", _hrv_guid_mk[:30])
+            _sc2.metric("Indice Monotonia",
+                        f"{_im_mk:.2f}" if _im_mk is not None else "—",
+                        delta="variar" if _forcar_var else "ok repetir",
+                        delta_color="inverse" if _forcar_var else "off")
+            _sc3.metric("Estado actual", _estado_hoje)
+
+            if _cands:
+                _best    = _cands[0]
+                _best_ej = _best['Proxima sessao']
+                _partes_b= _best_ej.split('_'); _mod_b=_partes_b[0]
+                _zona_b  = '_'.join(_partes_b[1:]) if len(_partes_b)>1 else ''
+                _cor_b   = _CORES_MK.get(_mod_b,'#27ae60')
+                _hxb = _cor_b.lstrip('#'); _rb,_gb,_bb = int(_hxb[0:2],16),int(_hxb[2:4],16),int(_hxb[4:6],16)
+                st.markdown(
+                    f"<div style='background:rgba({_rb},{_gb},{_bb},0.08);"
+                    f"border:1.5px solid {_cor_b};border-radius:8px;padding:14px 18px;margin:8px 0'>"
+                    f"<div style='font-size:12px;color:#666;margin-bottom:4px'>"
+                    f"Sugestao Markov (HRV x IM x padrao historico)</div>"
+                    f"<div style='font-size:22px;font-weight:500;color:{_cor_b}'>"
+                    f"{_mod_b} — {_zona_b}</div>"
+                    f"<div style='font-size:12px;color:#555;margin-top:4px'>"
+                    f"P={_best['Probabilidade']} | HRV t+1: {_best['HRV t+1']} "
+                    f"{'| IM alto — variar' if _forcar_var else ''}"
+                    f"</div></div>", unsafe_allow_html=True)
+                if len(_cands) > 1:
+                    with st.expander("Alternativas"):
+                        st.dataframe(pd.DataFrame([
+                            {'Opcao':r['Proxima sessao'],'P':r['Probabilidade'],'HRV t+1':r['HRV t+1']}
+                            for r in _cands[1:4]
+                        ]), hide_index=True, use_container_width=True)
+            else:
+                st.info("Sem transicao compativel. Sugestao: Descanso ou sessao Leve.")
+
+            # 2a ordem
+            st.markdown("#### Planeamento 2 dias — Markov 2a ordem")
+            st.caption("Sequencia hoje→amanha que maximiza HRV t+2.")
+            _d2_rows = []
+            if _estado_hoje in _trans2:
+                for _ej_o in sorted(_trans2[_estado_hoje].keys()):
+                    _ek_opts = _trans2[_estado_hoje][_ej_o]
+                    _best_ek = None; _best_h2 = -999
+                    for _ek, _hl in _ek_opts.items():
+                        if len(_hl) < 2: continue
+                        _m2 = float(np.mean(_hl))
+                        if _m2 > _best_h2: _best_h2=_m2; _best_ek=_ek
+                    if _best_ek:
+                        _p_ej = _prob.get((_estado_hoje,_ej_o),0)
+                        if _p_ej < 0.03: continue
+                        _d2_rows.append({'Hoje (escolha)':_ej_o,'P(hoje→amanha)':f"{_p_ej*100:.0f}%",
+                                         'Melhor amanha':_best_ek,'HRV t+2':_hrv_delta_str(_best_h2),
+                                         '_h2':_best_h2})
+                if _d2_rows:
+                    _d2_rows.sort(key=lambda x: x['_h2'], reverse=True)
+                    st.dataframe(pd.DataFrame([
+                        {k:v for k,v in r.items() if k!='_h2'} for r in _d2_rows[:6]
+                    ]), hide_index=True, use_container_width=True)
+                else:
+                    st.info("Dados insuficientes para 2a ordem.")
+            else:
+                st.info("Sem historico para 2a ordem.")
+
+            _n_total_mk = sum(_trans.values())
+            _n_est_mk   = len(set(e for (e,_) in _trans.keys()))
+            with st.expander("Sobre o modelo"):
+                st.markdown(f"""
+**Markov Chain — {_n_total_mk} transicoes | {_n_est_mk} estados**
+
+- Estado = Modalidade x Zona RPE (Leve<=4 / Moderado 4-7 / Forte >7) + Descanso
+- HRV: Recuperacao → Z1/Descanso/Z2curto | HIIT → Z2/Z3
+- IM Fry: se >1.5 forcar variacao de zona/modalidade
+- Recalcula sem cache
+                """)
+
+        except Exception as _mk_err:
+            st.warning(f"Markov Chain — erro: {_mk_err}")
+    else:
+        st.info("Markov Chain requer actividades + wellness (da_full + wc_full).")
 
 
     st.markdown("---")
