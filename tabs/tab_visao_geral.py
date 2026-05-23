@@ -1718,82 +1718,65 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             st.markdown("**⚡ Planeador de Zonas — semana actual e progressão 3m**")
 
             # ── Planeador interactivo Z1/Z2/Z3 por modalidade ─────────────────
-            with st.expander("🎯 Ajustar objectivo de eFTP e ver progressão semanal",
-                             expanded=False):
+            st.caption(
+                "Define o eFTP alvo e o prazo. O modelo calcula os kJ/sem de Z3 "
+                "necessários por modalidade, distribuídos em rampa linear."
+            )
+            _pc1, _pc2 = st.columns(2)
+            _prazo_sem = _pc1.slider("Prazo (semanas)", 4, 24, 12, 2,
+                                     key="prazo_sem_planeador")
+            _delta_eftp_input = _pc2.slider("eFTP alvo (ganho em W)", 0, 30, 10, 1,
+                                            key="delta_eftp_planeador")
+
+            # Tabela de progressão para cada modalidade
+            _plan_rows = []
+            for _mv_p in ['Bike','Row','Ski','Run']:
+                _ap_p = _alpha_p.get(_mv_p, {})
+                if not _ap_p.get('ok'): continue
+                _eftp_p    = _ap_p.get('eftp_now', 0)
+                _eftp_tgt_p = _eftp_p + _delta_eftp_input
+                _a3p = _ap_p.get('alpha_z3', 0)
+                _a2p = _ap_p.get('alpha_z2', 0)
+                _a1p = _ap_p.get('alpha_z1', 0)
+                _intcp = _eftp_p - (_a3p*_ap_p.get('cz3_now',0)
+                                   + _a2p*_ap_p.get('cz2_now',0)
+                                   + _a1p*_ap_p.get('cz1_now',0))
+                # CTLγ_Z3 necessário
+                _cz3_now_p = _ap_p.get('cz3_now', 0)
+                _cz2_now_p = _ap_p.get('cz2_now', 0)
+                _cz1_now_p = _ap_p.get('cz1_now', 0)
+                if abs(_a3p) > 0.01:
+                    _cz3_tgt_p = (_eftp_tgt_p - _a2p*_cz2_now_p
+                                  - _a1p*_cz1_now_p - _intcp) / _a3p
+                    _cz3_tgt_p = max(_cz3_tgt_p, _cz3_now_p)
+                else:
+                    _cz3_tgt_p = _cz3_now_p * 1.10
+                # kJ/sem actual e alvo
+                _kj3_act_p = _ap_p.get('kj_z3_semana_actual', 0)
+                _kj3_alvo_p = float(_cz3_tgt_p * 7)
+                # Esta semana (semana 1 de N)
+                _kj3_sem1 = _kj3_act_p + (_kj3_alvo_p - _kj3_act_p) / _prazo_sem
+                _r2_p = _ap_p.get('r2', 0)
+                _r2_icon = '🟢' if _r2_p >= 0.20 else ('🟡' if _r2_p >= 0.08 else '🔴')
+                _plan_rows.append({
+                    'Modalidade':         _mv_p,
+                    'eFTP actual':        f"{_eftp_p:.0f}W",
+                    f'eFTP alvo (+{_delta_eftp_input}W)': f"{_eftp_tgt_p:.0f}W",
+                    'Z3 actual (kJ/sem)': f"{_kj3_act_p:.0f}",
+                    f'Z3 sem 1 (kJ/sem)': f"{_kj3_sem1:.0f}",
+                    f'Z3 alvo sem {_prazo_sem} (kJ/sem)': f"{_kj3_alvo_p:.0f}",
+                    f'Gap esta sem':       f"+{max(0,_kj3_sem1-_kj3_act_p):.0f} kJ",
+                    f'R²':                f"{_r2_icon}{_r2_p:.2f}",
+                })
+
+            if _plan_rows:
+                st.dataframe(pd.DataFrame(_plan_rows), hide_index=True,
+                             use_container_width=True)
                 st.caption(
-                    "Define o eFTP alvo e o prazo. O modelo calcula os kJ/sem de Z3 "
-                    "necessários por modalidade, distribuídos em rampa linear."
+                    f"Rampa linear {_prazo_sem} semanas. "
+                    "Sem 1 = primeiro incremento. Z2 e Z1 mantêm ritmo actual (+5%). "
+                    "🔴R²<0.08 = modelo pouco fiável para esta modalidade."
                 )
-                _pc1, _pc2 = st.columns(2)
-                _prazo_sem = _pc1.slider("Prazo (semanas)", 4, 24, 12, 2,
-                                         key="prazo_sem_planeador")
-                _delta_eftp_input = _pc2.slider("eFTP alvo (ganho em W)", 0, 30, 10, 1,
-                                                key="delta_eftp_planeador")
-
-                # Tabela de progressão para cada modalidade
-                _plan_rows = []
-                for _mv_p in ['Bike','Row','Ski','Run']:
-                    _ap_p = _alpha_p.get(_mv_p, {})
-                    if not _ap_p.get('ok'): continue
-                    _eftp_p    = _ap_p.get('eftp_now', 0)
-                    _eftp_tgt_p = _eftp_p + _delta_eftp_input
-                    _a3p = _ap_p.get('alpha_z3', 0)
-                    _a2p = _ap_p.get('alpha_z2', 0)
-                    _a1p = _ap_p.get('alpha_z1', 0)
-                    _intcp = _eftp_p - (_a3p*_ap_p.get('cz3_now',0)
-                                       + _a2p*_ap_p.get('cz2_now',0)
-                                       + _a1p*_ap_p.get('cz1_now',0))
-                    # CTLγ_Z3 necessário
-                    _cz3_now_p = _ap_p.get('cz3_now', 0)
-                    _cz2_now_p = _ap_p.get('cz2_now', 0)
-                    _cz1_now_p = _ap_p.get('cz1_now', 0)
-                    if abs(_a3p) > 0.01:
-                        _cz3_tgt_p = (_eftp_tgt_p - _a2p*_cz2_now_p
-                                      - _a1p*_cz1_now_p - _intcp) / _a3p
-                        _cz3_tgt_p = max(_cz3_tgt_p, _cz3_now_p)
-                    else:
-                        _cz3_tgt_p = _cz3_now_p * 1.10
-                    # kJ/sem actual e alvo
-                    _kj3_act_p = _ap_p.get('kj_z3_semana_actual', 0)
-                    _kj3_alvo_p = float(_cz3_tgt_p * 7)
-                    # Esta semana (semana 1 de N)
-                    _kj3_sem1 = _kj3_act_p + (_kj3_alvo_p - _kj3_act_p) / _prazo_sem
-                    _r2_p = _ap_p.get('r2', 0)
-                    _r2_icon = '🟢' if _r2_p >= 0.20 else ('🟡' if _r2_p >= 0.08 else '🔴')
-                    _plan_rows.append({
-                        'Modalidade':         _mv_p,
-                        'eFTP actual':        f"{_eftp_p:.0f}W",
-                        f'eFTP alvo (+{_delta_eftp_input}W)': f"{_eftp_tgt_p:.0f}W",
-                        'Z3 actual (kJ/sem)': f"{_kj3_act_p:.0f}",
-                        f'Z3 sem 1 (kJ/sem)': f"{_kj3_sem1:.0f}",
-                        f'Z3 alvo sem {_prazo_sem} (kJ/sem)': f"{_kj3_alvo_p:.0f}",
-                        f'Gap esta sem':       f"+{max(0,_kj3_sem1-_kj3_act_p):.0f} kJ",
-                        f'R²':                f"{_r2_icon}{_r2_p:.2f}",
-                    })
-
-                if _plan_rows:
-                    st.dataframe(pd.DataFrame(_plan_rows), hide_index=True,
-                                 use_container_width=True)
-                    st.caption(
-                        f"Rampa linear {_prazo_sem} semanas. "
-                        "Sem 1 = primeiro incremento. Z2 e Z1 mantêm ritmo actual (+5%). "
-                        "🔴R²<0.08 = modelo pouco fiável para esta modalidade."
-                    )
-
-            # ── CTL e Z3 feito esta semana por modalidade ─────────────────────
-            _cc1, _cc2, _cc3, _cc4 = st.columns(4)
-            with _cc1: st.metric("CTL actual",     f"{_ctl_hoje:.1f}")
-            with _cc2: st.metric("ΔCTL estimado",  f"{_delta_ctl_total:+.2f}",
-                                 "✅ no range 1–5" if _dentro_range else
-                                 ("⚠️ abaixo de 1" if _delta_ctl_total < 1 else "⚠️ acima de 5"))
-            with _cc3: st.metric("CTL projectado", f"{_ctl_proj:.1f}")
-            with _cc4: st.metric("TSB projectado", f"{_tsb_proj:.1f}")
-
-            # CTL feito por modalidade esta semana
-            if _delta_rows:
-                with st.expander("🔍 CTL por modalidade — semana actual"):
-                    _df_ctl_mod = pd.DataFrame(_delta_rows)
-                    st.dataframe(_df_ctl_mod, width="stretch", hide_index=True)
 
             # kJ Z3 feito esta semana por modalidade
             _col_z3_wk = next((c for c in ['Z3KJ','z3_kj','z3kj'] if c in da.columns), None)
