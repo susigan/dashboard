@@ -1294,12 +1294,26 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             )
 
         # ── Carregar α do Modelo 2 (FTLM Polar) do session_state ──────────────
-        # Calculado em tab_eftp quando o utilizador visita essa tab.
-        # Contém: alpha_z3/z2/z1, r2, ctz_now, alvos por horizonte, kJ_zona_semana
         _alpha_p = st.session_state.get('alpha_polar_cache', {})
 
-        # α calculado no arranque (app.py) — sem recálculo aqui
-        # Se ainda vazio após recarregamento, mostrar mensagem informativa
+        # Se não calculado ainda, calcular agora
+        if not _alpha_p:
+            try:
+                from utils.data import calcular_alpha_polar
+                _alpha_p = calcular_alpha_polar(da_full)
+                if _alpha_p:
+                    st.session_state['alpha_polar_cache'] = _alpha_p
+            except Exception:
+                pass
+
+        # Diagnóstico silencioso — mostrar razão se ok=False
+        _alpha_reasons = {m: _alpha_p.get(m, {}).get('reason','') 
+                          for m in ['Bike','Row','Ski','Run']
+                          if not _alpha_p.get(m, {}).get('ok', False)}
+        if _alpha_reasons:
+            with st.expander("ℹ️ KJ Alvo / eFTP Alvo — diagnóstico", expanded=False):
+                for m, reason in _alpha_reasons.items():
+                    st.caption(f"{m}: {reason or 'sem dados'}")
 
         for mod in ['Bike','Row','Ski','Run']:
             _sub = _pf[_pf['type'].apply(norm_tipo)==mod].copy()
