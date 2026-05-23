@@ -1296,11 +1296,13 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
         # ── Carregar α do Modelo 2 (FTLM Polar) do session_state ──────────────
         _alpha_p = st.session_state.get('alpha_polar_cache', {})
 
-        # Se não calculado ainda, calcular agora
+        # Se não calculado ainda, calcular agora com ac_full (histórico completo)
         if not _alpha_p:
             try:
                 from utils.data import calcular_alpha_polar
-                _alpha_p = calcular_alpha_polar(da_full)
+                # Usar da_full (ac_full passado como argumento) — histórico completo
+                _ac_full_vg = st.session_state.get('da_full', da_full)
+                _alpha_p = calcular_alpha_polar(_ac_full_vg)
                 if _alpha_p:
                     st.session_state['alpha_polar_cache'] = _alpha_p
             except Exception as _ap_err:
@@ -1318,13 +1320,17 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 # Mostrar colunas disponíveis em da_full para diagnóstico
                 _cols_da = list(da_full.columns) if da_full is not None else []
                 _z_cols = [c for c in _cols_da if any(x in c.lower() for x in ['z1','z2','z3','zone','kj'])]
-                st.caption(f"Colunas zona/kj em da_full: {_z_cols[:20]}")
+                st.caption(f"Colunas zona/kj em ac_full: {_z_cols[:20]}")
                 _col_mod_chk  = next((c for c in ['type','modality'] if c in _cols_da), None)
                 _col_eftp_chk = next((c for c in ['icu_eftp','eFTP','eftp'] if c in _cols_da), None)
                 _col_date_chk = next((c for c in ['date','Data'] if c in _cols_da), None)
                 st.caption(f"col_mod={_col_mod_chk} | col_eftp={_col_eftp_chk} | col_date={_col_date_chk}")
+                if _col_mod_chk and _col_eftp_chk:
+                    for _m_diag in ['Bike','Row','Ski','Run']:
+                        _n_sess = len(_ac_full_vg[_ac_full_vg[_col_mod_chk]==_m_diag].dropna(subset=[_col_eftp_chk]))
+                        st.caption(f"  {_m_diag}: {_n_sess} sessões com eFTP")
                 for _m_ap, _reason in _alpha_reasons.items():
-                    st.caption(f"{_m_ap}: {_reason}")
+                    st.caption(f"  ❌ {_m_ap}: {_reason}")
 
         for mod in ['Bike','Row','Ski','Run']:
             _sub = _pf[_pf['type'].apply(norm_tipo)==mod].copy()
