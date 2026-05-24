@@ -847,9 +847,12 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 if len(_s) > 0: _eftp[_m] = float(_s.iloc[-1])
 
         def _med_semanas(df, col, n_sem=8):
-            """Mediana das últimas n semanas com dados (col > 0)."""
+            """Mediana das últimas n semanas COMPLETAS com dados (excluindo semana actual)."""
             df = df.copy()
             df['_sem'] = df['Data'].dt.to_period('W')
+            _sem_actual = pd.Timestamp.now().normalize().to_period('W')
+            # Excluir semana actual — só semanas completas
+            df = df[df['_sem'] < _sem_actual]
             agg = df.groupby('_sem')[col].sum().reset_index()
             agg = agg.sort_values('_sem').tail(n_sem)
             vals = agg[col][agg[col] > 0]
@@ -1287,7 +1290,23 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             h_sem_ant  = float(_sem_ant['_mt'].sum())
 
             # Meta semana (com suavização anti-salto)
-            kj_meta = min(kj_base * fator, max(kj_sem_ant, kj_base) * 1.08) if has_kj else 0.0
+            kj_meta_need = kj_base * fator if has_kj else 0.0
+
+            # Integração M2 — Z3 alvo desta semana eleva a meta se κ não está em overload
+            _ap_mod_meta = _alpha_p.get(mod, {})
+            _kj3_meta_m2 = 0.0
+            if _ap_mod_meta.get('ok') and not ol and (
+                    _kappa_now is None or _kappa_now <= _KAPPA_P87):
+                _kj3_sem_m2  = _ap_mod_meta.get('alvos',{}).get('3m',{}).get('kj_z3_semana', 0)
+                _kj2_act_m2  = _ap_mod_meta.get('kj_z2_semana_actual', 0)
+                _kj1_act_m2  = _ap_mod_meta.get('kj_z1_semana_actual', 0)
+                _kj_meta_m2  = _kj3_sem_m2 + _kj2_act_m2 * 1.05 + _kj1_act_m2 * 1.05
+                # M2 não pode exigir mais de +20% sobre o que o Need permite
+                _kj_meta_m2  = min(_kj_meta_m2, kj_meta_need * 1.20)
+
+            kj_meta_raw = max(kj_meta_need, _kj_meta_m2) if has_kj else 0.0
+            # Anti-salto: nunca mais de +8% sobre semana anterior ou baseline
+            kj_meta = min(kj_meta_raw, max(kj_sem_ant, kj_base) * 1.08) if has_kj else 0.0
             h_meta  = min(h_base  * fator, max(h_sem_ant,  h_base)  * 1.08)
             km_meta = km_base * fator if has_km else 0.0
 
