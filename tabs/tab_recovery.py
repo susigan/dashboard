@@ -848,7 +848,10 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
     st.subheader("🏋️ HRV-Guided Training (LnrMSSD)")
 
     if len(dw) >= 14 and dw['hrv'].notna().sum() >= 14:
-        df_hg = dw.copy().sort_values('Data')
+        # Usar wc_full (histórico completo) em vez de dw (filtrado pelo sidebar)
+        # Garante que dados recentes não são cortados pelo filtro de datas
+        _wc_hg = wc_full.copy() if (wc_full is not None and len(wc_full) > 0) else dw.copy()
+        df_hg = _wc_hg.sort_values('Data')
         df_hg['Data'] = pd.to_datetime(df_hg['Data'])
 
         # ── MUDANÇA: reindex para calendário completo em vez de dropna ──────
