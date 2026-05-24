@@ -857,23 +857,15 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
         df_hg.index.name = 'Data'
         df_hg = df_hg.reset_index()
 
-        # Usar hrv_raw (valor original da sheet, sem imputação) se disponível
-        # hrv_raw = NaN significa dia sem medição real
-        # hrv_imputado = True significa o hrv foi preenchido com lookback
-        _hrv_col_hg = 'hrv_raw' if 'hrv_raw' in df_hg.columns else 'hrv'
-        _imp_col_hg = 'hrv_imputado' if 'hrv_imputado' in df_hg.columns else None
-
+        # hrv nunca é preenchido por lookback (preproc_wellness não preenche hrv)
+        # → NaN = sem medição real, sem ambiguidade
         df_hg['LnrMSSD'] = np.where(
-            df_hg[_hrv_col_hg].notna() & (df_hg[_hrv_col_hg] > 0),
-            np.log(df_hg[_hrv_col_hg]),
+            df_hg['hrv'].notna() & (df_hg['hrv'] > 0),
+            np.log(df_hg['hrv']),
             np.nan
         )
-        # Flag: dia sem medição real (NaN no raw OU imputado)
-        if _imp_col_hg:
-            df_hg['sem_medicao'] = (df_hg[_hrv_col_hg].isna() |
-                                     df_hg[_imp_col_hg].fillna(False).astype(bool))
-        else:
-            df_hg['sem_medicao'] = df_hg['LnrMSSD'].isna()
+        # Flag: dia sem medição de HRV (NaN = sem dado real)
+        df_hg['sem_medicao'] = df_hg['hrv'].isna()
 
         hg_c1, hg_c2 = st.columns(2)
         dias_fam = hg_c1.slider("Dias baseline rolling", 7, 28, 14, key="hg_baseline")
