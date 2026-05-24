@@ -1756,6 +1756,29 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             if _plan_rows:
                 st.dataframe(pd.DataFrame(_plan_rows), hide_index=True,
                              use_container_width=True)
+
+                # Contexto dTRIMP/dKJ e eff_delta
+                _eff_kj = st.session_state.get('eff_kj_cache', {})
+                if _eff_kj:
+                    st.markdown("**Contexto fisiológico para aumentar Z3:**")
+                    _ctx_rows = []
+                    for _mv_ctx in ['Bike','Row','Ski','Run']:
+                        _ec = _eff_kj.get(_mv_ctx, {})
+                        if not _ec: continue
+                        _ok_z3 = _ec.get('aumentar_z3_ok', True)
+                        _ctx_rows.append({
+                            'Modal.':          _mv_ctx,
+                            'dTRIMP/dKJ':      f"{_ec['dtrimp_dkj']:.3f} {_ec['dtrimp_lbl']}",
+                            'Eff delta 28d':   f"{_ec['eff_delta']:+.1%} {_ec['eff_delta_lbl']}",
+                            'Aumentar Z3?':    '✅ Seguro' if _ok_z3 else '⚠️ Cautela',
+                        })
+                    if _ctx_rows:
+                        st.dataframe(pd.DataFrame(_ctx_rows), hide_index=True,
+                                     use_container_width=True)
+                        st.caption(
+                            "dTRIMP/dKJ < 0.3 eficiente | 0.3–0.5 normal | >0.5 custo alto. "
+                            "Eff delta: variação TRIMP/KJ últimos 28d vs baseline 84d.")
+
                 st.caption(
                     f"Rampa linear {_prazo_sem} semanas. "
                     "Sem 1 = primeiro incremento. Z2 e Z1 mantêm ritmo actual (+5%). "
