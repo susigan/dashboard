@@ -1605,31 +1605,26 @@ def _preencher_faltantes_lookback(df, coluna):
 
 def preproc_wellness(df):
     """
-    Limpeza wellness — igual ao ATHELTICA v12 DataPreprocessor.limpar_wellness():
-    1. Ordenar por Data
-    2. Remover duplicatas por Data (keep=first)
-    3. Z-score threshold=3.0 → NaN (picos)
-    4. Zeros inválidos → NaN (hrv, rhr, sleep_hours)
-    5. Preencher faltantes: mediana 7d anteriores → 14d → média global
-    6. Guardar hrv_raw (antes de imputação) e flag hrv_imputado
+    Limpeza wellness.
+    hrv_raw = valor original da sheet (antes de z-score e lookback)
+    hrv     = valor limpo e preenchido (para análises contínuas)
     """
     if len(df) == 0: return df
     df = df.copy().sort_values('Data')
     df = df.drop_duplicates(subset=['Data'], keep='first')
-    # [1] Remover picos Z-score
-    for c in [c for c in ['hrv', 'rhr', 'sleep_hours', 'sleep_quality',
+    # [0] Guardar HRV original ANTES de qualquer limpeza
+    if 'hrv' in df.columns:
+        df['hrv_raw'] = pd.to_numeric(df['hrv'], errors='coerce')
+    # [1] Remover picos Z-score — threshold 3.5 para hrv (menos agressivo)
+    for c in [c for c in ['rhr', 'sleep_hours', 'sleep_quality',
                            'stress', 'fatiga', 'humor', 'soreness', 'peso', 'fat']
               if c in df.columns]:
         df[c] = remove_zscore(df[c], 3.0)
+    if 'hrv' in df.columns:
+        df['hrv'] = remove_zscore(df['hrv'], 3.5)  # threshold mais permissivo para HRV
     # [2] Zeros inválidos → NaN
     df = remove_zeros(df, ['hrv', 'rhr', 'sleep_hours'])
-    # [3] Guardar HRV original ANTES de preenchimento (hrv_raw = NaN se sem medição real)
-    if 'hrv' in df.columns:
-        df['hrv_raw'] = df['hrv'].copy()
-
-    # [4] Preencher faltantes com lookback (sem data leakage)
-    # hrv É preenchido aqui para não quebrar outras análises (WEED_z, etc.)
-    # tab_recovery usa hrv_raw para detectar dias sem medição real
+    # [3] Preencher faltantes com lookback (sem data leakage)
     for c in [c for c in ['hrv', 'rhr', 'sleep_quality', 'fatiga',
                            'stress', 'humor', 'soreness']
               if c in df.columns]:
