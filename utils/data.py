@@ -1623,19 +1623,17 @@ def preproc_wellness(df):
         df[c] = remove_zscore(df[c], 3.0)
     # [2] Zeros inválidos → NaN
     df = remove_zeros(df, ['hrv', 'rhr', 'sleep_hours'])
-    # [3] Guardar HRV original ANTES de imputação
+    # [3] Guardar HRV original ANTES de qualquer modificação
     if 'hrv' in df.columns:
-        df['hrv_raw']      = df['hrv'].copy()       # NaN = sem medição real
-        df['hrv_imputado'] = False
+        df['hrv_raw'] = df['hrv'].copy()  # NaN = sem medição real
+
     # [4] Preencher faltantes com lookback (sem data leakage)
-    for c in [c for c in ['hrv', 'rhr', 'sleep_quality', 'fatiga',
+    # NOTA: 'hrv' NÃO é preenchido — deve ser sempre medição real
+    # Outros sinais (rhr, sleep_quality, etc.) são preenchidos para análises contínuas
+    for c in [c for c in ['rhr', 'sleep_quality', 'fatiga',
                            'stress', 'humor', 'soreness']
               if c in df.columns]:
-        df_antes = df[c].copy()
         df = _preencher_faltantes_lookback(df, c)
-        # Marcar onde hrv foi imputado
-        if c == 'hrv':
-            df['hrv_imputado'] = df_antes.isna() & df['hrv'].notna()
     return df.reset_index(drop=True)
 
 def preproc_ativ(df):
