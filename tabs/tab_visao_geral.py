@@ -847,8 +847,10 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 if len(_s) > 0: _eftp[_m] = float(_s.iloc[-1])
 
         def _med_semanas(df, col, n_sem=8):
-            """Mediana das últimas n semanas COMPLETAS com dados (excluindo semana actual)."""
+            """Mediana das últimas n semanas COMPLETAS com dados (excluindo semana actual).
+            Semana = segunda a domingo (ISO week)."""
             df = df.copy()
+            # to_period('W') pandas = Monday-based por default
             df['_sem'] = df['Data'].dt.to_period('W')
             _sem_actual = pd.Timestamp.now().normalize().to_period('W')
             # Excluir semana actual — só semanas completas
