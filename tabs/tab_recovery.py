@@ -345,8 +345,12 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
 
         # Banda: dias sem medição (LnrMSSD NaN) → fundo cinzento
         sem_med = beta_df[beta_df['LnrMSSD'].isna()].copy()
-        sem_med = sem_med.reset_index()
+        if 'Data' not in sem_med.columns:
+            sem_med = sem_med.reset_index().rename(columns={'index': 'Data'})
+        else:
+            sem_med = sem_med.reset_index(drop=True)
         for _, row_sm in sem_med.iterrows():
+            if pd.isna(row_sm.get('Data')): continue
             fig_b.add_vrect(
                 x0=row_sm['Data'] - pd.Timedelta(hours=12),
                 x1=row_sm['Data'] + pd.Timedelta(hours=12),
