@@ -1,2262 +1,1958 @@
 from utils.config import *
 from utils.helpers import *
 from utils.data import *
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import datetime, timedelta
-import re as _re
+from datetime import datetime
 import warnings
 import sys, os as _os
-sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+from scipy import stats
 
+sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 warnings.filterwarnings('ignore')
 
-def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
-    st.header("📊 Visão Geral")
 
-    # ── KPIs — mês corrente fixo (independente do filtro global) ──
-    _kpi_hoje    = pd.Timestamp.now().normalize()
-    _kpi_mc_ini  = _kpi_hoje.replace(day=1)
-    _kpi_mp_fim  = _kpi_mc_ini - pd.Timedelta(days=1)
-    _kpi_mp_ini  = _kpi_mp_fim.replace(day=1)
-
-    # Atividades do mês corrente e mês anterior (usa da_full se disponível)
-    _src_kpi = da_full if da_full is not None and len(da_full) > 0 else da
-    if len(_src_kpi) > 0 and 'Data' in _src_kpi.columns:
-        _kpi_df = _src_kpi.copy()
-        _kpi_df['Data'] = pd.to_datetime(_kpi_df['Data'])
-        _kpi_df = _kpi_df[_kpi_df['type'].apply(norm_tipo) != 'WeightTraining']
-        _kpi_mc = _kpi_df[_kpi_df['Data'] >= _kpi_mc_ini]
-        _kpi_mp = _kpi_df[(_kpi_df['Data'] >= _kpi_mp_ini) & (_kpi_df['Data'] <= _kpi_mp_fim)]
-    else:
-        _kpi_mc = _kpi_mp = pd.DataFrame()
-
-    _sess_mc  = len(_kpi_mc)
-    _sess_mp  = len(_kpi_mp)
-    _horas_mc = _kpi_mc['moving_time'].sum() / 3600 if 'moving_time' in _kpi_mc.columns and len(_kpi_mc) > 0 else 0
-    _horas_mp = _kpi_mp['moving_time'].sum() / 3600 if 'moving_time' in _kpi_mp.columns and len(_kpi_mp) > 0 else 0
-    _kj_mc = pd.to_numeric(_kpi_mc.get('icu_joules', pd.Series()), errors='coerce').sum() / 1000 if 'icu_joules' in _kpi_mc.columns and len(_kpi_mc) > 0 else 0
-    _kj_mp = pd.to_numeric(_kpi_mp.get('icu_joules', pd.Series()), errors='coerce').sum() / 1000 if 'icu_joules' in _kpi_mp.columns and len(_kpi_mp) > 0 else 0
-
-    # Delta absoluto (não %)
-    def _delta_abs_sess(vc, vp):
-        if not vp or vp == 0: return None
-        d = vc - vp
-        return f"{d:+.0f} vs mês ant."
-
-    def _delta_abs_h(vc, vp):
-        if not vp or vp == 0: return None
-        d = vc - vp
-        return f"{d:+.1f}h vs mês ant."
-
-    def _delta_abs_kj(vc, vp):
-        if not vp or vp == 0: return None
-        d = vc - vp
-        return f"{d:+.0f} kJ vs mês ant."
-
-    # Intensidade do mês — RPE / HR / Power
-    def _calc_intensidade(df_src):
-        """Retorna dicts com distribuição leve/mod/forte por RPE, HR e Power."""
-        result = {}
-        if len(df_src) == 0:
-            return result
-
-        # RPE: Leve≤4 / Mod 4.1-6.9 / Forte≥7
-        _rpe = pd.to_numeric(df_src.get('rpe', pd.Series(dtype=float)), errors='coerce').dropna()
-        if len(_rpe) > 0:
-            n = len(_rpe)
-            result['rpe'] = {
-                'L': int((_rpe <= 4.0).sum()),
-                'M': int(((_rpe > 4.0) & (_rpe < 7.0)).sum()),
-                'F': int((_rpe >= 7.0).sum()),
-                'n': n,
-            }
-
-        # HR: Leve<120 / Mod 120-149 / Forte≥150 bpm (médias por sessão)
-        _hr = pd.to_numeric(df_src.get('hr_avg', df_src.get('average_heartrate', pd.Series(dtype=float))), errors='coerce').dropna()
-        if len(_hr) > 0:
-            n = len(_hr)
-            result['hr'] = {
-                'L': int((_hr < 120).sum()),
-                'M': int(((_hr >= 120) & (_hr < 150)).sum()),
-                'F': int((_hr >= 150).sum()),
-                'n': n,
-            }
-
-        # Power: Leve<0.75IF / Mod 0.75-0.90IF / Forte>0.90IF
-        # Proxy: usar IF se disponível, ou usar power_avg vs eFTP
-        _if = pd.to_numeric(df_src.get('IF', df_src.get('icu_intensity', pd.Series(dtype=float))), errors='coerce').dropna()
-        if len(_if) == 0 and 'power_avg' in df_src.columns and 'icu_eftp' in df_src.columns:
-            _pwr = pd.to_numeric(df_src['power_avg'], errors='coerce')
-            _ftp = pd.to_numeric(df_src['icu_eftp'],  errors='coerce')
-            _if  = (_pwr / _ftp.replace(0, np.nan)).dropna()
-        if len(_if) > 0:
-            n = len(_if)
-            result['pwr'] = {
-                'L': int((_if < 0.75).sum()),
-                'M': int(((_if >= 0.75) & (_if < 0.90)).sum()),
-                'F': int((_if >= 0.90).sum()),
-                'n': n,
-            }
-
-        return result
-
-    def _fmt_int(d, key):
-        """Formata distribuição como 'X%/Y%/Z%' com legenda de cores."""
-        if key not in d or d[key]['n'] == 0:
-            return '—', ''
-        n  = d[key]['n']
-        pl = d[key]['L'] / n * 100
-        pm = d[key]['M'] / n * 100
-        pf = d[key]['F'] / n * 100
-        s  = f"{pl:.0f}%/{pm:.0f}%/{pf:.0f}%"
-        cap = (f"<span style='color:#2ecc71'>●</span> {d[key]['L']} &nbsp;"
-               f"<span style='color:#f39c12'>●</span> {d[key]['M']} &nbsp;"
-               f"<span style='color:#e74c3c'>●</span> {d[key]['F']}")
-        return s, cap
-
-    _int_mc = _calc_intensidade(_kpi_mc)
-    _rpe_str_mc, _rpe_cap_mc = _fmt_int(_int_mc, 'rpe')
-    _hr_str_mc,  _hr_cap_mc  = _fmt_int(_int_mc, 'hr')
-    _pwr_str_mc, _pwr_cap_mc = _fmt_int(_int_mc, 'pwr')
-
-    # Linha 1: Sessões / Horas / KJ
-    c1, c2, c3 = st.columns(3)
-    c1.metric("🏋️ Sessões (mês)", f"{_sess_mc}",
-              _delta_abs_sess(_sess_mc, _sess_mp))
-    c2.metric("⏱️ Horas (mês)", fmt_dur(_horas_mc) if _horas_mc else "—",
-              _delta_abs_h(_horas_mc, _horas_mp))
-    c3.metric("⚡ KJ (mês)", f"{_kj_mc:.0f}" if _kj_mc else "—",
-              _delta_abs_kj(_kj_mc, _kj_mp))
-
-    # Linha 2: Intensidade RPE / HR / Power
-    _ci1, _ci2, _ci3 = st.columns(3)
-    with _ci1:
-        st.metric("Intensidade RPE (L/M/F)", _rpe_str_mc,
-                  help="Leve ≤4 / Moderado 4.1–6.9 / Forte ≥7")
-        if _rpe_cap_mc:
-            st.caption(_rpe_cap_mc + " sess.", unsafe_allow_html=True)
-    with _ci2:
-        st.metric("Intensidade HR (L/M/F)", _hr_str_mc,
-                  help="Leve <120 bpm / Moderado 120–149 bpm / Forte ≥150 bpm")
-        if _hr_cap_mc:
-            st.caption(_hr_cap_mc + " sess.", unsafe_allow_html=True)
-    with _ci3:
-        st.metric("Intensidade Power (L/M/F)", _pwr_str_mc,
-                  help="Leve IF<0.75 / Moderado IF 0.75–0.89 / Forte IF≥0.90")
-        if _pwr_cap_mc:
-            st.caption(_pwr_cap_mc + " sess.", unsafe_allow_html=True)
-
-    # HRV e RHR
-    _src_wkpi = wc_full if wc_full is not None and len(wc_full) > 0 else dw
-    if _src_wkpi is not None and len(_src_wkpi) > 0 and 'hrv' in _src_wkpi.columns:
-        _wkpi = _src_wkpi.copy()
-        _wkpi['Data'] = pd.to_datetime(_wkpi['Data'])
-        _hrv_mc = _wkpi[_wkpi['Data'] >= _kpi_mc_ini]['hrv'].dropna()
-        _hrv_mp = _wkpi[(_wkpi['Data'] >= _kpi_mp_ini) & (_wkpi['Data'] <= _kpi_mp_fim)]['hrv'].dropna()
-        _rhr_mc = _wkpi[_wkpi['Data'] >= _kpi_mc_ini]['rhr'].dropna() if 'rhr' in _wkpi.columns else pd.Series()
-        _rhr_mp = _wkpi[(_wkpi['Data'] >= _kpi_mp_ini) & (_wkpi['Data'] <= _kpi_mp_fim)]['rhr'].dropna() if 'rhr' in _wkpi.columns else pd.Series()
-        _hrv_mc_v = float(_hrv_mc.mean()) if len(_hrv_mc) > 0 else None
-        _hrv_mp_v = float(_hrv_mp.mean()) if len(_hrv_mp) > 0 else None
-        _rhr_mc_v = float(_rhr_mc.mean()) if len(_rhr_mc) > 0 else None
-        _rhr_mp_v = float(_rhr_mp.mean()) if len(_rhr_mp) > 0 else None
-    else:
-        _hrv_mc_v = _hrv_mp_v = _rhr_mc_v = _rhr_mp_v = None
-
-    def _delta_abs_ms(vc, vp):
-        if vc is None or vp is None: return None
-        return f"{vc-vp:+.0f} ms vs mês ant."
-
-    def _delta_abs_bpm(vc, vp):
-        if vc is None or vp is None: return None
-        return f"{vc-vp:+.0f} bpm vs mês ant."
-
-    _ch1, _ch2 = st.columns(2)
-    _ch1.metric("💚 HRV (mês)", f"{_hrv_mc_v:.0f} ms" if _hrv_mc_v else "—",
-                _delta_abs_ms(_hrv_mc_v, _hrv_mp_v))
-    _ch2.metric("❤️ RHR (mês)", f"{_rhr_mc_v:.0f} bpm" if _rhr_mc_v else "—",
-                _delta_abs_bpm(_rhr_mc_v, _rhr_mp_v))
-    st.markdown("---")
-
-    # ── Semana ACTUAL (seg→hoje) ──────────────────────────────────────────
-    if da_full is not None and len(da_full) > 0:
-        _df_sw = da_full.copy()
-        _df_sw['Data'] = pd.to_datetime(_df_sw['Data'])
-        _df_sw = _df_sw[_df_sw['type'].apply(norm_tipo) != 'WeightTraining']
-        _df_sw = filtrar_principais(_df_sw)
-        if 'icu_joules' in _df_sw.columns:
-            _df_sw['_kj'] = pd.to_numeric(_df_sw['icu_joules'], errors='coerce') / 1000
-        elif 'power_avg' in _df_sw.columns:
-            _df_sw['_kj'] = (pd.to_numeric(_df_sw['power_avg'], errors='coerce') *
-                              pd.to_numeric(_df_sw['moving_time'], errors='coerce') / 1000)
-        else:
-            _df_sw['_kj'] = np.nan
-        _df_sw['_mt']  = pd.to_numeric(_df_sw['moving_time'], errors='coerce') / 3600
-        _df_sw['_rpe'] = pd.to_numeric(_df_sw['rpe'], errors='coerce')                          if 'rpe' in _df_sw.columns else np.nan
-
-        _hoje_sw  = pd.Timestamp.now().normalize()
-        _dow_sw   = _hoje_sw.weekday()
-        _sem_ini_sw = _hoje_sw - pd.Timedelta(days=_dow_sw)  # segunda desta semana
-        _df_sw_cur = _df_sw[_df_sw['Data'] >= _sem_ini_sw].copy()
-
-        rows_sw = []  # inicializar — sem actividades esta semana
-        if len(_df_sw_cur) > 0:
-            _df_sw_cur['_dia'] = _df_sw_cur['Data'].dt.strftime('%a %d/%m')
-            rows_sw = []
-            for _, r in _df_sw_cur.sort_values('Data').iterrows():
-                rows_sw.append({
-                    'Dia':        r['_dia'],
-                    'Modalidade': r['type'],
-                    'RPE':        f"{r['_rpe']:.0f}" if pd.notna(r['_rpe']) else '—',
-                    'KJ':         f"{r['_kj']:.0f}" if pd.notna(r['_kj']) and r['_kj']>0 else '—',
-                    'Horas':      fmt_dur(r['_mt']) if pd.notna(r['_mt']) else '—',
-                })
-            # ── Resumo Semanal — semana Seg→Dom actual ───────────────────
-            st.subheader("📋 Resumo Semanal")
-
-            # Semana actual: Seg → hoje
-            _rs_hoje     = pd.Timestamp.now().normalize()
-            _rs_dow      = _rs_hoje.weekday()
-            _rs_sem_ini  = _rs_hoje - pd.Timedelta(days=_rs_dow)   # segunda
-            # Semana anterior: Seg → Dom anterior
-            _rs_sp_fim   = _rs_sem_ini - pd.Timedelta(days=1)      # dom passado
-            _rs_sp_ini   = _rs_sp_fim  - pd.Timedelta(days=6)      # seg passada
-
-            # Filtra da_full para as duas semanas (exclui WeightTraining)
-            _rs_src = da_full.copy()
-            _rs_src['Data'] = pd.to_datetime(_rs_src['Data'])
-            _rs_src = _rs_src[_rs_src['type'].apply(norm_tipo) != 'WeightTraining']
-
-            _rs_cur = _rs_src[_rs_src['Data'] >= _rs_sem_ini]
-            _rs_prev= _rs_src[(_rs_src['Data'] >= _rs_sp_ini) & (_rs_src['Data'] <= _rs_sp_fim)]
-
-            # Sessões e Horas
-            _rs_sess_c = len(_rs_cur)
-            _rs_sess_p = len(_rs_prev)
-            _rs_h_c = _rs_cur['moving_time'].sum() / 3600 if 'moving_time' in _rs_cur.columns else 0
-            _rs_h_p = _rs_prev['moving_time'].sum() / 3600 if 'moving_time' in _rs_prev.columns else 0
-            _rs_kj_c = pd.to_numeric(_rs_cur.get('icu_joules', pd.Series()), errors='coerce').sum() / 1000 if 'icu_joules' in _rs_cur.columns else 0
-            _rs_kj_p = pd.to_numeric(_rs_prev.get('icu_joules', pd.Series()), errors='coerce').sum() / 1000 if 'icu_joules' in _rs_prev.columns else 0
-
-            def _rs_delta(vc, vp):
-                if not vp or vp == 0: return None
-                return f"{(vc-vp)/vp*100:+.0f}% vs sem.ant"
-
-            def _rs_delta_abs_sess(vc, vp):
-                if not vp: return None
-                return f"{vc-vp:+.0f} vs sem.ant"
-
-            def _rs_delta_abs_h(vc, vp):
-                if not vp: return None
-                return f"{vc-vp:+.1f}h vs sem.ant"
-
-            def _rs_delta_abs_kj(vc, vp):
-                if not vp: return None
-                return f"{vc-vp:+.0f} kJ vs sem.ant"
-
-            # RPE distribuição Leve/Moderado/Forte — Leve≤4 / Mod 4.1–6.9 / Forte≥7
-            _rs_rpe = pd.to_numeric(_rs_cur.get('rpe', pd.Series()), errors='coerce').dropna() if 'rpe' in _rs_cur.columns else pd.Series()
-            _rs_rpe_str = "—"
-            _n_leve = _n_mod = _n_forte = 0
-            if len(_rs_rpe) > 0:
-                _n_total = len(_rs_rpe)
-                _n_leve  = int((_rs_rpe <= 4.0).sum())
-                _n_mod   = int(((_rs_rpe > 4.0) & (_rs_rpe < 7.0)).sum())
-                _n_forte = int((_rs_rpe >= 7.0).sum())
-                _p_leve  = _n_leve / _n_total * 100
-                _p_mod   = _n_mod  / _n_total * 100
-                _p_forte = _n_forte/ _n_total * 100
-                _rs_rpe_str = f"{_p_leve:.0f}%/{_p_mod:.0f}%/{_p_forte:.0f}%"
-
-            # HR intensidade (média por sessão): Leve<120 / Mod 120-149 / Forte≥150
-            _hr_col = next((c for c in ['hr_avg','average_heartrate'] if c in _rs_cur.columns), None)
-            _rs_hr_str = "—"; _rs_hr_cap = ""
-            _nh_l = _nh_m = _nh_f = 0
-            if _hr_col:
-                _rs_hr = pd.to_numeric(_rs_cur[_hr_col], errors='coerce').dropna()
-                if len(_rs_hr) > 0:
-                    _nh_l = int((_rs_hr < 120).sum())
-                    _nh_m = int(((_rs_hr >= 120) & (_rs_hr < 150)).sum())
-                    _nh_f = int((_rs_hr >= 150).sum())
-                    _nt   = len(_rs_hr)
-                    _rs_hr_str = f"{_nh_l/_nt*100:.0f}%/{_nh_m/_nt*100:.0f}%/{_nh_f/_nt*100:.0f}%"
-                    _rs_hr_cap = (f"<span style='color:#2ecc71'>●</span> {_nh_l} &nbsp;"
-                                  f"<span style='color:#f39c12'>●</span> {_nh_m} &nbsp;"
-                                  f"<span style='color:#e74c3c'>●</span> {_nh_f}")
-
-            # Power intensidade via IF: Leve IF<0.75 / Mod 0.75-0.89 / Forte≥0.90
-            _rs_pwr_str = "—"; _rs_pwr_cap = ""
-            _np_l = _np_m = _np_f = 0
-            _if_col = next((c for c in ['IF','icu_intensity'] if c in _rs_cur.columns), None)
-            _rs_if = pd.Series(dtype=float)
-            if _if_col:
-                _rs_if = pd.to_numeric(_rs_cur[_if_col], errors='coerce').dropna()
-            elif 'power_avg' in _rs_cur.columns and 'icu_eftp' in _rs_cur.columns:
-                _p = pd.to_numeric(_rs_cur['power_avg'], errors='coerce')
-                _e = pd.to_numeric(_rs_cur['icu_eftp'],  errors='coerce')
-                _rs_if = (_p / _e.replace(0, np.nan)).dropna()
-            if len(_rs_if) > 0:
-                _np_l = int((_rs_if < 0.75).sum())
-                _np_m = int(((_rs_if >= 0.75) & (_rs_if < 0.90)).sum())
-                _np_f = int((_rs_if >= 0.90).sum())
-                _nt_p = len(_rs_if)
-                _rs_pwr_str = f"{_np_l/_nt_p*100:.0f}%/{_np_m/_nt_p*100:.0f}%/{_np_f/_nt_p*100:.0f}%"
-                _rs_pwr_cap = (f"<span style='color:#2ecc71'>●</span> {_np_l} &nbsp;"
-                               f"<span style='color:#f39c12'>●</span> {_np_m} &nbsp;"
-                               f"<span style='color:#e74c3c'>●</span> {_np_f}")
-
-            # HRV e RHR — semana actual vs semana anterior
-            _rs_wc = (wc_full if wc_full is not None and len(wc_full) > 0 else dw).copy() if (wc_full is not None or len(dw) > 0) else pd.DataFrame()
-            _rs_hrv_c = _rs_hrv_p = _rs_rhr_c = _rs_rhr_p = None
-            if len(_rs_wc) > 0 and 'hrv' in _rs_wc.columns:
-                _rs_wc['Data'] = pd.to_datetime(_rs_wc['Data'])
-                _wc_cur  = _rs_wc[_rs_wc['Data'] >= _rs_sem_ini]
-                _wc_prev = _rs_wc[(_rs_wc['Data'] >= _rs_sp_ini) & (_rs_wc['Data'] <= _rs_sp_fim)]
-                _rs_hrv_c = float(_wc_cur['hrv'].dropna().mean())  if _wc_cur['hrv'].notna().any()  else None
-                _rs_hrv_p = float(_wc_prev['hrv'].dropna().mean()) if _wc_prev['hrv'].notna().any() else None
-                if 'rhr' in _rs_wc.columns:
-                    _rs_rhr_c = float(_wc_cur['rhr'].dropna().mean())  if _wc_cur['rhr'].notna().any()  else None
-                    _rs_rhr_p = float(_wc_prev['rhr'].dropna().mean()) if _wc_prev['rhr'].notna().any() else None
-
-            # CTL actual + ΔCTL semana + projetado (cálculo rápido com icu_training_load)
-            _rs_ctl_str = _rs_dctl_str = _rs_ctl_proj_str = None
-            try:
-                _rs_pf = da_full.copy()
-                _rs_pf['Data'] = pd.to_datetime(_rs_pf['Data'])
-                if 'icu_training_load' in _rs_pf.columns:
-                    _rs_pf['_load'] = pd.to_numeric(_rs_pf['icu_training_load'], errors='coerce').fillna(0)
-                    _rs_dates = pd.date_range(_rs_pf['Data'].min(), _rs_hoje, freq='D')
-                    _rs_load_d = _rs_pf.groupby('Data')['_load'].sum().reindex(_rs_dates, fill_value=0)
-                    _rs_ctl_s  = _rs_load_d.ewm(span=42, adjust=False).mean()
-                    _rs_ctl_hoje_v = float(_rs_ctl_s.iloc[-1])
-                    # ΔCTL desta semana = diferença entre CTL hoje e CTL de segunda-feira
-                    _rs_ctl_seg_v  = float(_rs_ctl_s.loc[_rs_sem_ini]) if _rs_sem_ini in _rs_ctl_s.index else _rs_ctl_hoje_v
-                    _rs_dctl       = _rs_ctl_hoje_v - _rs_ctl_seg_v
-                    # Projetar CTL para domingo (assumindo mesmo ritmo de carga)
-                    _rs_dias_rest  = 6 - _rs_dow  # dias restantes até domingo
-                    _rs_load_cur_w = float(_rs_pf[_rs_pf['Data'] >= _rs_sem_ini]['_load'].sum())
-                    _rs_load_dia   = _rs_load_cur_w / max(_rs_dow + 1, 1)
-                    _rs_ctl_dom_v  = _rs_ctl_hoje_v  # approx simples
-                    for _ in range(_rs_dias_rest):
-                        _rs_ctl_dom_v = _rs_ctl_dom_v + (_rs_load_dia - _rs_ctl_dom_v) / 42
-                    _rs_ctl_str      = f"{_rs_ctl_hoje_v:.1f}"
-                    _rs_dctl_str     = f"{_rs_dctl:+.2f} esta sem."
-                    _rs_ctl_proj_str = f"→ {_rs_ctl_dom_v:.1f} (dom)"
-            except Exception:
-                pass
-
-            # Layout: linha 1 — Sessões / Horas / KJ (delta absoluto)
-            _rs1, _rs2, _rs3 = st.columns(3)
-            _rs1.metric("Sessões (sem.)",
-                        str(_rs_sess_c),
-                        _rs_delta_abs_sess(_rs_sess_c, _rs_sess_p))
-            _rs2.metric("Horas (sem.)",
-                        fmt_dur(_rs_h_c) if _rs_h_c else "—",
-                        _rs_delta_abs_h(_rs_h_c, _rs_h_p))
-            _rs3.metric("KJ (sem.)",
-                        f"{_rs_kj_c:.0f}" if _rs_kj_c else "—",
-                        _rs_delta_abs_kj(_rs_kj_c, _rs_kj_p))
-
-            # Linha 2 — HRV / RHR / CTL
-            _rs4, _rs5, _rs6 = st.columns(3)
-            _rs4.metric("HRV médio (sem.)",
-                        f"{_rs_hrv_c:.0f} ms" if _rs_hrv_c else "—",
-                        (f"{_rs_hrv_c-_rs_hrv_p:+.0f} ms vs sem.ant"
-                         if _rs_hrv_c and _rs_hrv_p else None))
-            _rs5.metric("RHR médio (sem.)",
-                        f"{_rs_rhr_c:.0f} bpm" if _rs_rhr_c else "—",
-                        (f"{_rs_rhr_c-_rs_rhr_p:+.0f} bpm vs sem.ant"
-                         if _rs_rhr_c and _rs_rhr_p else None))
-            with _rs6:
-                if _rs_ctl_str:
-                    st.metric("CTL actual", _rs_ctl_str, _rs_dctl_str)
-                    st.caption(_rs_ctl_proj_str or "")
-
-            # Linha 3 — Intensidade RPE / HR / Power (L/M/F)
-            _ri1, _ri2, _ri3 = st.columns(3)
-            with _ri1:
-                st.metric("Intensidade RPE (L/M/F)", _rs_rpe_str,
-                          help="Leve ≤4 / Moderado 4.1–6.9 / Forte ≥7")
-                if len(_rs_rpe) > 0:
-                    st.caption(
-                        f"<span style='color:#2ecc71'>●</span> {_n_leve} &nbsp;"
-                        f"<span style='color:#f39c12'>●</span> {_n_mod} &nbsp;"
-                        f"<span style='color:#e74c3c'>●</span> {_n_forte} sess.",
-                        unsafe_allow_html=True)
-            with _ri2:
-                st.metric("Intensidade HR (L/M/F)", _rs_hr_str,
-                          help="Leve <120 bpm / Moderado 120–149 bpm / Forte ≥150 bpm")
-                if _rs_hr_cap:
-                    st.caption(_rs_hr_cap + " sess.", unsafe_allow_html=True)
-            with _ri3:
-                st.metric("Intensidade Power (L/M/F)", _rs_pwr_str,
-                          help="Leve IF<0.75 / Moderado IF 0.75–0.89 / Forte IF≥0.90")
-                if _rs_pwr_cap:
-                    st.caption(_rs_pwr_cap + " sess.", unsafe_allow_html=True)
-
-            st.markdown("---")
-
-            # ── Semana actual | Semana anterior (lado a lado) ─────────────
-            _col_sa, _col_sp = st.columns(2)
-            with _col_sa:
-                st.subheader("📅 Semana actual")
-                st.dataframe(pd.DataFrame(rows_sw), width="stretch", hide_index=True)
-            with _col_sp:
-                _hoje_sw = pd.Timestamp.now().normalize()
-                _sp_fim  = _hoje_sw - pd.Timedelta(days=_hoje_sw.weekday()+1)
-                _sp_ini  = _sp_fim - pd.Timedelta(days=6)
-                st.subheader(f"📅 Sem. anterior ({_sp_ini.strftime('%d/%m')}→{_sp_fim.strftime('%d/%m')})")
-                if da_full is not None and len(da_full) > 0:
-                    _dfsp = da_full.copy()
-                    _dfsp['Data'] = pd.to_datetime(_dfsp['Data'])
-                    _dfsp['_mt'] = pd.to_numeric(_dfsp['moving_time'], errors='coerce') / 3600
-                    _dfsp['_kj'] = (pd.to_numeric(_dfsp['icu_joules'], errors='coerce') / 1000
-                                    if 'icu_joules' in _dfsp.columns else np.nan)
-                    _dfsp['_km'] = (pd.to_numeric(_dfsp['distance'], errors='coerce') / 1000
-                                    if 'distance' in _dfsp.columns else np.nan)
-                    _dfsp['_rpe'] = pd.to_numeric(_dfsp.get('rpe', pd.Series(dtype=float)),
-                                                   errors='coerce')
-                    _sub_sp = _dfsp[(_dfsp['Data'] >= _sp_ini) & (_dfsp['Data'] <= _sp_fim)]
-                    _sub_sp = _sub_sp[_sub_sp['type'].apply(norm_tipo) != 'WeightTraining']
-                    if len(_sub_sp) > 0:
-                        _rows_sp = []
-                        for _tp in sorted(_sub_sp['type'].apply(norm_tipo).unique()):
-                            _s = _sub_sp[_sub_sp['type'].apply(norm_tipo) == _tp]
-                            _rows_sp.append({
-                                'Modal.':  _tp,
-                                'Sess.':   len(_s),
-                                'Horas':   fmt_dur(_s['_mt'].sum()),
-                                'KM':      f"{_s['_km'].sum():.0f}" if _s['_km'].notna().any() else '—',
-                                'KJ':      f"{_s['_kj'].sum():.0f}" if _s['_kj'].notna().any() else '—',
-                                'RPE≥7':   int((_s['_rpe'] >= 7).sum()),
-                            })
-                        st.dataframe(pd.DataFrame(_rows_sp), width="stretch", hide_index=True)
-                    else:
-                        st.info("Sem actividades na semana anterior.")
-        else:
-            st.subheader("📋 Resumo Semanal")
-            st.info("Sem actividades desde segunda-feira.")
-            st.subheader("📅 Semana actual")
-            st.info("Sem actividades desde segunda-feira.")
-        st.markdown("---")
-
-    # ── HRV-Guided + Recovery Score + Peso/BF ────────────────────────────
-    vg_r1, vg_r2, vg_r3, vg_r4, vg_r5 = st.columns(5)
-
-    # ── HRV-Guided Training (LnrMSSD, baseline 14d, ±0.5 SD) ────────────
-    hrv_hoje    = None
-    hrv_class   = "Sem dados"
-    hrv_emoji   = "⚪"
-    rec_score   = None
-    rec_trend   = ""
-
-    if wc_full is not None and len(wc_full) > 0 and 'hrv' in wc_full.columns:
-        _wc = wc_full.copy()
-        _wc['Data'] = pd.to_datetime(_wc['Data'])
-        _wc = _wc.sort_values('Data')
-        _wc['LnrMSSD'] = np.where(_wc['hrv'] > 0, np.log(_wc['hrv']), np.nan)
-        _wc = _wc.dropna(subset=['LnrMSSD'])
-        if len(_wc) >= 7:
-            _wc['bm']  = _wc['LnrMSSD'].rolling(14, min_periods=7).mean()
-            _wc['bs']  = _wc['LnrMSSD'].rolling(14, min_periods=7).std()
-            _wc['linf']= _wc['bm'] - 0.5 * _wc['bs']
-            _wc['lsup']= _wc['bm'] + 0.5 * _wc['bs']
-            # Use last row for hrv_hoje; use last row WITH bm for classification
-            # This ensures today's HRV is classified even if bm not yet propagated
-            last_hrv = _wc.iloc[-1]   # actual last HRV entry (today if measured)
-            last_bm  = _wc.dropna(subset=['bm']).iloc[-1]  # last with rolling bm
-            hrv_hoje = float(last_hrv['hrv']) if pd.notna(last_hrv.get('hrv')) else None
-            # Classify using today's LnrMSSD vs the most recent baseline
-            _lnr_today = float(last_hrv['LnrMSSD']) if pd.notna(last_hrv.get('LnrMSSD')) else None
-            _linf_ref  = float(last_bm['linf']) if pd.notna(last_bm.get('linf')) else None
-            _lsup_ref  = float(last_bm['lsup']) if pd.notna(last_bm.get('lsup')) else None
-            if _lnr_today is not None and _linf_ref is not None:
-                if _linf_ref <= _lnr_today <= _lsup_ref:
-                    hrv_class = "HIIT"; hrv_emoji = "🟢"
-                else:
-                    hrv_class = "Recuperação"; hrv_emoji = "🔴"
-
-        # Recovery Score trend (7d)
-        _rec = calcular_recovery(_wc.rename(columns={'Data':'Data'}))
-        if len(_rec) >= 7:
-            rec_vals = _rec['recovery_score'].dropna()
-            if len(rec_vals) >= 7:
-                rec_score = rec_vals.iloc[-1]
-                rec_mean7 = rec_vals.tail(7).mean()
-                rec_mean_prev = rec_vals.iloc[-14:-7].mean() if len(rec_vals) >= 14 else rec_vals.mean()
-                if rec_mean7 > rec_mean_prev * 1.03:
-                    rec_trend = "↗"
-                elif rec_mean7 < rec_mean_prev * 0.97:
-                    rec_trend = "↘"
-                else:
-                    rec_trend = "→"
-
-    with vg_r1:
-        st.metric("🧠 HRV-Guided",
-                  f"{hrv_emoji} {hrv_class}",
-                  f"HRV {hrv_hoje:.0f} ms" if hrv_hoje else None)
-    with vg_r2:
-        st.metric("🔋 Recovery Score",
-                  f"{rec_score:.0f}/100" if rec_score else "—",
-                  rec_trend if rec_score else None)
-
-    # ── Peso e BF (rolling 7d, só dias com dados reais) ────────────────
-    # Fonte primária: wc/dw (formulário wellness — colunas 'peso' e 'bf_pct')
-    # Fallback: dc (Consolidado_Comida — colunas 'Peso' e 'BF')
-    peso_7d = peso_atual = peso_trend = bf_7d = bf_atual = bf_trend = None
-
-    _hoje_p   = pd.Timestamp.now().normalize()
-    _mes_ini_p  = _hoje_p.replace(day=1)
-    _mes_p_fim2 = _mes_ini_p - pd.Timedelta(days=1)
-    _mes_p_ini2 = _mes_p_fim2.replace(day=1)
-
-    # Tenta primeiro wc (wellness form: 'peso' e 'bf_pct')
-    # Se não tiver, usa dc (food diary: 'Peso' e 'BF')
-    _sources = []
-    if wc_full is not None and len(wc_full) > 0:
-        _wc2 = wc_full.copy()
-        _wc2['Data'] = pd.to_datetime(_wc2['Data'])
-        # Mapa: (col_no_df, var_peso, var_bf)
-        _peso_col = 'peso'   if 'peso'   in _wc2.columns else None
-        _bf_col   = 'bf_pct' if 'bf_pct' in _wc2.columns else None
-        if _peso_col or _bf_col:
-            _sources.append((_wc2, _peso_col, _bf_col, 'wellness'))
-    if dc is not None and len(dc) > 0:
-        _dc2 = dc.copy()
-        _dc2['Data'] = pd.to_datetime(_dc2['Data'])
-        _sources.append((_dc2, 'Peso', 'BF', 'food'))
-
-    for _src_df, _pcol, _bcol, _src_name in _sources:
-        # Peso
-        if _pcol and _pcol in _src_df.columns and peso_7d is None:
-            _s = _src_df[['Data', _pcol]].dropna(subset=[_pcol]).copy()
-            _s = _s[pd.to_numeric(_s[_pcol], errors='coerce').between(30, 200)]
-            if len(_s) >= 2:
-                _v_atual = float(_s[_pcol].iloc[-1])
-                _ult7    = _s[_s['Data'] >= _hoje_p - pd.Timedelta(days=14)][_pcol]
-                _v7      = float(_ult7.tail(7).mean()) if len(_ult7) >= 1 else _v_atual
-                _mp      = _s[(_s['Data'] >= _mes_p_ini2) & (_s['Data'] <= _mes_p_fim2)][_pcol]
-                _vmp     = float(_mp.mean()) if len(_mp) >= 1 else None
-                if _vmp and _vmp > 0:
-                    _pct = (_v7 - _vmp) / _vmp * 100
-                    peso_trend = (f"↗ +{_pct:.1f}% vs mês ant." if _pct > 0.5
-                                  else f"↘ {_pct:.1f}% vs mês ant." if _pct < -0.5
-                                  else "→ estável vs mês ant.")
-                peso_7d = _v7; peso_atual = _v_atual
-        # BF %
-        if _bcol and _bcol in _src_df.columns and bf_7d is None:
-            _s = _src_df[['Data', _bcol]].dropna(subset=[_bcol]).copy()
-            _s = _s[pd.to_numeric(_s[_bcol], errors='coerce').between(3, 50)]
-            if len(_s) >= 2:
-                _v_atual = float(_s[_bcol].iloc[-1])
-                _ult7    = _s[_s['Data'] >= _hoje_p - pd.Timedelta(days=14)][_bcol]
-                _v7      = float(_ult7.tail(7).mean()) if len(_ult7) >= 1 else _v_atual
-                _mp      = _s[(_s['Data'] >= _mes_p_ini2) & (_s['Data'] <= _mes_p_fim2)][_bcol]
-                _vmp     = float(_mp.mean()) if len(_mp) >= 1 else None
-                if _vmp and _vmp > 0:
-                    _pct = (_v7 - _vmp) / _vmp * 100
-                    bf_trend = (f"↗ +{_pct:.1f}% vs mês ant." if _pct > 0.5
-                                else f"↘ {_pct:.1f}% vs mês ant." if _pct < -0.5
-                                else "→ estável vs mês ant.")
-                bf_7d = _v7; bf_atual = _v_atual
-        if peso_7d is not None and bf_7d is not None:
-            break  # ambos encontrados, não precisa de fallback
-
-    with vg_r3:
-        st.metric("⚖️ Peso",
-                  f"{peso_7d:.1f} kg (7d)" if peso_7d else "—",
-                  f"Actual: {peso_atual:.1f} kg" if 'peso_atual' in dir() and peso_atual else None)
-        if peso_trend: st.caption(peso_trend)
-    with vg_r4:
-        st.metric("🫁 BF",
-                  f"{bf_7d:.1f}% (7d)" if bf_7d else "—",
-                  f"Actual: {bf_atual:.1f}%" if 'bf_atual' in dir() and bf_atual else None)
-        if bf_trend: st.caption(bf_trend)
-    with vg_r5:
-        pass  # coluna vazia para espaçamento
-
-    st.markdown("---")
-
-    # ── Prioridades + Need Score (visão rápida) ──────────────────────────
-    st.subheader("🎯 Próxima Sessão — Prioridades e Necessidade")
-
-    # Controlos de prioridade — partilhados com a aba Análises via keys únicas
-    _mods_vg = ['Bike', 'Row', 'Ski', 'Run']
-    # Defaults com session_state — lembra as últimas escolhas do utilizador
-    _def_preset = st.session_state.get("vg_prio_preset", "Balanceado (K=10)")
-    _def_p1     = st.session_state.get("vg_prio1", "Bike")
-    _def_p2     = st.session_state.get("vg_prio2", "Row")
-    _def_p3     = st.session_state.get("vg_prio3", "Ski")
-    _def_p4     = st.session_state.get("vg_prio4", "Run")
-    _presets    = ["Conservador (K=6)", "Balanceado (K=10)", "Agressivo (K=15)"]
-
-    vg_c0, vg_c1, vg_c2, vg_c3, vg_c4 = st.columns([1, 1, 1, 1, 1])
-    with vg_c0:
-        vg_preset = st.selectbox("Preset K", _presets,
-            index=_presets.index(_def_preset) if _def_preset in _presets else 1,
-            key="vg_prio_preset")
-        vg_K = {"Conservador (K=6)":6,"Balanceado (K=10)":10,"Agressivo (K=15)":15}[vg_preset]
-    with vg_c1:
-        vg_p1 = st.selectbox("🥇 P1 Foco", _mods_vg,
-            index=_mods_vg.index(_def_p1) if _def_p1 in _mods_vg else 0,
-            key="vg_prio1")
-    with vg_c2:
-        vg_p2 = st.selectbox("🥈 P2 Foco", _mods_vg,
-            index=_mods_vg.index(_def_p2) if _def_p2 in _mods_vg else 1,
-            key="vg_prio2")
-    with vg_c3:
-        vg_p3 = st.selectbox("🥉 P3 Manutenção", _mods_vg,
-            index=_mods_vg.index(_def_p3) if _def_p3 in _mods_vg else 2,
-            key="vg_prio3")
-    with vg_c4:
-        vg_p4 = st.selectbox("4️⃣  P4 Manutenção", _mods_vg,
-            index=_mods_vg.index(_def_p4) if _def_p4 in _mods_vg else 3,
-            key="vg_prio4")
-
-    vg_prio_rank  = {vg_p1:1, vg_p2:2, vg_p3:3, vg_p4:4}
-    vg_grupo_foco = {vg_p1, vg_p2}
-    vg_grupo_man  = {vg_p3, vg_p4}
-
-    if da_full is not None and len(da_full) > 0:
-        vg_res, _ = analisar_falta_estimulo(da_full, janela_dias=7)
-        if vg_res:
-            rows_f, rows_m = [], []
-            for mod, d in vg_res.items():
-                rank   = vg_prio_rank.get(mod, 4)
-                peso   = (4 + 1 - rank) / 4
-                bonus  = peso * vg_K * (1 - d['need_score'] / 100)
-                nf     = d['need_score'] + bonus
-                ol_flag= d.get('overload', False)
-                if ol_flag:   nf *= 0.5
-                if mod in vg_grupo_man: nf = min(nf, 40)
-                nf = max(nf, 10)
-                pf = ('ALTA' if nf>=70 else 'MÉDIA' if nf>=40 else 'BAIXA')
-                row_d = {
-                    'Modalidade': f"{'🎯' if mod in vg_grupo_foco else '🔧'} {mod}"
-                                  + (' ⚠️' if ol_flag else ''),
-                    'Need':       f"{d['need_score']:.0f}",
-                    'Final':      f"{nf:.0f}",
-                    'Vol/Int':    f"{d.get('need_vol',0):.0f}/{d.get('need_int_prescr',0):.0f}",
-                    'Prescrição': d.get('prescricao','—'),
-                }
-                if mod in vg_grupo_foco: rows_f.append((nf, row_d))
-                else:                    rows_m.append((nf, row_d))
-
-            rows_f.sort(key=lambda x: x[0], reverse=True)
-            rows_m.sort(key=lambda x: x[0], reverse=True)
-
-            col_f, col_m = st.columns(2)
-            with col_f:
-                st.markdown("**🎯 Foco**")
-                if rows_f:
-                    st.dataframe(pd.DataFrame([r for _,r in rows_f]),
-                                 width="stretch", hide_index=True)
-                    # Sugestão principal
-                    top    = rows_f[0]
-                    top_mod= top[1]['Modalidade'].replace('🎯 ','').replace('🔧 ','').replace(' ⚠️','')
-                    top_d  = vg_res.get(top_mod, {})
-                    if top_d.get('overload'):
-                        st.warning(f"⚠️ **{top_mod}**: {top_d.get('prescricao','—')}")
-                    else:
-                        st.info(f"🎯 **{top_mod}** — {top_d.get('prescricao','—')}")
-            with col_m:
-                st.markdown("**🔧 Manutenção**")
-                if rows_m:
-                    st.dataframe(pd.DataFrame([r for _,r in rows_m]),
-                                 width="stretch", hide_index=True)
-        else:
-            st.info("Dados insuficientes para análise de necessidade.")
-    else:
-        st.info("Dados de actividade completos não disponíveis.")
-
-    # ── Semana anterior + Comparação mensal ─────────────────────────────
-    if da_full is not None and len(da_full) > 0:
-        _df_all = da_full.copy()
-        _df_all['Data'] = pd.to_datetime(_df_all['Data'])
-        _df_all = _df_all[_df_all['type'].apply(norm_tipo) != 'WeightTraining']
-
-        # KJ
-        if 'icu_joules' in _df_all.columns:
-            _df_all['_kj'] = pd.to_numeric(_df_all['icu_joules'], errors='coerce') / 1000
-        elif 'power_avg' in _df_all.columns and 'moving_time' in _df_all.columns:
-            _df_all['_kj'] = (pd.to_numeric(_df_all['power_avg'], errors='coerce') *
-                              pd.to_numeric(_df_all['moving_time'], errors='coerce') / 1000)
-        else:
-            _df_all['_kj'] = np.nan
-        _df_all['_km']  = pd.to_numeric(_df_all['distance'], errors='coerce') / 1000                           if 'distance' in _df_all.columns else np.nan
-        _df_all['_mt']  = pd.to_numeric(_df_all['moving_time'], errors='coerce') / 3600
-        _df_all['_rpe'] = pd.to_numeric(_df_all['rpe'], errors='coerce')                           if 'rpe' in _df_all.columns else np.nan
-
-        hoje      = pd.Timestamp.now().normalize()
-        dow       = hoje.weekday()
-        sem_fim   = hoje - pd.Timedelta(days=dow + 1)
-        sem_ini   = sem_fim - pd.Timedelta(days=6)
-        mes_c_ini = hoje.replace(day=1)
-        mes_p_fim = mes_c_ini - pd.Timedelta(days=1)
-        mes_p_ini = mes_p_fim.replace(day=1)
-
-        def _vg_agg(df, d_ini, d_fim, semana=False):
-            sub = df[(df['Data'] >= d_ini) & (df['Data'] <= d_fim)]
-            if len(sub) == 0: return {}
-            res = {}
-            for mod in sorted(sub['type'].apply(norm_tipo).unique()):
-                s = sub[sub['type'].apply(norm_tipo) == mod]
-                d = {'kj': s['_kj'].sum() if s['_kj'].notna().any() else 0,
-                     'km': s['_km'].sum() if '_km' in s and s['_km'].notna().any() else 0,
-                     'horas': s['_mt'].sum() if s['_mt'].notna().any() else 0}
-                if semana:
-                    d['sessoes']   = len(s)
-                    d['rpe_altas'] = int((s['_rpe'] >= 7).sum())                                      if '_rpe' in s.columns else 0
-                res[mod] = d
-            return res
-
-        sem_data    = _vg_agg(_df_all, sem_ini, sem_fim, semana=True)
-        mes_p_p_fim = mes_p_ini - pd.Timedelta(days=1)
-        mes_p_p_ini = mes_p_p_fim.replace(day=1)
-        mes_pp      = _vg_agg(_df_all, mes_p_p_ini, mes_p_p_fim)
-        mes_p       = _vg_agg(_df_all, mes_p_ini, mes_p_fim)
-        mes_c       = _vg_agg(_df_all, mes_c_ini, hoje)
-
-        # ── Gráfico barras horizontais KJ ────────────────────────────────
-        all_mods_m = sorted(set(list(mes_p.keys()) + list(mes_c.keys())))
-        if all_mods_m:
-            st.subheader(f"⚡ KJ por Modalidade — "
-                         f"{mes_p_ini.strftime('%b %Y')} vs {mes_c_ini.strftime('%b %Y')}")
-            kj_p = [mes_p.get(m,{}).get('kj',0) for m in all_mods_m]
-            kj_c = [mes_c.get(m,{}).get('kj',0) for m in all_mods_m]
-            fig_kj = go.Figure()
-            fig_kj.add_trace(go.Bar(
-                y=all_mods_m, x=kj_p, name=mes_p_ini.strftime('%b %Y'),
-                orientation='h', marker_color='#95a5a6',
-                text=[f"{v:.0f}" if v>0 else '' for v in kj_p],
-                textposition='outside',
-                hovertemplate='%{y}: <b>%{x:.0f} kJ</b><extra></extra>'))
-            fig_kj.add_trace(go.Bar(
-                y=all_mods_m, x=kj_c,
-                name=f"{mes_c_ini.strftime('%b %Y')} (corrente)",
-                orientation='h', marker_color='#2ecc71',
-                text=[f"{v:.0f}" if v>0 else '' for v in kj_c],
-                textposition='outside',
-                hovertemplate='%{y}: <b>%{x:.0f} kJ</b><extra></extra>'))
-            fig_kj.update_layout(
-                paper_bgcolor='white', plot_bgcolor='white',
-                barmode='group', height=max(200, len(all_mods_m)*60+80),
-                font=dict(color='#222222'),
-                margin=dict(l=60, r=80, t=30, b=20),
-                xaxis=dict(title='kJ', showgrid=True, gridcolor='#eeeeee',
-                           tickfont=dict(color='#333333')),
-                yaxis=dict(tickfont=dict(color='#333333')),
-                legend=dict(orientation='h', y=1.08,
-                            font=dict(color='#111111', size=11)))
-            st.plotly_chart(fig_kj, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
-
-        # ── Tabela comparativa mensal removida ──────────────────────────
-
-    # ── Camada de Progressão de Carga ────────────────────────────────────
-    if da_full is not None and len(da_full) > 0:
-        st.subheader("📈 Progressão de Carga Semanal")
-        st.caption(
-            "Camada independente do Need Score — controla QUANTO treinar. "
-            "Fator modulado pelo Need (leitura apenas). Cap +12% vs ano anterior.")
-
-        _pf = da_full.copy()
-        _pf['Data'] = pd.to_datetime(_pf['Data'])
-        _pf = _pf[_pf['type'].apply(norm_tipo) != 'WeightTraining']
-
-        # KJ
-        if 'icu_joules' in _pf.columns:
-            _pf['_kj'] = pd.to_numeric(_pf['icu_joules'], errors='coerce') / 1000
-        elif 'power_avg' in _pf.columns and 'moving_time' in _pf.columns:
-            _pf['_kj'] = (pd.to_numeric(_pf['power_avg'], errors='coerce') *
-                          pd.to_numeric(_pf['moving_time'], errors='coerce') / 1000)
-        else:
-            _pf['_kj'] = np.nan
-        _pf['_km']  = pd.to_numeric(_pf['distance'], errors='coerce') / 1000                       if 'distance' in _pf.columns else np.nan
-        _pf['_mt']  = pd.to_numeric(_pf['moving_time'], errors='coerce') / 3600
-        _pf['_rpe_n']   = pd.to_numeric(_pf['rpe'], errors='coerce') if 'rpe' in _pf.columns else np.nan
-        _pf['_dur_min'] = _pf['_mt'] * 60
-
-        hoje_pf   = pd.Timestamp.now().normalize()
-        ano_atual = hoje_pf.year
-        ano_ant   = ano_atual - 1
-        dia_ano   = hoje_pf.timetuple().tm_yday
-        # Semana actual: segunda até hoje
-        dow_pf    = hoje_pf.weekday()
-        sem_ini_pf= hoje_pf - pd.Timedelta(days=dow_pf)
-
-        # Buscar Need scores e overload do modelo (se disponível)
-        _need_cache = {}
-        _ol_cache   = {}
-        _ni_cache   = {}
-        try:
-            _res_prog, _ = analisar_falta_estimulo(_pf, janela_dias=14)
-            if _res_prog:
-                for _m, _d in _res_prog.items():
-                    _need_cache[_m] = _d.get('need_score', 40)
-                    _ol_cache[_m]   = _d.get('overload', False)
-                    _ni_cache[_m]   = _d.get('need_int_prescr', 50)
-        except Exception:
-            pass
-
-        # Need_7d cache — para calcular delta 7d vs 14d
-        _need7_cache = {}
-        try:
-            _res_prog7, _ = analisar_falta_estimulo(_pf, janela_dias=7)
-            if _res_prog7:
-                for _m, _d in _res_prog7.items():
-                    _need7_cache[_m] = _d.get('need_score', 40)
-        except Exception:
-            pass
-
-        def _calc_f_delta(need_7d, need_14d, ol, n_sess_7d):
-            """
-            Opção B — thresholds fixos calibrados.
-            Delta = Need_7d - Need_14d.
-            Positivo = deficit recente maior que baseline = aumentar kj_target.
-            Negativo = excesso recente = reduzir kj_target.
-            Limites: F_MAX=1.10, F_MIN=0.85 (alinhados com prog_cap).
-            """
-            # Poucos dados recentes → neutro
-            if n_sess_7d < 3:
-                return 1.0
-            # Overload → nunca aumentar
-            delta = float(need_7d) - float(need_14d)
-            if   delta >= 25:  f = 1.10
-            elif delta >= 15:  f = 1.06
-            elif delta >= 5:   f = 1.02
-            elif delta <= -25: f = 0.85
-            elif delta <= -15: f = 0.90
-            elif delta <= -5:  f = 0.95
-            else:              f = 1.00
-            if ol:
-                f = min(f, 1.0)
-            return max(0.85, min(f, 1.10))
-
-        # eFTP por modalidade (último valor disponível)
-        _eftp = {}
-        # icu_ftp = FTP testado (estável, para zonas) — preferido
-        # icu_eftp = estimado pelo modelo (para acompanhamento de forma)
-        _ftp_col = 'icu_ftp' if 'icu_ftp' in _pf.columns else 'icu_eftp'
-        if _ftp_col in _pf.columns:
-            for _m in ['Bike','Row','Ski','Run']:
-                _s = _pf[_pf['type'].apply(norm_tipo)==_m][_ftp_col]
-                _s = pd.to_numeric(_s, errors='coerce').dropna()
-                if len(_s) > 0: _eftp[_m] = float(_s.iloc[-1])
-
-        def _med_semanas(df, col, n_sem=8):
-            """Mediana das últimas n semanas COMPLETAS com dados (excluindo semana actual).
-            Semana = segunda a domingo (ISO week)."""
-            df = df.copy()
-            # to_period('W') pandas = Monday-based por default
-            df['_sem'] = df['Data'].dt.to_period('W')
-            _sem_actual = pd.Timestamp.now().normalize().to_period('W')
-            # Excluir semana actual — só semanas completas
-            df = df[df['_sem'] < _sem_actual]
-            agg = df.groupby('_sem')[col].sum().reset_index()
-            agg = agg.sort_values('_sem').tail(n_sem)
-            vals = agg[col][agg[col] > 0]
-            return float(vals.median()) if len(vals) > 0 else 0.0
-
-        def _sugestao_sessao(kj_rest, h_rest, km_rest, mod, eftp, ni, ol, df_hist=None, f_delta=1.0):
-            """
-            Retorna (df_opcoes, ref_line, ol_warn).
-            5 tipos de estimulo com mesmo KJ_target. Principal por Need_intensity.
-            """
-            _TIPOS = [
-                {"key":"anaerobio",  "label":"⚫ Anaeróbio",  "pct":(1.15,1.30), "rpe_lbl":"9–10"},
-                {"key":"vo2",        "label":"🔴 VO2max",     "pct":(0.95,1.10), "rpe_lbl":"8–9"},
-                {"key":"threshold",  "label":"🟡 Threshold",  "pct":(0.83,0.90), "rpe_lbl":"6–7"},
-                {"key":"sweetspot",  "label":"🟢 Sweet Spot", "pct":(0.78,0.83), "rpe_lbl":"5–6"},
-                {"key":"leve",       "label":"🔵 Leve",       "pct":(0.55,0.68), "rpe_lbl":"3–4"},
-            ]
-
-            def _estrutura(tipo_key, dur_work_min):
-                d = max(1.0, float(dur_work_min))
-                structs = []
-                if tipo_key == "anaerobio":
-                    for reps, on_s, rest_s in [(10,20,120),(8,25,150),(6,30,180),(5,30,180),(4,40,240)]:
-                        if d > 0 and abs(reps*on_s/60 - d)/d < 0.30:
-                            structs.append(f"{reps}x{on_s}s rest {rest_s//60}:{rest_s%60:02d}")
-                    if not structs:
-                        structs = [f"{max(4,round(d*60/25))}x25s rest 2:30"]
-                elif tipo_key == "vo2":
-                    for reps, on_s in [(4,240),(5,180),(6,180),(5,240),(4,300),(6,240),(3,300),(8,150),(10,120)]:
-                        if d > 0 and abs(reps*on_s/60 - d)/d < 0.20:
-                            ms = on_s//60; ss_r = on_s%60
-                            structs.append(f"{reps}x{ms}:{ss_r:02d} rest {ms}:{ss_r:02d}")
-                    reps_30 = round(d*2)
-                    if 6 <= reps_30 <= 20:
-                        n_ser = max(1, reps_30//8); rpp = reps_30//n_ser
-                        structs.append(f"{n_ser}x{rpp}x30/30")
-                    structs = structs[:3]
-                    if not structs:
-                        structs = [f"{max(3,round(d/4))}x4:00 rest 4:00"]
-                elif tipo_key == "threshold":
-                    for reps, on_m in [(3,10),(4,8),(2,15),(4,10),(3,12),(5,8),(2,20)]:
-                        if d > 0 and abs(reps*on_m - d)/d < 0.25:
-                            structs.append(f"{reps}x{on_m}min rest 3–4min")
-                    structs = structs[:2]
-                    if not structs:
-                        n = max(2, round(d/10))
-                        structs = [f"{n}x{round(d/n)}min rest 3min"]
-                elif tipo_key == "sweetspot":
-                    for reps, on_m in [(1,40),(2,20),(3,15),(1,30),(2,25),(1,50)]:
-                        if d > 0 and abs(reps*on_m - d)/d < 0.25:
-                            structs.append(f"1x{on_m}min contínuo" if reps==1 else f"{reps}x{on_m}min rest 4–5min")
-                    structs = structs[:2]
-                    if not structs:
-                        structs = [f"1x{round(d)}min contínuo"]
-                else:
-                    structs = [f"Contínuo {round(d)}min"]
-                return "  /  ".join(structs)
-
-            # ── Histórico ─────────────────────────────────────────────────
-            _ref_kj = _ref_dur = _ref_pwr = None
-            _eff_delta = 0.0
-            _kjh_ref = _kjh_baseline = None
-            kj_target_A_adj = 1.0
-            _PROG_CAP = {"Z3":1.07, "Z2":1.10, "Z1":1.12}
-            _TEMPO_CAP = 1.10
-            pwr_inc_base = 0.01 if ni >= 70 else 0.02
-
-            if df_hist is not None and len(df_hist) >= 2:
-                _df_mod = df_hist[df_hist["type"].apply(norm_tipo) == mod].copy()
-                if len(_df_mod) > 0:
-                    _has_zona = "z3_kj" in _df_mod.columns and "z2_kj" in _df_mod.columns
-                    if _has_zona:
-                        _z3n = pd.to_numeric(_df_mod["z3_kj"], errors="coerce").fillna(0)
-                        _z2n = pd.to_numeric(_df_mod["z2_kj"], errors="coerce").fillna(0)
-                        _tot = pd.to_numeric(_df_mod["_kj"], errors="coerce").replace(0,np.nan).fillna(1)
-                        _df_mod["_zona_dom"] = "Z1"
-                        _df_mod.loc[_z2n/_tot > 0.30, "_zona_dom"] = "Z2"
-                        _df_mod.loc[_z3n/_tot > 0.20, "_zona_dom"] = "Z3"
-                        _df_mod.loc[(_z3n==0)&(_z2n==0), "_zona_dom"] = None
-                    else:
-                        _df_mod["_zona_dom"] = None
-                    _df_mod["_rpe_n_num"] = pd.to_numeric(_df_mod["_rpe_n"], errors="coerce")
-                    _df_mod["_match_rpe"]  = _df_mod["_rpe_n_num"].between(5,10).astype(float)
-                    _df_mod["_match_zona"] = (_df_mod["_zona_dom"]=="Z3").astype(float)*0.5
-                    _nt = len(_df_mod)
-                    _df_mod["_recency"] = (np.arange(_nt)/max(_nt-1,1))*0.2
-                    _df_mod["_score"]   = _df_mod["_match_rpe"]+_df_mod["_match_zona"]+_df_mod["_recency"]
-                    _pool = _df_mod[_df_mod["_match_rpe"] >= 1.0].copy()
-                    _dh   = _pool.sort_values("_score", ascending=False).head(5)
-                    if len(_dh) >= 2:
-                        _ref_kj  = float(_dh["_kj"].median())
-                        _ref_dur = float(_dh["_dur_min"].median())
-                        if "z3_pwr" in _dh.columns:
-                            _zp = pd.to_numeric(_dh["z3_pwr"], errors="coerce").replace(0,np.nan)
-                            _ref_pwr = float(_zp.median()) if _zp.notna().any() else None
-                        _pool2 = _pool.copy()
-                        _kj_w  = pd.to_numeric(_pool2["_kj"], errors="coerce").replace(0,np.nan)
-                        _trimp = (pd.to_numeric(_pool2["_dur_min"], errors="coerce") *
-                                  pd.to_numeric(_pool2["_rpe_n"],   errors="coerce"))
-                        _pool2["_eff"] = _trimp / _kj_w
-                        _eff_bl  = float(_pool2["_eff"].median()) if _pool2["_eff"].notna().any() else None
-                        _cut8w   = pd.Timestamp.now() - pd.Timedelta(weeks=8)
-                        _prec    = _pool2[_pool2["Data"] >= _cut8w]
-                        _eff_rec = float(_prec["_eff"].median()) if (len(_prec)>=2 and _prec["_eff"].notna().any()) else None
-                        if _eff_bl and _eff_rec and _eff_bl > 0:
-                            _eff_delta = (_eff_rec/_eff_bl) - 1.0
-                        _pool2["_kjh"] = (pd.to_numeric(_pool2["_kj"], errors="coerce") /
-                                          (pd.to_numeric(_pool2["_dur_min"], errors="coerce")/60))
-                        _kjh_baseline = float(_pool2["_kjh"].median()) if _pool2["_kjh"].notna().any() else None
-                        _kjh_ref = (_ref_kj/(_ref_dur/60)) if (_ref_kj and _ref_dur and _ref_dur>0) else None
-
-            # ── pwr_inc ────────────────────────────────────────────────────
-            pwr_inc = pwr_inc_base
-            if   _eff_delta < -0.05: pwr_inc *= 1.2
-            elif _eff_delta <  0.05: pwr_inc *= 1.0
-            elif _eff_delta <  0.12: pwr_inc *= 0.9
-            else:                    pwr_inc *= 0.7
-            if _kjh_baseline and _kjh_ref:
-                _kjh_ratio = _kjh_ref/_kjh_baseline
-                if   _kjh_ratio >= 1.0:  pwr_inc *= 1.1
-                elif _kjh_ratio >= 0.90: kj_target_A_adj = 0.95
-                else:                    kj_target_A_adj = 0.90
-
-            # ── zona e KJ_target ───────────────────────────────────────────
-            _prog_cap = _PROG_CAP["Z3" if ni>=70 else "Z2" if ni>=40 else "Z1"]
-            if ol:
-                kj_target = (_ref_kj*0.65) if _ref_kj else max(kj_rest*0.65, 60)
-            elif _ref_kj and _ref_kj > 0:
-                kj_target = min(kj_rest if kj_rest>0 else _ref_kj*1.03,
-                                _ref_kj*_prog_cap) * kj_target_A_adj
-            else:
-                kj_target = max(kj_rest, 80)
-
-            # ── f_delta: ajuste 7d vs 14d ─────────────────────────────────
-            # Overload já capturado em kj_target*0.65 — f_delta clampado a ≤1.0 por _calc_f_delta
-            kj_target = kj_target * f_delta
-
-            # Clamps de segurança pós f_delta
-            if _ref_kj and _ref_kj > 0:
-                kj_target = min(kj_target, _ref_kj * 1.15)  # nunca +15% do histórico
-            kj_target = max(kj_target, 40)                   # mínimo absoluto 40 kJ
-
-            tempo_max = (_ref_dur*_TEMPO_CAP) if _ref_dur else 90
-            watts_ftp = eftp if eftp else 200
-
-            # ── Semana anterior — Z1/Z2/Z3 por zona ───────────────────────
-            _sa_z3_kj = _sa_z3_dur = _sa_z3_pwr = None
-            _sa_z2_kj = _sa_z2_dur = _sa_z2_pwr = None
-            _sa_z1_kj = _sa_z1_dur = _sa_z1_rpe_med = None
-            hoje_sa    = pd.Timestamp.now().normalize()
-            sem_ini_sa = hoje_sa - pd.Timedelta(days=hoje_sa.weekday())
-            sa_ini     = sem_ini_sa - pd.Timedelta(weeks=1)
-            sa_fim     = sem_ini_sa - pd.Timedelta(days=1)
-
-            if df_hist is not None and len(df_hist) > 0 and "_rpe_n" in df_hist.columns:
-                _df_sa_all = df_hist[
-                    (df_hist["type"].apply(norm_tipo) == mod) &
-                    (df_hist["Data"] >= sa_ini) &
-                    (df_hist["Data"] <= sa_fim)
-                ].copy()
-                _rpe_sa = pd.to_numeric(_df_sa_all.get("_rpe_n", pd.Series(dtype=float)), errors="coerce")
-                _kj_sa  = pd.to_numeric(_df_sa_all.get("_kj",    pd.Series(dtype=float)), errors="coerce").replace(0,np.nan)
-
-                # Z3 — RPE >= 7 AND z3_kj/total_kj > 20%
-                if "z3_kj" in _df_sa_all.columns:
-                    _z3_sa  = pd.to_numeric(_df_sa_all["z3_kj"], errors="coerce").replace(0,np.nan)
-                    _z3_dom = (_z3_sa / _kj_sa.fillna(1) > 0.20) & (_rpe_sa >= 7)
-                    _df_z3  = _df_sa_all[_z3_dom].copy()
-                    if len(_df_z3) > 0:
-                        _sa_z3_kj  = float(pd.to_numeric(_df_z3["z3_kj"],  errors="coerce").replace(0,np.nan).sum())   if "z3_kj"  in _df_z3.columns else None
-                        _sa_z3_dur = float(pd.to_numeric(_df_z3["z3_sec"], errors="coerce").replace(0,np.nan).sum()/60) if "z3_sec" in _df_z3.columns else None
-                        _sa_z3_pwr = float(pd.to_numeric(_df_z3["z3_pwr"], errors="coerce").replace(0,np.nan).mean())  if "z3_pwr" in _df_z3.columns else None
-
-                # Z2 — RPE 5-7 AND z2_kj/total_kj > 30%
-                if "z2_kj" in _df_sa_all.columns:
-                    _z2_sa  = pd.to_numeric(_df_sa_all["z2_kj"], errors="coerce").replace(0,np.nan)
-                    _z2_dom = (_z2_sa / _kj_sa.fillna(1) > 0.30) & (_rpe_sa.between(5,7))
-                    _df_z2  = _df_sa_all[_z2_dom].copy()
-                    if len(_df_z2) > 0:
-                        _sa_z2_kj  = float(pd.to_numeric(_df_z2["z2_kj"],  errors="coerce").replace(0,np.nan).sum())   if "z2_kj"  in _df_z2.columns else None
-                        _sa_z2_dur = float(pd.to_numeric(_df_z2["z2_sec"], errors="coerce").replace(0,np.nan).sum()/60) if "z2_sec" in _df_z2.columns else None
-                        _sa_z2_pwr = float(pd.to_numeric(_df_z2["z2_pwr"], errors="coerce").replace(0,np.nan).mean())  if "z2_pwr" in _df_z2.columns else None
-
-                # Z1 — RPE <= 4 (qualquer sessão leve)
-                _df_z1 = _df_sa_all[_rpe_sa <= 4].copy()
-                if len(_df_z1) > 0:
-                    _sa_z1_kj      = float(_kj_sa[_rpe_sa<=4].sum())         if _kj_sa[_rpe_sa<=4].notna().any() else None
-                    _sa_z1_dur     = float(pd.to_numeric(_df_z1["_dur_min"], errors="coerce").sum()) if "_dur_min" in _df_z1.columns else None
-                    _sa_z1_rpe_med = float(_rpe_sa[_rpe_sa<=4].median())
-
-            # ── Principal ──────────────────────────────────────────────────
-            if ol:
-                _pk = "leve"
-            elif ni >= 90:
-                _pk = "anaerobio"
-            elif ni >= 70:
-                _pk = "vo2"
-            elif ni >= 60:
-                _pk = "threshold"
-            elif ni >= 40:
-                _pk = "sweetspot"
-            else:
-                _pk = "leve"
-
-            # ── Gerar linhas ───────────────────────────────────────────────
-            _rows = []
-            for _t in _TIPOS:
-                _key  = _t["key"]
-                _pct  = (_t["pct"][0]+_t["pct"][1])/2
-                _pwr_z = watts_ftp * _pct
-                if _key in ("vo2","anaerobio") and _ref_pwr:
-                    _pwr_z = _ref_pwr
-                _inc = pwr_inc if _key==_pk else (0.0 if _key=="anaerobio" else pwr_inc*0.5)
-                _pwr_f = _pwr_z*(1+_inc)*(0.95 if ol else 1.0)
-
-                # ── f_delta power adjustment — ajuste leve com clamp por zona ──
-                # 50% do efeito do f_delta, para não sobrepor o tipo de sessão
-                _pwr_adj = 1.0 + (f_delta - 1.0) * 0.5
-                # Clamp por zona (garante que Threshold não vaza para VO2)
-                _clamp_zona = {"anaerobio": 1.01, "vo2": 1.02,
-                               "threshold": 1.03, "sweetspot": 1.03, "leve": 1.05}
-                _pwr_adj = min(_pwr_adj, _clamp_zona.get(_key, 1.03))
-                _pwr_adj = max(_pwr_adj, 0.90)  # nunca reduzir mais de 10%
-                # Limites de zona para não mudar tipo de sessão
-                _zona_pct_min, _zona_pct_max = {
-                    "anaerobio":  (1.10, 1.35),
-                    "vo2":        (0.90, 1.12),
-                    "threshold":  (0.80, 0.92),
-                    "sweetspot":  (0.75, 0.84),
-                    "leve":       (0.50, 0.70),
-                }.get(_key, (0.50, 1.35))
-                _pwr_f = _pwr_f * _pwr_adj
-                _ftp_ref = (eftp if eftp else 200)
-                _pwr_f = max(_ftp_ref * _zona_pct_min,
-                             min(_pwr_f, _ftp_ref * _zona_pct_max))
-                _kj_z  = (kj_target*0.35 if _key=="anaerobio" else
-                           kj_target*1.10 if _key=="leve" else kj_target)
-                _dw = min((_kj_z*1000/(_pwr_f*60)) if _pwr_f>0 else 40, tempo_max)
-                _rr = {"anaerobio":8.0,"vo2":1.0,"threshold":0.35,"sweetspot":0.20}.get(_key,0.0)
-                _dt = _dw*(1+_rr)
-                _kj_r = _pwr_f*_dw*60/1000
-                _kjh  = _kj_r/(_dt/60) if _dt>0 else 0
-                _struct = _estrutura(_key, _dw)
-                # ── vs semana anterior por zona ──────────────────────────
-                _vs = ""
-                if _key in ("vo2","anaerobio"):
-                    # Z3: comparar kJ, duração e power em Z3
-                    if _sa_z3_kj and _sa_z3_kj > 5:
-                        _dk = _kj_r - _sa_z3_kj
-                        _vs = f"{_dk:+.0f}kJ Z3"
-                        if _sa_z3_pwr and _sa_z3_pwr > 0:
-                            _dp = _pwr_f - _sa_z3_pwr
-                            _vs += f" | {_dp:+.0f}W"
-                    elif _sa_z3_dur and _sa_z3_dur > 2:
-                        _vs = f"{_dw-_sa_z3_dur:+.1f}min Z3"
-
-                elif _key in ("threshold","sweetspot"):
-                    # Z2: comparar kJ e duração em Z2
-                    if _sa_z2_kj and _sa_z2_kj > 10:
-                        _dk2 = _kj_r - _sa_z2_kj
-                        _vs = f"{_dk2:+.0f}kJ Z2"
-                        if _sa_z2_pwr and _sa_z2_pwr > 0:
-                            _dp2 = _pwr_f - _sa_z2_pwr
-                            _vs += f" | {_dp2:+.0f}W"
-                    elif _sa_z2_dur and _sa_z2_dur > 5:
-                        _vs = f"{_dw-_sa_z2_dur:+.1f}min Z2"
-                    elif not _sa_z2_kj and not _sa_z2_dur:
-                        # Sem Z2 na semana anterior — novo estímulo
-                        _vs = "novo estímulo Z2"
-
-                elif _key == "leve":
-                    # Z1: opção B — se RPE médio < 4 e dur > 45min, sugerir subir para Z2
-                    if _sa_z1_kj and _sa_z1_dur:
-                        _dk1 = _kj_r - _sa_z1_kj
-                        _vs = f"{_dk1:+.0f}kJ Z1"
-                        # Sugerir upgrade se leve bem tolerado
-                        if (_sa_z1_rpe_med is not None and _sa_z1_rpe_med < 3.5
-                                and _sa_z1_dur > 45):
-                            _vs += " → considera Sweet Spot"
-                    elif _sa_z1_dur and _sa_z1_dur > 0:
-                        _dd1 = _dw - _sa_z1_dur
-                        _vs = f"{_dd1:+.0f}min Z1"
-                        if (_sa_z1_rpe_med is not None and _sa_z1_rpe_med < 3.5
-                                and _sa_z1_dur > 45):
-                            _vs += " → considera Sweet Spot"
-                _kjh_str = f"{_kjh:.0f}"
-                if _kjh_ref and _kjh_ref>0:
-                    _kjh_str += f" ({(_kjh-_kjh_ref)/_kjh_ref*100:+.0f}%)"
-                _rows.append({
-                    "Tipo":       ("★ " if _key==_pk else "  ")+_t["label"],
-                    "Estrutura":  _struct,
-                    "Watts":      f"{round(_pwr_f)}W",
-                    "Work":       f"{_dw:.0f}min",
-                    "Total":      f"{_dt:.0f}min",
-                    "KJ":         f"{_kj_r:.0f}",
-                    "KJ/h":       _kjh_str,
-                    "RPE":        _t["rpe_lbl"],
-                    "vs sem.ant": _vs,
-                })
-
-            if not _rows:
-                return None, None, None
-
-            _df_out = pd.DataFrame(_rows)
-            _ref_line = ""
-            if _ref_kj and _ref_dur:
-                _kjh_r = _ref_kj/(_ref_dur/60)
-                _ref_line = f"Ref: {_ref_kj:.0f} kJ | {_ref_dur:.0f} min | {_kjh_r:.0f} kJ/h"
-                if _sa_z3_kj:
-                    _ref_line += f"  |  Sem.ant Z3: {_sa_z3_kj:.0f} kJ"
-                    if _sa_z3_dur: _ref_line += f" / {_sa_z3_dur:.0f} min"
-            _ol_warn = "⚠️ EM OVERLOAD — power reduzido 5%" if ol else ""
-            # Mostrar f_delta no ref_line para transparência
-            if f_delta != 1.0:
-                _fd_str = f"+{(f_delta-1)*100:.0f}%" if f_delta > 1 else f"{(f_delta-1)*100:.0f}%"
-                _ref_line += f"  |  Δ7d/14d: {_fd_str} KJ"
-            return _df_out, _ref_line, _ol_warn
-
-        rows_prog = []
-
-        # ── κ actual — lido do session_state (populado pelo tab_pmc via calcular_series_carga) ──
-        # Os percentis são calculados DINAMICAMENTE sobre a série histórica real do atleta.
-        # Fallback: se tab_pmc ainda não correu nesta sessão, calcula aqui (sem cache interno).
-        _kappa_s           = None   # série completa de κ
-        _kappa_now         = None   # valor actual
-        _kappa_pct         = None   # percentil actual no histórico do atleta
-        _kappa_consec_alert = 0     # dias consecutivos com κ > p87
-
-        # Percentis dinâmicos — inicializam com valores do histórico do atleta
-        # (serão recalculados abaixo assim que tivermos a série real)
-        _KAPPA_P25 = 3.954
-        _KAPPA_P75 = 5.954
-        _KAPPA_P87 = 7.182
-
-        # 1ª tentativa: session_state (populado pelo tab_pmc quando é visitado)
-        _ld_ss = st.session_state.get('ld_frac_cache', None)
-        if _ld_ss is not None and 'FMT_kappa' in _ld_ss.columns:
-            _kappa_s = pd.to_numeric(_ld_ss['FMT_kappa'], errors='coerce').dropna()
-
-        # 2ª tentativa: calcular directamente (tab_pmc ainda não foi visitada)
-        if _kappa_s is None or len(_kappa_s) < 10:
-            try:
-                _ld_direct, _ = calcular_series_carga(
-                    da_full, df_wellness=wc_full, ate_hoje=True)
-                if _ld_direct is not None and 'FMT_kappa' in _ld_direct.columns:
-                    _kappa_s = pd.to_numeric(
-                        _ld_direct['FMT_kappa'], errors='coerce').dropna()
-                    # Guardar no session_state para evitar recálculo noutras tabs
-                    st.session_state['ld_frac_cache'] = _ld_direct
-            except Exception:
-                _kappa_s = None
-
-        # Calcular percentis REAIS do atleta e estado actual
-        if _kappa_s is not None and len(_kappa_s) >= 10:
-            # Percentis dinâmicos sobre o histórico real
-            _KAPPA_P25 = float(_kappa_s.quantile(0.25))
-            _KAPPA_P75 = float(_kappa_s.quantile(0.75))
-            _KAPPA_P87 = float(_kappa_s.quantile(0.87))
-
-            _kappa_now = float(_kappa_s.dropna().iloc[-1]) if _kappa_s.notna().any() else 0.0
-            _kappa_pct = float((_kappa_s < _kappa_now).mean() * 100)
-
-            # Dias consecutivos acima de p87
-            for _kv in _kappa_s.iloc[::-1]:
-                if _kv > _KAPPA_P87:
-                    _kappa_consec_alert += 1
-                else:
-                    break
-
-        # ── ALERTA AUTOMÁTICO κ > p87 por 3+ dias consecutivos ─────────────────
-        if _kappa_consec_alert >= 3:
-            st.error(
-                f"⚠️ **Alerta FMT Tensor** — κ acima do limiar de sobrecarga "
-                f"(>{_KAPPA_P87:.2f}, p87 do histórico do atleta) "
-                f"há **{_kappa_consec_alert} dias consecutivos**.\n\n"
-                f"κ actual: **{_kappa_now:.3f}** (p{_kappa_pct:.0f} do teu histórico). "
-                f"Sugestão: reduzir volume total 15-20% e eliminar sessões intervaladas por 5-7 dias."
-            )
-        elif _kappa_now is not None and _kappa_now > _KAPPA_P75:
-            st.warning(
-                f"⚠️ **κ elevado** ({_kappa_now:.3f}, p{_kappa_pct:.0f} do teu histórico) — "
-                f"fadiga silenciosa possível. {_kappa_consec_alert} dia(s) acima de p87 "
-                f"({_KAPPA_P87:.2f})."
-            )
-
-        # ── Ler α Modelo M2 do session_state (calculado no app.py no arranque) ─
-        _alpha_p = st.session_state.get('alpha_polar_cache', {})
-
-        for mod in ['Bike','Row','Ski','Run']:
-            _sub = _pf[_pf['type'].apply(norm_tipo)==mod].copy()
-            if len(_sub) == 0: continue
-
-            need  = _need_cache.get(mod, 40)
-            ol    = _ol_cache.get(mod, False)
-            ni    = _ni_cache.get(mod, 50)
-            eftp  = _eftp.get(mod)
-
-            # Baseline mediana 8 semanas (só semanas com dados)
-            kj_base  = _med_semanas(_sub, '_kj')
-            h_base   = _med_semanas(_sub, '_mt')
-            km_base  = _med_semanas(_sub, '_km') if '_km' in _sub.columns else 0.0
-            has_kj   = kj_base > 0
-            has_km   = km_base > 0
-
-            # Fator progressão — calibrado com κ e dados reais do atleta
-            # Percentis κ: p25=3.954 p75=5.954 p87=7.182
-            # Base empírica: análise de fator_real × rec_next semana seguinte (299 semanas)
-            if ol:
-                # Overload confirmado: -15% (dados mostram rec_next=56.8 em κ>p87,
-                # fator real em semanas de mau recovery = 0.880)
-                fator = 0.85
-            elif _kappa_now is not None and _kappa_now > _KAPPA_P87:
-                # Regra de segurança absoluta: κ > p87 força redução independente do need
-                fator = 0.90
-            elif _kappa_now is not None and _kappa_now > _KAPPA_P75:
-                # κ alto sobrepõe need — conter progressão
-                if need > 60:   fator = 0.98  # need alto mas κ alto — prevalecer cautela
-                else:           fator = 0.97
-            elif _kappa_now is not None and _kappa_now < _KAPPA_P25:
-                # κ baixo = máxima janela de ganho fisiológico
-                if need > 60:   fator = 1.08  # melhor janela: empurrar aqui
-                elif need > 30: fator = 1.05  # espaço de ganho moderado
-                else:           fator = 1.00  # manutenção mesmo com κ baixo
-            else:
-                # κ na zona média (p25-p75) — lógica original com ajustes
-                if need > 60:   fator = 1.04  # confirmado pelos dados
-                elif need < 30: fator = 0.97  # conter quando need baixo + κ médio
-                else:           fator = 1.02  # manter (dados confirmam)
-
-            # Sem anterior (última semana completa)
-            sem_ant_ini = sem_ini_pf - pd.Timedelta(weeks=1)
-            sem_ant_fim = sem_ini_pf - pd.Timedelta(days=1)
-            _sem_ant = _sub[(_sub['Data']>=sem_ant_ini)&(_sub['Data']<=sem_ant_fim)]
-            kj_sem_ant = float(_sem_ant['_kj'].sum()) if has_kj else 0.0
-            h_sem_ant  = float(_sem_ant['_mt'].sum())
-
-            # Meta semana (com suavização anti-salto)
-            kj_meta_need = kj_base * fator if has_kj else 0.0
-
-            # Integração M2 — Z3 alvo desta semana eleva a meta se κ não está em overload
-            _ap_mod_meta = _alpha_p.get(mod, {})
-            _kj3_meta_m2 = 0.0
-            if _ap_mod_meta.get('ok') and not ol and (
-                    _kappa_now is None or _kappa_now <= _KAPPA_P87):
-                _kj3_sem_m2  = _ap_mod_meta.get('alvos',{}).get('3m',{}).get('kj_z3_semana', 0)
-                _kj2_act_m2  = _ap_mod_meta.get('kj_z2_semana_actual', 0)
-                _kj1_act_m2  = _ap_mod_meta.get('kj_z1_semana_actual', 0)
-                _kj_meta_m2  = _kj3_sem_m2 + _kj2_act_m2 * 1.05 + _kj1_act_m2 * 1.05
-                # M2 não pode exigir mais de +20% sobre o que o Need permite
-                _kj_meta_m2  = min(_kj_meta_m2, kj_meta_need * 1.20)
-
-            kj_meta_raw = max(kj_meta_need, _kj_meta_m2) if has_kj else 0.0
-            # Anti-salto: nunca mais de +8% sobre semana anterior ou baseline
-            kj_meta = min(kj_meta_raw, max(kj_sem_ant, kj_base) * 1.08) if has_kj else 0.0
-            h_meta  = min(h_base  * fator, max(h_sem_ant,  h_base)  * 1.08)
-            km_meta = km_base * fator if has_km else 0.0
-
-            # Informativo: comparação com ano anterior (sem cap — só leitura)
-            _ano_ant = _sub[_sub['Data'].dt.year == ano_ant]
-            _ano_cur = _sub[_sub['Data'].dt.year == ano_atual]
-            h_2025   = float(_ano_ant['_mt'].sum())
-            kj_2025  = float(_ano_ant['_kj'].sum()) if has_kj else 0.0
-            km_2025  = float(_ano_ant['_km'].sum()) if has_km else 0.0
-            h_acum   = float(_ano_cur['_mt'].sum())
-            kj_acum  = float(_ano_cur['_kj'].sum()) if has_kj else 0.0
-            km_acum  = float(_ano_cur['_km'].sum()) if has_km else 0.0
-            h_proj   = h_acum  / dia_ano * 365 if h_acum  > 0 else 0
-            kj_proj  = kj_acum / dia_ano * 365 if has_kj and kj_acum > 0 else 0
-            cap_atingido = False  # cap removido — só informativo
-
-            # Status horas vs ano anterior (informativo)
-            if h_2025 > 0 and h_proj > 0:
-                h_delta_pct = (h_proj - h_2025) / h_2025 * 100
-                if h_delta_pct < 0:
-                    status_ano = f"⚠️ Abaixo ({h_delta_pct:+.0f}% vs {ano_ant})"
-                elif h_delta_pct <= 3:
-                    status_ano = f"→ Manutenção ({h_delta_pct:+.0f}% vs {ano_ant})"
-                elif h_delta_pct <= 12:
-                    status_ano = f"✅ No range ({h_delta_pct:+.0f}% vs {ano_ant})"
-                else:
-                    status_ano = f"📈 Acima ({h_delta_pct:+.0f}% vs {ano_ant})"
-            elif h_2025 == 0:
-                status_ano = "— (sem ano anterior)"
-            else:
-                status_ano = "— (sem proj.)"
-
-            # Semana actual (Seg → hoje)
-            _sem_cur = _sub[_sub['Data'] >= sem_ini_pf]
-            kj_feito = float(_sem_cur['_kj'].sum()) if has_kj else 0.0
-            h_feito  = float(_sem_cur['_mt'].sum())
-            km_feito = float(_sem_cur['_km'].sum()) if has_km else 0.0
-
-            # Restante real (sem forçar 0 por overload — overload indica-se no display)
-            kj_rest_real  = max(0.0, kj_meta - kj_feito) if has_kj else 0.0
-            h_rest_real   = max(0.0, h_meta  - h_feito)
-            km_rest_real  = max(0.0, km_meta - km_feito) if has_km else 0.0
-
-            # Para o engine de sugestão: overload → não adicionar carga
-            if ol:
-                kj_rest = 0.0; h_rest = 0.0; km_rest = 0.0
-            else:
-                kj_rest = kj_rest_real; h_rest = h_rest_real; km_rest = km_rest_real
-
-            # Display do Restante: se overload, mostra aviso em vez de "✅ 0"
-            if ol:
-                _restante_display = "⚠️ Overload"
-            elif has_kj:
-                _restante_display = "✅ 0" if kj_rest_real == 0 else f"{kj_rest_real:.0f} kJ"
-            elif has_km:
-                _restante_display = ("✅ 0" if km_rest_real == 0 and h_rest_real == 0
-                                     else f"{km_rest_real:.0f} km | {fmt_dur(h_rest_real)}")
-            else:
-                _restante_display = fmt_dur(h_rest_real)
-
-            # Sugestão — retorna (df, ref_line, ol_warn)
-            # Calcular f_delta para esta modalidade
-            _need7_m   = _need7_cache.get(mod, _need_cache.get(mod, 40))
-            _need14_m  = _need_cache.get(mod, 40)
-            _cut7d = pd.Timestamp.now().normalize() - pd.Timedelta(days=7)
-            _n7d   = len(_sub[_sub['Data'] >= _cut7d])
-            _f_delta_m = _calc_f_delta(_need7_m, _need14_m, ol, _n7d)
-
-            _sug_df, _sug_ref, _sug_ol = _sugestao_sessao(
-                kj_rest, h_rest, km_rest, mod, eftp, ni, ol,
-                df_hist=_pf, f_delta=_f_delta_m)
-
-            # ── Alvo de zonas (FTLM Polar) ────────────────────────────────────
-            _ap_mod = _alpha_p.get(mod, {})
-            _zone_prescription = None
-            if _ap_mod.get('ok'):
-                # HRV-Guided define o tecto de intensidade
-                _hrv_class_local = hrv_class if 'hrv_class' in dir() else 'Sem dados'
-                # Recuperação → Z1, Z2 curto, ou Descanso (nao Z3)
-                # HIIT        → Z2 (threshold/sweetspot) ou Z3 (VO2max/anaer)
-                if _hrv_class_local == 'Recuperação':
-                    _zona_permitidas = ['Z1', 'Z2']
-                    _zona_max        = 'Z2'
-                    _zona_primaria   = 'Z1'
-                    _hrv_note        = "HRV↓ Recuperação — Z1 prioritário, Z2 curto ou Descanso"
-                elif _hrv_class_local == 'HIIT':
-                    _zona_permitidas = ['Z2', 'Z3']
-                    _zona_max        = 'Z3'
-                    _zona_primaria   = 'Z2' if ni < 60 else 'Z3'
-                    _hrv_note        = "HRV✓ HIIT — Z2 (threshold/sweetspot) ou Z3 (VO2max)"
-                else:
-                    _zona_permitidas = ['Z1', 'Z2', 'Z3']
-                    _zona_max        = 'Z3' if ni >= 70 else 'Z2'
-                    _zona_primaria   = 'Z2'
-                    _hrv_note        = "HRV sem dados — Z2 por defeito"
-
-                # kJ actuais vs kJ necessários (alvo 3 meses)
-                _alvo_3m = _ap_mod.get('alvos', {}).get('3m', {})
-                _kj_z3_need = _alvo_3m.get('kj_z3_semana', 0)
-                _kj_z2_need = _alvo_3m.get('kj_z2_semana', 0)
-                _kj_z1_need = _alvo_3m.get('kj_z1_semana', 0)
-                _kj_z3_act  = _ap_mod.get('kj_z3_semana_actual', 0)
-                _kj_z2_act  = _ap_mod.get('kj_z2_semana_actual', 0)
-                _kj_z1_act  = _ap_mod.get('kj_z1_semana_actual', 0)
-                _eftp_tgt   = _alvo_3m.get('eftp_proj', eftp)
-                _delta_tgt  = _alvo_3m.get('delta_w', 0)
-
-                # Gap entre actual e necessário
-                _gap_z3 = max(0, _kj_z3_need - _kj_z3_act)
-                _gap_z2 = max(0, _kj_z2_need - _kj_z2_act)
-
-                # Selecção de zona prioritária esta semana
-                # Se gap Z3 > 0 e HRV permite → focar Z3
-                # Se κ alto → reduzir Z3, manter Z1/Z2
-                if ol or (_kappa_now is not None and _kappa_now > _KAPPA_P87):
-                    _zona_semana = 'Z1'
-                    _zona_note   = "κ alto/overload → Z1 (independente HRV)"
-                elif _gap_z3 > 5 and 'Z3' in _zona_permitidas:
-                    _zona_semana = 'Z3'
-                    _zona_note   = f"Gap Z3: {_gap_z3:.0f} kJ/sem | {_hrv_note}"
-                elif _gap_z3 > 5 and 'Z3' not in _zona_permitidas:
-                    _zona_semana = 'Z2' if 'Z2' in _zona_permitidas else 'Z1'
-                    _zona_note   = f"Gap Z3 ({_gap_z3:.0f} kJ) mas HRV→{_zona_semana} | {_hrv_note}"
-                elif _gap_z2 > 5 and 'Z2' in _zona_permitidas:
-                    _zona_semana = 'Z2'
-                    _zona_note   = f"Gap Z2: {_gap_z2:.0f} kJ/sem | {_hrv_note}"
-                else:
-                    _zona_semana = _zona_primaria
-                    _zona_note   = f"Zonas no alvo — {_hrv_note}"
-
-                _zone_prescription = {
-                    'zona_primaria': _zona_semana,
-                    'nota':          _zona_note,
-                    'hrv_note':      _hrv_note,
-                    'r2':            _ap_mod.get('r2', 0),
-                    'kj_z3_act':     _kj_z3_act,
-                    'kj_z3_need':    _kj_z3_need,
-                    'kj_z2_act':     _kj_z2_act,
-                    'kj_z2_need':    _kj_z2_need,
-                    'kj_z1_act':     _kj_z1_act,
-                    'kj_z1_need':    _kj_z1_need,
-                    'eftp_tgt':      _eftp_tgt,
-                    'delta_tgt':     _delta_tgt,
-                    'gap_z3':        _gap_z3,
-                    'gap_z2':        _gap_z2,
-                    'mmp_label':     _ap_mod.get('mmp_label','MMP'),
-                }
-
-            # Fator label
-            if ol:       fl = "↓ 0.98 overload"
-            elif cap_atingido: fl = "→ 1.00 cap"
-            elif need>60: fl = "↑ 1.04"
-            elif need<30: fl = "↑ 1.01"
-            else:         fl = "↑ 1.02"
-
-            # Zone targets for row display
-            _z3_lbl = 'a calcular...'; _z_alvo_eftp = 'a calcular...'; _z_zona_rec = '—'
-            if _zone_prescription:
-                _zp = _zone_prescription
-                _r2_z = _zp.get('r2', 0)
-                _r2_icon = '🟢' if _r2_z >= 0.20 else ('🟡' if _r2_z >= 0.08 else '🔴')
-                _z3_lbl = (f"act:{_zp['kj_z3_act']:.0f} alvo:{_zp['kj_z3_need']:.0f} kJ/sem"
-                           f" (gap:{_zp['gap_z3']:.0f})")
-                _z_alvo_eftp = (f"{_zp['eftp_tgt']:.0f}W ({_zp['delta_tgt']:+.0f}W 3m) "
-                                f"{_r2_icon}R²={_r2_z:.2f}")
-                _z_zona_rec = f"{_zp['zona_primaria']} — {_zp['nota'][:40]}"
-
-            row = {
-                'Modalidade':    mod,
-                'Métrica':       'KJ' if has_kj else ('KM' if has_km else 'Horas'),
-                'Base (med.8s)': f"{kj_base:.0f} kJ" if has_kj else
-                                  (f"{km_base:.0f} km | {fmt_dur(h_base)}" if has_km
-                                   else fmt_dur(h_base)),
-                'Fator':         fl,
-                'Meta semana':   f"{kj_meta:.0f} kJ" if has_kj else
-                                  (f"{km_meta:.0f} km | {fmt_dur(h_meta)}" if has_km
-                                   else fmt_dur(h_meta)),
-                'Feito':         f"{kj_feito:.0f} kJ" if has_kj else
-                                  (f"{km_feito:.0f} km | {fmt_dur(h_feito)}" if has_km
-                                   else fmt_dur(h_feito)),
-                'Restante':      _restante_display,
-                'Zona (esta sem)': _z_zona_rec,
-                'kJ Z3 act→alvo': _z3_lbl,
-                'eFTP alvo 3m':  _z_alvo_eftp,
-                '_sug_df': _sug_df, '_sug_ref': _sug_ref, '_sug_ol': _sug_ol,
-            }
-            rows_prog.append(row)
-
-        if rows_prog:
-            # Remover colunas internas antes de mostrar tabela
-            _rows_prog_display = [{k:v for k,v in r.items()
-                                   if k not in ("_sug_df","_sug_ref","_sug_ol")}
-                                  for r in rows_prog]
-            df_prog = pd.DataFrame(_rows_prog_display)
-
-            # ── Deload / Taper detector ───────────────────────────────────
-            # baseline = soma de TODAS modalidades, últimas 3 semanas completas
-            # usando a semana actual como referência (não data max por modalidade)
-            _semana_atual_period = sem_ini_pf.to_period('W')
-            _kj_total_cur = 0.0
-            _kj_b3_por_sem = {}  # {period: kj_total}
-
-            # Colunas Z1/Z2/Z3
-            _col_z1_det = next((c for c in ['Z1KJ','z1_kj','z1kj'] if c in _pf.columns), None)
-            _col_z2_det = next((c for c in ['Z2KJ','z2_kj','z2kj'] if c in _pf.columns), None)
-            _col_z3_det = next((c for c in ['Z3KJ','z3_kj','z3kj'] if c in _pf.columns), None)
-
-            _pf2 = _pf.copy()
-            _pf2['_ksem'] = _pf2['Data'].dt.to_period('W')
-            # Filtrar só modalidades relevantes
-            _pf2 = _pf2[_pf2['type'].apply(norm_tipo).isin(['Bike','Row','Ski','Run'])]
-
-            # Semana actual
-            _pf_cur = _pf2[_pf2['_ksem'] == _semana_atual_period]
-            _kj_total_cur = float(_pf_cur['_kj'].sum())
-
-            # Últimas 3 semanas completas (excluindo a actual)
-            _pf_prev = _pf2[_pf2['_ksem'] < _semana_atual_period]
-            _agg_sem = _pf_prev.groupby('_ksem')['_kj'].sum()
-            _prev3_sems = _agg_sem.tail(3)
-            _kj_b3_mean = float(_prev3_sems.mean()) if len(_prev3_sems) > 0 else 0.0
-
-            # Z1/Z2/Z3 semana actual e baseline
-            def _sum_zone(df, col):
-                if col and col in df.columns:
-                    return float(pd.to_numeric(df[col], errors='coerce').fillna(0).sum())
-                return 0.0
-
-            _z1_cur = _sum_zone(_pf_cur, _col_z1_det)
-            _z2_cur = _sum_zone(_pf_cur, _col_z2_det)
-            _z3_cur = _sum_zone(_pf_cur, _col_z3_det)
-
-            # Baseline Z1/Z2/Z3 (média das 3 semanas)
-            _z1_b3 = _sum_zone(_pf_prev.tail(3*20), _col_z1_det) / max(len(_prev3_sems),1) if _col_z1_det else 0.0
-            _z2_b3 = _sum_zone(_pf_prev.tail(3*20), _col_z2_det) / max(len(_prev3_sems),1) if _col_z2_det else 0.0
-            _z3_b3 = _sum_zone(_pf_prev.tail(3*20), _col_z3_det) / max(len(_prev3_sems),1) if _col_z3_det else 0.0
-
-            # Semana anterior
-            _sem_ant_period = _semana_atual_period - 1
-            _pf_ant = _pf2[_pf2['_ksem'] == _sem_ant_period]
-            _kj_sem_ant_det = float(_pf_ant['_kj'].sum())
-            _ratio_sem_ant = (_kj_sem_ant_det / _kj_b3_mean) if _kj_b3_mean > 0 else 1.0
-
-            # Guard início de semana
-            _dias_semana = hoje_pf.weekday() + 1
-            _kj_proj_semana = (_kj_total_cur / _dias_semana * 7) if _dias_semana > 0 else 0
-            _semana_iniciando = _dias_semana < 3
-            _load_ratio = ((_kj_proj_semana / _kj_b3_mean) if (_kj_b3_mean > 0 and _semana_iniciando)
-                           else (_kj_total_cur / _kj_b3_mean) if _kj_b3_mean > 0 else 1.0)
-            _sem_ant_era_taper = _ratio_sem_ant < 0.80
-
-            # Limiares
-            _kj_normal_min = _kj_b3_mean * 0.80
-            _kj_deload_min = _kj_b3_mean * 0.60
-            _kj_taper_min  = _kj_b3_mean * 0.30
-            _kj_taper_max  = _kj_b3_mean * 0.60
-            _kj_deload_max = _kj_b3_mean * 0.80
-
-            if _kj_b3_mean > 0:
-                st.markdown("**📊 Estado de carga — semana actual**")
-                _c_det1, _c_det2, _c_det3 = st.columns(3)
-                with _c_det1:
-                    _kj_show = _kj_proj_semana if _semana_iniciando else _kj_total_cur
-                    _lbl_kj  = f"{_kj_show:.0f} kJ {'(proj.)' if _semana_iniciando else ''}"
-                    st.metric("Carga actual (semana)", _lbl_kj,
-                              f"{(_load_ratio-1)*100:+.0f}% vs baseline")
-                with _c_det2:
-                    st.metric("Baseline (média 3 sem)", f"{_kj_b3_mean:.0f} kJ",
-                              f"Sem.ant: {_ratio_sem_ant*100:.0f}% baseline")
-                with _c_det3:
-                    if _semana_iniciando and not _sem_ant_era_taper:
-                        _fase = "⏳ Início semana"
-                    elif _load_ratio >= 0.80:
-                        _fase = "✅ Normal"
-                    elif _load_ratio >= 0.60:
-                        _fase = "📉 Deload"
-                    elif _load_ratio >= 0.30:
-                        _fase = "🔵 Taper"
-                    else:
-                        _fase = "⚠️ Muito baixo"
-                    st.metric("Fase detectada", _fase, f"ratio={_load_ratio:.2f}")
-
-                # Z1/Z2/Z3 esta semana vs baseline
-                if any([_z1_cur, _z2_cur, _z3_cur, _z1_b3, _z2_b3, _z3_b3]):
-                    _cz1, _cz2, _cz3 = st.columns(3)
-                    with _cz1:
-                        st.metric("Z1 esta sem (kJ)", f"{_z1_cur:.0f}",
-                                  f"baseline: {_z1_b3:.0f} kJ/sem")
-                    with _cz2:
-                        st.metric("Z2 esta sem (kJ)", f"{_z2_cur:.0f}",
-                                  f"baseline: {_z2_b3:.0f} kJ/sem")
-                    with _cz3:
-                        st.metric("Z3 esta sem (kJ)", f"{_z3_cur:.0f}",
-                                  f"baseline: {_z3_b3:.0f} kJ/sem")
-
-                # Ranges informativos
-                st.caption(
-                    f"**Ranges** (baseline={_kj_b3_mean:.0f} kJ/sem) — "
-                    f"Normal: >{_kj_normal_min:.0f} | "
-                    f"Deload: {_kj_deload_min:.0f}–{_kj_deload_max:.0f} | "
-                    f"Taper: {_kj_taper_min:.0f}–{_kj_taper_max:.0f} kJ  "
-                    f"{'⏳ Início semana — usando projecção pro-rata' if _semana_iniciando else ''}"
-                    f"{'  |  Sem.ant já era Taper/Deload' if _sem_ant_era_taper else ''}")
-
-                # Alertas — só se semana tem dados suficientes OU sem.ant era taper
-                if not _semana_iniciando or _sem_ant_era_taper:
-                    if _load_ratio < 0.80:
-                        if _load_ratio >= 0.60:
-                            _taper_cont = " (continuação)" if _sem_ant_era_taper else ""
-                            st.info(f"📉 **Deload{_taper_cont}** — volume 20–40% abaixo. "
-                                    "Manter intensidade. Duração típica: 3–7 dias.")
-                        elif _load_ratio >= 0.30:
-                            _taper_cont = " (continuação)" if _sem_ant_era_taper else ""
-                            st.info(f"🔵 **Taper{_taper_cont}** — volume 40–70% abaixo. "
-                                    "Manter/aumentar intensidade. Duração típica: 7–14 dias.")
-                        else:
-                            st.warning("⚠️ Carga muito baixa (>70% redução). "
-                                       "Confirma se é intencional.")
-
-            st.markdown("---")
-
-            # ── ΔCTL estimado — usa icu_training_load (mesma escala do PMC) ──
-            # CTL/ATL calculados com icu_training_load → consistente com Tab PMC
-            # ΔCTL/sessão = load_sessão / 42  (definição EMA span=42)
-            # Threshold: +1 a +5 CTL por semana (válido na escala TSS-like)
-            _pf2 = _pf.copy()
-
-            # Usar icu_training_load se disponível, fallback session_rpe
-            _tl_col = None
-            if 'icu_training_load' in _pf2.columns:
-                _pf2['_load_icu'] = pd.to_numeric(_pf2['icu_training_load'], errors='coerce').fillna(0)
-                _tl_col = 'icu_training_load'
-            else:
-                _pf2['_load_icu'] = (_pf2['_mt'] * 60 *
-                    pd.to_numeric(_pf2.get('rpe', pd.Series(dtype=float)), errors='coerce').fillna(5))
-                _tl_col = 'session_rpe (fallback)'
-
-            _dates_ctl = pd.date_range(_pf2['Data'].min(), hoje_pf, freq='D')
-            _load_ctl  = _pf2.groupby('Data')['_load_icu'].sum().reindex(_dates_ctl, fill_value=0)
-            _ctl_hoje  = float(_load_ctl.ewm(span=42, adjust=False).mean().iloc[-1])
-            _atl_hoje  = float(_load_ctl.ewm(span=7,  adjust=False).mean().iloc[-1])
-            _tsb_hoje  = _ctl_hoje - _atl_hoje
-
-            # ΔCTL por modalidade:
-            # Estimar load da próxima sessão = mediana icu_training_load das sessões comparáveis
-            # ΔCTL_sessão = load_estimada / 42
-            _delta_ctl_total = 0.0
-            _delta_rows = []
-            for r_p in rows_prog:
-                _mod_p = r_p['Modalidade']
-                _sug_df_p = r_p.get('_sug_df')
-
-                # Load estimada: mediana das sessões comparáveis desta modalidade
-                _load_est = 0.0
-                _load_src = "—"
-                if 'icu_training_load' in _pf2.columns:
-                    _df_mod_p = _pf2[_pf2['type'].apply(norm_tipo) == _mod_p]
-                    _ni_p     = _ni_cache.get(_mod_p, 50)
-                    # Filtrar por RPE compatível com Need_intensity
-                    _rpe_min  = 7 if _ni_p >= 75 else 5 if _ni_p >= 40 else 1
-                    _rpe_max  = 10 if _ni_p >= 60 else 7 if _ni_p >= 30 else 5
-                    _rpe_f    = pd.to_numeric(_df_mod_p.get('rpe', pd.Series(dtype=float)), errors='coerce')
-                    _df_comp  = _df_mod_p[_rpe_f.between(_rpe_min, _rpe_max)]
-                    if len(_df_comp) >= 3:
-                        _tl_vals  = pd.to_numeric(_df_comp['icu_training_load'], errors='coerce').dropna()
-                        if len(_tl_vals) >= 2:
-                            _load_est = float(_tl_vals.tail(10).median())
-                            _load_src = f"mediana {min(len(_tl_vals),10)} sessões RPE {_rpe_min}–{_rpe_max}"
-                    if _load_est == 0:
-                        # Fallback: mediana geral desta modalidade
-                        _tl_all = pd.to_numeric(_df_mod_p['icu_training_load'], errors='coerce').dropna()
-                        if len(_tl_all) >= 2:
-                            _load_est = float(_tl_all.tail(10).median())
-                            _load_src = "mediana geral (fallback)"
-
-                # ΔCTL = load / 42
-                _delta_p = _load_est / 42.0 if _load_est > 0 else 0.0
-                _delta_ctl_total += _delta_p
-                _delta_rows.append({
-                    'Modalidade':    _mod_p,
-                    'Load estimada': f"{_load_est:.0f}" if _load_est > 0 else "—",
-                    'Fonte':         _load_src,
-                    'ΔCTL est.':     f"{_delta_p:+.2f}",
-                })
-
-            # CTL/TSB projectados
-            _ctl_proj = _ctl_hoje + _delta_ctl_total
-            _tsb_proj = _tsb_hoje - _delta_ctl_total
-
-            # Threshold +1 a +5 CTL/semana (escala icu_training_load)
-            _dentro_range = 1.0 <= _delta_ctl_total <= 5.0
-
-            st.markdown("**⚡ Planeador de Zonas — semana actual e progressão 3m**")
-
-            # ── Planeador interactivo Z1/Z2/Z3 por modalidade ─────────────────
-            st.caption(
-                "Define o eFTP alvo e o prazo. O modelo calcula os kJ/sem de Z3 "
-                "necessários por modalidade, distribuídos em rampa linear."
-            )
-            _pc1, _pc2 = st.columns(2)
-            _prazo_sem = _pc1.slider("Prazo (semanas)", 4, 24, 12, 2,
-                                     key="prazo_sem_planeador")
-            _delta_eftp_input = _pc2.slider("eFTP alvo (ganho em W)", 0, 30, 10, 1,
-                                            key="delta_eftp_planeador")
-
-            # Tabela de progressão para cada modalidade
-            _plan_rows = []
-            for _mv_p in ['Bike','Row','Ski','Run']:
-                _ap_p = _alpha_p.get(_mv_p, {})
-                if not _ap_p.get('ok'): continue
-                _eftp_p    = _ap_p.get('eftp_now', 0)
-                _eftp_tgt_p = _eftp_p + _delta_eftp_input
-                _a3p = _ap_p.get('alpha_z3', 0)
-                _a2p = _ap_p.get('alpha_z2', 0)
-                _a1p = _ap_p.get('alpha_z1', 0)
-                _intcp = _eftp_p - (_a3p*_ap_p.get('cz3_now',0)
-                                   + _a2p*_ap_p.get('cz2_now',0)
-                                   + _a1p*_ap_p.get('cz1_now',0))
-                # CTLγ_Z3 necessário
-                _cz3_now_p = _ap_p.get('cz3_now', 0)
-                _cz2_now_p = _ap_p.get('cz2_now', 0)
-                _cz1_now_p = _ap_p.get('cz1_now', 0)
-                if abs(_a3p) > 0.01:
-                    _cz3_tgt_p = (_eftp_tgt_p - _a2p*_cz2_now_p
-                                  - _a1p*_cz1_now_p - _intcp) / _a3p
-                    _cz3_tgt_p = max(_cz3_tgt_p, _cz3_now_p)
-                else:
-                    _cz3_tgt_p = _cz3_now_p * 1.10
-                # kJ/sem actual e alvo
-                _kj3_act_p = _ap_p.get('kj_z3_semana_actual', 0)
-                _kj3_alvo_p = float(_cz3_tgt_p * 7)
-                # Esta semana (semana 1 de N)
-                _kj3_sem1 = _kj3_act_p + (_kj3_alvo_p - _kj3_act_p) / _prazo_sem
-                _r2_p = _ap_p.get('r2', 0)
-                _r2_icon = '🟢' if _r2_p >= 0.20 else ('🟡' if _r2_p >= 0.08 else '🔴')
-                _plan_rows.append({
-                    'Modalidade':         _mv_p,
-                    'eFTP actual':        f"{_eftp_p:.0f}W",
-                    f'eFTP alvo (+{_delta_eftp_input}W)': f"{_eftp_tgt_p:.0f}W",
-                    'Z3 actual (kJ/sem)': f"{_kj3_act_p:.0f}",
-                    f'Z3 sem 1 (kJ/sem)': f"{_kj3_sem1:.0f}",
-                    f'Z3 alvo sem {_prazo_sem} (kJ/sem)': f"{_kj3_alvo_p:.0f}",
-                    f'Gap esta sem':       f"+{max(0,_kj3_sem1-_kj3_act_p):.0f} kJ",
-                    f'R²':                f"{_r2_icon}{_r2_p:.2f}",
-                })
-
-            if _plan_rows:
-                st.dataframe(pd.DataFrame(_plan_rows), hide_index=True,
-                             use_container_width=True)
-
-                # Contexto dTRIMP/dKJ e eff_delta
-                _eff_kj = st.session_state.get('eff_kj_cache', {})
-                if _eff_kj:
-                    st.markdown("**Contexto fisiológico para aumentar Z3:**")
-                    _ctx_rows = []
-                    for _mv_ctx in ['Bike','Row','Ski','Run']:
-                        _ec = _eff_kj.get(_mv_ctx, {})
-                        if not _ec: continue
-                        _ok_z3 = _ec.get('aumentar_z3_ok', True)
-                        _ctx_rows.append({
-                            'Modal.':          _mv_ctx,
-                            'dTRIMP/dKJ':      f"{_ec['dtrimp_dkj']:.3f} {_ec['dtrimp_lbl']}",
-                            'Eff delta 28d':   f"{_ec['eff_delta']:+.1%} {_ec['eff_delta_lbl']}",
-                            'Aumentar Z3?':    '✅ Seguro' if _ok_z3 else '⚠️ Cautela',
-                        })
-                    if _ctx_rows:
-                        st.dataframe(pd.DataFrame(_ctx_rows), hide_index=True,
-                                     use_container_width=True)
-                        st.caption(
-                            "dTRIMP/dKJ < 0.3 eficiente | 0.3–0.5 normal | >0.5 custo alto. "
-                            "Eff delta: variação TRIMP/KJ últimos 28d vs baseline 84d.")
-
-                st.caption(
-                    f"Rampa linear {_prazo_sem} semanas. "
-                    "Sem 1 = primeiro incremento. Z2 e Z1 mantêm ritmo actual (+5%). "
-                    "🔴R²<0.08 = modelo pouco fiável para esta modalidade."
-                )
-
-            # kJ Z3 feito esta semana por modalidade
-            _col_z3_wk = next((c for c in ['Z3KJ','z3_kj','z3kj'] if c in da.columns), None)
-            _col_mod_wk = next((c for c in ['type','modality'] if c in da.columns), None)
-            _col_dat_wk = next((c for c in ['date','Data'] if c in da.columns), None)
-            if _col_z3_wk and _col_mod_wk and _col_dat_wk:
-                _today_wk = pd.Timestamp.now().normalize()
-                _mon_wk   = _today_wk - pd.Timedelta(days=_today_wk.weekday())
-                _da_wk    = da.copy()
-                _da_wk[_col_dat_wk] = pd.to_datetime(_da_wk[_col_dat_wk]).dt.normalize()
-                _da_wk = _da_wk[_da_wk[_col_dat_wk] >= _mon_wk]
-                if len(_da_wk) > 0:
-                    _z3_sem_rows = []
-                    for _mv_z in ['Bike','Row','Ski','Run']:
-                        _sub_z = _da_wk[_da_wk[_col_mod_wk]==_mv_z]
-                        _kj3_feito = pd.to_numeric(_sub_z[_col_z3_wk], errors='coerce').fillna(0).sum()
-                        _kj3_alvo_vg = _alpha_p.get(_mv_z,{}).get('alvos',{}).get('3m',{}).get('kj_z3_semana',0)
-                        if _kj3_feito > 0 or _kj3_alvo_vg > 0:
-                            _z3_sem_rows.append({
-                                'Modalidade': _mv_z,
-                                'Z3 feito esta sem (kJ)': f"{_kj3_feito:.0f}",
-                                'Z3 alvo esta sem (kJ)':  f"{_kj3_alvo_vg:.0f}",
-                                'Progresso':              f"{min(100,_kj3_feito/max(_kj3_alvo_vg,1)*100):.0f}%",
-                            })
-                    if _z3_sem_rows:
-                        with st.expander("🎯 Z3 feito vs alvo — semana actual"):
-                            st.dataframe(pd.DataFrame(_z3_sem_rows),
-                                        hide_index=True, use_container_width=True)
-
-            st.markdown("---")
-            st.dataframe(df_prog,
-                         width="stretch", hide_index=True)
-            st.markdown("**💡 Sugestões de sessão (semana actual)**")
-
-            # Mini-tabs por modalidade
-            _mods_sug = [r for r in rows_prog if r.get("_sug_df") is not None]
-            if _mods_sug:
-                _emj_map = {"Bike":"🚴 Bike","Row":"🚣 Row","Ski":"🎿 Ski","Run":"🏃 Run"}
-                _tab_labels = [_emj_map.get(r["Modalidade"], r["Modalidade"])
-                               for r in _mods_sug]
-                _sug_tabs = st.tabs(_tab_labels)
-                for _stab, r in zip(_sug_tabs, _mods_sug):
-                    with _stab:
-                        _df_s  = r["_sug_df"]
-                        _ref_s = r.get("_sug_ref","")
-                        _ol_s  = r.get("_sug_ol","")
-                        # Linha de referência + overload
-                        if _ref_s: st.caption(_ref_s)
-                        if _ol_s:  st.warning(_ol_s)
-                        # Tabela de opções — principal marcada com ★ na coluna Tipo
-                        # Não usar style (causa texto branco no tema escuro do Streamlit)
-                        st.dataframe(
-                            _df_s,
-                            hide_index=True,
-                            use_container_width=True)
-                        # KJ restante e meta abaixo da tabela
-                        _kj_r_val = r.get("Restante","")
-                        _meta_val = r.get("Meta semana","")
-                        _feito_val = r.get("Feito","")
-                        if _kj_r_val or _meta_val:
-                            st.caption(
-                                f"Meta semana: **{_meta_val}** | "
-                                f"Feito: **{_feito_val}** | "
-                                f"Restante: **{_kj_r_val}**")
-            st.caption(
-                "⚠️ Quantidade de carga: esta camada. Tipo de treino: Need Score acima. "
-                "Cap horas +12% vs " + str(ano_ant) + ".")
-
+def tab_recovery(dw, da=None, wc_full=None, da_full=None):
+    
+    st.header("🔋 Recovery Score & HRV Analysis")
+    
+    # Garantir que da existe (mesmo que vazio)
+    if da is None:
+        da = pd.DataFrame()
+
+    if len(dw) == 0 or 'hrv' not in dw.columns:
+        st.warning("Sem dados de HRV.")
+        return
 
     # ════════════════════════════════════════════════════════════════════════
-    # ÍNDICE DE MONOTONIA DE FRY — Card de alerta na Visão Geral
-    # Fry RW et al. (1992). Periodisation and Prevention of Overtraining.
-    # IM = carga_média_7d / std_carga_7d (dias com treino=kJ, dias sem=0)
-    # IM > 2.0 → supressão imune provável | IM > 1.5 → monitorizar
+    # MODELO β — Paper: "VFC y Sistema Nervioso Autónomo" (Della Mattia, 2025)
+    # Implementação: β (frescura actual), βAgudo (3d), βCrónico (7d)
+    # Regra: só prescrever alta intensidade quando ≥2 de 3 indicadores convergem
+    # Tratamento de NAs: dado ausente = INCERTEZA = prescrição conservadora
     # ════════════════════════════════════════════════════════════════════════
     st.markdown("---")
-    st.markdown("### 🔄 Monotonia de Treino — Índice de Fry (7 dias)")
+    st.markdown("## 🧠 Modelo β — Estado Autonómico Integrado")
     st.caption(
-        "Fry et al. (1992) | Seiler & Tønnessen (2009). "
-        "IM = carga média diária / desvio padrão da carga. "
-        "Dias sem treino contam como 0 kJ — o descanso reduz a monotonia."
+        "Baseado em Della Mattia (ednacore AI, 2025): *VFC y Sistema Nervioso Autónomo*. "
+        "O SNA responde a factores invisíveis (glucogénio, osmolaridade, microinflamação) "
+        "antes da percepção consciente. A HRV sozinha num único dia não é accionável — "
+        "a tendência de 3 e 7 dias é."
     )
 
-    _src_fry = da_full if da_full is not None and len(da_full) > 0 else da
-    if _src_fry is not None and len(_src_fry) > 0:
-        # Usar mesma pipeline do tab_volume: filtrar_principais + add_tempo + norm_tipo
-        # Garante mesma lógica de filtragem e mesmos nomes de colunas
-        _fry_df = filtrar_principais(_src_fry).copy()
-        _fry_df = add_tempo(_fry_df)
-        _fry_df['Data'] = pd.to_datetime(_fry_df['Data']).dt.normalize()
-        _fry_df['type'] = _fry_df['type'].apply(norm_tipo)
-        _CICLICOS_FRY = ['Bike', 'Run', 'Row', 'Ski']
-        _fry_df = _fry_df[_fry_df['type'].isin(_CICLICOS_FRY)]
+    def _calcular_modelo_beta(wc_src):
+        """
+        Calcula β, βAgudo e βCrónico a partir da série de HRV.
 
-        # kJ por dia (soma de todas modalidades) — dias sem treino = 0
-        _kj_col = next((c for c in ['icu_joules','joules','kj_total']
-                        if c in _fry_df.columns and _fry_df[c].notna().any()), None)
-        if _kj_col:
-            _fry_daily_raw = _fry_df.groupby('Data')[_kj_col].sum()
-            # Converter J → kJ se necessário (uma vez, sobre a série inteira)
-            if _kj_col == 'icu_joules':
-                _fry_daily_raw = _fry_daily_raw / 1000
+        Tratamento de NAs — regra do paper:
+        - NaN em hrv hoje → β = NaN (não temos sinal, não podemos confirmar)
+        - NaN em janela 3d → βAgudo = NaN (incerteza aguda)
+        - NaN em janela 7d com <3 valores → βCrónico = NaN
+        - NaN em qualquer componente → prescrição conservadora por defeito
 
-            # Reindex para calendário completo — dias sem treino = 0 (não NaN)
-            _fry_idx = pd.date_range(_fry_daily_raw.index.min(),
-                                      pd.Timestamp.now().normalize(), freq='D')
-            _fry_daily = _fry_daily_raw.reindex(_fry_idx, fill_value=0)
+        β é calculado como score 0-100 baseado em:
+            - Posição do LnrMSSD vs baseline 28d (z-score normalizado)
+            - Não usa o baseline da tab principal (que elimina NAs)
+            - Usa reindex para manter dias calendário reais
+        """
+        import scipy.stats as _sst
 
-            # IM = média 7d / std 7d
-            _fry_m7 = _fry_daily.rolling(7, min_periods=4).mean()
-            _fry_s7 = _fry_daily.rolling(7, min_periods=4).std()
-            _fry_im = (_fry_m7 / _fry_s7.replace(0, np.nan)).round(2)
+        # Usar wc_full se disponível (histórico completo sem filtro sidebar)
+        src = wc_src.copy() if wc_src is not None and len(wc_src) > 0 else dw.copy()
+        src['Data'] = pd.to_datetime(src['Data'])
+        src = src.sort_values('Data').set_index('Data')
 
-            # Training Strain = IM × carga_média
-            _fry_strain = (_fry_im * _fry_m7).round(1)
+        # CRÍTICO: reindex para datas calendário contínuas — preserva NAs reais
+        # Em vez de dropna(), mantemos os NaN onde não houve medição
+        date_range = pd.date_range(src.index.min(), src.index.max(), freq='D')
+        src = src.reindex(date_range)
 
-            _im_hoje    = float(_fry_im.iloc[-1])  if _fry_im.notna().any()    else None
-            _m7_hoje    = float(_fry_m7.iloc[-1])  if _fry_m7.notna().any()    else None
-            _strain_hoje= float(_fry_strain.iloc[-1]) if _fry_strain.notna().any() else None
-            _im_7d_ant  = float(_fry_im.iloc[-8])  if len(_fry_im) > 8 and pd.notna(_fry_im.iloc[-8]) else None
+        if 'hrv' not in src.columns:
+            return None
 
-            # Semáforo
-            if _im_hoje is None:
-                _im_cor = "#888"; _im_emoji = "⬜"; _im_lbl = "Sem dados"
-            elif _im_hoje > 2.0:
-                _im_cor = "#e74c3c"; _im_emoji = "🔴"; _im_lbl = "Supressão imune provável"
-            elif _im_hoje > 1.5:
-                _im_cor = "#f39c12"; _im_emoji = "🟡"; _im_lbl = "Monitorizar"
-            else:
-                _im_cor = "#27ae60"; _im_emoji = "✅"; _im_lbl = "Polarizado"
+        # LnrMSSD — preserva NaN onde hrv é NaN ou 0
+        src['LnrMSSD'] = np.where(
+            src['hrv'].notna() & (src['hrv'] > 0),
+            np.log(src['hrv']),
+            np.nan
+        )
 
-            _fi1, _fi2, _fi3, _fi4 = st.columns(4)
-            _fi1.metric(
-                "IM (Índice de Monotonia)",
-                f"{_im_hoje:.2f}" if _im_hoje is not None else "—",
-                delta=f"{_im_emoji} {_im_lbl}",
-                delta_color="off",
-                help=(
-                    "IM = carga_média_7d / std_carga_7d. "
-                    "Dias sem treino = 0 kJ. "
-                    "<1.5 ✅ | 1.5–2.0 🟡 | >2.0 🔴 supressão imune"
-                )
+        # Baseline 28d — rolling calendário, min_periods=7
+        # NaNs são ignorados pelo rolling mas os dias calendário são preservados
+        src['bm28'] = src['LnrMSSD'].rolling(28, min_periods=7).mean()
+        src['bs28'] = src['LnrMSSD'].rolling(28, min_periods=7).std()
+
+        # β — score 0-100 baseado em z-score vs baseline 28d
+        # z = (hoje - baseline) / std_baseline → normalizado para 0-100
+        # z=0 → β=50 | z=+2 → β≈95 | z=-2 → β≈5
+        src['z28'] = (src['LnrMSSD'] - src['bm28']) / src['bs28'].replace(0, np.nan)
+        src['beta'] = src['z28'].apply(
+            lambda z: round(float(_sst.norm.cdf(z) * 100), 1) if pd.notna(z) else np.nan
+        )
+
+        # βAgudo — % mudança média 3d vs média 7d (janela calendário)
+        # min_periods=2 para 3d, min_periods=4 para 7d
+        m3  = src['LnrMSSD'].rolling(3,  min_periods=2).mean()
+        m7  = src['LnrMSSD'].rolling(7,  min_periods=4).mean()
+        src['beta_agudo'] = np.where(
+            m7.notna() & m3.notna() & (m7 != 0),
+            ((m3 - m7) / m7.abs()) * 100,
+            np.nan
+        )
+
+        # βCrónico — % mudança média 7d vs média 28d (janela calendário)
+        src['beta_cronico'] = np.where(
+            src['bm28'].notna() & m7.notna() & (src['bm28'] != 0),
+            ((m7 - src['bm28']) / src['bm28'].abs()) * 100,
+            np.nan
+        )
+
+        return src[['LnrMSSD', 'bm28', 'bs28', 'beta', 'beta_agudo', 'beta_cronico']].tail(90)
+
+    def _regra_convergencia(beta, b_agudo, b_cronico, hrv_hoje_notna):
+        """
+        Regra do paper: actuar só quando ≥2 de 3 indicadores convergem.
+        NaN em qualquer indicador = incerteza = prescrição conservadora.
+
+        Retorna: (prescricao, cor, n_sinais_pos, n_sinais_neg, n_incertos, detalhe)
+        """
+        sinais = []  # +1 positivo, -1 negativo, 0 incerto
+
+        # Sinal 1: β actual
+        if pd.isna(beta):
+            sinais.append(('β actual', 0, 'NaN — sem medição hoje', '#888'))
+        elif beta >= 60:
+            sinais.append(('β actual', +1, f'{beta:.0f} ≥ 60 ✅', '#27ae60'))
+        elif beta <= 40:
+            sinais.append(('β actual', -1, f'{beta:.0f} ≤ 40 ⚠️', '#e74c3c'))
+        else:
+            sinais.append(('β actual', 0, f'{beta:.0f} zona neutra (40-60)', '#f39c12'))
+
+        # Sinal 2: βAgudo (3d)
+        if pd.isna(b_agudo):
+            sinais.append(('βAgudo 3d', 0, 'NaN — dados insuficientes', '#888'))
+        elif b_agudo >= 1.0:
+            sinais.append(('βAgudo 3d', +1, f'{b_agudo:+.1f}% ≥ +1% ✅', '#27ae60'))
+        elif b_agudo <= -1.0:
+            sinais.append(('βAgudo 3d', -1, f'{b_agudo:+.1f}% ≤ -1% ⚠️', '#e74c3c'))
+        else:
+            sinais.append(('βAgudo 3d', 0, f'{b_agudo:+.1f}% zona neutra', '#f39c12'))
+
+        # Sinal 3: βCrónico (7d)
+        if pd.isna(b_cronico):
+            sinais.append(('βCrónico 7d', 0, 'NaN — dados insuficientes', '#888'))
+        elif b_cronico >= 1.0:
+            sinais.append(('βCrónico 7d', +1, f'{b_cronico:+.1f}% ≥ +1% ✅', '#27ae60'))
+        elif b_cronico <= -1.0:
+            sinais.append(('βCrónico 7d', -1, f'{b_cronico:+.1f}% ≤ -1% ⚠️', '#e74c3c'))
+        else:
+            sinais.append(('βCrónico 7d', 0, f'{b_cronico:+.1f}% zona neutra', '#f39c12'))
+
+        n_pos = sum(1 for _, s, _, _ in sinais if s == +1)
+        n_neg = sum(1 for _, s, _, _ in sinais if s == -1)
+        n_inc = sum(1 for _, s, _, _ in sinais if s == 0)
+
+        # REGRA CRÍTICA: dado ausente hoje = não confirmar HIIT
+        if not hrv_hoje_notna:
+            prescricao = "⚠️ SEM MEDIÇÃO HOJE — Não prescrever HIIT"
+            cor_pres   = "#e67e22"
+            return prescricao, cor_pres, n_pos, n_neg, n_inc, sinais
+
+        # Regra ≥2 convergem
+        if n_pos >= 2:
+            prescricao = "✅ HIIT / Alta intensidade — ≥2 sinais positivos"
+            cor_pres   = "#27ae60"
+        elif n_neg >= 2:
+            prescricao = "🔴 Recuperação activa — ≥2 sinais negativos"
+            cor_pres   = "#e74c3c"
+        elif n_neg >= 1 and n_inc >= 1:
+            prescricao = "🟠 Sessão moderada Z1/Z2 — 1 sinal negativo + incerteza"
+            cor_pres   = "#e67e22"
+        elif n_pos == 1 and n_inc >= 2:
+            prescricao = "🟡 Sessão moderada Z1/Z2 — sinais insuficientes para HIIT"
+            cor_pres   = "#f39c12"
+        else:
+            prescricao = "🟡 Zona neutra — manter intensidade planeada"
+            cor_pres   = "#f39c12"
+
+        return prescricao, cor_pres, n_pos, n_neg, n_inc, sinais
+
+    # ── Calcular Modelo β ──────────────────────────────────────────────────
+    beta_df = _calcular_modelo_beta(wc_full)
+
+    if beta_df is None or beta_df.empty or beta_df['beta'].isna().all():
+        st.info("Dados insuficientes para calcular Modelo β (mínimo 14 dias de HRV).")
+    else:
+        # Valores actuais (hoje = último registo calendário)
+        ult = beta_df.iloc[-1]
+        beta_hoje    = ult['beta']
+        b_agudo_hoje = ult['beta_agudo']
+        b_cron_hoje  = ult['beta_cronico']
+
+        # Verificar se hoje tem medição real
+        # "hoje" = data mais recente no índice do beta_df
+        data_ultimo_idx = beta_df.index[-1]
+        hrv_hoje_notna  = pd.notna(ult['LnrMSSD'])
+
+        # Quantos dias desde última medição
+        # Procurar último dia com LnrMSSD não-NaN
+        ultima_med = beta_df['LnrMSSD'].dropna()
+        dias_sem_medicao = 0
+        if not ultima_med.empty:
+            ultima_data_med = ultima_med.index[-1]
+            dias_sem_medicao = (data_ultimo_idx - ultima_data_med).days
+
+        # ── Aviso de dado ausente — CRÍTICO ──────────────────────────────
+        if dias_sem_medicao > 0:
+            st.error(
+                f"⚠️ **ATENÇÃO — {dias_sem_medicao} dia(s) sem medição de HRV.** "
+                f"Última medição: {ultima_data_med.strftime('%d/%m/%Y')}. "
+                f"Sem sinal autonómico actual, o sistema não pode confirmar "
+                f"estado de readiness. **Não prescrever HIIT por precaução.** "
+                f"O bug de ontem (HIIT sugerido sem medição) era exactamente este cenário: "
+                f"o sistema usou o último valor disponível ({ultima_data_med.strftime('%d/%m/%Y')}) "
+                f"como se fosse hoje."
             )
-            _fi2.metric(
-                "Carga média 7d (kJ/dia)",
-                f"{_m7_hoje:.0f}" if _m7_hoje is not None else "—",
-                help="Média de kJ por dia nos últimos 7 dias (dias sem treino = 0)"
-            )
-            _fi3.metric(
-                "Training Strain",
-                f"{_strain_hoje:.0f}" if _strain_hoje is not None else "—",
-                help="Training Strain = IM × carga_média_7d. Combina quantidade e monotonia."
-            )
-            _delta_im = (
-                f"{_im_hoje - _im_7d_ant:+.2f} vs semana ant."
-                if _im_hoje is not None and _im_7d_ant is not None else None
-            )
-            _fi4.metric(
-                "Δ IM vs semana anterior",
-                _delta_im or "—",
-                delta_color="inverse" if _im_hoje is not None and _im_hoje > 1.5 else "off"
-            )
 
-            # Card de alerta se IM > 2.0
-            if _im_hoje is not None and _im_hoje > 2.0:
-                _h_r, _h_g, _h_b = int(_im_cor[1:3],16), int(_im_cor[3:5],16), int(_im_cor[5:7],16)
+        # ── Regra de convergência ─────────────────────────────────────────
+        prescricao, cor_pres, n_pos, n_neg, n_inc, sinais_detalhe = _regra_convergencia(
+            beta_hoje, b_agudo_hoje, b_cron_hoje, hrv_hoje_notna
+        )
+
+        # ── Cards principais ──────────────────────────────────────────────
+        cb1, cb2, cb3, cb4 = st.columns(4)
+
+        # β actual
+        beta_label = f"{beta_hoje:.0f}/100" if pd.notna(beta_hoje) else "— (sem dados)"
+        beta_delta = (
+            "Alta frescura ✅" if pd.notna(beta_hoje) and beta_hoje >= 65
+            else ("Zona funcional" if pd.notna(beta_hoje) and beta_hoje >= 50
+            else ("Possível fadiga ⚠️" if pd.notna(beta_hoje) else "Sem medição hoje"))
+        )
+        cb1.metric(
+            "β Frescura actual",
+            beta_label,
+            delta=beta_delta,
+            delta_color="normal" if pd.notna(beta_hoje) and beta_hoje >= 50 else "inverse",
+            help=(
+                "Score 0-100 baseado no z-score de LnrMSSD vs baseline 28d. "
+                ">65: Alta frescura | 50-65: Zona funcional | <50: Possível fadiga. "
+                "NaN = sem medição hoje → incerteza."
+            )
+        )
+
+        # βAgudo 3d
+        ba_label = f"{b_agudo_hoje:+.1f}%" if pd.notna(b_agudo_hoje) else "— (NaN)"
+        ba_delta = (
+            "Tendência +3d ↗" if pd.notna(b_agudo_hoje) and b_agudo_hoje >= 1
+            else ("Estável" if pd.notna(b_agudo_hoje) and b_agudo_hoje >= -1
+            else ("Queda aguda ↘ ⚠️" if pd.notna(b_agudo_hoje) else "Incerto"))
+        )
+        cb2.metric(
+            "βAgudo (3d)",
+            ba_label,
+            delta=ba_delta,
+            delta_color="normal" if pd.notna(b_agudo_hoje) and b_agudo_hoje >= 0 else "inverse",
+            help=(
+                "% mudança da média LnrMSSD 3d vs 7d (janela calendário, não sessões). "
+                "Capta aceleração de fadiga antes do β diário. "
+                "NaN se <2 medições nos últimos 3 dias."
+            )
+        )
+
+        # βCrónico 7d
+        bc_label = f"{b_cron_hoje:+.1f}%" if pd.notna(b_cron_hoje) else "— (NaN)"
+        bc_delta = (
+            "Adaptação positiva ↗" if pd.notna(b_cron_hoje) and b_cron_hoje >= 1
+            else ("Estável" if pd.notna(b_cron_hoje) and b_cron_hoje >= -1
+            else ("Declínio crónico ↘ ⚠️" if pd.notna(b_cron_hoje) else "Incerto"))
+        )
+        cb3.metric(
+            "βCrónico (7d)",
+            bc_label,
+            delta=bc_delta,
+            delta_color="normal" if pd.notna(b_cron_hoje) and b_cron_hoje >= 0 else "inverse",
+            help=(
+                "% mudança da média LnrMSSD 7d vs baseline 28d (janela calendário). "
+                "Tendência de adaptação de médio prazo. "
+                "NaN se <4 medições nos últimos 7 dias."
+            )
+        )
+
+        # Sinais convergentes
+        cb4.metric(
+            "Sinais convergentes",
+            f"{max(n_pos, n_neg)}/3",
+            delta=f"+{n_pos} pos | -{n_neg} neg | ~{n_inc} inc",
+            delta_color="normal" if n_pos >= 2 else ("inverse" if n_neg >= 2 else "off"),
+            help="Número de indicadores que convergem na mesma direcção. ≥2 = sinal accionável."
+        )
+
+        # ── Prescrição — card destacado ───────────────────────────────────
+        h_r, h_g, h_b = (
+            int(cor_pres[1:3], 16), int(cor_pres[3:5], 16), int(cor_pres[5:7], 16)
+        )
+        st.markdown(
+            f'<div style="padding:16px 20px; border-radius:10px; margin:12px 0; '
+            f'background:rgba({h_r},{h_g},{h_b},0.10); '
+            f'border-left:6px solid {cor_pres};">'
+            f'<span style="font-size:1.15em; font-weight:700; color:{cor_pres};">'
+            f'Prescrição Modelo β: {prescricao}</span>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
+
+        # ── Detalhe dos sinais ────────────────────────────────────────────
+        with st.expander("🔍 Detalhe dos 3 indicadores β", expanded=False):
+            st.markdown("**Regra de decisão:** actuar apenas quando ≥2 dos 3 indicadores convergem na mesma direcção.")
+            st.markdown("**Dado ausente = incerteza = prescrição conservadora** (não prescrever HIIT)")
+            st.markdown("")
+
+            for nome, sinal, desc, cor_s in sinais_detalhe:
+                hs_r = int(cor_s[1:3], 16)
+                hs_g = int(cor_s[3:5], 16)
+                hs_b = int(cor_s[5:7], 16)
+                icone = "✅" if sinal == +1 else ("⚠️" if sinal == -1 else "⬜")
                 st.markdown(
-                    f'<div style="padding:12px 16px; border-radius:8px; margin:8px 0; '
-                    f'background:rgba({_h_r},{_h_g},{_h_b},0.10); '
-                    f'border-left:5px solid {_im_cor};">'
-                    f'<b style="color:{_im_cor};">⚠️ Monotonia elevada (IM={_im_hoje:.2f})</b> — '
-                    f'Treino demasiado uniforme nos últimos 7 dias. '
-                    f'Introduzir dias de carga muito baixa (Z1) entre sessões de alta intensidade. '
-                    f'Ver análise completa em Tab Volume.'
+                    f'<div style="padding:8px 14px; margin:4px 0; border-radius:6px; '
+                    f'background:rgba({hs_r},{hs_g},{hs_b},0.10); '
+                    f'border-left:4px solid {cor_s};">'
+                    f'<b>{icone} {nome}:</b> {desc}'
                     f'</div>',
                     unsafe_allow_html=True
                 )
-            elif _im_hoje is not None and _im_hoje > 1.5:
-                st.info(
-                    f"🟡 IM={_im_hoje:.2f} — zona de atenção. "
-                    f"Verificar distribuição Z1/Z2/Z3 na Tab Volume."
-                )
 
+            st.markdown("")
+            st.caption(
+                "**Por que NaN não é zero?** Um dia sem medição de HRV não significa "
+                "que a HRV estava normal — significa que não sabemos. O SNA pode estar "
+                "a responder a factores invisíveis (glucogénio baixo, microinflamação, "
+                "deshidratação) que só a medição confirmaria. "
+                "Tratar NaN como 'baseline' foi o que causou o HIIT sugerido ontem."
+            )
+
+        # ── Gráfico β — série 90 dias ─────────────────────────────────────
+        st.markdown("#### Evolução β — últimos 90 dias")
+
+        beta_plot = beta_df.dropna(subset=['bm28']).copy()
+        beta_plot.index.name = 'Data'
+        beta_plot = beta_plot.reset_index()
+
+        fig_b = go.Figure()
+
+        # Banda: dias sem medição (LnrMSSD NaN) → fundo cinzento
+        sem_med = beta_df[beta_df['LnrMSSD'].isna()].copy()
+        sem_med = sem_med.reset_index()
+        for _, row_sm in sem_med.iterrows():
+            fig_b.add_vrect(
+                x0=row_sm['Data'] - pd.Timedelta(hours=12),
+                x1=row_sm['Data'] + pd.Timedelta(hours=12),
+                fillcolor="rgba(150,150,150,0.15)",
+                line_width=0,
+                annotation_text="sem HRV",
+                annotation_position="top left",
+                annotation_font_size=9,
+                annotation_font_color="#aaa",
+            )
+
+        # Zonas β
+        fig_b.add_hrect(y0=65, y1=100,
+            fillcolor="rgba(39,174,96,0.07)", line_width=0,
+            annotation_text="Alta frescura (>65)", annotation_position="left",
+            annotation_font_size=10, annotation_font_color="#27ae60")
+        fig_b.add_hrect(y0=40, y1=65,
+            fillcolor="rgba(243,156,18,0.05)", line_width=0,
+            annotation_text="Zona funcional", annotation_position="left",
+            annotation_font_size=10, annotation_font_color="#f39c12")
+        fig_b.add_hrect(y0=0, y1=40,
+            fillcolor="rgba(231,76,60,0.07)", line_width=0,
+            annotation_text="Fadiga possível (<40)", annotation_position="left",
+            annotation_font_size=10, annotation_font_color="#e74c3c")
+
+        # β diário
+        fig_b.add_trace(go.Scatter(
+            x=beta_plot['Data'], y=beta_plot['beta'],
+            mode='lines+markers',
+            name='β (frescura)',
+            line=dict(color='#2471A3', width=2.5),
+            marker=dict(size=6),
+            hovertemplate='%{x|%d/%m/%Y}<br>β: <b>%{y:.0f}</b><extra></extra>'
+        ))
+
+        # βAgudo (eixo y2)
+        fig_b.add_trace(go.Scatter(
+            x=beta_plot['Data'], y=beta_plot['beta_agudo'],
+            mode='lines',
+            name='βAgudo 3d (%)',
+            line=dict(color='#E74C3C', width=1.5, dash='dot'),
+            yaxis='y2',
+            hovertemplate='%{x|%d/%m/%Y}<br>βAgudo: <b>%{y:+.1f}%</b><extra></extra>'
+        ))
+
+        # βCrónico (eixo y2)
+        fig_b.add_trace(go.Scatter(
+            x=beta_plot['Data'], y=beta_plot['beta_cronico'],
+            mode='lines',
+            name='βCrónico 7d (%)',
+            line=dict(color='#9B59B6', width=1.5, dash='dash'),
+            yaxis='y2',
+            hovertemplate='%{x|%d/%m/%Y}<br>βCrónico: <b>%{y:+.1f}%</b><extra></extra>'
+        ))
+
+        # Linha y=0 no eixo y2
+        fig_b.add_hline(y=0, line_dash='solid', line_color='rgba(150,150,150,0.4)',
+                        line_width=1, yref='y2')
+
+        fig_b.update_layout(
+            paper_bgcolor='white', plot_bgcolor='white',
+            font=dict(color='#111', size=12),
+            height=420,
+            hovermode='x unified',
+            margin=dict(t=40, b=70, l=60, r=80),
+            legend=dict(orientation='h', y=-0.18,
+                        font=dict(color='#111', size=10),
+                        bgcolor='rgba(255,255,255,0.9)'),
+            yaxis=dict(
+                title='β (0–100)',
+                range=[0, 100],
+                showgrid=True, gridcolor='#eee',
+                tickfont=dict(color='#2471A3'),
+                title_font=dict(color='#2471A3'),
+            ),
+            yaxis2=dict(
+                title='βAgudo / βCrónico (%)',
+                overlaying='y', side='right',
+                showgrid=False,
+                zeroline=True, zerolinecolor='rgba(150,150,150,0.4)',
+                tickfont=dict(color='#888'),
+                title_font=dict(color='#888'),
+            ),
+            xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111'))
+        )
+
+        st.plotly_chart(fig_b, use_container_width=True,
+                        config={'displayModeBar': False, 'responsive': True,
+                                'scrollZoom': False},
+                        key="rec_beta_chart")
+
+        # ── Nota metodológica ─────────────────────────────────────────────
+        with st.expander("ℹ️ Metodologia — Modelo β e tratamento de NAs"):
+            st.markdown(f"""
+**O problema com dados ausentes na tab_recovery actual**
+
+O código actual (linha 132) faz `df = df.dropna(subset=['LnrMSSD'])` — remove todos
+os dias sem medição **antes** de qualquer cálculo. Consequência: `.iloc[-1]` (prescrição
+de hoje) usa o último dia **com dados**, que pode ser há 2-3 dias. Se esse dia estava
+dentro do baseline → sistema diz HIIT. Isto foi exactamente o que aconteceu ontem.
+
+**Como o Modelo β trata NAs**
+
+Em vez de eliminar, usa `reindex()` para manter o calendário completo com NaN onde
+não há medição. O rolling usa `min_periods` explícito (não `min_periods=1`) para
+garantir que não calcula com dados insuficientes.
+
+| Situação | β | βAgudo | βCrónico | Prescrição |
+|---|---|---|---|---|
+| Medição normal | calculado | calculado | calculado | por convergência |
+| Sem medição hoje | **NaN** | impactado | calculado | **conservadora** |
+| 2+ dias sem medição | NaN | **NaN** | calculado | **conservadora** |
+| Semana irregular (<4 medições) | parcial | NaN | **NaN** | **conservadora** |
+
+**Fórmulas**
+
+- `β = Φ(z) × 100` onde `z = (LnrMSSD_hoje - bm28) / bs28`
+- `βAgudo = (mean_3d - mean_7d) / |mean_7d| × 100`
+- `βCrónico = (mean_7d - bm28) / |bm28| × 100`
+- Thresholds: +1% / -1% (sinal detectável acima do ruído de CV 8-12%)
+
+**Referências**
+
+Della Mattia G (2025). *VFC y Sistema Nervioso Autónomo — Lo que no podemos sentir.*
+ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite endurance athletes.
+*Sports Medicine.* | Buchheit M (2014). Monitoring training status with HR measures.
+*Frontiers in Physiology.*
+            """)
+
+    st.markdown("---")
+
+
+    # ════════════════════════════════════════════════════════════════════════
+    # INTEGRAR RPE DAS ATIVIDADES (padrão tab_correlacoes)
+    # ════════════════════════════════════════════════════════════════════════
+    
+    # Helper para remover outliers (igual ao da tab_correlacoes)
+    def _remove_outliers_iqr(series, factor=1.5):
+        s = pd.to_numeric(series, errors='coerce')
+        q1, q3 = s.quantile(0.25), s.quantile(0.75)
+        iqr = q3 - q1
+        mask = (s < q1 - factor*iqr) | (s > q3 + factor*iqr)
+        s[mask] = np.nan
+        return s
+
+    # Helper para classificar RPE
+    def classificar_rpe(val):
+        if pd.isna(val): return None
+        if val < 5: return 'Leve'
+        elif val < 7: return 'Moderado'
+        else: return 'Pesado'
+
+    # Encontrar coluna de RPE
+    rpe_col = next((c for c in ['icu_rpe', 'rpe', 'RPE'] if c in da.columns), None) if not da.empty else None
+    
+    if rpe_col:
+        # Processar datas
+        da_proc = da.copy()
+        da_proc['Data'] = pd.to_datetime(da_proc['Data']).dt.normalize()
+        dw['Data'] = pd.to_datetime(dw['Data']).dt.normalize()
+        
+        # Remover outliers do RPE
+        da_proc[rpe_col] = _remove_outliers_iqr(da_proc[rpe_col])
+        da_proc = da_proc.dropna(subset=[rpe_col])
+        
+        # Agrupar por dia (média dos treinos do dia)
+        rpe_diario = da_proc.groupby('Data')[rpe_col].agg([
+            ('icu_rpe', 'mean'),  # média do dia
+            ('icu_rpe_max', 'max'),
+            ('treinos_count', 'count')
+        ]).reset_index()
+        
+        # Classificar intensidade
+        rpe_diario['rpe_cat'] = rpe_diario['icu_rpe'].apply(classificar_rpe)
+        
+        # Merge com wellness
+        dw = dw.merge(rpe_diario, on='Data', how='left')
+        
+        # Preencher dias sem treino como descanso (Rest) ou deixar NaN conforme sua preferência
+        # Na tab_correlacoes você usa 'Rest' para dias sem atividade
+        # Aqui vamos deixar NaN para indicar "sem treino" mas criar flag de descanso
+        dw['treino_pesado'] = (dw['icu_rpe'] >= 7).astype(int)
+        dw['treino_moderado'] = ((dw['icu_rpe'] >= 5) & (dw['icu_rpe'] < 7)).astype(int)
+        dw['treino_leve'] = (dw['icu_rpe'] < 5).astype(int)
+        dw['descanso'] = dw['icu_rpe'].isna().astype(int)  # 1 = dia sem treino
+        
+        st.success(f"✅ Dados de carga integrados: {dw['icu_rpe'].notna().sum()} dias com RPE")
+    else:
+        # Criar colunas vazias para não quebrar o código posterior
+        dw['icu_rpe'] = np.nan
+        dw['icu_rpe_max'] = np.nan
+        dw['treinos_count'] = 0
+        dw['rpe_cat'] = 'Sem dados'
+        dw['treino_pesado'] = 0
+        dw['treino_moderado'] = 0
+        dw['treino_leve'] = 0
+        dw['descanso'] = 1  # Assume descanso se não tem dados
+        if not da.empty:
+            st.info("ℹ️ Atividades disponíveis mas sem coluna de RPE (icu_rpe/rpe)")
+
+    # Calcular recovery com dw já contendo RPE integrado
+    # (dw já foi limpo por preproc_wellness: zscore, zeros→NaN, lookback fill)
+    rec = calcular_recovery(dw)
+    if len(rec) == 0:
+        return
+
+    u = rec.iloc[-1]
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Recovery Score", f"{u['recovery_score']:.0f}")
+    c2.metric("HRV", f"{u['hrv']:.0f}" if pd.notna(u['hrv']) else "—")
+    c3.metric("Baseline", f"{u['hrv_baseline']:.0f}" if pd.notna(u['hrv_baseline']) else "—")
+    _cv7 = u.get('hrv_cv_7d', None)
+    c4.metric("CV%", f"{_cv7:.1f}%" if _cv7 is not None else "—")
+
+    st.markdown("---")
+
+    col1, col2 = st.columns(2)
+    n_dias    = col1.slider("Dias", 14, min(len(dw), 365), 90, key="rec_dias")
+    janela_cv = col2.slider("Janela CV", 3, 14, 7, key="rec_jcv")
+
+    modo_modelo = st.radio(
+        "Modelo",
+        ["Mode 1 — Altini", "Mode 2 — Plews"],
+        horizontal=True,
+        key="rec_modo"
+    )
+
+    df = dw.copy().sort_values('Data')
+    df['Data'] = pd.to_datetime(df['Data'])
+    df = df.tail(n_dias)
+
+    df['LnrMSSD'] = np.where(df['hrv'] > 0, np.log(df['hrv']), np.nan)
+    df = df.dropna(subset=['LnrMSSD'])
+
+    if len(df) < 10:
+        st.warning("Poucos dados.")
+        return
+
+    # ── Baseline: Mode 1 = 7d (Altini, janela curta p/ CV), Mode 2 = 60d (Plews) ──
+    baseline_w = 7 if "Mode 1" in modo_modelo else 60
+
+    df['baseline'] = df['LnrMSSD'].rolling(baseline_w, min_periods=5).mean()
+    df['std']      = df['LnrMSSD'].rolling(baseline_w, min_periods=5).std()
+
+    df['cv'] = (
+        df['LnrMSSD'].rolling(janela_cv, min_periods=3).std() /
+        df['LnrMSSD'].rolling(janela_cv, min_periods=3).mean()
+    ) * 100
+
+    # ── SWC = Smallest Worthwhile Change = 0.5 * CV do baseline ──────────────
+    df['SWC']   = 0.5 * (df['std'] / df['baseline'] * 100)
+    df['upper'] = df['baseline'] * (1 + df['SWC'] / 100)
+    df['lower'] = df['baseline'] * (1 - df['SWC'] / 100)
+
+    # ── Thresholds de CV: média ± 0.5 SD do histórico de CV ──────────────────
+    cv_hist = df['cv'].dropna()
+    if len(cv_hist) > 10:
+        cv_mean = cv_hist.mean()
+        cv_std  = cv_hist.std()
+        cv_low  = max(0.1, cv_mean - 0.5 * cv_std)
+        cv_high = cv_mean + 0.5 * cv_std
+    else:
+        cv_low, cv_high = 0.5, 1.5
+
+    # ── Slope 7d (regressão linear sobre LnrMSSD) ────────────────────────────
+    def slope_fn(x):
+        xd = x.dropna()
+        return stats.linregress(range(len(xd)), xd)[0] if len(xd) >= 5 else np.nan
+
+    df['slope'] = df['LnrMSSD'].rolling(7, min_periods=5).apply(slope_fn)
+
+    # ── Classificação Mode 1 — Altini ────────────────────────────────────────
+    def altini(r):
+        if pd.isna(r['cv']) or pd.isna(r['baseline']):
+            return 'Sem dados', '#808080'
+        if r['LnrMSSD'] < r['baseline'] and r['cv'] < cv_low:
+            return 'Accumulated Fatigue', '#e74c3c'
+        if r['LnrMSSD'] < r['baseline'] and r['cv'] > cv_high:
+            return 'Maladaptation', '#f1c40f'
+        if r['LnrMSSD'] > r['baseline'] and r['cv'] < cv_low:
+            return 'Good Adaptation', '#27ae60'
+        if r['LnrMSSD'] > r['baseline'] and r['cv'] > cv_high:
+            return 'High Variability', '#2c3e50'
+        return 'Normal', '#95a5a6'
+
+    # ── Classificação Mode 2 — Plews ─────────────────────────────────────────
+    def plews(r):
+        if pd.isna(r['cv']) or pd.isna(r['baseline']):
+            return 'Sem dados', '#808080'
+        declinio = r['slope'] < -0.01 if pd.notna(r['slope']) else False
+        if r['cv'] < cv_low and declinio:
+            return 'NFOR', '#8b0000'
+        if r['LnrMSSD'] < r['lower']:
+            return 'Overreaching', '#e67e22'
+        if r['cv'] > cv_high:
+            return 'High Variability', '#2c3e50'
+        return 'Normal', '#27ae60'
+
+    if "Mode 1" in modo_modelo:
+        df[['zona', 'cor']] = df.apply(lambda r: pd.Series(altini(r)), axis=1)
+    else:
+        df[['zona', 'cor']] = df.apply(lambda r: pd.Series(plews(r)), axis=1)
+
+    df_plot = df.dropna(subset=['baseline', 'cv'])
+    if len(df_plot) == 0:
+        st.warning("Sem dados suficientes após processamento.")
+        return
+
+    # ════════════════════════════════════════════════════════════════════════
+    # GRÁFICO PRINCIPAL — Barras coloridas + Baseline + SWC + CV% (y2)
+    # ════════════════════════════════════════════════════════════════════════
+    fig = go.Figure()
+
+    # ── Barras coloridas por zona (transparentes) ─────────────────────────
+    zonas_ordem = (
+        ['Good Adaptation', 'Normal', 'High Variability', 'Maladaptation', 'Accumulated Fatigue', 'Sem dados']
+        if "Mode 1" in modo_modelo else
+        ['Normal', 'High Variability', 'Overreaching', 'NFOR', 'Sem dados']
+    )
+    zonas_vistas = df_plot[['zona', 'cor']].drop_duplicates().set_index('zona')['cor'].to_dict()
+    for zona in zonas_ordem:
+        if zona not in zonas_vistas:
+            continue
+        cor = zonas_vistas[zona]
+        d   = df_plot[df_plot['zona'] == zona]
+        r_h, g_h, b_h = int(cor[1:3],16), int(cor[3:5],16), int(cor[5:7],16)
+        cor_fill = f'rgba({r_h},{g_h},{b_h},0.55)'
+        cor_line = f'rgba({r_h},{g_h},{b_h},0.85)'
+        fig.add_trace(go.Bar(
+            x=d['Data'],
+            y=d['LnrMSSD'],
+            name=zona,
+            marker=dict(color=cor_fill, line=dict(color=cor_line, width=1)),
+            customdata=np.stack([d['cv'], d['slope'].fillna(0)], axis=1),
+            hovertemplate=(
+                '<b>' + zona + '</b><br>'
+                'Data: %{x|%d/%m/%Y}<br>'
+                'LnRMSSD: %{y:.3f}<br>'
+                'CV%: %{customdata[0]:.2f}%<br>'
+                'Slope 7d: %{customdata[1]:.4f}'
+                '<extra></extra>'
+            )
+        ))
+
+    # ── Baseline (linha tracejada ESCURA E GROSSA) ─────────────────────────
+    fig.add_trace(go.Scatter(
+        x=df_plot['Data'], y=df_plot['baseline'],
+        name=f'Baseline ({baseline_w}d)',
+        line=dict(color='#2c3e50', width=4, dash='dash'),
+        hovertemplate='Baseline: %{y:.3f}<extra></extra>'
+    ))
+
+    # ── SWC band: maior opacidade ────────────────────────────────────────
+    fig.add_trace(go.Scatter(
+        x=df_plot['Data'], y=df_plot['upper'],
+        line=dict(color='rgba(44,62,80,0.40)', width=1),
+        showlegend=False, hoverinfo='skip'
+    ))
+    fig.add_trace(go.Scatter(
+        x=df_plot['Data'], y=df_plot['lower'],
+        fill='tonexty', fillcolor='rgba(44,62,80,0.20)',
+        line=dict(color='rgba(44,62,80,0.40)', width=1),
+        name='SWC band',
+        hovertemplate='SWC lower: %{y:.3f}<extra></extra>'
+    ))
+    # ── CV% no eixo Y2 ───────────────────────────────────────────────────
+    fig.add_trace(go.Scatter(
+        x=df_plot['Data'], y=df_plot['cv'],
+        name='CV% (eixo direito)',
+        line=dict(color='#e67e22', width=2),
+        marker=dict(size=4),
+        yaxis='y2',
+        hovertemplate='CV%: %{y:.2f}%<extra></extra>'
+    ))
+    # Threshold cv_low (LINHA GROSSA)
+    fig.add_trace(go.Scatter(
+        x=[df_plot['Data'].iloc[0], df_plot['Data'].iloc[-1]],
+        y=[cv_low, cv_low],
+        name=f'CV low ({cv_low:.2f}%)',
+        yaxis='y2',
+        line=dict(color='#e67e22', width=3, dash='dot'),
+        hoverinfo='skip'
+    ))
+    # Threshold cv_high (LINHA GROSSA)
+    fig.add_trace(go.Scatter(
+        x=[df_plot['Data'].iloc[0], df_plot['Data'].iloc[-1]],
+        y=[cv_high, cv_high],
+        name=f'CV high ({cv_high:.2f}%)',
+        yaxis='y2',
+        line=dict(color='#c0392b', width=3, dash='dot'),
+        hoverinfo='skip'
+    ))
+
+    fig.update_layout(
+        paper_bgcolor='white', plot_bgcolor='white',
+        font=dict(color='#111', size=12),
+        height=500, barmode='relative',
+        hovermode='x unified',
+        margin=dict(t=60, b=80, l=60, r=80),
+        title=dict(
+            text=f'{"Mode 1 — Altini" if "Mode 1" in modo_modelo else "Mode 2 — Plews"}'
+                 f' | Baseline {baseline_w}d | CV thresholds: low={cv_low:.2f}% / high={cv_high:.2f}%',
+            font=dict(size=13, color='#111')),
+        legend=dict(orientation='h', y=-0.22, font=dict(color='#111', size=10),
+                    bgcolor='rgba(255,255,255,0.9)'),
+        yaxis=dict(title='LnRMSSD',
+                   showgrid=True, gridcolor='#eee',
+                   tickfont=dict(color='#111'),
+                   range=[0, 8],
+                   dtick=1),
+        yaxis2=dict(title=f'CV% ({janela_cv}d)',
+                    overlaying='y', side='right',
+                    showgrid=False,
+                    tickfont=dict(color='#e67e22'),
+                    title_font=dict(color='#e67e22'),
+                    range=[0, max(3.0, df_plot['cv'].max() * 1.3)]),
+        xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111'))
+    )
+
+    st.plotly_chart(fig, use_container_width=True,
+                    config={'displayModeBar': False, 'responsive': True,
+                            'scrollZoom': False},
+                    key="rec_main_chart")
+
+    # ── Status actual ────────────────────────────────────────────────────
+    ultimo = df_plot.iloc[-1]
+    st.markdown("### 📊 Status Atual")
+    cs1, cs2, cs3, cs4 = st.columns(4)
+    cor_s = ultimo['cor']
+    r_h, g_h, b_h = int(cor_s[1:3],16), int(cor_s[3:5],16), int(cor_s[5:7],16)
+    cs1.markdown(
+        f'<div style="padding:12px;border-radius:8px;background:rgba({r_h},{g_h},{b_h},0.15);'
+        f'border-left:5px solid {cor_s};">'
+        f'<b style="color:{cor_s};font-size:14px;">{ultimo["zona"]}</b></div>',
+        unsafe_allow_html=True)
+    cs2.metric("CV%",     f"{ultimo['cv']:.2f}%",
+               delta=f"low:{cv_low:.2f}% | high:{cv_high:.2f}%")
+    cs3.metric("LnRMSSD", f"{ultimo['LnrMSSD']:.3f}",
+               delta=f"baseline: {ultimo['baseline']:.3f}")
+    cs4.metric("Slope 7d", f"{ultimo['slope']:.4f}" if pd.notna(ultimo['slope']) else "—")
+
+    # ════════════════════════════════════════════════════════════════════════
+    # EXPLICAÇÃO DO STATUS E CÁLCULO
+    # ════════════════════════════════════════════════════════════════════════
+    with st.expander("📖 Como foi calculado este resultado?", expanded=True):
+        if "Mode 1" in modo_modelo:
+            st.markdown("""
+            **Mode 1 — Altini (Baseline Curto)**
+            
+            **Lógica:** Matriz 2×2 baseada na posição do LnRMSSD vs Baseline e estabilidade do CV (Coeficiente de Variação).
+            
+            | Condição | Significado | Interpretação |
+            |----------|-------------|---------------|
+            | **Accumulated Fatigue** | LnRMSSD < Baseline + CV < low | Fadiga crônica acumulada. HRV está consistentemente suprimido abaixo do baseline com baixa variação. Indica necessidade de descanso. |
+            | **Maladaptation** | LnRMSSD < Baseline + CV > high | Resposta inconsistente ao treino. HRV baixo mas com alta variabilidade, indicando instabilidade do sistema nervoso autônomo. |
+            | **Good Adaptation** | LnRMSSD > Baseline + CV < low | Estado ideal! HRV elevado e estável. Sistema bem recuperado e adaptado. |
+            | **High Variability** | LnRMSSD > Baseline + CV > high | Atenção: HRV está elevado mas instável. Pode indicar sobrecompensação ou estresse agudo não resolvido. |
+            | **Normal** | Valores intermediários | Estado neutro, sem sinais claros de fadiga ou supercompensação. |
+            
+            **Cálculos:**
+            - **Baseline**: Média móvel de 7 dias do LnRMSSD
+            - **CV%**: Desvio padrão / média × 100 (janela de {janela_cv} dias)
+            - **Thresholds CV**: Média histórica ± 0.5 DP do CV
+            - **Status atual**: {zona_atual} (CV={cv_atual:.2f}%, vs baseline={baseline_atual:.3f})
+            """.format(janela_cv=janela_cv, zona_atual=ultimo['zona'], 
+                      cv_atual=ultimo['cv'], baseline_atual=ultimo['baseline']))
         else:
-            st.info("Coluna kJ não disponível para cálculo de monotonia.")
-    else:
-        st.info("Sem dados de actividades para cálculo.")
+            st.markdown("""
+            **Mode 2 — Plews (Baseline Longo)**
+            
+            **Lógica:** Baseada na tendência (slope 7d) + posição relativa à banda SWC (Smallest Worthwhile Change).
+            
+            | Condição | Significado | Interpretação |
+            |----------|-------------|---------------|
+            | **NFOR** (Non-Functional Overreaching) | CV < low + Slope negativo | Fadiga severa funcional. HRV estável mas em declínio contínuo. Risco de overtraining. |
+            | **Overreaching** | LnRMSSD < Lower SWC | HRV abaixo da banda de variação mínima importante. Indica sobrecrecheamento agudo. |
+            | **High Variability** | CV > high | Instabilidade autonômica. Resposta ao treino inconsistente, possível estresse não funcional. |
+            | **Normal** | Dentro dos parâmetros normais | Recuperação adequada, pronto para carga de treino. |
+            
+            **Cálculos:**
+            - **Baseline**: Média móvel de 60 dias do LnRMSSD (mais estável, menos sensível a flutuações agudas)
+            - **SWC (Smallest Worthwhile Change)**: 0.5 × (DP do baseline / baseline) × 100
+            - **Bandas**: Baseline ± SWC%
+            - **Slope 7d**: Coeficiente angular da regressão linear dos últimos 7 dias
+            - **Status atual**: {zona_atual} (Slope={slope_atual:.4f}, vs SWC lower={lower_atual:.3f})
+            """.format(zona_atual=ultimo['zona'], slope_atual=ultimo['slope'] if pd.notna(ultimo['slope']) else 0,
+                      lower_atual=ultimo['lower']))
 
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # MARKOV CHAIN + SUGESTAO HRV-GUIDED x MONOTONIA x PADRAO HISTORICO
-    # Estado = Modalidade x Zona RPE (Leve/Moderado/Forte) + Descanso
-    # Recalcula a cada carregamento sem cache
-    # ══════════════════════════════════════════════════════════════════════════
     st.markdown("---")
-    st.markdown("### 🔗 Markov Chain — Padrão e Sugestão HRV-Guided")
-    with st.expander("Como funciona", expanded=False):
-        st.markdown("""
-**Markov Chain 1a e 2a ordem — calibrada nos dados deste atleta**
 
-Estado = Modalidade_Zona (ex: Bike_Moderado, Row_Forte) ou Descanso.
-A cadeia aprende a probabilidade de cada transição e o HRV médio t+1 e t+2.
+    # ════════════════════════════════════════════════════════════════════════
+    # HRV-GUIDED TRAINING — 2 painéis: LnrMSSD colorido + Desvio em DP (±5)
+    # ════════════════════════════════════════════════════════════════════════
+    st.subheader("🏋️ HRV-Guided Training (LnrMSSD)")
 
-**Sugestão integrada:**
-1. HRV-Guided: Recuperação → Z1/Z2/Descanso | HIIT → Z2/Z3
-2. Monotonia (IM): se IM>1.5 forçar variação de zona/modalidade
-3. Markov: selecciona a transição com melhor HRV histórico dentro das opcoes permitidas
+    if len(dw) >= 14 and dw['hrv'].notna().sum() >= 14:
+        df_hg = dw.copy().sort_values('Data')
+        df_hg['Data'] = pd.to_datetime(df_hg['Data'])
 
-Recalcula sem cache a cada carregamento.
-        """)
+        # ── MUDANÇA: reindex para calendário completo em vez de dropna ──────
+        # Mantém dias sem HRV como NaN — não os elimina
+        # Baseline rolling calcula sobre dias COM dados (min_periods)
+        # Dias sem medição aparecem no gráfico com estrela ⭐ na posição do baseline
+        df_hg = df_hg.set_index('Data')
+        date_range_hg = pd.date_range(df_hg.index.min(), df_hg.index.max(), freq='D')
+        df_hg = df_hg.reindex(date_range_hg)
+        df_hg.index.name = 'Data'
+        df_hg = df_hg.reset_index()
 
-    if da_full is not None and len(da_full) > 0 and wc_full is not None and len(wc_full) > 0:
-        try:
-            _mk_da = filtrar_principais(da_full).copy()
-            _mk_da['Data'] = pd.to_datetime(_mk_da['Data']).dt.normalize()
-            _mk_da['type'] = _mk_da['type'].apply(norm_tipo)
-            _mk_da = _mk_da[_mk_da['type'].isin(['Bike','Run','Row','Ski','WeightTraining'])]
+        # Usar hrv_raw (valor original da sheet, sem imputação) se disponível
+        # hrv_raw = NaN significa dia sem medição real
+        # hrv_imputado = True significa o hrv foi preenchido com lookback
+        _hrv_col_hg = 'hrv_raw' if 'hrv_raw' in df_hg.columns else 'hrv'
+        _imp_col_hg = 'hrv_imputado' if 'hrv_imputado' in df_hg.columns else None
 
-            _mk_wc = wc_full.copy()
-            _mk_wc['Data'] = pd.to_datetime(_mk_wc['Data']).dt.normalize()
+        df_hg['LnrMSSD'] = np.where(
+            df_hg[_hrv_col_hg].notna() & (df_hg[_hrv_col_hg] > 0),
+            np.log(df_hg[_hrv_col_hg]),
+            np.nan
+        )
+        # Flag: dia sem medição real (NaN no raw OU imputado)
+        if _imp_col_hg:
+            df_hg['sem_medicao'] = (df_hg[_hrv_col_hg].isna() |
+                                     df_hg[_imp_col_hg].fillna(False).astype(bool))
+        else:
+            df_hg['sem_medicao'] = df_hg['LnrMSSD'].isna()
 
-            def _zona_rpe(rpe_val):
-                try:
-                    r = float(rpe_val)
-                    if r <= 4.0:   return 'Leve'
-                    elif r <= 7.0: return 'Moderado'
-                    else:          return 'Forte'
-                except: return 'Moderado'
+        hg_c1, hg_c2 = st.columns(2)
+        dias_fam = hg_c1.slider("Dias baseline rolling", 7, 28, 14, key="hg_baseline")
+        n_hg_max = max(14, df_hg['LnrMSSD'].notna().sum())
+        n_hg     = hg_c2.slider("Dias a mostrar", 14, min(len(df_hg), 180),
+                                  min(60, len(df_hg)), key="hg_dias")
 
-            _mk_da['rpe_n']  = pd.to_numeric(
-                _mk_da.get('rpe', pd.Series(dtype=float)), errors='coerce').fillna(5)
-            _mk_da['zona']   = _mk_da['rpe_n'].apply(_zona_rpe)
-            _mk_da['estado'] = _mk_da['type'] + '_' + _mk_da['zona']
+        # Baseline: rolling EXCLUINDO o dia actual (shift 1) — sem lookahead
+        # O baseline de hoje = média dos últimos 14 dias anteriores a hoje
+        # Sem shift, o próprio valor de hoje entra no seu baseline → distorção
+        _mp = max(5, dias_fam // 2)
+        df_hg['bm']    = df_hg['LnrMSSD'].shift(1).rolling(dias_fam, min_periods=_mp).mean()
+        df_hg['bs']    = df_hg['LnrMSSD'].shift(1).rolling(dias_fam, min_periods=_mp).std()
+        df_hg['linf']  = df_hg['bm'] - 0.5 * df_hg['bs']
+        df_hg['lsup']  = df_hg['bm'] + 0.5 * df_hg['bs']
+        df_hg['desvio_dp'] = (df_hg['LnrMSSD'] - df_hg['bm']) / df_hg['bs'].replace(0, np.nan)
 
-            _mk_daily = (_mk_da.sort_values('rpe_n', ascending=False)
-                               .groupby('Data')['estado'].first().reset_index())
+        # Classificação:
+        # - Dia COM medição: HIIT / Recuperação / Sem dados (baseline insuf.)
+        # - Dia SEM medição: 'Sem medição' → prescrição conservadora
+        def _classif_hg(r):
+            if r['sem_medicao']:
+                return 'Sem medição ⭐'
+            if pd.isna(r['bm']):
+                return 'Sem dados'
+            if r['linf'] <= r['LnrMSSD'] <= r['lsup']:
+                return 'HIIT'
+            return 'Recuperação'
 
-            _mk_idx = pd.date_range(
-                _mk_daily['Data'].min(), pd.Timestamp.now().normalize(), freq='D')
-            _mk_estados = (_mk_daily.set_index('Data')
-                                    .reindex(_mk_idx).fillna('Descanso').reset_index())
-            _mk_estados.columns = ['Data', 'estado']
+        df_hg['intens'] = df_hg.apply(_classif_hg, axis=1)
 
-            _hrv_col_mk = next((c for c in ['hrv','HRV'] if c in _mk_wc.columns), None)
-            if _hrv_col_mk:
-                _mk_hrv   = _mk_wc[['Data', _hrv_col_mk]].copy()
-                _mk_hrv.columns = ['Data', 'hrv']
-                _hrv_base = float(_mk_hrv['hrv'].median()) if len(_mk_hrv) > 5 else 50.0
+        # Guardar para análise de correlação posterior
+        df_analysis = df_hg.copy()
+        df_hg_raw = dw.copy().sort_values('Data')
+        df_hg_raw['Data'] = pd.to_datetime(df_hg_raw['Data'])
+        df_hg_raw['RMSSD'] = df_hg_raw['hrv'].where(df_hg_raw['hrv'] > 0)
+        # Manter calendário completo também para RMSSD bruto
+        df_hg_raw = df_hg_raw.set_index('Data')
+        _dr_raw = pd.date_range(df_hg_raw.index.min(), df_hg_raw.index.max(), freq='D')
+        df_hg_raw = df_hg_raw.reindex(_dr_raw)
+        df_hg_raw.index.name = 'Data'
+        df_hg_raw = df_hg_raw.reset_index()
+        _mp_raw = max(5, dias_fam // 2)
+        df_hg_raw['bm_raw'] = df_hg_raw['RMSSD'].shift(1).rolling(dias_fam, min_periods=_mp_raw).mean()
+        df_hg_raw['bs_raw'] = df_hg_raw['RMSSD'].shift(1).rolling(dias_fam, min_periods=_mp_raw).std()
+        df_hg_raw['desvio_dp_raw'] = (df_hg_raw['RMSSD'] - df_hg_raw['bm_raw']) / df_hg_raw['bs_raw'].replace(0, np.nan)
+        df_hg_raw['intens_raw'] = df_hg_raw.apply(
+            lambda r: ('Sem medição ⭐' if pd.isna(r['RMSSD'])
+                       else 'HIIT' if pd.notna(r['bm_raw']) and (r['bm_raw'] - 0.5*r['bs_raw']) <= r['RMSSD'] <= (r['bm_raw'] + 0.5*r['bs_raw'])
+                       else ('Recuperação' if pd.notna(r['bm_raw']) else 'Sem dados')), axis=1)
+
+        df_p = df_hg.tail(n_hg).copy()
+
+        COR_MAP = {'HIIT': '#27ae60', 'Recuperação': '#f39c12', 'Sem dados': '#95a5a6', 'Sem medição ⭐': '#cccccc'}
+
+        _fig_hg = make_subplots(
+            rows=2, cols=1, shared_xaxes=True,
+            row_heights=[0.65, 0.35], vertical_spacing=0.06,
+            subplot_titles=[
+                f'LnrMSSD — Baseline {dias_fam}d ± 0.5 DP',
+                'Desvio do Baseline (unidades de DP) — Range ±5'
+            ]
+        )
+
+        for intensidade, cor in COR_MAP.items():
+            df_i = df_p[df_p['intens'] == intensidade]
+            if len(df_i) == 0:
+                continue
+            r_h2, g_h2, b_h2 = int(cor[1:3],16), int(cor[3:5],16), int(cor[5:7],16)
+
+            if intensidade == 'Sem medição ⭐':
+                # Dias sem HRV: estrela no valor do baseline (ou 0 se baseline tbm NaN)
+                y_vals = df_i['bm'].fillna(df_i['LnrMSSD'].mean())
+                _fig_hg.add_trace(go.Scatter(
+                    x=df_i['Data'], y=y_vals,
+                    mode='markers', name='Sem medição ⭐',
+                    marker=dict(
+                        color='#aaaaaa', size=14,
+                        symbol='star',
+                        line=dict(width=1.5, color='white')
+                    ),
+                    hovertemplate='<b>⭐ Sem medição HRV</b><br>%{x|%d/%m/%Y}<br>Prescrição: Recuperação (por precaução)<extra></extra>'
+                ), row=1, col=1)
             else:
-                _mk_hrv   = pd.DataFrame(columns=['Data','hrv'])
-                _hrv_base = 50.0
+                _fig_hg.add_trace(go.Scatter(
+                    x=df_i['Data'], y=df_i['LnrMSSD'],
+                    mode='markers', name=intensidade,
+                    marker=dict(color=cor, size=10, line=dict(width=1.5, color='white')),
+                    hovertemplate=f'<b>{intensidade}</b><br>%{{x|%d/%m}}: %{{y:.3f}}<extra></extra>'
+                ), row=1, col=1)
 
-            def _hrv_delta_str(val):
-                if val is None or (isinstance(val,float) and np.isnan(val)): return '—'
-                d = (val - _hrv_base) / max(_hrv_base,1) * 100
-                return f"{d:+.1f}%"
+        _fig_hg.add_trace(go.Scatter(
+            x=df_p['Data'], y=df_p['lsup'],
+            line=dict(color='rgba(39,174,96,0.4)', width=1),
+            showlegend=False, hoverinfo='skip'
+        ), row=1, col=1)
+        _fig_hg.add_trace(go.Scatter(
+            x=df_p['Data'], y=df_p['linf'],
+            fill='tonexty', fillcolor='rgba(39,174,96,0.12)',
+            line=dict(color='rgba(39,174,96,0.4)', width=1),
+            name='Zona HIIT (±0.5 DP)', hoverinfo='skip'
+        ), row=1, col=1)
 
-            from collections import defaultdict
-            _trans  = defaultdict(int)
-            _hrv1   = defaultdict(list)
-            _trans2 = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+        _fig_hg.add_trace(go.Scatter(
+            x=df_p['Data'], y=df_p['bm'],
+            name=f'Baseline {dias_fam}d',
+            line=dict(color='#2c3e50', width=2, dash='dash'),
+            hovertemplate='Baseline: %{y:.3f}<extra></extra>'
+        ), row=1, col=1)
 
-            _estados_list = _mk_estados['estado'].tolist()
-            _datas_list   = _mk_estados['Data'].tolist()
-            _hrv_dict     = dict(zip(_mk_hrv['Data'], _mk_hrv['hrv'])) if len(_mk_hrv) > 0 else {}
+        # Painel inferior: Desvio com range expandido para ±5 DP
+        _fig_hg.add_hrect(y0=-0.5, y1=0.5, fillcolor='rgba(39,174,96,0.20)',
+                          line_width=0, row=2, col=1, annotation_text="Zona HIIT", 
+                          annotation_position="left")
+        _fig_hg.add_hrect(y0=-5, y1=-0.5, fillcolor='rgba(243,156,18,0.10)',
+                          line_width=0, row=2, col=1)
+        _fig_hg.add_hrect(y0=0.5, y1=5, fillcolor='rgba(243,156,18,0.10)',
+                          line_width=0, row=2, col=1)
+        _fig_hg.add_hline(y=0, line_dash='solid', line_color='#27ae60',
+                          line_width=1.5, row=2, col=1)
+        _fig_hg.add_hline(y=0.5, line_dash='dot', line_color='#f39c12',
+                          line_width=1, row=2, col=1)
+        _fig_hg.add_hline(y=-0.5, line_dash='dot', line_color='#f39c12',
+                          line_width=1, row=2, col=1)
 
-            for _i in range(len(_estados_list)-2):
-                _ei = _estados_list[_i]; _ej = _estados_list[_i+1]; _ek = _estados_list[_i+2]
-                _d_next = _datas_list[_i+1]; _d_next2 = _datas_list[_i+2]
-                _trans[(_ei,_ej)] += 1
-                _h1 = _hrv_dict.get(_d_next)
-                if _h1 is not None and not np.isnan(float(_h1)):
-                    _hrv1[(_ei,_ej)].append(float(_h1))
-                _h2 = _hrv_dict.get(_d_next2)
-                if _h2 is not None and not np.isnan(float(_h2)):
-                    _trans2[_ei][_ej][_ek].append(float(_h2))
+        for intensidade, cor in COR_MAP.items():
+            df_i = df_p[df_p['intens'] == intensidade]
+            if len(df_i) == 0:
+                continue
+            _fig_hg.add_trace(go.Scatter(
+                x=df_i['Data'], y=df_i['desvio_dp'],
+                mode='markers', name=intensidade,
+                showlegend=False,
+                marker=dict(color=cor, size=7, opacity=0.8,
+                            line=dict(width=1, color='white')),
+                hovertemplate=f'%{{x|%d/%m}}: %{{y:.2f}} DP<extra></extra>'
+            ), row=2, col=1)
 
-            _ei_counts = defaultdict(int)
-            for (_ei,_ej), cnt in _trans.items():
-                _ei_counts[_ei] += cnt
-            _prob = {(_ei,_ej): cnt/_ei_counts[_ei]
-                     for (_ei,_ej),cnt in _trans.items() if _ei_counts[_ei] > 0}
+        _fig_hg.add_trace(go.Scatter(
+            x=df_p['Data'], y=df_p['desvio_dp'],
+            mode='lines', line=dict(color='#7f8c8d', width=1, dash='dot'),
+            showlegend=False, hoverinfo='skip'
+        ), row=2, col=1)
 
-            # Check today's state directly from da_full (more reliable than reindex)
-            _hoje_mk = pd.Timestamp.now().normalize()
-            _today_sessions = _mk_da[_mk_da['Data'] == _hoje_mk]
-            if len(_today_sessions) > 0:
-                # Today has training — use the highest RPE session
-                _best_today = _today_sessions.sort_values('rpe_n', ascending=False).iloc[0]
-                _estado_hoje = str(_best_today['estado'])
+        _fig_hg.update_layout(
+            paper_bgcolor='white', plot_bgcolor='white',
+            font=dict(color='#111', size=11),
+            height=520,
+            hovermode='x unified',
+            margin=dict(t=60, b=70, l=60, r=40),
+            legend=dict(orientation='h', y=-0.18, font=dict(color='#111', size=10),
+                        bgcolor='rgba(255,255,255,0.9)')
+        )
+        _fig_hg.update_xaxes(showgrid=True, gridcolor='#eee',
+                              tickfont=dict(color='#111'))
+        _fig_hg.update_yaxes(showgrid=True, gridcolor='#eee',
+                              tickfont=dict(color='#111'), row=1, col=1,
+                              title_text='LnRMSSD')
+        _fig_hg.update_yaxes(showgrid=True, gridcolor='#eee',
+                              tickfont=dict(color='#111'), row=2, col=1,
+                              title_text='Desvio (DP)',
+                              range=[-5, 5],  # ALTERADO: Range expandido para ±5
+                              zeroline=True,
+                              zerolinecolor='#27ae60', zerolinewidth=1.5)
+
+        st.plotly_chart(_fig_hg, use_container_width=True,
+                        config={'displayModeBar': False, 'responsive': True,
+                                'scrollZoom': False},
+                        key="rec_hg_chart")
+
+        # ── Métricas resumo ───────────────────────────────────────────────
+        df_val = df_hg[df_hg['bm'].notna()]
+        if len(df_val) > 0:
+            hiit_n  = (df_val['intens'] == 'HIIT').sum()
+            rec_n   = (df_val['intens'] == 'Recuperação').sum()
+            total_n = len(df_val)
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Dias HIIT",       f"{hiit_n} ({hiit_n/total_n*100:.0f}%)")
+            m2.metric("Dias Recuperação", f"{rec_n} ({rec_n/total_n*100:.0f}%)")
+            # Prescrição HOJE — verificar se hoje tem medição real
+            _ultimo_hg = df_val.iloc[-1]
+            _data_ultimo = _ultimo_hg['Data']
+            _data_hoje = pd.Timestamp('today').normalize()
+            _dias_sem = (_data_hoje - _data_ultimo).days if pd.notna(_data_ultimo) else 999
+
+            if _ultimo_hg['intens'] == 'Sem medição ⭐' or _dias_sem > 0:
+                _pres_hoje = f'⭐ Sem medição ({_dias_sem}d) — Recuperação'
+            elif _ultimo_hg['intens'] == 'HIIT':
+                _pres_hoje = '✅ HIIT'
             else:
-                _estado_hoje = _mk_estados.iloc[-1]['estado']
+                _pres_hoje = '🟠 Recuperação'
+            m3.metric("Prescrição HOJE", _pres_hoje,
+                      help=(
+                          "⭐ = sem medição de HRV hoje ou nos últimos dias. "
+                          "Sem sinal autonómico, a prescrição conservadora é Recuperação. "
+                          "O baseline não é substituto da medição real."
+                      ))
 
-            _CORES_MK = {'Bike':'#e74c3c','Run':'#27ae60','Row':'#3498db',
-                         'Ski':'#9b59b6','WeightTraining':'#f39c12','Descanso':'#95a5a6'}
-
-            _mc1, _mc2 = st.columns([1,2])
-            with _mc1:
-                _partes_h = _estado_hoje.split('_'); _mod_h = _partes_h[0]
-                _zona_h   = '_'.join(_partes_h[1:]) if len(_partes_h) > 1 else ''
-                _cor_h    = _CORES_MK.get(_mod_h,'#888')
-                _hx = _cor_h.lstrip('#'); _rh,_gh,_bh = int(_hx[0:2],16),int(_hx[2:4],16),int(_hx[4:6],16)
-                st.markdown(
-                    f"<div style='background:rgba({_rh},{_gh},{_bh},0.10);"
-                    f"border-left:4px solid {_cor_h};border-radius:6px;padding:10px 14px;'>"
-                    f"<div style='font-size:11px;color:#666;margin-bottom:2px'>Estado actual</div>"
-                    f"<div style='font-size:18px;font-weight:500;color:{_cor_h}'>{_mod_h}</div>"
-                    f"<div style='font-size:12px;color:#555'>{_zona_h}</div>"
-                    f"</div>", unsafe_allow_html=True)
-
-            with _mc2:
-                st.caption("Top transicoes a partir do estado actual (por HRV t+1)")
-                _rows_1 = []
-                for (_ei,_ej),_p in _prob.items():
-                    if _ei != _estado_hoje or _p < 0.04: continue
-                    _hvals = _hrv1.get((_ei,_ej),[])
-                    _hmed  = float(np.mean(_hvals)) if len(_hvals) >= 2 else None
-                    _rows_1.append({'Proxima sessao':_ej,'Probabilidade':f"{_p*100:.0f}%",
-                                    'HRV t+1':_hrv_delta_str(_hmed),'n obs':len(_hvals),
-                                    '_hmed':_hmed if _hmed else -999,'_prob':_p})
-                _rows_1.sort(key=lambda x: x['_hmed'], reverse=True)
-                if _rows_1:
-                    st.dataframe(pd.DataFrame([
-                        {k:v for k,v in r.items() if not k.startswith('_')}
-                        for r in _rows_1[:6]
-                    ]), hide_index=True, use_container_width=True)
-                else:
-                    st.info("Sem historico de transicoes a partir deste estado.")
-
-            # Sugestao integrada
-            st.markdown("#### Sugestao — HRV x Monotonia x Markov")
-
-            # HRV-Guided — reutilizar hrv_class já calculado no topo da função
-            # (mesmo valor que aparece no card HRV-Guided, consistência garantida)
-            if hrv_class == 'Recuperação':
-                _zona_perm_mk = ['Leve', 'Moderado']
-                _hrv_guid_mk  = "Recuperação — Z1/Descanso, Z2 curto se necessário"
-            elif hrv_class == 'HIIT':
-                _zona_perm_mk = ['Moderado', 'Forte']
-                _hrv_guid_mk  = "HIIT — Z2 (threshold/sweetspot) ou Z3 (VO2max)"
-            else:
-                _zona_perm_mk = ['Leve', 'Moderado', 'Forte']
-                _hrv_guid_mk  = "HRV sem dados — todas as zonas permitidas" 
-
-            # IM actual
-            _im_mk = None
-            try:
-                _kj_c_mk = next((c for c in ['icu_joules','joules','kj_total']
-                                  if c in _mk_da.columns and _mk_da[c].notna().any()), None)
-                if _kj_c_mk:
-                    _kj_d2 = _mk_da.groupby('Data')[_kj_c_mk].sum()
-                    if _kj_c_mk == 'icu_joules': _kj_d2 = _kj_d2/1000
-                    _kj_i2 = pd.date_range(_kj_d2.index.min(),pd.Timestamp.now().normalize(),freq='D')
-                    _kj_f2 = _kj_d2.reindex(_kj_i2,fill_value=0)
-                    _m7_2  = _kj_f2.rolling(7,min_periods=4).mean()
-                    _s7_2  = _kj_f2.rolling(7,min_periods=4).std()
-                    _im_s2 = _m7_2/_s7_2.replace(0,np.nan)
-                    _im_mk = float(_im_s2.iloc[-1]) if _im_s2.notna().any() else None
-            except Exception: pass
-
-            _forcar_var = _im_mk is not None and _im_mk > 1.5
-
-            # Filtrar candidatos
-            _cands = []
-            for r in _rows_1:
-                _ej2    = r['Proxima sessao']
-                _partes = _ej2.split('_')
-                _zona_c = '_'.join(_partes[1:]) if len(_partes) > 1 else ''
-                # Mapear zona RPE para zona_perm
-                _zona_rpe_map = {'Leve':'Leve','Moderado':'Moderado','Forte':'Forte'}
-                if _ej2 != 'Descanso' and _zona_c not in _zona_perm_mk:
-                    continue
-                if _forcar_var and _ej2 == _estado_hoje:
-                    continue
-                _cands.append(r)
-            _cands.sort(key=lambda x: x['_hmed'], reverse=True)
-
-            _sc1,_sc2,_sc3 = st.columns(3)
-            _sc1.metric("HRV-Guided", _hrv_guid_mk[:30])
-            _sc2.metric("Indice Monotonia",
-                        f"{_im_mk:.2f}" if _im_mk is not None else "—",
-                        delta="variar" if _forcar_var else "ok repetir",
-                        delta_color="inverse" if _forcar_var else "off")
-            _sc3.metric("Estado actual", _estado_hoje)
-
-            if _cands:
-                _best    = _cands[0]
-                _best_ej = _best['Proxima sessao']
-                _partes_b= _best_ej.split('_'); _mod_b=_partes_b[0]
-                _zona_b  = '_'.join(_partes_b[1:]) if len(_partes_b)>1 else ''
-                _cor_b   = _CORES_MK.get(_mod_b,'#27ae60')
-                _hxb = _cor_b.lstrip('#'); _rb,_gb,_bb = int(_hxb[0:2],16),int(_hxb[2:4],16),int(_hxb[4:6],16)
-                st.markdown(
-                    f"<div style='background:rgba({_rb},{_gb},{_bb},0.08);"
-                    f"border:1.5px solid {_cor_b};border-radius:8px;padding:14px 18px;margin:8px 0'>"
-                    f"<div style='font-size:12px;color:#666;margin-bottom:4px'>"
-                    f"Sugestao Markov (HRV x IM x padrao historico)</div>"
-                    f"<div style='font-size:22px;font-weight:500;color:{_cor_b}'>"
-                    f"{_mod_b} — {_zona_b}</div>"
-                    f"<div style='font-size:12px;color:#555;margin-top:4px'>"
-                    f"P={_best['Probabilidade']} | HRV t+1: {_best['HRV t+1']} "
-                    f"{'| IM alto — variar' if _forcar_var else ''}"
-                    f"</div></div>", unsafe_allow_html=True)
-                if len(_cands) > 1:
-                    with st.expander("Alternativas"):
-                        st.dataframe(pd.DataFrame([
-                            {'Opcao':r['Proxima sessao'],'P':r['Probabilidade'],'HRV t+1':r['HRV t+1']}
-                            for r in _cands[1:4]
-                        ]), hide_index=True, use_container_width=True)
-            else:
-                st.info("Sem transicao compativel. Sugestao: Descanso ou sessao Leve.")
-
-            # 2a ordem
-            st.markdown("#### Planeamento 2 dias — Markov 2a ordem")
-            st.caption("Sequencia hoje→amanha que maximiza HRV t+2.")
-            _d2_rows = []
-            if _estado_hoje in _trans2:
-                for _ej_o in sorted(_trans2[_estado_hoje].keys()):
-                    _ek_opts = _trans2[_estado_hoje][_ej_o]
-                    _best_ek = None; _best_h2 = -999
-                    for _ek, _hl in _ek_opts.items():
-                        if len(_hl) < 2: continue
-                        _m2 = float(np.mean(_hl))
-                        if _m2 > _best_h2: _best_h2=_m2; _best_ek=_ek
-                    if _best_ek:
-                        _p_ej = _prob.get((_estado_hoje,_ej_o),0)
-                        if _p_ej < 0.03: continue
-                        _d2_rows.append({'Hoje (escolha)':_ej_o,'P(hoje→amanha)':f"{_p_ej*100:.0f}%",
-                                         'Melhor amanha':_best_ek,'HRV t+2':_hrv_delta_str(_best_h2),
-                                         '_h2':_best_h2})
-                if _d2_rows:
-                    _d2_rows.sort(key=lambda x: x['_h2'], reverse=True)
-                    st.dataframe(pd.DataFrame([
-                        {k:v for k,v in r.items() if k!='_h2'} for r in _d2_rows[:6]
-                    ]), hide_index=True, use_container_width=True)
-                else:
-                    st.info("Dados insuficientes para 2a ordem.")
-            else:
-                st.info("Sem historico para 2a ordem.")
-
-            _n_total_mk = sum(_trans.values())
-            _n_est_mk   = len(set(e for (e,_) in _trans.keys()))
-            with st.expander("Sobre o modelo"):
-                st.markdown(f"""
-**Markov Chain — {_n_total_mk} transicoes | {_n_est_mk} estados**
-
-- Estado = Modalidade x Zona RPE (Leve<=4 / Moderado 4-7 / Forte >7) + Descanso
-- HRV: Recuperacao → Z1/Descanso/Z2curto | HIIT → Z2/Z3
-- IM Fry: se >1.5 forcar variacao de zona/modalidade
-- Recalcula sem cache
+            # ════════════════════════════════════════════════════════════════════════
+        # ANÁLISE 1: HIIT LnRMSSD vs Recovery Modes (Rolling 14d)
+        # ════════════════════════════════════════════════════════════════════════
+        st.markdown("---")
+        st.subheader("📊 Análise 1: HIIT HRV-Guided vs Recovery Modes (14d)")
+        
+        # Preparar dados
+        df_corr = df_analysis.copy()
+        
+        # Recalcular zonas Mode 1 e Mode 2 para todo o histórico
+        df_corr['baseline_7'] = df_corr['LnrMSSD'].rolling(7, min_periods=5).mean()
+        df_corr['baseline_60'] = df_corr['LnrMSSD'].rolling(60, min_periods=30).mean()
+        df_corr['std_7'] = df_corr['LnrMSSD'].rolling(7, min_periods=5).std()
+        df_corr['std_60'] = df_corr['LnrMSSD'].rolling(60, min_periods=30).std()
+        
+        # CV móvel de 7 dias
+        df_corr['cv_7'] = (df_corr['LnrMSSD'].rolling(7, min_periods=3).std() / 
+                          df_corr['LnrMSSD'].rolling(7, min_periods=3).mean()) * 100
+        
+        # Thresholds CV
+        cv_hist_full = df_corr['cv_7'].dropna()
+        if len(cv_hist_full) > 10:
+            cv_m = cv_hist_full.mean()
+            cv_s = cv_hist_full.std()
+            cv_l = max(0.1, cv_m - 0.5 * cv_s)
+            cv_h = cv_m + 0.5 * cv_s
+        else:
+            cv_l, cv_h = 0.5, 1.5
+        
+        # Slope 7d
+        df_corr['slope_7'] = df_corr['LnrMSSD'].rolling(7, min_periods=5).apply(slope_fn)
+        
+        # SWC para Mode 2
+        df_corr['SWC_60'] = 0.5 * (df_corr['std_60'] / df_corr['baseline_60'] * 100)
+        df_corr['lower_60'] = df_corr['baseline_60'] * (1 - df_corr['SWC_60'] / 100)
+        
+        # Classificação Mode 1 (Altini)
+        def altini_full(r):
+            if pd.isna(r['cv_7']) or pd.isna(r['baseline_7']):
+                return 'Sem_dados'
+            if r['LnrMSSD'] < r['baseline_7'] and r['cv_7'] < cv_l:
+                return 'Accumulated_Fatigue'
+            if r['LnrMSSD'] < r['baseline_7'] and r['cv_7'] > cv_h:
+                return 'Maladaptation'
+            if r['LnrMSSD'] > r['baseline_7'] and r['cv_7'] < cv_l:
+                return 'Good_Adaptation'
+            if r['LnrMSSD'] > r['baseline_7'] and r['cv_7'] > cv_h:
+                return 'High_Variability'
+            return 'Normal'
+        
+        # Classificação Mode 2 (Plews)
+        def plews_full(r):
+            if pd.isna(r['cv_7']) or pd.isna(r['baseline_60']):
+                return 'Sem_dados'
+            declinio = r['slope_7'] < -0.01 if pd.notna(r['slope_7']) else False
+            if r['cv_7'] < cv_l and declinio:
+                return 'NFOR'
+            if r['LnrMSSD'] < r['lower_60']:
+                return 'Overreaching'
+            if r['cv_7'] > cv_h:
+                return 'High_Variability'
+            return 'Normal'
+        
+        df_corr['mode1_zone'] = df_corr.apply(altini_full, axis=1)
+        df_corr['mode2_zone'] = df_corr.apply(plews_full, axis=1)
+        
+        # Criar variável binária para HIIT do LnRMSSD (1 = HIIT, 0 = Recuperação)
+        df_corr['hiit_ln'] = (df_corr['intens'] == 'HIIT').astype(int)
+        
+        # Criar variáveis binárias para cada zona Mode 1 e Mode 2
+        mode1_zones = ['Accumulated_Fatigue', 'Maladaptation', 'Good_Adaptation', 'High_Variability', 'Normal']
+        mode2_zones = ['NFOR', 'Overreaching', 'High_Variability', 'Normal']
+        
+        for zone in mode1_zones:
+            df_corr[f'm1_{zone}'] = (df_corr['mode1_zone'] == zone).astype(int)
+        
+        for zone in mode2_zones:
+            df_corr[f'm2_{zone}'] = (df_corr['mode2_zone'] == zone).astype(int)
+        
+        # Calcular rolling de 14 dias para HIIT e para os eventos
+        rolling_cols = ['hiit_ln'] + [f'm1_{z}' for z in mode1_zones] + [f'm2_{z}' for z in mode2_zones]
+        for col in rolling_cols:
+            df_corr[f'{col}_r14'] = df_corr[col].rolling(14, min_periods=7).mean()
+        
+        # Calcular correlações: HIIT LnRMSSD rolling vs Modos rolling
+        corr_results = []
+        
+        for mode, zones in [('m1', mode1_zones), ('m2', mode2_zones)]:
+            mode_name = "Mode 1 (Altini)" if mode == 'm1' else "Mode 2 (Plews)"
+            
+            for zone in zones:
+                col_hiit = 'hiit_ln_r14'
+                col_zone = f'{mode}_{zone}_r14'
+                
+                valid_data = df_corr[[col_hiit, col_zone]].dropna()
+                if len(valid_data) > 10:
+                    corr, p_val = stats.pearsonr(valid_data[col_hiit], valid_data[col_zone])
+                    
+                    # Interpretação
+                    if abs(corr) >= 0.7:
+                        strength = "Forte"
+                    elif abs(corr) >= 0.4:
+                        strength = "Moderada"
+                    elif abs(corr) >= 0.2:
+                        strength = "Fraca"
+                    else:
+                        strength = "Desprezível"
+                    
+                    direction = "Positiva" if corr > 0 else "Negativa"
+                    
+                    corr_results.append({
+                        'Modo': mode_name,
+                        'Evento': zone.replace('_', ' '),
+                        'Correlação': corr,
+                        'Direção': direction,
+                        'Força': strength,
+                        'P-valor': p_val,
+                        'Significativo': "Sim" if p_val < 0.05 else "Não",
+                        'N': len(valid_data)
+                    })
+        
+        if corr_results:
+            df_corr_display = pd.DataFrame(corr_results)
+            
+            # Separar por modo
+            for mode_name in ["Mode 1 (Altini)", "Mode 2 (Plews)"]:
+                st.markdown(f"**{mode_name}**")
+                df_mode = df_corr_display[df_corr_display['Modo'] == mode_name].copy()
+                
+                # Destacar fortes e moderadas
+                def color_forca(val):
+                    if val == "Forte":
+                        return "background-color: rgba(231, 76, 60, 0.3); color: #c0392b; font-weight: bold"
+                    elif val == "Moderada":
+                        return "background-color: rgba(241, 196, 15, 0.3)"
+                    return ""
+                
+                # Aplicar apenas na coluna Força
+                def aplicar_cores(df):
+                    cols = [''] * len(df.columns)
+                    força_idx = df.columns.get_loc('Força')
+                    cols[força_idx] = 'background-color: rgba(241, 196, 15, 0.3)'  # default
+                    return cols
+                
+                st.dataframe(
+                    df_mode[['Evento', 'Correlação', 'Direção', 'Força', 'P-valor', 'Significativo']]
+                    .style.map(color_forca, subset=['Força'])
+                    .format({'Correlação': '{:.3f}', 'P-valor': '{:.4f}'}),
+                    use_container_width=True,
+                    hide_index=True
+                )
+            
+            with st.expander("ℹ️ Como interpretar estas correlações"):
+                st.markdown("""
+                Estas correlações mostram a relação entre **frequência de dias HIIT** (rolling 14d) e **frequência de eventos de recuperação** (rolling 14d).
+                
+                - **Positiva**: Mais dias HIIT ↔ Mais eventos deste tipo
+                - **Negativa**: Mais dias HIIT ↔ Menos eventos deste tipo  
+                - **Forte (≥0.7)**: Relação muito consistente
+                - **Moderada (0.4-0.7)**: Relação clara e útil
+                - **Significativo (p<0.05)**: A correlação não é ao acaso
+                
+                **Exemplo prático**: Se "Accumulated Fatigue" tem correlação negativa forte com HIIT, significa que quando você faz mais HIIT, tende a ter menos fadiga acumulada (bom sinal!), ou vice-versa.
                 """)
+        else:
+            st.info("Dados insuficientes para calcular correlações.")
 
-        except Exception as _mk_err:
-            st.warning(f"Markov Chain — erro: {_mk_err}")
-    else:
-        st.info("Markov Chain requer actividades + wellness (da_full + wc_full).")
+                # ════════════════════════════════════════════════════════════════════════
+        # ANÁLISE 1.5: Lag Analysis - Treino Pesado (RPE≥7) → Fadiga Futura
+        # ════════════════════════════════════════════════════════════════════════
+        st.markdown("---")
+        st.subheader("⏱️ Análise Temporal: Treino Pesado (ICU_RPE ≥7) → Fadiga Futura")
+        
+        if 'icu_rpe' in df_corr.columns and df_corr['icu_rpe'].notna().any():
+            
+            # Criar indicador de treino pesado (RPE >= 7)
+            df_corr['treino_pesado'] = (df_corr['icu_rpe'] >= 7).astype(int)
+            
+            # Definir lags para testar
+            lags_rpe = [1, 2, 3, 5, 7, 10, 14]
+            resultados_lag_rpe = []
+            
+            # Eventos de fadiga para monitorar
+            eventos_fadiga = [
+                ('m1', 'Accumulated_Fatigue', 'Mode 1'),
+                ('m1', 'Maladaptation', 'Mode 1'),
+                ('m2', 'NFOR', 'Mode 2'),
+                ('m2', 'Overreaching', 'Mode 2')
+            ]
+            
+            for lag in lags_rpe:
+                for mode_prefix, evento, mode_nome in eventos_fadiga:
+                    col_evento = f'{mode_prefix}_{evento}'
+                    col_futuro = f'{evento}_future_rpe'
+                    
+                    # Shift no evento de fadiga (para o futuro)
+                    df_lag = df_corr[['Data', 'treino_pesado', col_evento]].copy()
+                    df_lag[col_futuro] = df_lag[col_evento].shift(-lag)
+                    
+                    # Calcular correlação entre treino pesado hoje e fadiga no futuro
+                    valid = df_lag[['treino_pesado', col_futuro]].dropna()
+                    
+                    if len(valid) > 5:  # Mínimo de observações
+                        # Se poucas variações (raramente tem fadiga), correlação é instável
+                        if valid[col_futuro].nunique() > 1:
+                            corr, p_val = stats.pearsonr(valid['treino_pesado'], valid[col_futuro])
+                            
+                            resultados_lag_rpe.append({
+                                'Lag (dias)': lag,
+                                'Modo': mode_nome,
+                                'Evento Futuro': evento.replace('_', ' '),
+                                'Correlação': corr,
+                                'P-valor': p_val,
+                                'N': len(valid),
+                                'Significativo': "Sim" if p_val < 0.05 else "Não",
+                                'Risco': 'Alto' if corr > 0.3 and p_val < 0.05 else 'Moderado' if corr > 0.1 else 'Baixo'
+                            })
+            
+            if resultados_lag_rpe:
+                df_lag_rpe = pd.DataFrame(resultados_lag_rpe)
+                
+                # Mostrar resultados por lag
+                for lag in lags_rpe:
+                    df_lag_day = df_lag_rpe[df_lag_rpe['Lag (dias)'] == lag]
+                    if not df_lag_day.empty:
+                        with st.expander(f"Após {lag} dias do treino pesado"):
+                            st.dataframe(
+                                df_lag_day[['Modo', 'Evento Futuro', 'Correlação', 'Risco', 'P-valor', 'Significativo']]
+                                .style.format({'Correlação': '{:.3f}', 'P-valor': '{:.4f}'})
+                                .apply(lambda x: ['background-color: rgba(231, 76, 60, 0.3)' if x['Risco'] == 'Alto' 
+                                                  else 'background-color: rgba(241, 196, 15, 0.3)' if x['Risco'] == 'Moderado' 
+                                                  else '' for _ in x], axis=1),
+                                use_container_width=True,
+                                hide_index=True
+                            )
+                
+                # Identificar o lag mais crítico
+                df_alto_risco = df_lag_rpe[(df_lag_rpe['Risco'] == 'Alto') & (df_lag_rpe['Significativo'] == 'Sim')]
+                
+                if not df_alto_risco.empty:
+                    # Pegar o de maior correlação
+                    maior_risco = df_alto_risco.loc[df_alto_risco['Correlação'].idxmax()]
+                    
+                    st.error(f"""
+                    🚨 **Padrão de Overreaching Detectado!**
+                    
+                    Treinos com **ICU_RPE ≥ 7** têm correlação de **{maior_risco['Correlação']:.3f}** com **{maior_risco['Evento Futuro']}** em **{maior_risco['Lag (dias)']} dias**.
+                    
+                    **Interpretação:**
+                    - Quando você treina pesado (RPE≥7), existe {maior_risco['Correlação']*100:.0f}% de chance de estar em estado de {maior_risco['Evento Futuro'].lower()} {maior_risco['Lag (dias)']} dias depois.
+                    - Este é um padrão de **acúmulo de fadiga não recuperável**.
+                    
+                    **Recomendações:**
+                    1. Após treinos RPE≥7, garantir **{maior_risco['Lag (dias)']+1} dias** de recuperação antes do próximo treino pesado
+                    2. Ou reduzir intensidade do próximo treino para RPE < 7 se ainda dentro do período de {maior_risco['Lag (dias)']} dias
+                    3. Considerar periodização: treino pesado → {maior_risco['Lag (dias)']} dias leves → próximo pesado
+                    """)
+                    
+                    # Gráfico de heatmap dos lags
+                    st.markdown("**Mapa de Calor - Correlação por Tempo**")
+                    
+                    # Pivot para heatmap
+                    df_pivot = df_lag_rpe.pivot_table(
+                        index=['Modo', 'Evento Futuro'], 
+                        columns='Lag (dias)', 
+                        values='Correlação',
+                        aggfunc='mean'
+                    ).fillna(0)
+                    
+                    fig_heat = go.Figure(data=go.Heatmap(
+                        z=df_pivot.values,
+                        x=df_pivot.columns,
+                        y=[f"{idx[0]} - {idx[1]}" for idx in df_pivot.index],
+                        colorscale='RdYlGn',
+                        zmid=0,
+                        zmin=-0.5,
+                        zmax=0.5,
+                        colorbar=dict(title='Correlação')
+                    ))
+                    
+                    fig_heat.update_layout(
+                        title="Correlação: Treino Pesado Hoje → Fadiga no Futuro",
+                        xaxis_title="Dias após treino",
+                        yaxis_title="Evento de Fadiga",
+                        height=300
+                    )
+                    
+                    st.plotly_chart(fig_heat, use_container_width=True, config={'displayModeBar': False})
+                    
+                else:
+                    st.success("""
+                    ✅ **Boa recuperação entre treinos pesados!**
+                    
+                    Não foi detectada correlação significativa entre treinos RPE≥7 e estados de fadiga futuros.
+                    Seu sistema está recuperando adequadamente entre sessões de alta carga.
+                    """)
+            else:
+                st.info("Dados insuficientes para análise temporal (mínimo 6 observações por período).")
+        else:
+            st.info("Coluna 'icu_rpe' não encontrada nos dados.")
 
+                # ════════════════════════════════════════════════════════════════════════
+        # ANÁLISE 1.7: Slope 7d Individualizado com Análise de Persistência
+        # ════════════════════════════════════════════════════════════════════════
+        st.markdown("---")
+        st.subheader("📉 Slope 7d Individualizado + Persistência do Estado")
+        
+        # Calcular estatísticas do slope usando TODO o histórico disponível
+        slope_series = df_corr['slope_7'].dropna()
+        
+        if len(slope_series) > 20:
+            slope_mean = slope_series.mean()
+            slope_std = slope_series.std()
+            swc = 0.5 * slope_std
+            
+            # Thresholds individualizados
+            thresh_recuperacao = slope_mean + swc
+            thresh_estavel_sup = slope_mean + (0.5 * swc)
+            thresh_estavel_inf = slope_mean - (0.5 * swc)
+            thresh_declinio = slope_mean - swc
+            thresh_nfor = slope_mean - (2 * slope_std)
+            
+            # Classificar cada dia em uma zona
+            def classificar_zona_slope(val):
+                if pd.isna(val):
+                    return 'Sem dados'
+                elif val >= thresh_recuperacao:
+                    return 'Supercompensação'
+                elif val >= thresh_estavel_sup:
+                    return 'Recuperação'
+                elif val >= thresh_estavel_inf:
+                    return 'Estável'
+                elif val >= thresh_declinio:
+                    return 'Declínio Leve'
+                elif val >= thresh_nfor:
+                    return 'Fadiga'
+                else:
+                    return 'NFOR Crítico'
+            
+            df_corr['zona_slope'] = df_corr['slope_7'].apply(classificar_zona_slope)
+            
+            # Calcular dias consecutivos (streak) na zona atual
+            zona_atual = df_corr['zona_slope'].iloc[-1]
+            dias_na_zona = 0
+            
+            # Contar quantos dias seguidos estamos na mesma zona (de trás pra frente)
+            for i in range(len(df_corr) - 1, -1, -1):
+                if df_corr['zona_slope'].iloc[i] == zona_atual:
+                    dias_na_zona += 1
+                else:
+                    break
+            
+            # Calcular histórico de streaks (para contextualizar)
+            todas_sequencias = []
+            seq_atual = 1
+            zona_anterior = df_corr['zona_slope'].iloc[0] if len(df_corr) > 0 else None
+            
+            for i in range(1, len(df_corr)):
+                if df_corr['zona_slope'].iloc[i] == zona_anterior:
+                    seq_atual += 1
+                else:
+                    if zona_anterior != 'Sem dados':
+                        todas_sequencias.append({'zona': zona_anterior, 'dias': seq_atual})
+                    seq_atual = 1
+                    zona_anterior = df_corr['zona_slope'].iloc[i]
+            
+            # Adicionar a última sequência
+            if zona_anterior and zona_anterior != 'Sem dados':
+                todas_sequencias.append({'zona': zona_anterior, 'dias': seq_atual})
+            
+            # Estatísticas de streaks por zona
+            df_seq = pd.DataFrame(todas_sequencias)
+            stats_seq = {}
+            if not df_seq.empty:
+                for zona in df_seq['zona'].unique():
+                    dados_zona = df_seq[df_seq['zona'] == zona]['dias']
+                    stats_seq[zona] = {
+                        'media': dados_zona.mean(),
+                        'max': dados_zona.max(),
+                        'atual': dias_na_zona if zona == zona_atual else 0
+                    }
+            
+            # Display métricas
+            col_p1, col_p2, col_p3, col_p4 = st.columns(4)
+            
+            with col_p1:
+                st.metric("Zona Atual", zona_atual)
+            with col_p2:
+                st.metric("Dias nesta Zona", f"{dias_na_zona} dias",
+                         delta=f"Seu recorde: {stats_seq.get(zona_atual, {}).get('max', 'N/A')} dias" if zona_atual in stats_seq else None)
+            with col_p3:
+                _slope_now = df_corr['slope_7'].dropna().iloc[-1] if df_corr['slope_7'].notna().any() else 0.0
+                st.metric("Slope Atual", f"{_slope_now:.4f}")
+            with col_p4:
+                media_historica = stats_seq.get(zona_atual, {}).get('media', 0)
+                if media_historica > 0:
+                    razao = dias_na_zona / media_historica
+                    st.metric("vs Sua Média", f"{razao:.1f}x",
+                             help=f"Você está nesta zona há {razao:.1f} vezes a sua média histórica ({media_historica:.1f} dias)")
+            
+            # Recomendação baseada em PERSISTÊNCIA (não apenas valor atual)
+            st.markdown("---")
+            st.markdown("**🎯 Recomendação Baseada na Persistência do Estado**")
+            
+            if zona_atual == 'NFOR Crítico':
+                if dias_na_zona >= 3:
+                    st.error(f"""
+                    🚨 **AÇÃO IMEDIATA NECESSÁRIA**
+                    
+                    Você está em NFOR há **{dias_na_zona} dias consecutivos**.
+                    
+                    **Histórico:** Seu recorde foi {stats_seq[zona_atual]['max']} dias nesta zona.
+                    **Risco:** Extremo - overtraining estabelecido.
+                    
+                    **Protocolo obrigatório:**
+                    - Descanso COMPLETO (sem treino) por pelo menos {dias_na_zona + 2} dias
+                    - Só retornar quando slope > {thresh_declinio:.4f} por 2 dias seguidos
+                    - Considerar consulta médica se sintomas físicos presentes
+                    """)
+                else:
+                    st.warning(f"""
+                    ⚠️ **NFOR Detectado ({dias_na_zona} dias)**
+                    
+                    Primeiros sinais de fadiga severa. 
+                    **Ação:** Reduzir carga em 50% imediatamente. Se persistir por mais 2 dias, descanso total.
+                    """)
+            
+            elif zona_atual == 'Fadiga':
+                if dias_na_zona >= 5:
+                    st.error(f"""
+                    🚨 **Fadiga Persistente ({dias_na_zona} dias)**
+                    
+                    Você excedeu sua média histórica de permanência nesta zona ({stats_seq[zona_atual]['media']:.1f} dias).
+                    
+                    **Risco:** Transição para NFOR em {7 - dias_na_zona} dias se mantiver carga atual.
+                    
+                    **Ação:** Descanso ativo (caminhada, yoga) por 3-5 dias até retornar à zona "Estável".
+                    """)
+                elif dias_na_zona >= 3:
+                    st.warning(f"""
+                    ⚠️ **Declínio Prolongado ({dias_na_zona} dias)**
+                    
+                    Carga de treino está superando capacidade de recuperação.
+                    **Ação:** Reduzir intensidade em 30% até normalização (1-2 dias).
+                    """)
+                else:
+                    st.info(f"""
+                    ℹ️ **Fadiga Aguda ({dias_na_zona} dia{'s' if dias_na_zona > 1 else ''})**
+                    
+                    Normal após treino intenso. Monitorar próximas 48h.
+                    """)
+            
+            elif zona_atual == 'Declínio Leve':
+                if dias_na_zona >= 7:
+                    st.warning(f"""
+                    ⚠️ **Declínio Crônico Leve ({dias_na_zona} dias)**
+                    
+                    Padrão de overreaching funcional. Não é crítico, mas performance está comprometida.
+                    **Ação:** 2-3 dias de recuperação ativa antes de novo ciclo de carga.
+                    """)
+                else:
+                    st.success(f"""
+                    ✅ **Estável ({dias_na_zona} dias)**
+                    
+                    Dentro da variação normal. Pode manter carga atual.
+                    """)
+            
+            elif zona_atual in ['Recuperação', 'Supercompensação']:
+                if dias_na_zona >= 2:
+                    st.success(f"""
+                    🚀 **Pronto para Carga! ({dias_na_zona} dias)**
+                    
+                    Período ótimo para treinos de alta intensidade ou competição.
+                    Aproveite esta janela - seucorpo está supercompensando.
+                    """)
+                else:
+                    st.info(f"""
+                    ℹ️ **Início de Recuperação**
+                    
+                    Aguarde mais 1 dia na zona para garantir estabilidade antes de carga alta.
+                    """)
+            
+            # Gráfico com legendas em PRETO e anotações de dias consecutivos
+            fig_slope_ind = go.Figure()
+            
+            # Linha do slope
+            fig_slope_ind.add_trace(go.Scatter(
+                x=df_corr['Data'],
+                y=df_corr['slope_7'],
+                name='Slope 7d',
+                line=dict(color='#2c3e50', width=2),
+                fill='tozeroy',
+                fillcolor='rgba(44, 62, 80, 0.1)',
+                hovertemplate='Data: %{x}<br>Slope: %{y:.4f}<extra></extra>'
+            ))
+            
+            # Adicionar anotações de streaks (sequências) visíveis
+            if len(todas_sequencias) > 0:
+                # Mostrar apenas as últimas 3 sequências para não poluir
+                for seq in todas_sequencias[-3:]:
+                    # Encontrar posição no tempo (aproximada)
+                    idx_fim = len(df_corr) - 1 - (0 if seq == todas_sequencias[-1] else sum([s['dias'] for s in todas_sequencias[todas_sequencias.index(seq)+1:]]))
+                    idx_inicio = max(0, idx_fim - seq['dias'] + 1)
+                    
+                    if idx_fim < len(df_corr) and idx_inicio < len(df_corr):
+                        data_meio = df_corr['Data'].iloc[(idx_inicio + idx_fim) // 2]
+                        valor_y = df_corr['slope_7'].iloc[idx_inicio:idx_fim+1].mean()
+                        
+                        cor_anot = 'red' if seq['zona'] in ['NFOR Crítico', 'Fadiga'] else \
+                                  'orange' if seq['zona'] == 'Declínio Leve' else \
+                                  'green' if seq['zona'] in ['Recuperação', 'Supercompensação'] else 'gray'
+                        
+                        fig_slope_ind.add_annotation(
+                            x=data_meio,
+                            y=valor_y,
+                            text=f"{seq['dias']}d",
+                            showarrow=False,
+                            font=dict(size=10, color=cor_anot, family="Arial Black"),
+                            bgcolor="rgba(255,255,255,0.8)",
+                            bordercolor=cor_anot,
+                            borderwidth=1,
+                            borderpad=2
+                        )
+            
+            # Bandas de referência individualizadas
+            fig_slope_ind.add_hrect(y0=thresh_recuperacao, y1=slope_mean + (3*slope_std), 
+                                   fillcolor="rgba(39, 174, 96, 0.15)", 
+                                   line_width=0, 
+                                   annotation_text="Supercompensação",
+                                   annotation_position="top right",
+                                   annotation_font=dict(color='black', size=11))
+            
+            fig_slope_ind.add_hrect(y0=thresh_estavel_sup, y1=thresh_recuperacao,
+                                   fillcolor="rgba(46, 204, 113, 0.15)",
+                                   line_width=0,
+                                   annotation_text="Recuperação",
+                                   annotation_position="right",
+                                   annotation_font=dict(color='black', size=11))
+            
+            fig_slope_ind.add_hrect(y0=thresh_estavel_inf, y1=thresh_estavel_sup,
+                                   fillcolor="rgba(149, 165, 166, 0.15)",
+                                   line_width=0,
+                                   annotation_text="Estável",
+                                   annotation_position="right",
+                                   annotation_font=dict(color='black', size=11))
+            
+            fig_slope_ind.add_hrect(y0=thresh_declinio, y1=thresh_estavel_inf,
+                                   fillcolor="rgba(241, 196, 15, 0.15)",
+                                   line_width=0,
+                                   annotation_text="Declínio Leve",
+                                   annotation_position="right",
+                                   annotation_font=dict(color='black', size=11))
+            
+            fig_slope_ind.add_hrect(y0=thresh_nfor, y1=thresh_declinio,
+                                   fillcolor="rgba(231, 76, 60, 0.15)",
+                                   line_width=0,
+                                   annotation_text="Fadiga",
+                                   annotation_position="right",
+                                   annotation_font=dict(color='black', size=11))
+            
+            fig_slope_ind.add_hrect(y0=slope_mean - (4*slope_std), y1=thresh_nfor,
+                                   fillcolor="rgba(192, 57, 43, 0.2)",
+                                   line_width=0,
+                                   annotation_text="NFOR",
+                                   annotation_position="bottom right",
+                                   annotation_font=dict(color='black', size=11))
+            
+            # Linhas de threshold com labels em preto
+            fig_slope_ind.add_hline(y=slope_mean, line_dash="solid", line_color="blue", line_width=2,
+                                   annotation_text=f"Sua Média ({slope_mean:.3f})",
+                                   annotation_position="right",
+                                   annotation_font=dict(color='black', size=10, family='Arial'))
+            
+            fig_slope_ind.add_hline(y=thresh_nfor, line_dash="dash", line_color="red", line_width=3,
+                                   annotation_text=f"Limite NFOR ({thresh_nfor:.3f})",
+                                   annotation_position="bottom right",
+                                   annotation_font=dict(color='black', size=10, family='Arial'))
+            
+            # Layout com legendas e textos em PRETO
+            fig_slope_ind.update_layout(
+                title=dict(
+                    text=f"Slope 7d Individualizado - Baseado em {len(slope_series)} dias",
+                    font=dict(color='black', size=14)
+                ),
+                xaxis=dict(
+                    title=dict(text="Data", font=dict(color='black')),
+                    tickfont=dict(color='black'),
+                    showgrid=True,
+                    gridcolor='rgba(128,128,128,0.2)'
+                ),
+                yaxis=dict(
+                    title=dict(text="Slope 7d do LnRMSSD", font=dict(color='black')),
+                    tickfont=dict(color='black'),
+                    showgrid=True,
+                    gridcolor='rgba(128,128,128,0.2)'
+                ),
+                paper_bgcolor='white',
+                plot_bgcolor='white',
+                height=500,
+                showlegend=True,
+                legend=dict(
+                    font=dict(color='black'),
+                    bgcolor='rgba(255,255,255,0.9)',
+                    bordercolor='black',
+                    borderwidth=1
+                ),
+                font=dict(color='black')  # Fonte geral preta
+            )
+            
+            st.plotly_chart(fig_slope_ind, use_container_width=True, config={'displayModeBar': False})
+            
+            # Tabela de histórico de sequências
+            with st.expander("📋 Ver Histórico de Sequências (Streaks)"):
+                df_hist_seq = pd.DataFrame(todas_sequencias[-10:])  # Últimas 10 sequências
+                df_hist_seq['Data Fim'] = [df_corr['Data'].iloc[-(sum([s['dias'] for s in todas_sequencias[i:]]) if i < len(todas_sequencias)-1 else 0) - 1].strftime('%d/%m/%Y') 
+                                          for i in range(len(todas_sequencias)-10, len(todas_sequencias))]
+                st.dataframe(df_hist_seq[['Data Fim', 'zona', 'dias']].rename(columns={'zona': 'Zona', 'dias': 'Duração (dias)'}),
+                            use_container_width=True, hide_index=True)
+                
+        else:
+            st.info(f"Dados insuficientes ({len(slope_series)} dias, mínimo 20) para análise individualizada.")
+        # ════════════════════════════════════════════════════════════════════════
+        # ANÁLISE 1.6: Correlação Temporal com Lag (HIIT prediz fadiga futura?)
+        # ════════════════════════════════════════════════════════════════════════
+        st.markdown("---")
+        st.subheader("⏱️ Análise Temporal: HIIT hoje → Fadiga futura? (Lag Analysis)")
+        
+        st.markdown("""
+        Esta análise verifica se dias de **HIIT sugerido pelo HRV-Guided** predizem estados de fadiga (NFOR, Overreaching, Accumulated Fatigue) após X dias.
+        """)
+        
+        # Definir lags para testar
+        lags = [1, 3, 5, 7, 14]
+        resultados_lag = []
+        
+        for lag in lags:
+            # Criar versões deslocadas dos eventos de fadiga
+            for mode, zones, mode_name in [
+                ('m1', ['Accumulated_Fatigue', 'Maladaptation'], 'Mode 1 (Fadiga)'),
+                ('m2', ['NFOR', 'Overreaching'], 'Mode 2 (Fadiga Severa)')
+            ]:
+                for zone in zones:
+                    # Shift nos dados do evento (futuro) vs HIIT atual
+                    df_lag = df_corr[['Data', 'hiit_ln', f'{mode}_{zone}']].copy()
+                    df_lag[f'{zone}_future'] = df_lag[f'{mode}_{zone}'].shift(-lag)  # Evento no futuro
+                    
+                    # Calcular correlação
+                    valid = df_lag[['hiit_ln', f'{zone}_future']].dropna()
+                    if len(valid) > 10:
+                        corr, p_val = stats.pearsonr(valid['hiit_ln'], valid[f'{zone}_future'])
+                        
+                        resultados_lag.append({
+                            'Lag (dias)': lag,
+                            'Modo': mode_name,
+                            'Evento Futuro': zone.replace('_', ' '),
+                            'Correlação': corr,
+                            'P-valor': p_val,
+                            'Significativo': "Sim" if p_val < 0.05 else "Não",
+                            'Interpretação': "Positiva" if corr > 0 else "Negativa"
+                        })
+        
+        if resultados_lag:
+            df_lag_results = pd.DataFrame(resultados_lag)
+            
+            # Mostrar resultados em tabela
+            st.markdown("**Correlações por período de latência:**")
+            
+            for lag in lags:
+                with st.expander(f"Lag de {lag} dias"):
+                    df_lag_day = df_lag_results[df_lag_results['Lag (dias)'] == lag]
+                    if not df_lag_day.empty:
+                        st.dataframe(
+                            df_lag_day[['Modo', 'Evento Futuro', 'Correlação', 'Interpretação', 'P-valor', 'Significativo']]
+                            .style.format({'Correlação': '{:.3f}', 'P-valor': '{:.4f}'})
+                            .apply(lambda x: ['background-color: rgba(231, 76, 60, 0.3)' if x['Correlação'] > 0.3 and x['Significativo'] == 'Sim' else '' for _ in x], axis=1),
+                            use_container_width=True,
+                            hide_index=True
+                        )
+            
+            # Identificar o lag mais preditivo
+            df_signif = df_lag_results[df_lag_results['Significativo'] == 'Sim']
+            if not df_signif.empty:
+                maior_corr = df_signif.loc[df_signif['Correlação'].idxmax()]
+                
+                st.markdown("---")
+                st.markdown("**🔍 Insight Principal:**")
+                
+                if maior_corr['Correlação'] > 0.3:
+                    st.warning(f"""
+                    **Preditor encontrado!**
+                    
+                    Fazer **HIIT hoje** tem correlação de **{maior_corr['Correlação']:.3f}** com aparecer **{maior_corr['Evento Futuro']}** em **{maior_corr['Lag (dias)']} dias**.
+                    
+                    **Interpretação:** O HRV-Guided está sugerindo HIIT em dias que, {maior_corr['Lag (dias)']} dias depois, resultam em estado de fadiga ({maior_corr['Evento Futuro']}).
+                    
+                    **Possíveis causas:**
+                    1. O baseline de {dias_fam}d do HRV-Guided está muito curto para captar a tendência de {maior_corr['Lag (dias)']}d
+                    2. Você pode estar fazendo HIIT em dias que parecem "bons" no curto prazo, mas que na verdade estavam em início de acúmulo de fadiga
+                    3. O HRV leva {maior_corr['Lag (dias)']} dias para refletir o estresse do HIIT neste caso específico
+                    
+                    **Recomendação:** Ajuste o HRV-Guided para usar baseline de pelo menos {maior_corr['Lag (dias)']}d quando este padrão aparecer.
+                    """)
+                else:
+                    st.info("""
+                    **Nenhum preditor forte encontrado.**
+                    
+                    As correlações temporais são fracas, sugerindo que o HRV-Guided está bem calibrado:
+                    - HIIT sugerido não está sistematicamente predizendo fadiga futura
+                    - A resposta ao treino está dentro do esperado
+                    """)
+        else:
+            st.info("Dados insuficientes para análise temporal (mínimo 10 observações por lag).")
 
+        # ════════════════════════════════════════════════════════════════════════
+        # ANÁLISE 2: Comparação LnRMSSD vs RMSSD Bruto (HRV-Guided)
+        # ════════════════════════════════════════════════════════════════════════
+        st.markdown("---")
+        st.subheader("📊 Análise 2: LnRMSSD vs RMSSD Bruto como HRV-Guided")
+        
+        # Preparar dados de RMSSD bruto
+        df_raw = df_hg_raw.copy()
+        df_raw['hiit_raw'] = (df_raw['intens_raw'] == 'HIIT').astype(int)
+        
+        # Juntar com dados LnRMSSD
+        df_comp = df_corr[['Data', 'hiit_ln', 'intens']].merge(
+            df_raw[['Data', 'hiit_raw', 'intens_raw', 'RMSSD', 'bm_raw', 'bs_raw']], 
+            on='Data', 
+            how='inner'
+        )
+        
+        # Métricas de concordância
+        total_dias = len(df_comp)
+        ambos_hiit = ((df_comp['hiit_ln'] == 1) & (df_comp['hiit_raw'] == 1)).sum()
+        ambos_rec = ((df_comp['hiit_ln'] == 0) & (df_comp['hiit_raw'] == 0)).sum()
+        ln_hiit_raw_rec = ((df_comp['hiit_ln'] == 1) & (df_comp['hiit_raw'] == 0)).sum()
+        ln_rec_raw_hiit = ((df_comp['hiit_ln'] == 0) & (df_comp['hiit_raw'] == 1)).sum()
+        
+        # Concordância geral (acurácia)
+        concordancia = (ambos_hiit + ambos_rec) / total_dias * 100 if total_dias > 0 else 0
+        
+        # Concordância específica em HIIT (sensibilidade do LnRMSSD vs RMSSD)
+        total_hiit_ln = df_comp['hiit_ln'].sum()
+        total_hiit_raw = df_comp['hiit_raw'].sum()
+        
+        # Cohen's Kappa para concordância ajustada ao acaso
+        from sklearn.metrics import cohen_kappa_score
+        kappa = cohen_kappa_score(df_comp['hiit_ln'], df_comp['hiit_raw'])
+        
+        # Interpretação Kappa
+        if kappa >= 0.8:
+            kappa_interp = "Quase perfeita"
+        elif kappa >= 0.6:
+            kappa_interp = "Substancial"
+        elif kappa >= 0.4:
+            kappa_interp = "Moderada"
+        elif kappa >= 0.2:
+            kappa_interp = "Fraca"
+        else:
+            kappa_interp = "Mínima"
+        
+        # Display métricas
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Concordância Geral", f"{concordancia:.1f}%", 
+                 help="Percentual de dias em que ambos os métodos deram a mesma prescrição (HIIT ou Recuperação)")
+        c2.metric("Cohen's Kappa", f"{kappa:.3f}", 
+                 delta=kappa_interp,
+                 help="Concordância ajustada ao acaso. >0.6 é considerada boa.")
+        c3.metric("Dias HIIT LnRMSSD", f"{total_hiit_ln}", 
+                 help=f"Dias prescritos como HIIT pelo método LnRMSSD ({total_hiit_ln/total_dias*100:.0f}%)")
+        c4.metric("Dias HIIT RMSSD", f"{total_hiit_raw}", 
+                 help=f"Dias prescritos como HIIT pelo método RMSSD Bruto ({total_hiit_raw/total_dias*100:.0f}%)")
+        
+        # Tabela de contingência
+        st.markdown("**Tabela de Contingência**")
+        cont_table = pd.DataFrame({
+            'LnRMSSD \\ RMSSD Bruto': ['HIIT', 'Recuperação'],
+            'HIIT': [ambos_hiit, ln_rec_raw_hiit],
+            'Recuperação': [ln_hiit_raw_rec, ambos_rec]
+        })
+        st.table(cont_table.set_index('LnRMSSD \\ RMSSD Bruto'))
+        
+        # Análise de diferenças
+        st.markdown("**Análise das Divergências**")
+        col_d1, col_d2 = st.columns(2)
+        
+        with col_d1:
+            st.metric("LnRMSSD diz HIIT mas RMSSD diz Rec", 
+                     f"{ln_hiit_raw_rec} dias",
+                     delta=f"{ln_hiit_raw_rec/total_dias*100:.1f}%",
+                     delta_color="off")
+            st.caption("LnRMSSD é mais 'agressivo' - permite HIIT quando RMSSD sugere descanso")
+        
+        with col_d2:
+            st.metric("LnRMSSD diz Rec mas RMSSD diz HIIT", 
+                     f"{ln_rec_raw_hiit} dias",
+                     delta=f"{ln_rec_raw_hiit/total_dias*100:.1f}%",
+                     delta_color="off")
+            st.caption("RMSSD Bruto é mais 'agressivo' - permite HIIT quando LnRMSSD sugere descanso")
+        
+        # Recomendação
+        st.markdown("---")
+        st.markdown("**💡 Recomendação de Uso**")
+        
+        if kappa >= 0.6:
+            st.success(f"""
+            **Alta concordância ({kappa_interp})**: Ambos os métodos são equivalentes para este atleta.
+            - LnRMSSD é preferível por normalizar a distribuição e reduzir efeito de outliers
+            - RMSSD bruto pode ser mais intuitivo (ms reais)
+            """)
+        elif kappa >= 0.4:
+            st.warning(f"""
+            **Concordância moderada**: Os métodos diferem com frequência.
+            - **LnRMSSD**: Mais conservador, tende a sugerir mais dias de recuperação ({ln_hiit_raw_rec} dias a mais que RMSSD)
+            - **RMSSD Bruto**: Mais permissivo, pode subestimar necessidade de recuperação em alguns casos
+            - Recomendação: Usar LnRMSSD para decisões importantes de treino
+            """)
+        else:
+            st.error(f"""
+            **Baixa concordância**: Os métodos divergem significativamente!
+            - Isso pode indicar grande variabilidade nos dados de HRV ou presença de outliers
+            - Verificar qualidade dos dados de medição
+            - Considerar outros marcadores (sensação subjetiva, sono, etc.)
+            """)
+
+    # ── DOWNLOAD CSV — sinais de recovery diários (histórico completo) ────────
     st.markdown("---")
+    st.subheader("📥 Export Recovery CSV")
+    st.caption(
+        "Histórico **completo** de recovery — independente do filtro global do sidebar. "
+        "Inclui: recovery_score, HRV baseline, CV, zonas Altini/Plews, slope LnrMSSD.")
 
-    # Resumo Semanal movido para cima (acima da tabela Semana actual)
+    try:
+        # Usar wc_full (histórico completo) se disponível; senão usa dw (filtrado)
+        _dw_csv = wc_full if (wc_full is not None and len(wc_full) > 0) else dw
+        # Integrar RPE do histórico completo de atividades
+        _da_csv = da_full if (da_full is not None and len(da_full) > 0) else (da if da is not None else pd.DataFrame())
 
+        # Integrar RPE no _dw_csv
+        _rpe_col_csv = next((c for c in ['icu_rpe', 'rpe', 'RPE'] if c in _da_csv.columns), None) if not _da_csv.empty else None
+        if _rpe_col_csv:
+            _da_rpe = _da_csv.copy()
+            _da_rpe['Data'] = pd.to_datetime(_da_rpe['Data']).dt.normalize()
+            _rpe_agg = _da_rpe.groupby('Data')[_rpe_col_csv].mean().reset_index()
+            _rpe_agg.columns = ['Data', 'rpe_diario']
+            _dw_csv = _dw_csv.copy()
+            _dw_csv['Data'] = pd.to_datetime(_dw_csv['Data']).dt.normalize()
+            _dw_csv = _dw_csv.merge(_rpe_agg, on='Data', how='left')
 
+        _rec_dl = calcular_recovery(_dw_csv)
+        if len(_rec_dl) > 0:
+            _dl_cols_rec = [c for c in [
+                'Data', 'hrv', 'rhr', 'recovery_score',
+                'hrv_baseline', 'hrv_cv_7d',
+                'sleep_quality', 'fatiga', 'stress', 'humor', 'soreness',
+            ] if c in _rec_dl.columns]
+            _df_rec_export = _rec_dl[_dl_cols_rec].copy()
 
+            # Adicionar rpe_diario se disponível
+            if 'rpe_diario' in _dw_csv.columns:
+                _rpe_merge = _dw_csv[['Data', 'rpe_diario']].copy()
+                _rpe_merge['Data'] = pd.to_datetime(_rpe_merge['Data'])
+                _df_rec_export['Data'] = pd.to_datetime(_df_rec_export['Data'])
+                _df_rec_export = _df_rec_export.merge(_rpe_merge, on='Data', how='left')
 
-# ════════════════════════════════════════════════════════════════════════════════
-# TAB 2 — PMC + FTLM
-# ════════════════════════════════════════════════════════════════════════════════
+            _df_rec_export['Data'] = _df_rec_export['Data'].astype(str)
+            _df_rec_export = _df_rec_export.round(4)
 
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# MÓDULO: tabs/tab_pmc.py
-# ════════════════════════════════════════════════════════════════════════════
+            _c_dl1, _c_dl2 = st.columns([2, 1])
+            with _c_dl1:
+                st.dataframe(_df_rec_export.tail(14), use_container_width=True, hide_index=True)
+                st.caption(f"Mostrando últimos 14 de {len(_df_rec_export)} dias totais no CSV")
+            with _c_dl2:
+                st.metric("Dias no CSV", len(_df_rec_export))
+                st.metric("Sidebar (gráficos)", len(dw))
+                st.caption("CSV = histórico completo\nGráficos = período sidebar")
+                st.download_button(
+                    label="📥 Download Recovery CSV",
+                    data=_df_rec_export.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
+                    file_name="atheltica_recovery.csv",
+                    mime="text/csv",
+                    key="rec_dl_csv",
+                )
+    except Exception as _rec_err:
+        st.info(f"Export não disponível: {_rec_err}")
