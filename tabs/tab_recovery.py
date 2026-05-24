@@ -871,11 +871,12 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
         n_hg     = hg_c2.slider("Dias a mostrar", 14, min(len(df_hg), 180),
                                   min(60, len(df_hg)), key="hg_dias")
 
-        # Baseline: rolling sobre dias COM dados (NaN são ignorados pelo rolling)
-        # min_periods=max(5, dias_fam//2) — permite calcular mesmo com alguns NaN
+        # Baseline: rolling EXCLUINDO o dia actual (shift 1) — sem lookahead
+        # O baseline de hoje = média dos últimos 14 dias anteriores a hoje
+        # Sem shift, o próprio valor de hoje entra no seu baseline → distorção
         _mp = max(5, dias_fam // 2)
-        df_hg['bm']    = df_hg['LnrMSSD'].rolling(dias_fam, min_periods=_mp).mean()
-        df_hg['bs']    = df_hg['LnrMSSD'].rolling(dias_fam, min_periods=_mp).std()
+        df_hg['bm']    = df_hg['LnrMSSD'].shift(1).rolling(dias_fam, min_periods=_mp).mean()
+        df_hg['bs']    = df_hg['LnrMSSD'].shift(1).rolling(dias_fam, min_periods=_mp).std()
         df_hg['linf']  = df_hg['bm'] - 0.5 * df_hg['bs']
         df_hg['lsup']  = df_hg['bm'] + 0.5 * df_hg['bs']
         df_hg['desvio_dp'] = (df_hg['LnrMSSD'] - df_hg['bm']) / df_hg['bs'].replace(0, np.nan)
@@ -906,8 +907,8 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
         df_hg_raw.index.name = 'Data'
         df_hg_raw = df_hg_raw.reset_index()
         _mp_raw = max(5, dias_fam // 2)
-        df_hg_raw['bm_raw'] = df_hg_raw['RMSSD'].rolling(dias_fam, min_periods=_mp_raw).mean()
-        df_hg_raw['bs_raw'] = df_hg_raw['RMSSD'].rolling(dias_fam, min_periods=_mp_raw).std()
+        df_hg_raw['bm_raw'] = df_hg_raw['RMSSD'].shift(1).rolling(dias_fam, min_periods=_mp_raw).mean()
+        df_hg_raw['bs_raw'] = df_hg_raw['RMSSD'].shift(1).rolling(dias_fam, min_periods=_mp_raw).std()
         df_hg_raw['desvio_dp_raw'] = (df_hg_raw['RMSSD'] - df_hg_raw['bm_raw']) / df_hg_raw['bs_raw'].replace(0, np.nan)
         df_hg_raw['intens_raw'] = df_hg_raw.apply(
             lambda r: ('Sem medição ⭐' if pd.isna(r['RMSSD'])
