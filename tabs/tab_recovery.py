@@ -861,15 +861,16 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
         df_hg.index.name = 'Data'
         df_hg = df_hg.reset_index()
 
-        # hrv nunca é preenchido por lookback (preproc_wellness não preenche hrv)
-        # → NaN = sem medição real, sem ambiguidade
+        # Usar hrv_raw (antes do preenchimento lookback) para HRV-Guided
+        # hrv_raw=NaN = sem medição real; hrv (preenchido) é usado noutras análises
+        _hrv_src = 'hrv_raw' if 'hrv_raw' in df_hg.columns else 'hrv'
         df_hg['LnrMSSD'] = np.where(
-            df_hg['hrv'].notna() & (df_hg['hrv'] > 0),
-            np.log(df_hg['hrv']),
+            df_hg[_hrv_src].notna() & (df_hg[_hrv_src] > 0),
+            np.log(df_hg[_hrv_src]),
             np.nan
         )
-        # Flag: dia sem medição de HRV (NaN = sem dado real)
-        df_hg['sem_medicao'] = df_hg['hrv'].isna()
+        # sem_medicao = True quando não há medição real (hrv_raw=NaN após reindex)
+        df_hg['sem_medicao'] = df_hg[_hrv_src].isna()
 
         hg_c1, hg_c2 = st.columns(2)
         dias_fam = hg_c1.slider("Dias baseline rolling", 7, 28, 14, key="hg_baseline")
