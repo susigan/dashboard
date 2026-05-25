@@ -753,7 +753,65 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                             font=dict(color='#111111', size=11)))
             st.plotly_chart(fig_kj, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False})
 
-        # ── Tabela comparativa mensal removida ──────────────────────────
+        # ── Tabela comparativa mensal — 2 blocos com cores ──────────────
+        if all_mods_m:
+            st.subheader("📊 Comparação Mensal por Modalidade")
+
+            def _di(vc, vp, lim=3.0):
+                # icon + color delta
+                if not vp or vp == 0: return '—', '#888'
+                pct = (vc - vp) / vp * 100
+                if   pct >  lim: return f'↗ +{pct:.0f}%', '#27ae60'
+                elif pct < -lim: return f'↘ {pct:.0f}%',  '#e74c3c'
+                else:             return f'→ {pct:+.0f}%', '#7f8c8d'
+
+            def _mes_rows(mod_list, mc, mr):
+                rows = []
+                for mod in mod_list:
+                    dc_ = mc.get(mod, {}); dp_ = mr.get(mod, {})
+                    kj_i, _ = _di(dc_.get('kj',0),    dp_.get('kj',0))
+                    km_i, _ = _di(dc_.get('km',0),    dp_.get('km',0))
+                    h_i,  _ = _di(dc_.get('horas',0), dp_.get('horas',0))
+                    rows.append({
+                        'Modal.': mod,
+                        'KJ':    f"{dc_.get('kj',0):.0f}"    if dc_.get('kj',0)>0    else '—',
+                        'ΔKJ':   kj_i,
+                        'KM':    f"{dc_.get('km',0):.0f}"    if dc_.get('km',0)>0    else '—',
+                        'ΔKM':   km_i,
+                        'Horas': fmt_dur(dc_.get('horas',0)) if dc_.get('horas',0)>0 else '—',
+                        'ΔH':    h_i,
+                    })
+                return rows
+
+            def _color_df(df_s):
+                def _c(v):
+                    v = str(v)
+                    if '↗' in v: return 'color:#27ae60;font-weight:bold'
+                    if '↘' in v: return 'color:#e74c3c;font-weight:bold'
+                    if '→' in v: return 'color:#7f8c8d'
+                    return ''
+                dcols = [c for c in df_s.columns if c.startswith('Δ')]
+                return df_s.style.map(_c, subset=dcols) if dcols else df_s.style
+
+            all_mods_pp = sorted(set(list(mes_p.keys()) + list(mes_pp.keys())))
+            _cb1, _cb2 = st.columns(2)
+            with _cb1:
+                st.caption(f"**{mes_p_ini.strftime('%b %Y')}** vs {mes_p_p_ini.strftime('%b %Y')}")
+                _rb1 = _mes_rows(all_mods_pp, mes_p, mes_pp)
+                if _rb1:
+                    st.dataframe(_color_df(pd.DataFrame(_rb1)),
+                                 hide_index=True, use_container_width=True)
+                else:
+                    st.info("Sem dados para mês anterior")
+            with _cb2:
+                st.caption(f"**{mes_c_ini.strftime('%b %Y')} ▶** vs {mes_p_ini.strftime('%b %Y')}")
+                _rb2 = _mes_rows(all_mods_m, mes_c, mes_p)
+                if _rb2:
+                    st.dataframe(_color_df(pd.DataFrame(_rb2)),
+                                 hide_index=True, use_container_width=True)
+                else:
+                    st.info("Sem dados para mês corrente")
+
 
     # ── Camada de Progressão de Carga ────────────────────────────────────
     if da_full is not None and len(da_full) > 0:
@@ -847,14 +905,9 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 if len(_s) > 0: _eftp[_m] = float(_s.iloc[-1])
 
         def _med_semanas(df, col, n_sem=8):
-            """Mediana das últimas n semanas COMPLETAS com dados (excluindo semana actual).
-            Semana = segunda a domingo (ISO week)."""
+            """Mediana das últimas n semanas com dados (col > 0)."""
             df = df.copy()
-            # to_period('W') pandas = Monday-based por default
             df['_sem'] = df['Data'].dt.to_period('W')
-            _sem_actual = pd.Timestamp.now().normalize().to_period('W')
-            # Excluir semana actual — só semanas completas
-            df = df[df['_sem'] < _sem_actual]
             agg = df.groupby('_sem')[col].sum().reset_index()
             agg = agg.sort_values('_sem').tail(n_sem)
             vals = agg[col][agg[col] > 0]
@@ -1240,8 +1293,13 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 f"({_KAPPA_P87:.2f})."
             )
 
-        # ── Ler α Modelo M2 do session_state (calculado no app.py no arranque) ─
+        # ── Carregar α do Modelo 2 (FTLM Polar) do session_state ──────────────
+        # Calculado em tab_eftp quando o utilizador visita essa tab.
+        # Contém: alpha_z3/z2/z1, r2, ctz_now, alvos por horizonte, kJ_zona_semana
         _alpha_p = st.session_state.get('alpha_polar_cache', {})
+
+        # α calculado no arranque (app.py) — sem recálculo aqui
+        # Se ainda vazio após recarregamento, mostrar mensagem informativa
 
         for mod in ['Bike','Row','Ski','Run']:
             _sub = _pf[_pf['type'].apply(norm_tipo)==mod].copy()
@@ -1292,23 +1350,7 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             h_sem_ant  = float(_sem_ant['_mt'].sum())
 
             # Meta semana (com suavização anti-salto)
-            kj_meta_need = kj_base * fator if has_kj else 0.0
-
-            # Integração M2 — Z3 alvo desta semana eleva a meta se κ não está em overload
-            _ap_mod_meta = _alpha_p.get(mod, {})
-            _kj3_meta_m2 = 0.0
-            if _ap_mod_meta.get('ok') and not ol and (
-                    _kappa_now is None or _kappa_now <= _KAPPA_P87):
-                _kj3_sem_m2  = _ap_mod_meta.get('alvos',{}).get('3m',{}).get('kj_z3_semana', 0)
-                _kj2_act_m2  = _ap_mod_meta.get('kj_z2_semana_actual', 0)
-                _kj1_act_m2  = _ap_mod_meta.get('kj_z1_semana_actual', 0)
-                _kj_meta_m2  = _kj3_sem_m2 + _kj2_act_m2 * 1.05 + _kj1_act_m2 * 1.05
-                # M2 não pode exigir mais de +20% sobre o que o Need permite
-                _kj_meta_m2  = min(_kj_meta_m2, kj_meta_need * 1.20)
-
-            kj_meta_raw = max(kj_meta_need, _kj_meta_m2) if has_kj else 0.0
-            # Anti-salto: nunca mais de +8% sobre semana anterior ou baseline
-            kj_meta = min(kj_meta_raw, max(kj_sem_ant, kj_base) * 1.08) if has_kj else 0.0
+            kj_meta = min(kj_base * fator, max(kj_sem_ant, kj_base) * 1.08) if has_kj else 0.0
             h_meta  = min(h_base  * fator, max(h_sem_ant,  h_base)  * 1.08)
             km_meta = km_base * fator if has_km else 0.0
 
@@ -1490,10 +1532,15 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                                   (f"{km_feito:.0f} km | {fmt_dur(h_feito)}" if has_km
                                    else fmt_dur(h_feito)),
                 'Restante':      _restante_display,
+                'Proj. Horas 2026': fmt_dur(h_proj) if h_proj>0 else "—",
+                'Range Horas (+3–12%)': (
+                    f"{fmt_dur(h_2025)} → {fmt_dur(h_2025*1.03)}–{fmt_dur(h_2025*1.12)}"
+                    if h_2025 > 0 else "—"),
+                'Status Horas':  status_ano,
+                '_sug_df': _sug_df, '_sug_ref': _sug_ref, '_sug_ol': _sug_ol,
                 'Zona (esta sem)': _z_zona_rec,
                 'kJ Z3 act→alvo': _z3_lbl,
                 'eFTP alvo 3m':  _z_alvo_eftp,
-                '_sug_df': _sug_df, '_sug_ref': _sug_ref, '_sug_ol': _sug_ol,
             }
             rows_prog.append(row)
 
@@ -1505,59 +1552,49 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             df_prog = pd.DataFrame(_rows_prog_display)
 
             # ── Deload / Taper detector ───────────────────────────────────
-            # baseline = soma de TODAS modalidades, últimas 3 semanas completas
-            # usando a semana actual como referência (não data max por modalidade)
-            _semana_atual_period = sem_ini_pf.to_period('W')
+            # baseline = mediana últimas 3 semanas com dados (KJ ou Horas)
+            _sem_ini_det  = hoje_pf - pd.Timedelta(weeks=1)
+            _sem3_ini_det = hoje_pf - pd.Timedelta(weeks=4)
             _kj_total_cur = 0.0
-            _kj_b3_por_sem = {}  # {period: kj_total}
+            _kj_total_b3  = []
+            for _m3 in ['Bike','Row','Ski','Run']:
+                _s3 = _pf[_pf['type'].apply(norm_tipo)==_m3].copy()
+                if len(_s3) == 0: continue
+                _s3['_ksem'] = _s3['Data'].dt.to_period('W')
+                _agg3 = _s3.groupby('_ksem')['_kj'].sum()
+                # Últimas 3 semanas completas (antes da actual)
+                _prev3 = _agg3[_agg3.index < _s3['Data'].max().to_period('W')].tail(3)
+                _kj_total_b3.extend(_prev3.values)
+                # Semana actual desta modalidade
+                _kj_total_cur += float(_s3[_s3['Data'] >= sem_ini_pf]['_kj'].sum())
 
-            # Colunas Z1/Z2/Z3
-            _col_z1_det = next((c for c in ['Z1KJ','z1_kj','z1kj'] if c in _pf.columns), None)
-            _col_z2_det = next((c for c in ['Z2KJ','z2_kj','z2kj'] if c in _pf.columns), None)
-            _col_z3_det = next((c for c in ['Z3KJ','z3_kj','z3kj'] if c in _pf.columns), None)
+            _kj_b3_mean = float(np.mean(_kj_total_b3)) if _kj_total_b3 else 0.0
 
-            _pf2 = _pf.copy()
-            _pf2['_ksem'] = _pf2['Data'].dt.to_period('W')
-            # Filtrar só modalidades relevantes
-            _pf2 = _pf2[_pf2['type'].apply(norm_tipo).isin(['Bike','Row','Ski','Run'])]
-
-            # Semana actual
-            _pf_cur = _pf2[_pf2['_ksem'] == _semana_atual_period]
-            _kj_total_cur = float(_pf_cur['_kj'].sum())
-
-            # Últimas 3 semanas completas (excluindo a actual)
-            _pf_prev = _pf2[_pf2['_ksem'] < _semana_atual_period]
-            _agg_sem = _pf_prev.groupby('_ksem')['_kj'].sum()
-            _prev3_sems = _agg_sem.tail(3)
-            _kj_b3_mean = float(_prev3_sems.mean()) if len(_prev3_sems) > 0 else 0.0
-
-            # Z1/Z2/Z3 semana actual e baseline
-            def _sum_zone(df, col):
-                if col and col in df.columns:
-                    return float(pd.to_numeric(df[col], errors='coerce').fillna(0).sum())
-                return 0.0
-
-            _z1_cur = _sum_zone(_pf_cur, _col_z1_det)
-            _z2_cur = _sum_zone(_pf_cur, _col_z2_det)
-            _z3_cur = _sum_zone(_pf_cur, _col_z3_det)
-
-            # Baseline Z1/Z2/Z3 (média das 3 semanas)
-            _z1_b3 = _sum_zone(_pf_prev.tail(3*20), _col_z1_det) / max(len(_prev3_sems),1) if _col_z1_det else 0.0
-            _z2_b3 = _sum_zone(_pf_prev.tail(3*20), _col_z2_det) / max(len(_prev3_sems),1) if _col_z2_det else 0.0
-            _z3_b3 = _sum_zone(_pf_prev.tail(3*20), _col_z3_det) / max(len(_prev3_sems),1) if _col_z3_det else 0.0
-
-            # Semana anterior
-            _sem_ant_period = _semana_atual_period - 1
-            _pf_ant = _pf2[_pf2['_ksem'] == _sem_ant_period]
-            _kj_sem_ant_det = float(_pf_ant['_kj'].sum())
+            # ── Semana anterior KJ (para guard início de semana) ──────────
+            _sem_ant_ini_det = sem_ini_pf - pd.Timedelta(weeks=1)
+            _sem_ant_fim_det = sem_ini_pf - pd.Timedelta(days=1)
+            _kj_sem_ant_det  = 0.0
+            for _m3 in ['Bike','Row','Ski','Run']:
+                _s3b = _pf[_pf['type'].apply(norm_tipo)==_m3]
+                _kj_sem_ant_det += float(_s3b[
+                    (_s3b['Data'] >= _sem_ant_ini_det) &
+                    (_s3b['Data'] <= _sem_ant_fim_det)
+                ]['_kj'].sum())
             _ratio_sem_ant = (_kj_sem_ant_det / _kj_b3_mean) if _kj_b3_mean > 0 else 1.0
 
-            # Guard início de semana
-            _dias_semana = hoje_pf.weekday() + 1
+            # Guard: dias decorridos desta semana (Seg=0, Dom=6)
+            _dias_semana = hoje_pf.weekday() + 1   # 1=seg, 7=dom
+            # KJ projectado para semana completa (pro-rata)
             _kj_proj_semana = (_kj_total_cur / _dias_semana * 7) if _dias_semana > 0 else 0
+
+            # Guard início de semana: se <3 dias decorridos E semana anterior Normal → não julgar
             _semana_iniciando = _dias_semana < 3
+
+            # Ratio a usar: projectado se início de semana, actual se ≥3 dias
             _load_ratio = ((_kj_proj_semana / _kj_b3_mean) if (_kj_b3_mean > 0 and _semana_iniciando)
                            else (_kj_total_cur / _kj_b3_mean) if _kj_b3_mean > 0 else 1.0)
+
+            # Se semana anterior já era Taper/Deload → não alarmar novamente
             _sem_ant_era_taper = _ratio_sem_ant < 0.80
 
             # Limiares
@@ -1590,19 +1627,6 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                     else:
                         _fase = "⚠️ Muito baixo"
                     st.metric("Fase detectada", _fase, f"ratio={_load_ratio:.2f}")
-
-                # Z1/Z2/Z3 esta semana vs baseline
-                if any([_z1_cur, _z2_cur, _z3_cur, _z1_b3, _z2_b3, _z3_b3]):
-                    _cz1, _cz2, _cz3 = st.columns(3)
-                    with _cz1:
-                        st.metric("Z1 esta sem (kJ)", f"{_z1_cur:.0f}",
-                                  f"baseline: {_z1_b3:.0f} kJ/sem")
-                    with _cz2:
-                        st.metric("Z2 esta sem (kJ)", f"{_z2_cur:.0f}",
-                                  f"baseline: {_z2_b3:.0f} kJ/sem")
-                    with _cz3:
-                        st.metric("Z3 esta sem (kJ)", f"{_z3_cur:.0f}",
-                                  f"baseline: {_z3_b3:.0f} kJ/sem")
 
                 # Ranges informativos
                 st.caption(
@@ -1701,119 +1725,22 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             # Threshold +1 a +5 CTL/semana (escala icu_training_load)
             _dentro_range = 1.0 <= _delta_ctl_total <= 5.0
 
-            st.markdown("**⚡ Planeador de Zonas — semana actual e progressão 3m**")
+            st.markdown("**⚡ Impacto CTL estimado — semana actual**")
+            st.caption(f"Métrica: **{_tl_col}** — consistente com Tab PMC")
+            _cc1, _cc2, _cc3, _cc4 = st.columns(4)
+            with _cc1: st.metric("CTL actual",     f"{_ctl_hoje:.1f}")
+            with _cc2: st.metric("ΔCTL estimado",  f"{_delta_ctl_total:+.2f}",
+                                 "✅ no range 1–5" if _dentro_range else
+                                 ("⚠️ abaixo de 1" if _delta_ctl_total < 1 else "⚠️ acima de 5"))
+            with _cc3: st.metric("CTL projectado", f"{_ctl_proj:.1f}")
+            with _cc4: st.metric("TSB projectado", f"{_tsb_proj:.1f}")
 
-            # ── Planeador interactivo Z1/Z2/Z3 por modalidade ─────────────────
-            st.caption(
-                "Define o eFTP alvo e o prazo. O modelo calcula os kJ/sem de Z3 "
-                "necessários por modalidade, distribuídos em rampa linear."
-            )
-            _pc1, _pc2 = st.columns(2)
-            _prazo_sem = _pc1.slider("Prazo (semanas)", 4, 24, 12, 2,
-                                     key="prazo_sem_planeador")
-            _delta_eftp_input = _pc2.slider("eFTP alvo (ganho em W)", 0, 30, 10, 1,
-                                            key="delta_eftp_planeador")
-
-            # Tabela de progressão para cada modalidade
-            _plan_rows = []
-            for _mv_p in ['Bike','Row','Ski','Run']:
-                _ap_p = _alpha_p.get(_mv_p, {})
-                if not _ap_p.get('ok'): continue
-                _eftp_p    = _ap_p.get('eftp_now', 0)
-                _eftp_tgt_p = _eftp_p + _delta_eftp_input
-                _a3p = _ap_p.get('alpha_z3', 0)
-                _a2p = _ap_p.get('alpha_z2', 0)
-                _a1p = _ap_p.get('alpha_z1', 0)
-                _intcp = _eftp_p - (_a3p*_ap_p.get('cz3_now',0)
-                                   + _a2p*_ap_p.get('cz2_now',0)
-                                   + _a1p*_ap_p.get('cz1_now',0))
-                # CTLγ_Z3 necessário
-                _cz3_now_p = _ap_p.get('cz3_now', 0)
-                _cz2_now_p = _ap_p.get('cz2_now', 0)
-                _cz1_now_p = _ap_p.get('cz1_now', 0)
-                if abs(_a3p) > 0.01:
-                    _cz3_tgt_p = (_eftp_tgt_p - _a2p*_cz2_now_p
-                                  - _a1p*_cz1_now_p - _intcp) / _a3p
-                    _cz3_tgt_p = max(_cz3_tgt_p, _cz3_now_p)
-                else:
-                    _cz3_tgt_p = _cz3_now_p * 1.10
-                # kJ/sem actual e alvo
-                _kj3_act_p = _ap_p.get('kj_z3_semana_actual', 0)
-                _kj3_alvo_p = float(_cz3_tgt_p * 7)
-                # Esta semana (semana 1 de N)
-                _kj3_sem1 = _kj3_act_p + (_kj3_alvo_p - _kj3_act_p) / _prazo_sem
-                _r2_p = _ap_p.get('r2', 0)
-                _r2_icon = '🟢' if _r2_p >= 0.20 else ('🟡' if _r2_p >= 0.08 else '🔴')
-                _plan_rows.append({
-                    'Modalidade':         _mv_p,
-                    'eFTP actual':        f"{_eftp_p:.0f}W",
-                    f'eFTP alvo (+{_delta_eftp_input}W)': f"{_eftp_tgt_p:.0f}W",
-                    'Z3 actual (kJ/sem)': f"{_kj3_act_p:.0f}",
-                    f'Z3 sem 1 (kJ/sem)': f"{_kj3_sem1:.0f}",
-                    f'Z3 alvo sem {_prazo_sem} (kJ/sem)': f"{_kj3_alvo_p:.0f}",
-                    f'Gap esta sem':       f"+{max(0,_kj3_sem1-_kj3_act_p):.0f} kJ",
-                    f'R²':                f"{_r2_icon}{_r2_p:.2f}",
-                })
-
-            if _plan_rows:
-                st.dataframe(pd.DataFrame(_plan_rows), hide_index=True,
-                             use_container_width=True)
-
-                # Contexto dTRIMP/dKJ e eff_delta
-                _eff_kj = st.session_state.get('eff_kj_cache', {})
-                if _eff_kj:
-                    st.markdown("**Contexto fisiológico para aumentar Z3:**")
-                    _ctx_rows = []
-                    for _mv_ctx in ['Bike','Row','Ski','Run']:
-                        _ec = _eff_kj.get(_mv_ctx, {})
-                        if not _ec: continue
-                        _ok_z3 = _ec.get('aumentar_z3_ok', True)
-                        _ctx_rows.append({
-                            'Modal.':          _mv_ctx,
-                            'dTRIMP/dKJ':      f"{_ec['dtrimp_dkj']:.3f} {_ec['dtrimp_lbl']}",
-                            'Eff delta 28d':   f"{_ec['eff_delta']:+.1%} {_ec['eff_delta_lbl']}",
-                            'Aumentar Z3?':    '✅ Seguro' if _ok_z3 else '⚠️ Cautela',
-                        })
-                    if _ctx_rows:
-                        st.dataframe(pd.DataFrame(_ctx_rows), hide_index=True,
-                                     use_container_width=True)
-                        st.caption(
-                            "dTRIMP/dKJ < 0.3 eficiente | 0.3–0.5 normal | >0.5 custo alto. "
-                            "Eff delta: variação TRIMP/KJ últimos 28d vs baseline 84d.")
-
-                st.caption(
-                    f"Rampa linear {_prazo_sem} semanas. "
-                    "Sem 1 = primeiro incremento. Z2 e Z1 mantêm ritmo actual (+5%). "
-                    "🔴R²<0.08 = modelo pouco fiável para esta modalidade."
-                )
-
-            # kJ Z3 feito esta semana por modalidade
-            _col_z3_wk = next((c for c in ['Z3KJ','z3_kj','z3kj'] if c in da.columns), None)
-            _col_mod_wk = next((c for c in ['type','modality'] if c in da.columns), None)
-            _col_dat_wk = next((c for c in ['date','Data'] if c in da.columns), None)
-            if _col_z3_wk and _col_mod_wk and _col_dat_wk:
-                _today_wk = pd.Timestamp.now().normalize()
-                _mon_wk   = _today_wk - pd.Timedelta(days=_today_wk.weekday())
-                _da_wk    = da.copy()
-                _da_wk[_col_dat_wk] = pd.to_datetime(_da_wk[_col_dat_wk]).dt.normalize()
-                _da_wk = _da_wk[_da_wk[_col_dat_wk] >= _mon_wk]
-                if len(_da_wk) > 0:
-                    _z3_sem_rows = []
-                    for _mv_z in ['Bike','Row','Ski','Run']:
-                        _sub_z = _da_wk[_da_wk[_col_mod_wk]==_mv_z]
-                        _kj3_feito = pd.to_numeric(_sub_z[_col_z3_wk], errors='coerce').fillna(0).sum()
-                        _kj3_alvo_vg = _alpha_p.get(_mv_z,{}).get('alvos',{}).get('3m',{}).get('kj_z3_semana',0)
-                        if _kj3_feito > 0 or _kj3_alvo_vg > 0:
-                            _z3_sem_rows.append({
-                                'Modalidade': _mv_z,
-                                'Z3 feito esta sem (kJ)': f"{_kj3_feito:.0f}",
-                                'Z3 alvo esta sem (kJ)':  f"{_kj3_alvo_vg:.0f}",
-                                'Progresso':              f"{min(100,_kj3_feito/max(_kj3_alvo_vg,1)*100):.0f}%",
-                            })
-                    if _z3_sem_rows:
-                        with st.expander("🎯 Z3 feito vs alvo — semana actual"):
-                            st.dataframe(pd.DataFrame(_z3_sem_rows),
-                                        hide_index=True, use_container_width=True)
+            if _delta_rows:
+                with st.expander("🔍 Detalhe ΔCTL por modalidade"):
+                    st.dataframe(pd.DataFrame(_delta_rows), width="stretch", hide_index=True)
+                    st.caption(
+                        "Load estimada = mediana icu_training_load das sessões comparáveis (RPE range). "
+                        "ΔCTL = load / 42. Threshold: +1 a +5 CTL/semana.")
 
             st.markdown("---")
             st.dataframe(df_prog,
@@ -1832,27 +1759,213 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                         _df_s  = r["_sug_df"]
                         _ref_s = r.get("_sug_ref","")
                         _ol_s  = r.get("_sug_ol","")
-                        # Linha de referência + overload
+                        _mod_s = r["Modalidade"]
                         if _ref_s: st.caption(_ref_s)
                         if _ol_s:  st.warning(_ol_s)
-                        # Tabela de opções — principal marcada com ★ na coluna Tipo
-                        # Não usar style (causa texto branco no tema escuro do Streamlit)
-                        st.dataframe(
-                            _df_s,
-                            hide_index=True,
-                            use_container_width=True)
-                        # KJ restante e meta abaixo da tabela
-                        _kj_r_val = r.get("Restante","")
-                        _meta_val = r.get("Meta semana","")
+                        st.dataframe(_df_s, hide_index=True, use_container_width=True)
+                        # KJ total + Z3 alvo/feito desta semana
+                        _kj_r_val  = r.get("Restante","")
+                        _meta_val  = r.get("Meta semana","")
                         _feito_val = r.get("Feito","")
-                        if _kj_r_val or _meta_val:
-                            st.caption(
-                                f"Meta semana: **{_meta_val}** | "
-                                f"Feito: **{_feito_val}** | "
-                                f"Restante: **{_kj_r_val}**")
-            st.caption(
-                "⚠️ Quantidade de carga: esta camada. Tipo de treino: Need Score acima. "
-                "Cap horas +12% vs " + str(ano_ant) + ".")
+                        # Z3 desta semana (do plano DB ou alpha_polar)
+                        try:
+                            from utils.plano_db import get_semana_atual
+                            _sem_info = get_semana_atual(_mod_s)
+                            _sem_dados = _sem_info.get('dados')
+                            if _sem_dados:
+                                _z3_alvo_s = _sem_dados.get('kj_z3_alvo', 0) or 0
+                                _z3_feito_s = _sem_dados.get('kj_z3_feito', 0) or 0
+                                _sem_num = _sem_info.get('semana_num', '?')
+                                _sem_tot = _sem_info.get('total_semanas', '?')
+                                _z3_pct = min(100, _z3_feito_s/max(_z3_alvo_s,1)*100)
+                                st.caption(
+                                    f"📋 Sem {_sem_num}/{_sem_tot} | "
+                                    f"Meta: **{_meta_val}** | Feito: **{_feito_val}** | Restante: **{_kj_r_val}** | "
+                                    f"Z3 alvo: **{_z3_alvo_s:.0f} kJ** | Z3 feito: **{_z3_feito_s:.0f} kJ** ({_z3_pct:.0f}%)")
+                            else:
+                                _ap_s = _alpha_p.get(_mod_s, {})
+                                _z3_a = _ap_s.get('alvos',{}).get('3m',{}).get('kj_z3_semana',0)
+                                st.caption(
+                                    f"Meta: **{_meta_val}** | Feito: **{_feito_val}** | Restante: **{_kj_r_val}** | "
+                                    f"Z3 alvo sem.: **{_z3_a:.0f} kJ** (sem plano activo)")
+                        except Exception:
+                            if _kj_r_val or _meta_val:
+                                st.caption(f"Meta: **{_meta_val}** | Feito: **{_feito_val}** | Restante: **{_kj_r_val}**")
+
+            st.caption("⚠️ Quantidade de carga: esta camada. Tipo de treino: Need Score acima. "
+                       "Cap horas +12% vs " + str(ano_ant) + ".")
+
+            # ── Planeador de Zonas integrado com DB ──────────────────────
+            st.markdown("---")
+            st.markdown("**📅 Planeador de Progressão Z3 — por modalidade**")
+            st.caption("O plano é criado automaticamente e atualizado a cada carregamento. "
+                       "Muda o prazo ou eFTP alvo para criar um novo plano.")
+
+            _pc1, _pc2, _pc3 = st.columns(3)
+            _prazo_sem = _pc1.slider("Prazo (semanas)", 4, 24, 12, 2,
+                                     key="prazo_sem_planeador")
+            _delta_eftp_input = _pc2.slider("eFTP alvo (ganho em W)", 0, 30, 10, 1,
+                                            key="delta_eftp_planeador")
+            # Semana manual (override) — normalmente automático
+            _sem_override = _pc3.number_input("Semana actual (auto)", 1, _prazo_sem, 1,
+                                              key="sem_override_planeador",
+                                              help="Normalmente detectado automaticamente. "
+                                                   "Ajusta só se necessário.")
+
+            # Processar plano para cada modalidade
+            _plan_rows = []
+            for _mv_p in ['Bike','Row','Ski','Run']:
+                _ap_p = _alpha_p.get(_mv_p, {})
+                if not _ap_p.get('ok'): continue
+                _eftp_p      = _ap_p.get('eftp_now', 0)
+                _a3p = _ap_p.get('alpha_z3', 0)
+                _a2p = _ap_p.get('alpha_z2', 0)
+                _a1p = _ap_p.get('alpha_z1', 0)
+                _intcp = _eftp_p - (_a3p*_ap_p.get('cz3_now',0)
+                                    + _a2p*_ap_p.get('cz2_now',0)
+                                    + _a1p*_ap_p.get('cz1_now',0))
+                _kj3_act_p   = _ap_p.get('kj_z3_semana_actual', 0)
+                _kj2_act_p   = _ap_p.get('kj_z2_semana_actual', 0)
+                _kj1_act_p   = _ap_p.get('kj_z1_semana_actual', 0)
+                _cz3_now_p   = _ap_p.get('cz3_now', 0)
+                _cz2_now_p   = _ap_p.get('cz2_now', 0)
+                _cz1_now_p   = _ap_p.get('cz1_now', 0)
+                _r2_p        = _ap_p.get('r2', 0)
+                _r2_icon     = '🟢' if _r2_p >= 0.20 else ('🟡' if _r2_p >= 0.08 else '🔴')
+
+                # Verificar/criar plano no DB automaticamente
+                _sem_info = {'semana_num': None, 'dados': None, 'plano': None}
+                try:
+                    from utils.plano_db import (get_semana_atual, plano_mudou,
+                                                criar_plano, actualizar_feito,
+                                                get_historico_plano)
+                    # Criar plano se mudou ou não existe
+                    if plano_mudou(_mv_p, _prazo_sem, _delta_eftp_input):
+                        criar_plano(
+                            modalidade=_mv_p,
+                            prazo_semanas=_prazo_sem,
+                            eftp_alvo_delta=_delta_eftp_input,
+                            eftp_actual=_eftp_p,
+                            kj_z3_inicial=_kj3_act_p,
+                            kj_z2_inicial=_kj2_act_p,
+                            kj_z1_inicial=_kj1_act_p,
+                            alpha_z3=_a3p, alpha_z2=_a2p, alpha_z1=_a1p,
+                            intercept=_intcp,
+                            cz3_now=_cz3_now_p, cz2_now=_cz2_now_p, cz1_now=_cz1_now_p)
+
+                    # Ler semana actual
+                    _sem_info = get_semana_atual(_mv_p)
+                    _sem_num  = _sem_info.get('semana_num', 1)
+                    _dados    = _sem_info.get('dados')
+
+                    # Actualizar feito desta semana automaticamente com dados reais
+                    _col_z3_p = next((c for c in ['Z3KJ','z3_kj','z3kj']
+                                      if c in _pf.columns), None)
+                    _col_z2_p = next((c for c in ['Z2KJ','z2_kj','z2kj']
+                                      if c in _pf.columns), None)
+                    _col_z1_p = next((c for c in ['Z1KJ','z1_kj','z1kj']
+                                      if c in _pf.columns), None)
+                    if _col_z3_p:
+                        _sem_iso_p = _sem_info.get('semana_iso', '')
+                        _pf_sem = _pf[
+                            (_pf['type'].apply(norm_tipo)==_mv_p) &
+                            (_pf['Data'] >= pd.Timestamp(_sem_iso_p))
+                        ] if _sem_iso_p else pd.DataFrame()
+                        _z3f = float(pd.to_numeric(_pf_sem.get(_col_z3_p, pd.Series()),errors='coerce').fillna(0).sum()) if len(_pf_sem)>0 else 0
+                        _z2f = float(pd.to_numeric(_pf_sem.get(_col_z2_p, pd.Series()),errors='coerce').fillna(0).sum()) if len(_pf_sem)>0 and _col_z2_p else 0
+                        _z1f = float(pd.to_numeric(_pf_sem.get(_col_z1_p, pd.Series()),errors='coerce').fillna(0).sum()) if len(_pf_sem)>0 and _col_z1_p else 0
+                        _eftp_sem = float(_pf[_pf['type'].apply(norm_tipo)==_mv_p]['icu_eftp'].dropna().iloc[-1]) if 'icu_eftp' in _pf.columns else None
+                        if _sem_iso_p:
+                            actualizar_feito(_mv_p, _sem_iso_p, _z3f, _z2f, _z1f, _eftp_sem)
+                            if _dados:
+                                _dados['kj_z3_feito'] = _z3f
+                                _dados['kj_z2_feito'] = _z2f
+                                _dados['kj_z1_feito'] = _z1f
+                except Exception:
+                    _dados = None
+
+                # Calcular alvos para a semana actual
+                _eftp_tgt_p = _eftp_p + _delta_eftp_input
+                if abs(_a3p) > 0.01:
+                    _cz3_tgt_p = (_eftp_tgt_p - _a2p*_cz2_now_p - _a1p*_cz1_now_p - _intcp) / _a3p
+                    _cz3_tgt_p = max(_cz3_tgt_p, _cz3_now_p)
+                else:
+                    _cz3_tgt_p = _cz3_now_p * 1.10
+                _kj3_alvo_final = float(_cz3_tgt_p * 7)
+                _sem_num_show = _sem_info.get('semana_num') or 1
+                _frac_sem = _sem_num_show / _prazo_sem
+                _kj3_esta_sem = _kj3_act_p + (_kj3_alvo_final - _kj3_act_p) * _frac_sem
+
+                # Feito desta semana (do DB)
+                _z3_feito_show = _dados['kj_z3_feito'] if _dados else 0
+                _z3_pct_show   = min(100, _z3_feito_show/max(_kj3_esta_sem,1)*100)
+                _concluido     = _sem_info.get('concluido', False)
+                _sem_label     = (f"✅ Concluído" if _concluido
+                                  else f"Sem {_sem_num_show}/{_prazo_sem}")
+
+                _plan_rows.append({
+                    'Modalidade':          _mv_p,
+                    'eFTP actual':         f"{_eftp_p:.0f}W",
+                    f'eFTP +{_delta_eftp_input}W': f"{_eftp_tgt_p:.0f}W",
+                    'Z3 histórico':        f"{_kj3_act_p:.0f} kJ/sem",
+                    'Z3 esta sem (alvo)':  f"{_kj3_esta_sem:.0f} kJ",
+                    'Z3 feito':            f"{_z3_feito_show:.0f} kJ ({_z3_pct_show:.0f}%)",
+                    'Z3 alvo final':       f"{_kj3_alvo_final:.0f} kJ/sem",
+                    'Semana':              _sem_label,
+                    'R²':                  f"{_r2_icon}{_r2_p:.2f}",
+                })
+
+            if _plan_rows:
+                st.dataframe(pd.DataFrame(_plan_rows), hide_index=True,
+                             use_container_width=True)
+                st.caption(
+                    f"Rampa linear {_prazo_sem} semanas. "
+                    "Semana detectada automaticamente. "
+                    "Novo plano criado ao mudar prazo ou eFTP alvo. "
+                    "🔴R²<0.08 = modelo pouco fiável.")
+
+            # Contexto dTRIMP/dKJ
+            _eff_kj = st.session_state.get('eff_kj_cache', {})
+            if _eff_kj:
+                st.markdown("**Contexto fisiológico para aumentar Z3:**")
+                _ctx_rows = []
+                for _mv_ctx in ['Bike','Row','Ski','Run']:
+                    _ec = _eff_kj.get(_mv_ctx, {})
+                    if not _ec: continue
+                    _ctx_rows.append({
+                        'Modal.':        _mv_ctx,
+                        'dTRIMP/dKJ':    f"{_ec['dtrimp_dkj']:.3f} {_ec['dtrimp_lbl']}",
+                        'Eff delta 28d': f"{_ec['eff_delta']:+.1%} {_ec['eff_delta_lbl']}",
+                        'Aumentar Z3?':  '✅ Seguro' if _ec.get('aumentar_z3_ok') else '⚠️ Cautela',
+                    })
+                if _ctx_rows:
+                    st.dataframe(pd.DataFrame(_ctx_rows), hide_index=True,
+                                 use_container_width=True)
+                    st.caption("dTRIMP/dKJ < 0.3 eficiente | 0.3–0.5 normal | >0.5 custo alto.")
+
+            # Histórico completo do plano (expander)
+            try:
+                from utils.plano_db import get_historico_plano
+                with st.expander("📊 Histórico do plano — todas as semanas"):
+                    _hist_tabs = st.tabs(['Bike','Row','Ski','Run'])
+                    for _ht, _mh in zip(_hist_tabs, ['Bike','Row','Ski','Run']):
+                        with _ht:
+                            _df_hist_p = get_historico_plano(_mh)
+                            if not _df_hist_p.empty:
+                                _df_hist_p['% Z3'] = (
+                                    _df_hist_p['kj_z3_feito'] /
+                                    _df_hist_p['kj_z3_alvo'].replace(0,1) * 100
+                                ).round(0).astype(int).astype(str) + '%'
+                                st.dataframe(
+                                    _df_hist_p[['semana_num','semana_iso',
+                                                'kj_z3_alvo','kj_z3_feito','% Z3',
+                                                'kj_z2_alvo','kj_z2_feito',
+                                                'eftp_real']],
+                                    hide_index=True, use_container_width=True)
+                            else:
+                                st.info(f"Sem plano activo para {_mh}.")
+            except Exception:
+                pass
 
 
     # ════════════════════════════════════════════════════════════════════════
