@@ -1481,22 +1481,43 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 _eftp_tgt   = _alvo_3m.get('eftp_proj', eftp)
                 _delta_tgt  = _alvo_3m.get('delta_w', 0)
 
-                # Gap entre actual e necessário
+                # Gap entre actual e necessário (para selecção de zona)
                 _gap_z3 = max(0, _kj_z3_need - _kj_z3_act)
                 _gap_z2 = max(0, _kj_z2_need - _kj_z2_act)
 
-                # Selecção de zona prioritária esta semana
-                # Se gap Z3 > 0 e HRV permite → focar Z3
-                # Se κ alto → reduzir Z3, manter Z1/Z2
+                # Feito esta semana e alvo desta semana (do plano DB)
+                _z3_feito_sem = 0.0  # feito esta semana (real)
+                _z3_alvo_sem  = _kj_z3_need  # fallback: alvo M2 estático
+                try:
+                    from utils.plano_db import get_semana_atual as _gsa
+                    _si = _gsa(mod)
+                    _sd = _si.get('dados')
+                    if _sd:
+                        _z3_feito_sem = float(_sd.get('kj_z3_feito', 0) or 0)
+                        _z3_alvo_sem  = float(_sd.get('kj_z3_alvo',  _kj_z3_need) or _kj_z3_need)
+                    # Actualizar feito com dados reais se tiver colunas Z3
+                    _col_z3_inline = next((c for c in ['Z3KJ','z3_kj','z3kj'] if c in _pf.columns), None)
+                    if _col_z3_inline and _si.get('semana_iso'):
+                        _pf_sem_inline = _pf[
+                            (_pf['type'].apply(norm_tipo)==mod) &
+                            (_pf['Data'] >= pd.Timestamp(_si['semana_iso']))]
+                        _z3_feito_sem = float(pd.to_numeric(
+                            _pf_sem_inline[_col_z3_inline],errors='coerce').fillna(0).sum())
+                except Exception:
+                    pass
+
+                _gap_z3_sem = max(0, _z3_alvo_sem - _z3_feito_sem)  # gap real desta semana
+
+                # Selecção de zona — usa gap desta semana
                 if ol or (_kappa_now is not None and _kappa_now > _KAPPA_P87):
                     _zona_semana = 'Z1'
                     _zona_note   = "κ alto/overload → Z1 (independente HRV)"
-                elif _gap_z3 > 5 and 'Z3' in _zona_permitidas:
+                elif _gap_z3_sem > 5 and 'Z3' in _zona_permitidas:
                     _zona_semana = 'Z3'
-                    _zona_note   = f"Gap Z3: {_gap_z3:.0f} kJ/sem | {_hrv_note}"
-                elif _gap_z3 > 5 and 'Z3' not in _zona_permitidas:
+                    _zona_note   = f"Gap Z3: {_gap_z3_sem:.0f} kJ/sem | {_hrv_note}"
+                elif _gap_z3_sem > 5 and 'Z3' not in _zona_permitidas:
                     _zona_semana = 'Z2' if 'Z2' in _zona_permitidas else 'Z1'
-                    _zona_note   = f"Gap Z3 ({_gap_z3:.0f} kJ) mas HRV→{_zona_semana} | {_hrv_note}"
+                    _zona_note   = f"Gap Z3 ({_gap_z3_sem:.0f} kJ) mas HRV→{_zona_semana} | {_hrv_note}"
                 elif _gap_z2 > 5 and 'Z2' in _zona_permitidas:
                     _zona_semana = 'Z2'
                     _zona_note   = f"Gap Z2: {_gap_z2:.0f} kJ/sem | {_hrv_note}"
@@ -1505,21 +1526,23 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                     _zona_note   = f"Zonas no alvo — {_hrv_note}"
 
                 _zone_prescription = {
-                    'zona_primaria': _zona_semana,
-                    'nota':          _zona_note,
-                    'hrv_note':      _hrv_note,
-                    'r2':            _ap_mod.get('r2', 0),
-                    'kj_z3_act':     _kj_z3_act,
-                    'kj_z3_need':    _kj_z3_need,
-                    'kj_z2_act':     _kj_z2_act,
-                    'kj_z2_need':    _kj_z2_need,
-                    'kj_z1_act':     _kj_z1_act,
-                    'kj_z1_need':    _kj_z1_need,
-                    'eftp_tgt':      _eftp_tgt,
-                    'delta_tgt':     _delta_tgt,
-                    'gap_z3':        _gap_z3,
-                    'gap_z2':        _gap_z2,
-                    'mmp_label':     _ap_mod.get('mmp_label','MMP'),
+                    'zona_primaria':  _zona_semana,
+                    'nota':           _zona_note,
+                    'hrv_note':       _hrv_note,
+                    'r2':             _ap_mod.get('r2', 0),
+                    'kj_z3_feito':    _z3_feito_sem,   # feito esta semana
+                    'kj_z3_alvo':     _z3_alvo_sem,    # alvo desta semana (plano DB)
+                    'kj_z3_act':      _kj_z3_act,      # histórico 4sem (para gap M2)
+                    'kj_z3_need':     _kj_z3_need,
+                    'kj_z2_act':      _kj_z2_act,
+                    'kj_z2_need':     _kj_z2_need,
+                    'kj_z1_act':      _kj_z1_act,
+                    'kj_z1_need':     _kj_z1_need,
+                    'eftp_tgt':       _eftp_tgt,
+                    'delta_tgt':      _delta_tgt,
+                    'gap_z3':         _gap_z3_sem,
+                    'gap_z2':         _gap_z2,
+                    'mmp_label':      _ap_mod.get('mmp_label','MMP'),
                 }
 
             # Fator label
@@ -1535,8 +1558,14 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 _zp = _zone_prescription
                 _r2_z = _zp.get('r2', 0)
                 _r2_icon = '🟢' if _r2_z >= 0.20 else ('🟡' if _r2_z >= 0.08 else '🔴')
-                _z3_lbl = (f"act:{_zp['kj_z3_act']:.0f} alvo:{_zp['kj_z3_need']:.0f} kJ/sem"
-                           f" (gap:{_zp['gap_z3']:.0f})")
+                # feito esta semana / alvo desta semana / gap restante
+                _z3f = _zp['kj_z3_feito']
+                _z3a = _zp['kj_z3_alvo']
+                _z3g = _zp['gap_z3']
+                _pct_z3 = min(100, _z3f / max(_z3a, 1) * 100)
+                _z3_lbl = (f"feito:{_z3f:.0f} alvo:{_z3a:.0f} kJ "
+                           f"({'✅' if _z3g == 0 else f'falta:{_z3g:.0f}'}) "
+                           f"{_pct_z3:.0f}%")
                 _z_alvo_eftp = (f"{_zp['eftp_tgt']:.0f}W ({_zp['delta_tgt']:+.0f}W 3m) "
                                 f"{_r2_icon}R²={_r2_z:.2f}")
                 _z_zona_rec = f"{_zp['zona_primaria']} — {_zp['nota'][:40]}"
