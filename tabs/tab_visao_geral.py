@@ -544,29 +544,36 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
     _mes_p_fim2 = _mes_ini_p - pd.Timedelta(days=1)
     _mes_p_ini2 = _mes_p_fim2.replace(day=1)
 
-    # Tenta primeiro wc (wellness form: 'peso' e 'bf_pct')
-    # Se não tiver, usa dc (food diary: 'Peso' e 'BF')
+    # Tenta primeiro wc (wellness form — colunas 'peso'/'fat'/'bf_pct')
+    # Fallback: dc (Consolidado_Comida — colunas 'Peso'/'BF')
     _sources = []
     if wc_full is not None and len(wc_full) > 0:
         _wc2 = wc_full.copy()
         _wc2['Data'] = pd.to_datetime(_wc2['Data'])
-        # Mapa: (col_no_df, var_peso, var_bf)
-        _peso_col = 'peso'   if 'peso'   in _wc2.columns else None
-        _bf_col   = 'bf_pct' if 'bf_pct' in _wc2.columns else None
+        _peso_col = next((c for c in ['peso','Peso','weight'] if c in _wc2.columns), None)
+        # BF: aceitar FAT, fat, bf_pct, BF, body_fat
+        _bf_col   = next((c for c in ['FAT','fat','bf_pct','BF','body_fat']
+                          if c in _wc2.columns), None)
         if _peso_col or _bf_col:
             _sources.append((_wc2, _peso_col, _bf_col, 'wellness'))
     if dc is not None and len(dc) > 0:
         _dc2 = dc.copy()
         _dc2['Data'] = pd.to_datetime(_dc2['Data'])
-        _sources.append((_dc2, 'Peso', 'BF', 'food'))
+        _dc_peso = next((c for c in ['Peso','peso'] if c in _dc2.columns), None)
+        _dc_bf   = next((c for c in ['BF','FAT','fat','bf_pct'] if c in _dc2.columns), None)
+        if _dc_peso or _dc_bf:
+            _sources.append((_dc2, _dc_peso, _dc_bf, 'food'))
 
     for _src_df, _pcol, _bcol, _src_name in _sources:
         # Peso
         if _pcol and _pcol in _src_df.columns and peso_7d is None:
-            _s = _src_df[['Data', _pcol]].dropna(subset=[_pcol]).copy()
-            _s = _s[pd.to_numeric(_s[_pcol], errors='coerce').between(30, 200)]
+            _s = (_src_df[['Data', _pcol]].copy()
+                  .assign(**{_pcol: pd.to_numeric(_src_df[_pcol], errors='coerce')})
+                  .dropna(subset=[_pcol])
+                  .query(f"30 <= {_pcol} <= 200")
+                  .sort_values('Data'))
             if len(_s) >= 2:
-                _v_atual = float(_s[_pcol].iloc[-1])
+                _v_atual = float(_s[_pcol].iloc[-1])   # último dia COM dado real
                 _ult7    = _s[_s['Data'] >= _hoje_p - pd.Timedelta(days=14)][_pcol]
                 _v7      = float(_ult7.tail(7).mean()) if len(_ult7) >= 1 else _v_atual
                 _mp      = _s[(_s['Data'] >= _mes_p_ini2) & (_s['Data'] <= _mes_p_fim2)][_pcol]
@@ -579,10 +586,13 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 peso_7d = _v7; peso_atual = _v_atual
         # BF %
         if _bcol and _bcol in _src_df.columns and bf_7d is None:
-            _s = _src_df[['Data', _bcol]].dropna(subset=[_bcol]).copy()
-            _s = _s[pd.to_numeric(_s[_bcol], errors='coerce').between(3, 50)]
+            _s = (_src_df[['Data', _bcol]].copy()
+                  .assign(**{_bcol: pd.to_numeric(_src_df[_bcol], errors='coerce')})
+                  .dropna(subset=[_bcol])
+                  .query(f"3 <= {_bcol} <= 50")
+                  .sort_values('Data'))
             if len(_s) >= 2:
-                _v_atual = float(_s[_bcol].iloc[-1])
+                _v_atual = float(_s[_bcol].iloc[-1])   # último dia COM dado real
                 _ult7    = _s[_s['Data'] >= _hoje_p - pd.Timedelta(days=14)][_bcol]
                 _v7      = float(_ult7.tail(7).mean()) if len(_ult7) >= 1 else _v_atual
                 _mp      = _s[(_s['Data'] >= _mes_p_ini2) & (_s['Data'] <= _mes_p_fim2)][_bcol]
@@ -594,7 +604,7 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                                 else "→ estável vs mês ant.")
                 bf_7d = _v7; bf_atual = _v_atual
         if peso_7d is not None and bf_7d is not None:
-            break  # ambos encontrados, não precisa de fallback
+            break
 
     with vg_r3:
         st.metric("⚖️ Peso",
