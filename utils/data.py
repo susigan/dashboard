@@ -281,6 +281,90 @@ def _hrv_trend(hrv_arr, window=7, return_slope=False):
     return trend_combined
 
 
+def kalman_ctlg(kj_series_daily: pd.Series, tau: float,
+                Q_frac: float = 0.02, R_obs: float = 0.5) -> pd.Series:
+    """
+    Kalman 1D para CTLγ — substitui EWM(fill_value=0).
+    Dias sem treino = ausência de observação (não enviesa a estimativa).
+    decay = exp(-1/τ), equivalente ao EWM mas sem artefacto do fill=0.
+    """
+    kj = kj_series_daily.values.astype(np.float64)
+    n  = len(kj)
+    if n == 0:
+        return kj_series_daily.copy()
+    decay  = np.exp(-1.0 / max(tau, 1.0))
+    _kj_std = float(np.nanstd(kj[kj > 0])) if (kj > 0).any() else 1.0
+    Q = (Q_frac * _kj_std) ** 2
+    _first_obs = kj[kj > 0]
+    x = float(_first_obs[0]) if len(_first_obs) > 0 else 0.0
+    P = float(_kj_std ** 2)
+    out = np.zeros(n)
+    for t in range(n):
+        x = decay * x
+        P = decay * P * decay + Q
+        if kj[t] > 0:
+            K = P / (P + R_obs)
+            x = x + K * (kj[t] - x)
+            P = (1 - K) * P
+        out[t] = x
+    return pd.Series(out, index=kj_series_daily.index)
+
+
+def _compute_kappa_kalman(series_list, window=28, tau_smooth=7,
+                          return_eigenvalues=False):
+    """
+    FMT scalar curvature κ(t) com suavização Kalman sobre a covariância rolling.
+
+    Della Mattia (2019): κ(t) = trace(cov(Δx)) — rolling window 28d.
+    O rolling covariance bruto é ruidoso (cada janela só tem 28 pontos).
+
+    Melhoria: após calcular κ_bruto via rolling covariance, aplica
+    EWM(span=tau_smooth) para separar sinal de ruído.
+    Isso equivale a um filtro passa-baixo sobre κ — o Della Mattia menciona
+    explicitamente que κ deve ser suave para ser interpretável.
+
+    Parâmetros:
+        series_list      : list of 1D arrays — dimensões do vector x(t)
+        window           : janela rolling para covariância (default 28)
+        tau_smooth       : EWM span para suavizar κ após cálculo (default 7)
+        return_eigenvalues: se True, retorna λ₁/Σλ também suavizado
+
+    Retorna: kappa (array n), [lambda1_frac (array n) se return_eigenvalues]
+    """
+    n   = len(series_list[0])
+    d   = len(series_list)
+    mat = np.full((n, d), np.nan)
+    for j, s in enumerate(series_list):
+        arr = np.array(s, dtype=np.float64)
+        mu, sd = np.nanmean(arr), np.nanstd(arr)
+        mat[:, j] = (arr - mu) / sd if sd > 1e-9 else (arr - mu)
+    delta = np.full_like(mat, np.nan)
+    delta[1:] = mat[1:] - mat[:-1]
+    kappa_raw    = np.full(n, np.nan)
+    lambda1_raw  = np.full(n, np.nan)
+    for t in range(window, n):
+        wd = delta[t - window:t]
+        valid = np.all(np.isfinite(wd), axis=1)
+        if valid.sum() < max(10, d + 2):
+            continue
+        try:
+            F = np.cov(wd[valid].T)
+            kappa_raw[t] = float(np.trace(F))
+            if return_eigenvalues and d >= 2:
+                eigs = np.sort(np.linalg.eigvalsh(F))[::-1]
+                eigs_pos = eigs[eigs > 0]
+                if len(eigs_pos) > 0:
+                    lambda1_raw[t] = float(eigs_pos[0] / eigs_pos.sum())
+        except Exception:
+            pass
+    # Suavizar κ com EWM — separa sinal de ruído sem distorcer transições
+    kappa_s = pd.Series(kappa_raw).ewm(span=tau_smooth, min_periods=3).mean().values
+    if return_eigenvalues:
+        lambda1_s = pd.Series(lambda1_raw).ewm(span=tau_smooth, min_periods=3).mean().values
+        return kappa_s, lambda1_s
+    return kappa_s
+
+
 def fit_gamma_performance(load_arr, perf_arr, gamma_range=(0.10, 0.90),
                           step=0.05, lag=0, max_lag=365,
                           smooth_perf=3):
@@ -955,7 +1039,7 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
     _tensor_dim = len(_dims_overall)
 
     if _tensor_dim >= 2:
-        _kappa_arr, _lambda1_arr = _compute_kappa(
+        _kappa_arr, _lambda1_arr = _compute_kappa_kalman(
             _dims_overall, _fmt_w, return_eigenvalues=True)
         ld['FMT_kappa']        = _kappa_arr
         ld['FMT_lambda1_frac'] = _lambda1_arr
@@ -974,7 +1058,7 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
             _dims_4d.append(_impute_rolling(ld['WEED_z'].values))
         _dims_4d.append(_impute_rolling(ld['wp_prime'].values))
         if len(_dims_4d) >= 2:
-            ld['FMT_kappa_4d'] = _compute_kappa(_dims_4d, _fmt_w)
+            ld['FMT_kappa_4d'] = _compute_kappa_kalman(_dims_4d, _fmt_w)
 
     # Per-modality 3×3: [CTLγ_mod, HRV_trend, WEED_z] — com imputação rolling
     for _mod in ['Bike', 'Row', 'Ski', 'Run']:
@@ -987,7 +1071,7 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
         if 'WEED_z' in ld.columns and ld['WEED_z'].notna().sum() >= 20:
             _dims_mod.append(_impute_rolling(ld['WEED_z'].values))
         if len(_dims_mod) >= 2:
-            ld[f'FMT_kappa_{_mod}'] = _compute_kappa(_dims_mod, _fmt_w)
+            ld[f'FMT_kappa_{_mod}'] = _compute_kappa_kalman(_dims_mod, _fmt_w)
 
     if hrv_trend_arr is not None:
         ld['HRV_trend'] = hrv_trend_arr
@@ -1605,23 +1689,21 @@ def _preencher_faltantes_lookback(df, coluna):
 
 def preproc_wellness(df):
     """
-    Limpeza wellness.
-    hrv_raw = valor original da sheet (antes de z-score e lookback)
-    hrv     = valor limpo e preenchido (para análises contínuas)
+    Limpeza wellness — igual ao ATHELTICA v12 DataPreprocessor.limpar_wellness():
+    1. Ordenar por Data
+    2. Remover duplicatas por Data (keep=first)
+    3. Z-score threshold=3.0 → NaN (picos)
+    4. Zeros inválidos → NaN (hrv, rhr, sleep_hours)
+    5. Preencher faltantes: mediana 7d anteriores → 14d → média global
     """
     if len(df) == 0: return df
     df = df.copy().sort_values('Data')
     df = df.drop_duplicates(subset=['Data'], keep='first')
-    # [0] Guardar HRV original ANTES de qualquer limpeza
-    if 'hrv' in df.columns:
-        df['hrv_raw'] = pd.to_numeric(df['hrv'], errors='coerce')
-    # [1] Remover picos Z-score — threshold 3.5 para hrv (menos agressivo)
-    for c in [c for c in ['rhr', 'sleep_hours', 'sleep_quality',
+    # [1] Remover picos Z-score
+    for c in [c for c in ['hrv', 'rhr', 'sleep_hours', 'sleep_quality',
                            'stress', 'fatiga', 'humor', 'soreness', 'peso', 'fat']
               if c in df.columns]:
         df[c] = remove_zscore(df[c], 3.0)
-    if 'hrv' in df.columns:
-        df['hrv'] = remove_zscore(df['hrv'], 3.5)  # threshold mais permissivo para HRV
     # [2] Zeros inválidos → NaN
     df = remove_zeros(df, ['hrv', 'rhr', 'sleep_hours'])
     # [3] Preencher faltantes com lookback (sem data leakage)
@@ -1938,26 +2020,9 @@ def calcular_alpha_polar(ac_full, gamma_map=None, session_state_key='alpha_polar
     col_mod  = next((c for c in ['type','modality','sport'] if c in ac_full.columns), None)
     col_eftp = next((c for c in ['icu_eftp','eFTP','eftp'] if c in ac_full.columns), None)
     col_date = next((c for c in ['date','Data','data'] if c in ac_full.columns), None)
-    col_z1   = next((c for c in ['z1_kj','Z1KJ','z1kj',
-                                  'icu_zone_1_kj','zone_1_kj','z1kJ',
-                                  'zone1_kj','kj_z1','trimp_z1',
-                                  'Z1KJ'] if c in ac_full.columns), None)
-    col_z2   = next((c for c in ['z2_kj','Z2KJ','z2kj',
-                                  'icu_zone_2_kj','zone_2_kj','z2kJ',
-                                  'zone2_kj','kj_z2','trimp_z2',
-                                  'Z2KJ'] if c in ac_full.columns), None)
-    col_z3   = next((c for c in ['z3_kj','Z3KJ','z3kj',
-                                  'icu_zone_3_kj','zone_3_kj','z3kJ',
-                                  'zone3_kj','kj_z3','trimp_z3',
-                                  'Z3KJ'] if c in ac_full.columns), None)
-
-    # Diagnóstico se colunas não encontradas
-    if not (col_z1 and col_z2 and col_z3):
-        import streamlit as _st
-        _avail = [c for c in ac_full.columns if any(x in c.lower() for x in ['kj','zone','z1','z2','z3'])]
-        # Retornar com razão em vez de {} silencioso
-        return {m: {'ok': False, 'reason': f'sem colunas z1/z2/z3_kj (disponíveis: {_avail[:10]})'} 
-                for m in ['Bike','Row','Ski','Run']}
+    col_z1   = next((c for c in ['z1_kj','Z1KJ','z1kj'] if c in ac_full.columns), None)
+    col_z2   = next((c for c in ['z2_kj','Z2KJ','z2kj'] if c in ac_full.columns), None)
+    col_z3   = next((c for c in ['z3_kj','Z3KJ','z3kj'] if c in ac_full.columns), None)
 
     if not all([col_mod, col_eftp, col_date]):
         return {}
@@ -1969,19 +2034,11 @@ def calcular_alpha_polar(ac_full, gamma_map=None, session_state_key='alpha_polar
         tau  = max(42.0 * (1.0 - gam) + 7.0 * gam, 7.0)
         span = int(round(tau))
 
-        # Sessões com eFTP e zonas — últimos 2 anos (mais fidedigno e rápido)
+        # Sessões com eFTP e zonas
         _ef = ac_full[ac_full[col_mod] == mod].copy()
         _ef[col_date] = pd.to_datetime(_ef[col_date]).dt.normalize()
-        _cutoff_2y = pd.Timestamp.now().normalize() - pd.Timedelta(days=730)
-        _ef = _ef[_ef[col_date] >= _cutoff_2y]
-        # Renomear só se não for já 'Data' ou 'eftp'
-        _rename = {}
-        if col_date != 'Data': _rename[col_date] = 'Data'
-        if col_eftp != 'eftp': _rename[col_eftp] = 'eftp'
-        if _rename: _ef = _ef.rename(columns=_rename)
-        # Remover colunas Data/eftp duplicadas se existirem
-        _ef = _ef.loc[:, ~_ef.columns.duplicated()]
-        _ef = _ef.sort_values('Data').drop_duplicates('Data').reset_index(drop=True)
+        _ef = (_ef.rename(columns={col_date: 'Data', col_eftp: 'eftp'})
+                  .sort_values('Data').drop_duplicates('Data').reset_index(drop=True))
         _ef['eftp'] = pd.to_numeric(_ef['eftp'], errors='coerce')
         _ef = _ef.dropna(subset=['eftp'])
 
@@ -1998,16 +2055,19 @@ def calcular_alpha_polar(ac_full, gamma_map=None, session_state_key='alpha_polar
             result[mod] = {'ok': False, 'reason': 'sem colunas z1/z2/z3_kj'}
             continue
 
-        # CTLγ por zona
+        # CTLγ por zona — Kalman 1D em vez de EWM(fill=0)
+        # Dias sem treino tratados como ausência de observação, não como 0 kJ
         _date_range = pd.date_range(_ef['Data'].min(), pd.Timestamp.now().normalize(), freq='D')
         _ef_idx     = _ef.set_index('Data')
-        _z1d = _ef_idx['z1'].reindex(_date_range, fill_value=0)
-        _z2d = _ef_idx['z2'].reindex(_date_range, fill_value=0)
-        _z3d = _ef_idx['z3'].reindex(_date_range, fill_value=0)
-
-        _cz1 = _z1d.ewm(span=span).mean()
-        _cz2 = _z2d.ewm(span=span).mean()
-        _cz3 = _z3d.ewm(span=span).mean()
+        # Séries esparsas (NaN onde não há sessão, não 0)
+        _z1d = _ef_idx['z1'].reindex(_date_range)   # NaN = sem observação
+        _z2d = _ef_idx['z2'].reindex(_date_range)
+        _z3d = _ef_idx['z3'].reindex(_date_range)
+        # Para Kalman: preencher NaN com 0 só como sinal de "sem observação"
+        # O filtro ignora dias com kj=0 na actualização (só predição)
+        _cz1 = kalman_ctlg(_z1d.fillna(0), tau=float(span))
+        _cz2 = kalman_ctlg(_z2d.fillna(0), tau=float(span))
+        _cz3 = kalman_ctlg(_z3d.fillna(0), tau=float(span))
 
         # Mapear para datas das sessões
         _ef['cz1'] = _ef['Data'].map(_cz1.to_dict())
@@ -2151,8 +2211,7 @@ def calcular_alpha_polar(ac_full, gamma_map=None, session_state_key='alpha_polar
 
 def calcular_nlss(df_act, df_wellness=None,
                   p0_frac: float = 0.5,
-                  window_l: int = 365,
-                  mod: str = None) -> dict:
+                  window_l: int = 365) -> dict:
     """
     Estima K1, K2, T1, T2 via Hierarchical Bayesian NLSS (Algorithm 1).
     Implementação vectorizada — tipicamente <5s para histórico de 3 anos.
@@ -2215,15 +2274,9 @@ def calcular_nlss(df_act, df_wellness=None,
 
     # Garantir type normalizado: VirtualRide→Bike, Ride→Bike, etc.
     _tipo_col = next((c for c in ['type', 'modality'] if c in df.columns), None)
-    # Modalidade alvo — usa mod se passado, senão Bike por defeito
-    _mod_target = mod if mod else 'Bike'
-    # MMP preferido: MMP5 para Row/Ski, MMP20 para Bike/Run
-    _mmp_pref = 'mmp5_w' if _mod_target in ('Row', 'Ski') else 'mmp20_w'
-    _mmp_fallbacks = ['mmp5_w', 'mmp3_w'] if _mod_target in ('Row', 'Ski') else ['mmp5_w', 'mmp3_w']
-
     if _tipo_col:
         df['_type_norm'] = df[_tipo_col].apply(norm_tipo)
-        _df_bike = df[df['_type_norm'] == _mod_target].copy()
+        _df_bike = df[df['_type_norm'] == 'Bike'].copy()
     else:
         _df_bike = df.copy()
 
@@ -2244,34 +2297,28 @@ def calcular_nlss(df_act, df_wellness=None,
                    .sort_values('Data')
                    .reset_index(drop=True))
 
-    # Primário: MMP preferido da modalidade — 1 ponto por ano, escala consistente
-    _tests_mmp20 = _max_anual_mmp(_df_bike, _mmp_pref)
+    # Primário: MMP20 de Bike — 1 ponto por ano, escala consistente
+    # Usar APENAS MMP20 — misturar MMP3 (347W) com MMP20 (228W) cria
+    # inconsistência de escala: o optimizador interpreta a diferença como
+    # variação de performance quando são durações diferentes → fica no prior.
+    _tests_mmp20 = _max_anual_mmp(_df_bike, 'mmp20_w')
 
     if not _tests_mmp20.empty:
         tests_df      = _tests_mmp20.copy()
-        _fonte_testes = f'{_mod_target} {_mmp_pref} — maximo anual ({len(_tests_mmp20)} pontos)'
+        _fonte_testes = f'Bike MMP20 — maximo anual ({len(_tests_mmp20)} pontos)'
     else:
         tests_df      = pd.DataFrame(columns=['Data', 'watts'])
-        _fonte_testes = f'Sem dados de {_mod_target} {_mmp_pref}'
+        _fonte_testes = 'Sem dados de Bike MMP20'
 
-    # Fallback: MMP alternativos se insuficiente
-    if len(tests_df) < 2:
-        for _mmp_fb in _mmp_fallbacks:
-            _t_fb = _max_anual_mmp(_df_bike, _mmp_fb)
-            if len(_t_fb) >= 2:
-                tests_df      = _t_fb
-                _fonte_testes = f'{_mod_target} {_mmp_fb} — fallback ({len(_t_fb)} pontos)'
-                break
-
-    # Fallback final: todas as modalidades
+    # Fallback: todas as modalidades se Bike insuficiente
     if len(tests_df) < 2:
         _all = df.copy()
         _all['Data'] = pd.to_datetime(_all['Data'])
         _all['_ano'] = _all['Data'].dt.year
-        _t20_all = _max_anual_mmp(_all, _mmp_pref)
+        _t20_all = _max_anual_mmp(_all, 'mmp20_w')
         if len(_t20_all) >= 2:
             tests_df      = _t20_all
-            _fonte_testes = f'Todas modalidades {_mmp_pref} — fallback'
+            _fonte_testes = 'Todas modalidades MMP20 — maximo anual (fallback)'
         else:
             _fonte_testes = 'Insuficiente'
 
