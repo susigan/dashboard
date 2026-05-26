@@ -647,17 +647,17 @@ IC 90% via σ_resid em ln-escala → convertido para Watts. Cap ±25% em 28d.
                 _cn = (_cr / _cmed) - 1.0
                 _ef["ctlg_norm"] = _ef["Data"].map(_cn.to_dict())
 
-                # Δln(eFTP) vs mediana rolling 60d anterior (era 90d — muito restritivo)
-                _ef["eftp_ref"] = _ef["eftp"].rolling(60, min_periods=3).median().shift(1)
+                # Δln(eFTP) vs mediana rolling 90d anterior
+                _ef["eftp_ref"] = _ef["eftp"].rolling(90, min_periods=5).median().shift(1)
                 _ef = _ef.dropna(subset=["eftp_ref","ctlg_norm"])
-                if len(_ef) < 5:  # era 8 — reduzir para aceitar mais modalidades
+                if len(_ef) < 8:
                     continue
                 # No clip on dln — let OLS see real variance (outliers handled by R²)
                 _ratio = _ef["eftp"] / _ef["eftp_ref"].clip(lower=1.0)
                 _ef["dln"] = np.log(_ratio.clip(lower=0.5, upper=2.0))  # ±100% max plausível fisiologicamente
 
                 _v = _ef[["dln","ctlg_norm"]].replace([np.inf,-np.inf],np.nan).dropna()
-                if len(_v) < 5:  # era 8
+                if len(_v) < 8:
                     continue
 
                 _bv, _ic_ols, _r, _, _ = _sp_stats.linregress(
@@ -911,7 +911,6 @@ IC 90% via σ_resid em ln-escala → convertido para Watts. Cap ±25% em 28d.
                 for _mi in ['Bike','Row','Ski','Run']:
                     _gamma_from_ld[_mi] = (_ld_info.get('mods',{}).get(_mi,{})
                                             .get('gamma_perf', 0.5))
-                _polar_rows = []  # inicializar antes do try
                 _alpha_result = calcular_alpha_polar(ac_full, gamma_map=_gamma_from_ld)
                 st.session_state['alpha_polar_cache'] = _alpha_result
             except Exception as _ae:
@@ -1047,14 +1046,17 @@ eFTP ~ α_Z3·CTLγ_Z3 + α_Z2·CTLγ_Z2 + α_Z1·CTLγ_Z1   [OLS múltipla]
                 _date_range = pd.date_range(_ef["Data"].min(), pd.Timestamp.now().normalize(), freq="D")
                 _ef_idx = _ef.set_index("Data")
 
-                _z1_daily = _ef_idx["z1"].reindex(_date_range, fill_value=0)
-                _z2_daily = _ef_idx["z2"].reindex(_date_range, fill_value=0)
-                _z3_daily = _ef_idx["z3"].reindex(_date_range, fill_value=0)
+                # Séries esparsas — NaN onde não houve sessão (não fill_value=0)
+                _z1_daily = _ef_idx["z1"].reindex(_date_range)
+                _z2_daily = _ef_idx["z2"].reindex(_date_range)
+                _z3_daily = _ef_idx["z3"].reindex(_date_range)
 
-                # CTLγ por zona — EWM com span modal
-                _ctlg_z1 = _z1_daily.ewm(span=_span).mean()
-                _ctlg_z2 = _z2_daily.ewm(span=_span).mean()
-                _ctlg_z3 = _z3_daily.ewm(span=_span).mean()
+                # Kalman CTLγ — dias sem treino tratados como ausência de observação
+                # Evita o viés do EWM(fill=0): treinar 0 kJ ≠ não treinar
+                from utils.data import kalman_ctlg as _kctlg
+                _ctlg_z1 = _kctlg(_z1_daily.fillna(0), tau=float(_span))
+                _ctlg_z2 = _kctlg(_z2_daily.fillna(0), tau=float(_span))
+                _ctlg_z3 = _kctlg(_z3_daily.fillna(0), tau=float(_span))
 
                 # Mapear CTLγ de cada zona para as datas das sessões
                 _ef["cz1"] = _ef["Data"].map(_ctlg_z1.to_dict())
