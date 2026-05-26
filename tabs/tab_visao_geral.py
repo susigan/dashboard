@@ -1662,93 +1662,79 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
 
             st.markdown("---")
 
-            # ── ΔCTL estimado — usa icu_training_load (mesma escala do PMC) ──
-            # CTL/ATL calculados com icu_training_load → consistente com Tab PMC
-            # ΔCTL/sessão = load_sessão / 42  (definição EMA span=42)
-            # Threshold: +1 a +5 CTL por semana (válido na escala TSS-like)
+            # ── CTL real desta semana — usa icu_training_load real ────────
             _pf2 = _pf.copy()
-
-            # Usar icu_training_load se disponível, fallback session_rpe
-            _tl_col = None
             if 'icu_training_load' in _pf2.columns:
                 _pf2['_load_icu'] = pd.to_numeric(_pf2['icu_training_load'], errors='coerce').fillna(0)
-                _tl_col = 'icu_training_load'
             else:
-                _pf2['_load_icu'] = (_pf2['_mt'] * 60 *
-                    pd.to_numeric(_pf2.get('rpe', pd.Series(dtype=float)), errors='coerce').fillna(5))
-                _tl_col = 'session_rpe (fallback)'
+                _pf2['_load_icu'] = 0.0
 
-            _dates_ctl = pd.date_range(_pf2['Data'].min(), hoje_pf, freq='D')
-            _load_ctl  = _pf2.groupby('Data')['_load_icu'].sum().reindex(_dates_ctl, fill_value=0)
-            _ctl_hoje  = float(_load_ctl.ewm(span=42, adjust=False).mean().iloc[-1])
-            _atl_hoje  = float(_load_ctl.ewm(span=7,  adjust=False).mean().iloc[-1])
-            _tsb_hoje  = _ctl_hoje - _atl_hoje
+            # CTL e ATL reais — série histórica completa
+            _dates_ctl  = pd.date_range(_pf2['Data'].min(), hoje_pf, freq='D')
+            _load_ctl   = _pf2.groupby('Data')['_load_icu'].sum().reindex(_dates_ctl, fill_value=0)
+            _ctl_serie  = _load_ctl.ewm(span=42, adjust=False).mean()
+            _atl_serie  = _load_ctl.ewm(span=7,  adjust=False).mean()
+            _ctl_hoje   = float(_ctl_serie.iloc[-1])
+            _atl_hoje   = float(_atl_serie.iloc[-1])
+            _tsb_hoje   = _ctl_hoje - _atl_hoje
 
-            # ΔCTL por modalidade:
-            # Estimar load da próxima sessão = mediana icu_training_load das sessões comparáveis
-            # ΔCTL_sessão = load_estimada / 42
-            _delta_ctl_total = 0.0
-            _delta_rows = []
-            for r_p in rows_prog:
-                _mod_p = r_p['Modalidade']
-                _sug_df_p = r_p.get('_sug_df')
+            # CTL e ATL na segunda-feira desta semana (início da semana)
+            _ctl_seg = float(_ctl_serie.get(sem_ini_pf, _ctl_serie.iloc[-1]))
+            _atl_seg = float(_atl_serie.get(sem_ini_pf, _atl_serie.iloc[-1]))
 
-                # Load estimada: mediana das sessões comparáveis desta modalidade
-                _load_est = 0.0
-                _load_src = "—"
-                if 'icu_training_load' in _pf2.columns:
-                    _df_mod_p = _pf2[_pf2['type'].apply(norm_tipo) == _mod_p]
-                    _ni_p     = _ni_cache.get(_mod_p, 50)
-                    # Filtrar por RPE compatível com Need_intensity
-                    _rpe_min  = 7 if _ni_p >= 75 else 5 if _ni_p >= 40 else 1
-                    _rpe_max  = 10 if _ni_p >= 60 else 7 if _ni_p >= 30 else 5
-                    _rpe_f    = pd.to_numeric(_df_mod_p.get('rpe', pd.Series(dtype=float)), errors='coerce')
-                    _df_comp  = _df_mod_p[_rpe_f.between(_rpe_min, _rpe_max)]
-                    if len(_df_comp) >= 3:
-                        _tl_vals  = pd.to_numeric(_df_comp['icu_training_load'], errors='coerce').dropna()
-                        if len(_tl_vals) >= 2:
-                            _load_est = float(_tl_vals.tail(10).median())
-                            _load_src = f"mediana {min(len(_tl_vals),10)} sessões RPE {_rpe_min}–{_rpe_max}"
-                    if _load_est == 0:
-                        # Fallback: mediana geral desta modalidade
-                        _tl_all = pd.to_numeric(_df_mod_p['icu_training_load'], errors='coerce').dropna()
-                        if len(_tl_all) >= 2:
-                            _load_est = float(_tl_all.tail(10).median())
-                            _load_src = "mediana geral (fallback)"
+            # CTL semana anterior (domingo passado)
+            _sem_ant_dom = sem_ini_pf - pd.Timedelta(days=1)
+            _ctl_sem_ant = float(_ctl_serie.get(_sem_ant_dom, _ctl_serie.iloc[-1]))
+            _atl_sem_ant = float(_atl_serie.get(_sem_ant_dom, _atl_serie.iloc[-1]))
 
-                # ΔCTL = load / 42
-                _delta_p = _load_est / 42.0 if _load_est > 0 else 0.0
-                _delta_ctl_total += _delta_p
-                _delta_rows.append({
-                    'Modalidade':    _mod_p,
-                    'Load estimada': f"{_load_est:.0f}" if _load_est > 0 else "—",
-                    'Fonte':         _load_src,
-                    'ΔCTL est.':     f"{_delta_p:+.2f}",
-                })
+            # Variação real desta semana
+            _dctl_real = _ctl_hoje - _ctl_seg
+            _datl_real = _atl_hoje - _atl_seg
 
-            # CTL/TSB projectados
-            _ctl_proj = _ctl_hoje + _delta_ctl_total
-            _tsb_proj = _tsb_hoje - _delta_ctl_total
+            # CTL real por modalidade esta semana
+            _ctl_mod_rows = []
+            for _mod_p in ['Bike','Row','Ski','Run']:
+                _df_mod_sem = _pf2[
+                    (_pf2['type'].apply(norm_tipo) == _mod_p) &
+                    (_pf2['Data'] >= sem_ini_pf)
+                ]
+                _load_mod = float(_df_mod_sem['_load_icu'].sum()) if len(_df_mod_sem) > 0 else 0
+                _sess_mod = len(_df_mod_sem)
+                if _load_mod > 0 or _sess_mod > 0:
+                    _ctl_mod_rows.append({
+                        'Modalidade':       _mod_p,
+                        'Sessões sem.':     _sess_mod,
+                        'Load total sem.':  f"{_load_mod:.0f}",
+                        'Contribuição CTL': f"{_load_mod/42:.2f}",
+                    })
 
-            # Threshold +1 a +5 CTL/semana (escala icu_training_load)
-            _dentro_range = 1.0 <= _delta_ctl_total <= 5.0
-
-            st.markdown("**⚡ Impacto CTL estimado — semana actual**")
-            st.caption(f"Métrica: **{_tl_col}** — consistente com Tab PMC")
+            # Mostrar
+            st.markdown("**📈 CTL — semana actual**")
             _cc1, _cc2, _cc3, _cc4 = st.columns(4)
-            with _cc1: st.metric("CTL actual",     f"{_ctl_hoje:.1f}")
-            with _cc2: st.metric("ΔCTL estimado",  f"{_delta_ctl_total:+.2f}",
-                                 "✅ no range 1–5" if _dentro_range else
-                                 ("⚠️ abaixo de 1" if _delta_ctl_total < 1 else "⚠️ acima de 5"))
-            with _cc3: st.metric("CTL projectado", f"{_ctl_proj:.1f}")
-            with _cc4: st.metric("TSB projectado", f"{_tsb_proj:.1f}")
+            with _cc1:
+                st.metric("CTL actual",
+                          f"{_ctl_hoje:.1f}",
+                          f"{_dctl_real:+.2f} vs início sem.")
+            with _cc2:
+                st.metric("CTL sem. anterior",
+                          f"{_ctl_sem_ant:.1f}",
+                          f"{_ctl_hoje - _ctl_sem_ant:+.2f} variação")
+            with _cc3:
+                st.metric("ATL actual",
+                          f"{_atl_hoje:.1f}",
+                          f"{_datl_real:+.2f} vs início sem.")
+            with _cc4:
+                st.metric("TSB actual",
+                          f"{_tsb_hoje:.1f}",
+                          f"{'⚡ Fresco' if _tsb_hoje > 5 else '😴 Fatigado' if _tsb_hoje < -10 else '✅ Neutro'}")
 
-            if _delta_rows:
-                with st.expander("🔍 Detalhe ΔCTL por modalidade"):
-                    st.dataframe(pd.DataFrame(_delta_rows), width="stretch", hide_index=True)
-                    st.caption(
-                        "Load estimada = mediana icu_training_load das sessões comparáveis (RPE range). "
-                        "ΔCTL = load / 42. Threshold: +1 a +5 CTL/semana.")
+            # CTL por modalidade esta semana
+            if _ctl_mod_rows:
+                with st.expander("🔍 CTL por modalidade — semana actual"):
+                    st.dataframe(pd.DataFrame(_ctl_mod_rows),
+                                 hide_index=True, use_container_width=True)
+                    st.caption("Load = soma icu_training_load. "
+                               "Contribuição CTL = load/42 (mesma escala do PMC).")
 
             st.markdown("---")
             st.dataframe(df_prog,
