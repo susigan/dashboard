@@ -121,9 +121,11 @@ def main():
                     _dr = pd.date_range(_ef["Data"].min(),
                                         pd.Timestamp.now().normalize(), freq="D")
                     _ei = _ef.set_index("Data")
-                    _cz1 = _ei["z1"].reindex(_dr, fill_value=0).ewm(span=_span).mean()
-                    _cz2 = _ei["z2"].reindex(_dr, fill_value=0).ewm(span=_span).mean()
-                    _cz3 = _ei["z3"].reindex(_dr, fill_value=0).ewm(span=_span).mean()
+                    # Kalman CTLγ — dias sem treino = ausência de observação (não fill=0)
+                    from utils.data import kalman_ctlg as _kctlg
+                    _cz1 = _kctlg(_ei["z1"].reindex(_dr).fillna(0), tau=float(_span))
+                    _cz2 = _kctlg(_ei["z2"].reindex(_dr).fillna(0), tau=float(_span))
+                    _cz3 = _kctlg(_ei["z3"].reindex(_dr).fillna(0), tau=float(_span))
                     _ef["cz1"] = _ef["Data"].map(_cz1.to_dict())
                     _ef["cz2"] = _ef["Data"].map(_cz2.to_dict())
                     _ef["cz3"] = _ef["Data"].map(_cz3.to_dict())
