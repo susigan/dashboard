@@ -69,7 +69,7 @@ MAPA_WELLNESS = {
     'soreness':     ['Cansaço Muscular Geral', 'Muscle Soreness', 'Soreness'],
     'peso':         ['Peso', 'Weight'],
     'fat':          ['FAT', 'Fat', 'Gordura'],
-    'hf_power':     ['HF Power', 'hf_power', 'HF', 'hf', 'hrv_hf', 'HRV_HF'],
+    'hf_power':     ['HF Power', 'hf_power', 'HF', 'hrv_hf', 'HRV_HF'],
 }
 
 MAPA_TRAINING = {
