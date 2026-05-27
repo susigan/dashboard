@@ -1544,13 +1544,17 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
                     """)
             
             # Gráfico com legendas em PRETO e anotações de dias consecutivos
-            # Filtrar últimos 30 dias para o gráfico
-            _hoje_slope = pd.Timestamp.now().normalize()
-            _df_slope_30 = df_corr[df_corr['Data'] >= _hoje_slope - pd.Timedelta(days=30)].copy()
+            # Gráfico começa onde o slope TEM dados (não onde o df começa)
+            _df_slope_plot = df_corr[df_corr['slope_7'].notna()].copy()
+            if len(_df_slope_plot) > 0:
+                _slope_start = _df_slope_plot['Data'].min()
+            else:
+                _slope_start = pd.Timestamp.now().normalize() - pd.Timedelta(days=86)
+            _df_slope_30 = df_corr[df_corr['Data'] >= _slope_start].copy()
 
             fig_slope_ind = go.Figure()
             
-            # Linha do slope — só últimos 30 dias
+            # Linha do slope — alinhado com início dos dados reais
             fig_slope_ind.add_trace(go.Scatter(
                 x=_df_slope_30['Data'],
                 y=_df_slope_30['slope_7'],
@@ -1779,115 +1783,149 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
             st.info("Dados insuficientes para análise temporal (mínimo 10 observações por lag).")
 
         # ════════════════════════════════════════════════════════════════════════
-        # ANÁLISE 2: Comparação LnRMSSD vs RMSSD Bruto (HRV-Guided)
+        # ANÁLISE 2: HF_Power-Guided Training (Javaloyes et al. 2020)
         # ════════════════════════════════════════════════════════════════════════
         st.markdown("---")
-        st.subheader("📊 Análise 2: LnRMSSD vs RMSSD Bruto como HRV-Guided")
-        
-        # Preparar dados de RMSSD bruto
-        df_raw = df_hg_raw.copy()
-        df_raw['hiit_raw'] = (df_raw['intens_raw'] == 'HIIT').astype(int)
-        
-        # Juntar com dados LnRMSSD
-        df_comp = df_corr[['Data', 'hiit_ln', 'intens']].merge(
-            df_raw[['Data', 'hiit_raw', 'intens_raw', 'RMSSD', 'bm_raw', 'bs_raw']], 
-            on='Data', 
-            how='inner'
+        st.subheader("📊 Análise 2: HF_Power-Guided Training")
+        st.caption(
+            "Javaloyes et al. 2020. Decisão baseada na DIRECÇÃO da mudança de HF_Power "
+            "(banda 0.15–0.40 Hz) — não num threshold fixo. "
+            "Máquina de estados: LOW_START → HIGH → HIIT / LOW_REDUCE → REST → REST_TOTAL."
         )
-        
-        # Métricas de concordância
-        total_dias = len(df_comp)
-        ambos_hiit = ((df_comp['hiit_ln'] == 1) & (df_comp['hiit_raw'] == 1)).sum()
-        ambos_rec = ((df_comp['hiit_ln'] == 0) & (df_comp['hiit_raw'] == 0)).sum()
-        ln_hiit_raw_rec = ((df_comp['hiit_ln'] == 1) & (df_comp['hiit_raw'] == 0)).sum()
-        ln_rec_raw_hiit = ((df_comp['hiit_ln'] == 0) & (df_comp['hiit_raw'] == 1)).sum()
-        
-        # Concordância geral (acurácia)
-        concordancia = (ambos_hiit + ambos_rec) / total_dias * 100 if total_dias > 0 else 0
-        
-        # Concordância específica em HIIT (sensibilidade do LnRMSSD vs RMSSD)
-        total_hiit_ln = df_comp['hiit_ln'].sum()
-        total_hiit_raw = df_comp['hiit_raw'].sum()
-        
-        # Cohen's Kappa para concordância ajustada ao acaso
-        from sklearn.metrics import cohen_kappa_score
-        kappa = cohen_kappa_score(df_comp['hiit_ln'], df_comp['hiit_raw'])
-        
-        # Interpretação Kappa
-        if kappa >= 0.8:
-            kappa_interp = "Quase perfeita"
-        elif kappa >= 0.6:
-            kappa_interp = "Substancial"
-        elif kappa >= 0.4:
-            kappa_interp = "Moderada"
-        elif kappa >= 0.2:
-            kappa_interp = "Fraca"
+
+        # ── Máquina de estados HF_Power ─────────────────────────────────────
+        ESTADOS_HFP = {
+            'LOW_START':   {'label': '🔵 Início (LOW_START)',  'cor': '#3498db'},
+            'HIGH':        {'label': '🟢 Alta prontidão (HIGH)', 'cor': '#27ae60'},
+            'HIIT':        {'label': '🔴 HIIT',                'cor': '#e74c3c'},
+            'LOW_REDUCE':  {'label': '🟡 Reduzir carga',       'cor': '#f39c12'},
+            'REST':        {'label': '🟠 Descanso activo',     'cor': '#e67e22'},
+            'REST_TOTAL':  {'label': '⚫ Descanso total',      'cor': '#2c3e50'},
+        }
+
+        def _hfp_trend(today, ref, margin=0.02):
+            """Direcção da mudança — sem threshold fixo, margem 2% ruído instrumental."""
+            if pd.isna(today) or pd.isna(ref) or ref <= 0:
+                return 'neutral'
+            ratio = (today - ref) / ref
+            if ratio > margin:   return 'positive'
+            if ratio < -margin:  return 'negative'
+            return 'neutral'
+
+        def _hfp_transition(estado, trend):
+            """Máquina de estados Javaloyes et al. 2020."""
+            if estado == 'LOW_START':
+                return 'HIGH'
+            if estado == 'HIGH':
+                if trend == 'positive': return 'HIIT'
+                if trend == 'negative': return 'LOW_REDUCE'
+                return 'HIGH'
+            if estado == 'LOW_REDUCE':
+                if trend == 'positive': return 'HIGH'
+                if trend == 'negative': return 'REST'
+                return 'LOW_REDUCE'
+            if estado == 'REST':
+                if trend == 'negative': return 'REST_TOTAL'
+                return 'LOW_REDUCE'
+            if estado == 'REST_TOTAL':
+                if trend != 'negative': return 'REST'
+                return 'REST_TOTAL'
+            if estado == 'HIIT':
+                if trend == 'neutral': return 'LOW_REDUCE'
+                if trend == 'positive': return 'HIGH'
+                return 'LOW_REDUCE'
+            return estado
+
+        # ── Ler HF_Power do wellness ────────────────────────────────────────
+        _wc_hfp = wc_full.copy() if (wc_full is not None and len(wc_full) > 0) else dw.copy()
+        _wc_hfp['Data'] = pd.to_datetime(_wc_hfp['Data']).dt.normalize()
+        _hfp_col = next((c for c in ['hf_power','HF_Power','hf','HF','hrv_hf']
+                         if c in _wc_hfp.columns), None)
+
+        if _hfp_col is None:
+            st.info("ℹ️ Coluna HF_Power não encontrada no wellness. "
+                    "Verifica que a coluna existe na sheet (nomes aceites: hf_power, HF_Power, hf, HF).")
         else:
-            kappa_interp = "Mínima"
-        
-        # Display métricas
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Concordância Geral", f"{concordancia:.1f}%", 
-                 help="Percentual de dias em que ambos os métodos deram a mesma prescrição (HIIT ou Recuperação)")
-        c2.metric("Cohen's Kappa", f"{kappa:.3f}", 
-                 delta=kappa_interp,
-                 help="Concordância ajustada ao acaso. >0.6 é considerada boa.")
-        c3.metric("Dias HIIT LnRMSSD", f"{total_hiit_ln}", 
-                 help=f"Dias prescritos como HIIT pelo método LnRMSSD ({total_hiit_ln/total_dias*100:.0f}%)")
-        c4.metric("Dias HIIT RMSSD", f"{total_hiit_raw}", 
-                 help=f"Dias prescritos como HIIT pelo método RMSSD Bruto ({total_hiit_raw/total_dias*100:.0f}%)")
-        
-        # Tabela de contingência
-        st.markdown("**Tabela de Contingência**")
-        cont_table = pd.DataFrame({
-            'LnRMSSD \\ RMSSD Bruto': ['HIIT', 'Recuperação'],
-            'HIIT': [ambos_hiit, ln_rec_raw_hiit],
-            'Recuperação': [ln_hiit_raw_rec, ambos_rec]
-        })
-        st.table(cont_table.set_index('LnRMSSD \\ RMSSD Bruto'))
-        
-        # Análise de diferenças
-        st.markdown("**Análise das Divergências**")
-        col_d1, col_d2 = st.columns(2)
-        
-        with col_d1:
-            st.metric("LnRMSSD diz HIIT mas RMSSD diz Rec", 
-                     f"{ln_hiit_raw_rec} dias",
-                     delta=f"{ln_hiit_raw_rec/total_dias*100:.1f}%",
-                     delta_color="off")
-            st.caption("LnRMSSD é mais 'agressivo' - permite HIIT quando RMSSD sugere descanso")
-        
-        with col_d2:
-            st.metric("LnRMSSD diz Rec mas RMSSD diz HIIT", 
-                     f"{ln_rec_raw_hiit} dias",
-                     delta=f"{ln_rec_raw_hiit/total_dias*100:.1f}%",
-                     delta_color="off")
-            st.caption("RMSSD Bruto é mais 'agressivo' - permite HIIT quando LnRMSSD sugere descanso")
-        
-        # Recomendação
-        st.markdown("---")
-        st.markdown("**💡 Recomendação de Uso**")
-        
-        if kappa >= 0.6:
-            st.success(f"""
-            **Alta concordância ({kappa_interp})**: Ambos os métodos são equivalentes para este atleta.
-            - LnRMSSD é preferível por normalizar a distribuição e reduzir efeito de outliers
-            - RMSSD bruto pode ser mais intuitivo (ms reais)
-            """)
-        elif kappa >= 0.4:
-            st.warning(f"""
-            **Concordância moderada**: Os métodos diferem com frequência.
-            - **LnRMSSD**: Mais conservador, tende a sugerir mais dias de recuperação ({ln_hiit_raw_rec} dias a mais que RMSSD)
-            - **RMSSD Bruto**: Mais permissivo, pode subestimar necessidade de recuperação em alguns casos
-            - Recomendação: Usar LnRMSSD para decisões importantes de treino
-            """)
-        else:
-            st.error(f"""
-            **Baixa concordância**: Os métodos divergem significativamente!
-            - Isso pode indicar grande variabilidade nos dados de HRV ou presença de outliers
-            - Verificar qualidade dos dados de medição
-            - Considerar outros marcadores (sensação subjetiva, sono, etc.)
-            """)
+            _wc_hfp = _wc_hfp[['Data', _hfp_col]].rename(columns={_hfp_col: 'hfp'})
+            _wc_hfp['hfp'] = pd.to_numeric(_wc_hfp['hfp'], errors='coerce')
+            _wc_hfp = _wc_hfp.dropna(subset=['hfp']).sort_values('Data').reset_index(drop=True)
+
+            if len(_wc_hfp) < 3:
+                st.info("Dados insuficientes de HF_Power (mínimo 3 dias).")
+            else:
+                # Referência = média dos últimos 3 dias anteriores
+                _wc_hfp['hfp_ref'] = _wc_hfp['hfp'].shift(1).rolling(3, min_periods=1).mean()
+                _wc_hfp['trend']   = _wc_hfp.apply(
+                    lambda r: _hfp_trend(r['hfp'], r['hfp_ref']), axis=1)
+
+                # Calcular estado para cada dia
+                _estados = []
+                _est = 'LOW_START'
+                for _, row in _wc_hfp.iterrows():
+                    _est = _hfp_transition(_est, row['trend'])
+                    _estados.append(_est)
+                _wc_hfp['estado'] = _estados
+
+                # ── Últimos 5 dias (incluindo hoje) ─────────────────────────
+                st.markdown("**Últimos 5 dias — HF_Power-Guided:**")
+                _ult5 = _wc_hfp.tail(5).copy()
+                _rows5 = []
+                for _, r in _ult5.iterrows():
+                    _cfg = ESTADOS_HFP.get(r['estado'], {'label': r['estado'], 'cor': '#888'})
+                    _trend_icon = {'positive':'↗ Subiu','negative':'↘ Caiu','neutral':'→ Estável'}.get(r['trend'],'—')
+                    _rows5.append({
+                        'Data':        r['Data'].strftime('%d/%m'),
+                        'HF_Power':    f"{r['hfp']:.0f}" if pd.notna(r['hfp']) else '—',
+                        'Referência':  f"{r['hfp_ref']:.0f}" if pd.notna(r['hfp_ref']) else '—',
+                        'Tendência':   _trend_icon,
+                        'Estado':      _cfg['label'],
+                        'Prescrição':  ('✅ HIIT' if r['estado']=='HIIT'
+                                        else '🔴 Descanso total' if r['estado']=='REST_TOTAL'
+                                        else '🟠 Descanso activo' if r['estado']=='REST'
+                                        else '🟡 Carga reduzida' if r['estado']=='LOW_REDUCE'
+                                        else '🟢 Treino moderado/alto' if r['estado']=='HIGH'
+                                        else '🔵 Início'),
+                    })
+                st.dataframe(pd.DataFrame(_rows5), hide_index=True, use_container_width=True)
+                st.caption("Referência = média HF_Power dos 3 dias anteriores. "
+                           "Margem de ruído: ±2% (variação instrumental).")
+
+                # ── Correlação estados HF_Power vs HRV-Guided ───────────────
+                st.markdown("**Correlação: HF_Power-Guided vs LnRMSSD-Guided (HRV-Guided):**")
+                # Juntar com df_hg (que tem 'intens' = HIIT/Recuperação)
+                try:
+                    _df_hg_merge = df_hg[['Data','intens']].copy()
+                    _df_hg_merge['Data'] = pd.to_datetime(_df_hg_merge['Data']).dt.normalize()
+                    _merged = _wc_hfp.merge(_df_hg_merge, on='Data', how='inner')
+                    _merged = _merged[_merged['intens'].isin(['HIIT','Recuperação'])].copy()
+                    _merged['hiit_hrv'] = (_merged['intens'] == 'HIIT').astype(int)
+                    _merged['hiit_hfp'] = (_merged['estado'] == 'HIIT').astype(int)
+
+                    if len(_merged) >= 10:
+                        from scipy import stats as _sst
+                        _n = len(_merged)
+                        _concord = int((_merged['hiit_hrv'] == _merged['hiit_hfp']).sum())
+                        _pct = _concord / _n * 100
+                        _r, _p = _sst.pearsonr(_merged['hiit_hrv'], _merged['hiit_hfp'])
+
+                        # Tabela de contingência
+                        _ct = pd.crosstab(
+                            _merged['intens'].map({'HIIT':'HRV-Guided: HIIT','Recuperação':'HRV-Guided: Rec'}),
+                            _merged['estado'].map(lambda s: f"HFP: {s}"))
+                        st.dataframe(_ct, use_container_width=True)
+
+                        _c1,_c2,_c3 = st.columns(3)
+                        _c1.metric("Concordância", f"{_pct:.0f}%", f"{_concord}/{_n} dias")
+                        _c2.metric("Correlação r", f"{_r:.3f}",
+                                   "✅ p<0.05" if _p < 0.05 else f"p={_p:.3f}")
+                        _c3.metric("Dias analisados", _n)
+                        st.caption(
+                            "Concordância = % dias onde ambos os modelos concordam (HIIT/não-HIIT). "
+                            "Correlação de Pearson entre prescrições binárias.")
+                    else:
+                        st.info(f"Dados insuficientes para correlação ({len(_merged)} dias comuns).")
+                except Exception as _hfp_err:
+                    st.info(f"Correlação não disponível: {_hfp_err}")
 
     # ── DOWNLOAD CSV — sinais de recovery diários (histórico completo) ────────
     st.markdown("---")
