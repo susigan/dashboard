@@ -1556,149 +1556,306 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
         else:
             st.info(f"Dados insuficientes ({len(slope_series)} dias, mínimo 20) para análise individualizada.")
         # ════════════════════════════════════════════════════════════════════════
-        # ANÁLISE 2: HF_Power-Guided Training (Javaloyes et al. 2020)
+        # ANÁLISE 2: HRV-Guided Protocol (Javaloyes et al. 2018/2020)
+        # Protocolo publicado: LnRMSSD 7d rolling avg + SWC + limite consecutivos
         # ════════════════════════════════════════════════════════════════════════
         st.markdown("---")
-        st.subheader("📊 Análise 2: HF_Power-Guided Training")
+        st.subheader("📊 Análise 2: HRV-Guided Protocol — Javaloyes et al.")
         st.caption(
-            "Javaloyes et al. 2020. Decisão baseada na DIRECÇÃO da mudança de HF_Power "
-            "(banda 0.15–0.40 Hz) — não num threshold fixo. "
-            "Máquina de estados: LOW_START → HIGH → HIIT / LOW_REDUCE → REST → REST_TOTAL."
+            "Protocolo publicado: Javaloyes A et al. (2018/2020). "
+            "LnRMSSD rolling 7 dias vs SWC (mean ± 0.5×SD do baseline). "
+            "Máx 2 sessões consecutivas de alta intensidade. Máx 2 dias REST consecutivos. "
+            "Referência: Plews et al. (2013); Kiviniemi et al. (2007)."
         )
 
-        # ── Máquina de estados HF_Power ─────────────────────────────────────
-        ESTADOS_HFP = {
-            'LOW_START':   {'label': '🔵 Início (LOW_START)',  'cor': '#3498db'},
-            'HIGH':        {'label': '🟢 Alta prontidão (HIGH)', 'cor': '#27ae60'},
-            'HIIT':        {'label': '🔴 HIIT',                'cor': '#e74c3c'},
-            'LOW_REDUCE':  {'label': '🟡 Reduzir carga',       'cor': '#f39c12'},
-            'REST':        {'label': '🟠 Descanso activo',     'cor': '#e67e22'},
-            'REST_TOTAL':  {'label': '⚫ Descanso total',      'cor': '#2c3e50'},
-        }
+        with st.expander("📖 Metodologia — como funciona", expanded=False):
+            st.markdown("""
+**Protocolo Javaloyes et al. 2018/2020 (IJSPP / JSCR)**
 
-        def _hfp_trend(today, ref, margin=0.02):
-            """Direcção da mudança — sem threshold fixo, margem 2% ruído instrumental."""
-            if pd.isna(today) or pd.isna(ref) or ref <= 0:
-                return 'neutral'
-            ratio = (today - ref) / ref
-            if ratio > margin:   return 'positive'
-            if ratio < -margin:  return 'negative'
-            return 'neutral'
+1. **Métrica**: LnRMSSD rolling 7 dias (`LnRMSSD₇ₐᵥ`)
+2. **Banda SWC**: calculada no período baseline → `mean ± 0.5 × SD`
+3. **Decisão diária**:
+   - LnRMSSD₇ₐᵥ **acima do SWC** → Alta intensidade (HIGH/HIIT)
+   - LnRMSSD₇ₐᵥ **dentro da banda** → Baixa intensidade (LOW)
+   - LnRMSSD₇ₐᵥ **abaixo do SWC** → Descanso (REST)
+4. **Restrições de consecutivos**:
+   - Máx **2 sessões consecutivas** de alta intensidade → força LOW
+   - Máx **2 dias consecutivos** de REST → força LOW
+5. **SWC actualizado**: a cada 4 semanas com os dados das últimas 4 semanas
+            """)
 
-        def _hfp_transition(estado, trend):
-            """Máquina de estados Javaloyes et al. 2020."""
-            if estado == 'LOW_START':
-                return 'HIGH'
-            if estado == 'HIGH':
-                if trend == 'positive': return 'HIIT'
-                if trend == 'negative': return 'LOW_REDUCE'
-                return 'HIGH'
-            if estado == 'LOW_REDUCE':
-                if trend == 'positive': return 'HIGH'
-                if trend == 'negative': return 'REST'
-                return 'LOW_REDUCE'
-            if estado == 'REST':
-                if trend == 'negative': return 'REST_TOTAL'
-                return 'LOW_REDUCE'
-            if estado == 'REST_TOTAL':
-                if trend != 'negative': return 'REST'
-                return 'REST_TOTAL'
-            if estado == 'HIIT':
-                if trend == 'neutral': return 'LOW_REDUCE'
-                if trend == 'positive': return 'HIGH'
-                return 'LOW_REDUCE'
-            return estado
+        # ── Usar wc_full (histórico completo) ────────────────────────────────
+        _wc_j = wc_full.copy() if (wc_full is not None and len(wc_full) > 0) else dw.copy()
+        _wc_j['Data'] = pd.to_datetime(_wc_j['Data']).dt.normalize()
 
-        # ── Ler HF_Power do wellness ────────────────────────────────────────
-        _wc_hfp = wc_full.copy() if (wc_full is not None and len(wc_full) > 0) else dw.copy()
-        _wc_hfp['Data'] = pd.to_datetime(_wc_hfp['Data']).dt.normalize()
-        _hfp_col = next((c for c in ['hf_power','HF_Power','hf','HF','hrv_hf']
-                         if c in _wc_hfp.columns), None)
+        # Usar hrv_raw se disponível (valor real sem preenchimento lookback)
+        _hrv_src_j = 'hrv_raw' if 'hrv_raw' in _wc_j.columns else 'hrv'
+        _wc_j['LnRMSSD'] = np.where(
+            _wc_j[_hrv_src_j].notna() & (_wc_j[_hrv_src_j] > 0),
+            np.log(_wc_j[_hrv_src_j]),
+            np.nan
+        )
 
-        if _hfp_col is None:
-            st.info("ℹ️ Coluna HF_Power não encontrada no wellness. "
-                    "Verifica que a coluna existe na sheet (nomes aceites: hf_power, HF_Power, hf, HF).")
+        # Reindex para calendário completo — preserva NaN dias sem medição
+        _wc_j = _wc_j.sort_values('Data').set_index('Data')
+        _date_range_j = pd.date_range(_wc_j.index.min(), _wc_j.index.max(), freq='D')
+        _wc_j = _wc_j.reindex(_date_range_j)
+        _wc_j.index.name = 'Data'
+        _wc_j = _wc_j.reset_index()
+
+        if _wc_j['LnRMSSD'].notna().sum() < 14:
+            st.info("Dados insuficientes para o protocolo Javaloyes (mínimo 14 dias de HRV).")
         else:
-            _wc_hfp = _wc_hfp[['Data', _hfp_col]].rename(columns={_hfp_col: 'hfp'})
-            _wc_hfp['hfp'] = pd.to_numeric(_wc_hfp['hfp'], errors='coerce')
-            _wc_hfp = _wc_hfp.dropna(subset=['hfp']).sort_values('Data').reset_index(drop=True)
+            # ── Rolling 7 dias (min_periods=4 para tolerar fins de semana) ──
+            _wc_j['ln7'] = _wc_j['LnRMSSD'].rolling(7, min_periods=4).mean()
 
-            if len(_wc_hfp) < 3:
-                st.info("Dados insuficientes de HF_Power (mínimo 3 dias).")
+            # ── SWC: calculado sobre os primeiros 28 dias com dados (baseline) ──
+            # Plews et al. 2013: SWC = mean ± 0.5 × SD
+            _ln_baseline = _wc_j['LnRMSSD'].dropna().head(28)
+            if len(_ln_baseline) >= 7:
+                _swc_mean = float(_ln_baseline.mean())
+                _swc_sd   = float(_ln_baseline.std())
+                _swc_sup  = _swc_mean + 0.5 * _swc_sd
+                _swc_inf  = _swc_mean - 0.5 * _swc_sd
             else:
-                # Referência = dia anterior (não média — Javaloyes usa comparação directa)
-                _wc_hfp['hfp_ref'] = _wc_hfp['hfp'].shift(1)
-                _wc_hfp['trend']   = _wc_hfp.apply(
-                    lambda r: _hfp_trend(r['hfp'], r['hfp_ref']), axis=1)
+                # Fallback: usar todo o histórico
+                _ln_all   = _wc_j['LnRMSSD'].dropna()
+                _swc_mean = float(_ln_all.mean())
+                _swc_sd   = float(_ln_all.std())
+                _swc_sup  = _swc_mean + 0.5 * _swc_sd
+                _swc_inf  = _swc_mean - 0.5 * _swc_sd
 
-                # Calcular estado para cada dia
-                _estados = []
-                _est = 'LOW_START'
-                for _, row in _wc_hfp.iterrows():
-                    _est = _hfp_transition(_est, row['trend'])
-                    _estados.append(_est)
-                _wc_hfp['estado'] = _estados
+            # ── Classificação diária + regras de consecutivos ────────────────
+            _prescricoes = []
+            _consec_high = 0  # dias consecutivos de alta intensidade
+            _consec_rest = 0  # dias consecutivos de descanso
 
-                # ── Últimos 5 dias (incluindo hoje) ─────────────────────────
-                st.markdown("**Últimos 5 dias — HF_Power-Guided:**")
-                _ult5 = _wc_hfp.tail(5).copy()
-                _rows5 = []
-                for _, r in _ult5.iterrows():
-                    _cfg = ESTADOS_HFP.get(r['estado'], {'label': r['estado'], 'cor': '#888'})
-                    _trend_icon = {'positive':'↗ Subiu','negative':'↘ Caiu','neutral':'→ Estável'}.get(r['trend'],'—')
-                    _rows5.append({
-                        'Data':        r['Data'].strftime('%d/%m'),
-                        'HF_Power':    f"{r['hfp']:.4f}" if pd.notna(r['hfp']) else '—',
-                        'Referência':  f"{r['hfp_ref']:.4f}" if pd.notna(r['hfp_ref']) else '—',
-                        'Tendência':   _trend_icon,
-                        'Estado':      _cfg['label'],
-                        'Prescrição':  ('✅ HIIT' if r['estado']=='HIIT'
-                                        else '🔴 Descanso total' if r['estado']=='REST_TOTAL'
-                                        else '🟠 Descanso activo' if r['estado']=='REST'
-                                        else '🟡 Carga reduzida' if r['estado']=='LOW_REDUCE'
-                                        else '🟢 Treino moderado/alto' if r['estado']=='HIGH'
-                                        else '🔵 Início'),
-                    })
-                st.dataframe(pd.DataFrame(_rows5), hide_index=True, use_container_width=True)
-                st.caption("Referência = HF_Power do dia anterior. "
-                           "Margem de ruído: ±2% (variação instrumental).")
+            for _, row in _wc_j.iterrows():
+                ln7 = row['ln7']
 
-                # ── Correlação estados HF_Power vs HRV-Guided ───────────────
-                st.markdown("**Correlação: HF_Power-Guided vs LnRMSSD-Guided (HRV-Guided):**")
-                # Juntar com df_hg (que tem 'intens' = HIIT/Recuperação)
-                try:
-                    _df_hg_merge = df_hg[['Data','intens']].copy()
-                    _df_hg_merge['Data'] = pd.to_datetime(_df_hg_merge['Data']).dt.normalize()
-                    _merged = _wc_hfp.merge(_df_hg_merge, on='Data', how='inner')
-                    _merged = _merged[_merged['intens'].isin(['HIIT','Recuperação'])].copy()
-                    _merged['hiit_hrv'] = (_merged['intens'] == 'HIIT').astype(int)
-                    _merged['hiit_hfp'] = (_merged['estado'] == 'HIIT').astype(int)
-
-                    if len(_merged) >= 10:
-                        from scipy import stats as _sst
-                        _n = len(_merged)
-                        _concord = int((_merged['hiit_hrv'] == _merged['hiit_hfp']).sum())
-                        _pct = _concord / _n * 100
-                        _r, _p = _sst.pearsonr(_merged['hiit_hrv'], _merged['hiit_hfp'])
-
-                        # Tabela de contingência
-                        _ct = pd.crosstab(
-                            _merged['intens'].map({'HIIT':'HRV-Guided: HIIT','Recuperação':'HRV-Guided: Rec'}),
-                            _merged['estado'].map(lambda s: f"HFP: {s}"))
-                        st.dataframe(_ct, use_container_width=True)
-
-                        _c1,_c2,_c3 = st.columns(3)
-                        _c1.metric("Concordância", f"{_pct:.0f}%", f"{_concord}/{_n} dias")
-                        _c2.metric("Correlação r", f"{_r:.3f}",
-                                   "✅ p<0.05" if _p < 0.05 else f"p={_p:.3f}")
-                        _c3.metric("Dias analisados", _n)
-                        st.caption(
-                            "Concordância = % dias onde ambos os modelos concordam (HIIT/não-HIIT). "
-                            "Correlação de Pearson entre prescrições binárias.")
+                if pd.isna(ln7):
+                    # Sem dados → conservador (LOW)
+                    _pres = 'LOW'
+                    _consec_high = 0
+                else:
+                    if ln7 > _swc_sup:
+                        # Acima do SWC → candidato a HIGH
+                        if _consec_high >= 2:
+                            # Regra: máx 2 consecutivos → forçar LOW
+                            _pres = 'LOW'
+                            _consec_high = 0
+                            _consec_rest = 0
+                        else:
+                            _pres = 'HIGH'
+                            _consec_high += 1
+                            _consec_rest = 0
+                    elif ln7 >= _swc_inf:
+                        # Dentro da banda SWC → LOW
+                        _pres = 'LOW'
+                        _consec_high = 0
+                        _consec_rest = 0
                     else:
-                        st.info(f"Dados insuficientes para correlação ({len(_merged)} dias comuns).")
-                except Exception as _hfp_err:
-                    st.info(f"Correlação não disponível: {_hfp_err}")
+                        # Abaixo do SWC → candidato a REST
+                        if _consec_rest >= 2:
+                            # Regra: máx 2 REST consecutivos → forçar LOW
+                            _pres = 'LOW'
+                            _consec_rest = 0
+                            _consec_high = 0
+                        else:
+                            _pres = 'REST'
+                            _consec_rest += 1
+                            _consec_high = 0
+
+                _prescricoes.append(_pres)
+
+            _wc_j['prescricao'] = _prescricoes
+
+            # ── Mapa de cores e labels ───────────────────────────────────────
+            _COR_MAP = {
+                'HIGH': '#27ae60',
+                'LOW':  '#f39c12',
+                'REST': '#e74c3c',
+            }
+            _LABEL_MAP = {
+                'HIGH': '🟢 Alta intensidade',
+                'LOW':  '🟡 Baixa intensidade',
+                'REST': '🔴 Descanso',
+            }
+            _PRES_MAP = {
+                'HIGH': '✅ HIGH — treino intenso (≥VT2)',
+                'LOW':  '🟡 LOW — treino leve (<VT1)',
+                'REST': '🔴 REST — descanso activo',
+            }
+
+            # ── Cards de estado actual ────────────────────────────────────────
+            _hoje_j = pd.Timestamp.now().normalize()
+            _wc_j_val = _wc_j[_wc_j['ln7'].notna()]
+            if len(_wc_j_val) > 0:
+                _ult_j = _wc_j_val.iloc[-1]
+                _pres_hoje = _ult_j['prescricao']
+                _ln7_hoje  = _ult_j['ln7']
+
+                _cj1, _cj2, _cj3, _cj4 = st.columns(4)
+                _cj1.metric(
+                    "LnRMSSD₇ avg",
+                    f"{_ln7_hoje:.3f}" if pd.notna(_ln7_hoje) else "—",
+                    help="Média rolling 7 dias do LnRMSSD"
+                )
+                _cj2.metric(
+                    "SWC superior",
+                    f"{_swc_sup:.3f}",
+                    help=f"mean({_swc_mean:.3f}) + 0.5×SD({_swc_sd:.3f})"
+                )
+                _cj3.metric(
+                    "SWC inferior",
+                    f"{_swc_inf:.3f}",
+                    help=f"mean({_swc_mean:.3f}) - 0.5×SD({_swc_sd:.3f})"
+                )
+                _cj4.metric(
+                    "Prescrição HOJE",
+                    _LABEL_MAP.get(_pres_hoje, _pres_hoje)
+                )
+
+                # Card destacado
+                _cor_j = _COR_MAP.get(_pres_hoje, '#888')
+                _hr_j, _hg_j, _hb_j = int(_cor_j[1:3],16), int(_cor_j[3:5],16), int(_cor_j[5:7],16)
+                st.markdown(
+                    f'<div style="padding:14px 20px;border-radius:8px;margin:8px 0;'
+                    f'background:rgba({_hr_j},{_hg_j},{_hb_j},0.10);'
+                    f'border-left:5px solid {_cor_j};">'
+                    f'<b style="font-size:1.1em;color:{_cor_j};">'
+                    f'{_PRES_MAP.get(_pres_hoje, _pres_hoje)}</b>'
+                    f'<span style="color:#888;margin-left:12px;font-size:0.9em;">'
+                    f'LnRMSSD₇={_ln7_hoje:.3f} | SWC [{_swc_inf:.3f}, {_swc_sup:.3f}]'
+                    f'</span></div>',
+                    unsafe_allow_html=True
+                )
+
+            # ── Últimos 5 dias ────────────────────────────────────────────────
+            st.markdown("**Últimos 5 dias — protocolo Javaloyes:**")
+            _ult5_j = _wc_j[_wc_j['ln7'].notna()].tail(5).copy()
+            _rows5_j = []
+            for _, r in _ult5_j.iterrows():
+                _pos = ('↑ Acima SWC' if r['ln7'] > _swc_sup
+                        else '↓ Abaixo SWC' if r['ln7'] < _swc_inf
+                        else '→ Dentro SWC')
+                _rows5_j.append({
+                    'Data':          r['Data'].strftime('%d/%m'),
+                    'LnRMSSD₇':     f"{r['ln7']:.3f}",
+                    'SWC banda':     f"[{_swc_inf:.3f}, {_swc_sup:.3f}]",
+                    'Posição':       _pos,
+                    'Prescrição':    _LABEL_MAP.get(r['prescricao'], r['prescricao']),
+                    'Sessão':        _PRES_MAP.get(r['prescricao'], r['prescricao']),
+                })
+            st.dataframe(pd.DataFrame(_rows5_j), hide_index=True, use_container_width=True)
+            st.caption(
+                f"SWC calculado sobre os primeiros 28 dias de dados. "
+                f"mean={_swc_mean:.3f} | SD={_swc_sd:.3f} | "
+                f"banda=[{_swc_inf:.3f}, {_swc_sup:.3f}]. "
+                "Máx 2 sessões HIGH consecutivas. Máx 2 dias REST consecutivos."
+            )
+
+            # ── Gráfico histórico ─────────────────────────────────────────────
+            _wc_j_plot = _wc_j[_wc_j['ln7'].notna()].copy()
+            if len(_wc_j_plot) >= 14:
+                import plotly.graph_objects as _go_j
+                _fig_j = _go_j.Figure()
+
+                # Bandas SWC
+                _fig_j.add_hrect(
+                    y0=_swc_inf, y1=_swc_sup,
+                    fillcolor='rgba(243,156,18,0.12)',
+                    line_width=0,
+                    annotation_text="Banda SWC (LOW)",
+                    annotation_position="right",
+                    annotation_font_size=10,
+                    annotation_font_color='#f39c12'
+                )
+                _fig_j.add_hline(y=_swc_sup, line_dash='dash',
+                                  line_color='rgba(39,174,96,0.6)', line_width=1)
+                _fig_j.add_hline(y=_swc_inf, line_dash='dash',
+                                  line_color='rgba(231,76,60,0.6)', line_width=1)
+
+                # Linha LnRMSSD 7d colorida por prescrição
+                for _pres_g, _cor_g in _COR_MAP.items():
+                    _sub_g = _wc_j_plot[_wc_j_plot['prescricao'] == _pres_g]
+                    if len(_sub_g) > 0:
+                        _fig_j.add_trace(_go_j.Scatter(
+                            x=_sub_g['Data'], y=_sub_g['ln7'],
+                            mode='markers',
+                            name=_LABEL_MAP[_pres_g],
+                            marker=dict(color=_cor_g, size=8,
+                                       line=dict(width=1.5, color='white')),
+                            hovertemplate=f'%{{x|%d/%m}}<br>LnRMSSD₇: %{{y:.3f}}<br>{_LABEL_MAP[_pres_g]}<extra></extra>'
+                        ))
+
+                # Linha contínua
+                _fig_j.add_trace(_go_j.Scatter(
+                    x=_wc_j_plot['Data'], y=_wc_j_plot['ln7'],
+                    mode='lines',
+                    line=dict(color='rgba(44,62,80,0.4)', width=1.5),
+                    showlegend=False,
+                    hoverinfo='skip'
+                ))
+
+                _fig_j.update_layout(
+                    height=380,
+                    paper_bgcolor='white', plot_bgcolor='white',
+                    font=dict(color='#111', size=11),
+                    hovermode='x unified',
+                    margin=dict(t=30, b=60, l=60, r=120),
+                    legend=dict(orientation='h', y=-0.18,
+                                font=dict(size=10),
+                                bgcolor='rgba(255,255,255,0.9)'),
+                    title=dict(text='LnRMSSD rolling 7 dias — protocolo Javaloyes',
+                               font=dict(size=13)),
+                    xaxis=dict(showgrid=True, gridcolor='#eee'),
+                    yaxis=dict(title='LnRMSSD₇', showgrid=True,
+                               gridcolor='#eee')
+                )
+                st.plotly_chart(_fig_j, use_container_width=True,
+                                config={'displayModeBar': False},
+                                key='javaloyes_hrv_chart')
+
+            # ── Correlação com HRV-Guided (Altini) ───────────────────────────
+            st.markdown("**Correlação: Javaloyes vs HRV-Guided (Altini/Plews):**")
+            try:
+                _df_hg_j = df_hg[['Data', 'intens']].copy()
+                _df_hg_j['Data'] = pd.to_datetime(_df_hg_j['Data']).dt.normalize()
+                _wc_j_merge = _wc_j[_wc_j['ln7'].notna()][['Data', 'prescricao']].copy()
+                _merged_j = _wc_j_merge.merge(_df_hg_j, on='Data', how='inner')
+                _merged_j = _merged_j[_merged_j['intens'].isin(['HIIT','Recuperação'])].copy()
+                _merged_j['hiit_hrv']  = (_merged_j['intens'] == 'HIIT').astype(int)
+                _merged_j['hiit_jav']  = (_merged_j['prescricao'] == 'HIGH').astype(int)
+
+                if len(_merged_j) >= 10:
+                    from scipy import stats as _sst_j
+                    _n_j = len(_merged_j)
+                    _concord_j = int((_merged_j['hiit_hrv'] == _merged_j['hiit_jav']).sum())
+                    _pct_j = _concord_j / _n_j * 100
+                    _r_j, _p_j = _sst_j.pearsonr(_merged_j['hiit_hrv'], _merged_j['hiit_jav'])
+
+                    # Tabela contingência
+                    _ct_j = pd.crosstab(
+                        _merged_j['intens'].map({'HIIT':'HRV-Guided: HIIT', 'Recuperação':'HRV-Guided: Rec'}),
+                        _merged_j['prescricao'].map({'HIGH':'Javaloyes: HIGH', 'LOW':'Javaloyes: LOW', 'REST':'Javaloyes: REST'})
+                    )
+                    st.dataframe(_ct_j, use_container_width=True)
+
+                    _cc1, _cc2, _cc3 = st.columns(3)
+                    _cc1.metric("Concordância", f"{_pct_j:.0f}%", f"{_concord_j}/{_n_j} dias")
+                    _cc2.metric("Correlação r", f"{_r_j:.3f}",
+                                "✅ p<0.05" if _p_j < 0.05 else f"p={_p_j:.3f}")
+                    _cc3.metric("Dias analisados", _n_j)
+                    st.caption(
+                        "HRV-Guided (Altini/Plews): LnRMSSD vs banda ±0.5 DP rolling 14d. "
+                        "Javaloyes: LnRMSSD₇ vs SWC baseline. "
+                        "Concordância = % dias com mesma prescrição (HIGH/não-HIGH)."
+                    )
+                else:
+                    st.info(f"Dados insuficientes para correlação ({len(_merged_j)} dias comuns).")
+            except Exception as _j_err:
+                st.info(f"Correlação não disponível: {_j_err}")
 
     # ── DOWNLOAD CSV — sinais de recovery diários (histórico completo) ────────
     st.markdown("---")
