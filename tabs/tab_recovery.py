@@ -1228,141 +1228,6 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
         else:
             st.info("Dados insuficientes para calcular correlações.")
 
-                # ════════════════════════════════════════════════════════════════════════
-        # ANÁLISE 1.5: Lag Analysis - Treino Pesado (RPE≥7) → Fadiga Futura
-        # ════════════════════════════════════════════════════════════════════════
-        st.markdown("---")
-        st.subheader("⏱️ Análise Temporal: Treino Pesado (ICU_RPE ≥7) → Fadiga Futura")
-        
-        if 'icu_rpe' in df_corr.columns and df_corr['icu_rpe'].notna().any():
-            
-            # Criar indicador de treino pesado (RPE >= 7)
-            df_corr['treino_pesado'] = (df_corr['icu_rpe'] >= 7).astype(int)
-            
-            # Definir lags para testar
-            lags_rpe = [1, 2, 3, 5, 7, 10, 14]
-            resultados_lag_rpe = []
-            
-            # Eventos de fadiga para monitorar
-            eventos_fadiga = [
-                ('m1', 'Accumulated_Fatigue', 'Mode 1'),
-                ('m1', 'Maladaptation', 'Mode 1'),
-                ('m2', 'NFOR', 'Mode 2'),
-                ('m2', 'Overreaching', 'Mode 2')
-            ]
-            
-            for lag in lags_rpe:
-                for mode_prefix, evento, mode_nome in eventos_fadiga:
-                    col_evento = f'{mode_prefix}_{evento}'
-                    col_futuro = f'{evento}_future_rpe'
-                    
-                    # Shift no evento de fadiga (para o futuro)
-                    df_lag = df_corr[['Data', 'treino_pesado', col_evento]].copy()
-                    df_lag[col_futuro] = df_lag[col_evento].shift(-lag)
-                    
-                    # Calcular correlação entre treino pesado hoje e fadiga no futuro
-                    valid = df_lag[['treino_pesado', col_futuro]].dropna()
-                    
-                    if len(valid) > 5:  # Mínimo de observações
-                        # Se poucas variações (raramente tem fadiga), correlação é instável
-                        if valid[col_futuro].nunique() > 1:
-                            corr, p_val = stats.pearsonr(valid['treino_pesado'], valid[col_futuro])
-                            
-                            resultados_lag_rpe.append({
-                                'Lag (dias)': lag,
-                                'Modo': mode_nome,
-                                'Evento Futuro': evento.replace('_', ' '),
-                                'Correlação': corr,
-                                'P-valor': p_val,
-                                'N': len(valid),
-                                'Significativo': "Sim" if p_val < 0.05 else "Não",
-                                'Risco': 'Alto' if corr > 0.3 and p_val < 0.05 else 'Moderado' if corr > 0.1 else 'Baixo'
-                            })
-            
-            if resultados_lag_rpe:
-                df_lag_rpe = pd.DataFrame(resultados_lag_rpe)
-                
-                # Mostrar resultados por lag
-                for lag in lags_rpe:
-                    df_lag_day = df_lag_rpe[df_lag_rpe['Lag (dias)'] == lag]
-                    if not df_lag_day.empty:
-                        with st.expander(f"Após {lag} dias do treino pesado"):
-                            st.dataframe(
-                                df_lag_day[['Modo', 'Evento Futuro', 'Correlação', 'Risco', 'P-valor', 'Significativo']]
-                                .style.format({'Correlação': '{:.3f}', 'P-valor': '{:.4f}'})
-                                .apply(lambda x: ['background-color: rgba(231, 76, 60, 0.3)' if x['Risco'] == 'Alto' 
-                                                  else 'background-color: rgba(241, 196, 15, 0.3)' if x['Risco'] == 'Moderado' 
-                                                  else '' for _ in x], axis=1),
-                                use_container_width=True,
-                                hide_index=True
-                            )
-                
-                # Identificar o lag mais crítico
-                df_alto_risco = df_lag_rpe[(df_lag_rpe['Risco'] == 'Alto') & (df_lag_rpe['Significativo'] == 'Sim')]
-                
-                if not df_alto_risco.empty:
-                    # Pegar o de maior correlação
-                    maior_risco = df_alto_risco.loc[df_alto_risco['Correlação'].idxmax()]
-                    
-                    st.error(f"""
-                    🚨 **Padrão de Overreaching Detectado!**
-                    
-                    Treinos com **ICU_RPE ≥ 7** têm correlação de **{maior_risco['Correlação']:.3f}** com **{maior_risco['Evento Futuro']}** em **{maior_risco['Lag (dias)']} dias**.
-                    
-                    **Interpretação:**
-                    - Quando você treina pesado (RPE≥7), existe {maior_risco['Correlação']*100:.0f}% de chance de estar em estado de {maior_risco['Evento Futuro'].lower()} {maior_risco['Lag (dias)']} dias depois.
-                    - Este é um padrão de **acúmulo de fadiga não recuperável**.
-                    
-                    **Recomendações:**
-                    1. Após treinos RPE≥7, garantir **{maior_risco['Lag (dias)']+1} dias** de recuperação antes do próximo treino pesado
-                    2. Ou reduzir intensidade do próximo treino para RPE < 7 se ainda dentro do período de {maior_risco['Lag (dias)']} dias
-                    3. Considerar periodização: treino pesado → {maior_risco['Lag (dias)']} dias leves → próximo pesado
-                    """)
-                    
-                    # Gráfico de heatmap dos lags
-                    st.markdown("**Mapa de Calor - Correlação por Tempo**")
-                    
-                    # Pivot para heatmap
-                    df_pivot = df_lag_rpe.pivot_table(
-                        index=['Modo', 'Evento Futuro'], 
-                        columns='Lag (dias)', 
-                        values='Correlação',
-                        aggfunc='mean'
-                    ).fillna(0)
-                    
-                    fig_heat = go.Figure(data=go.Heatmap(
-                        z=df_pivot.values,
-                        x=df_pivot.columns,
-                        y=[f"{idx[0]} - {idx[1]}" for idx in df_pivot.index],
-                        colorscale='RdYlGn',
-                        zmid=0,
-                        zmin=-0.5,
-                        zmax=0.5,
-                        colorbar=dict(title='Correlação')
-                    ))
-                    
-                    fig_heat.update_layout(
-                        title="Correlação: Treino Pesado Hoje → Fadiga no Futuro",
-                        xaxis_title="Dias após treino",
-                        yaxis_title="Evento de Fadiga",
-                        height=300
-                    )
-                    
-                    st.plotly_chart(fig_heat, use_container_width=True, config={'displayModeBar': False})
-                    
-                else:
-                    st.success("""
-                    ✅ **Boa recuperação entre treinos pesados!**
-                    
-                    Não foi detectada correlação significativa entre treinos RPE≥7 e estados de fadiga futuros.
-                    Seu sistema está recuperando adequadamente entre sessões de alta carga.
-                    """)
-            else:
-                st.info("Dados insuficientes para análise temporal (mínimo 6 observações por período).")
-        else:
-            st.info("Coluna 'icu_rpe' não encontrada nos dados.")
-
-                # ════════════════════════════════════════════════════════════════════════
         # ANÁLISE 1.7: Slope 7d Individualizado com Análise de Persistência
         # ════════════════════════════════════════════════════════════════════════
         st.markdown("---")
@@ -1691,98 +1556,6 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
         else:
             st.info(f"Dados insuficientes ({len(slope_series)} dias, mínimo 20) para análise individualizada.")
         # ════════════════════════════════════════════════════════════════════════
-        # ANÁLISE 1.6: Correlação Temporal com Lag (HIIT prediz fadiga futura?)
-        # ════════════════════════════════════════════════════════════════════════
-        st.markdown("---")
-        st.subheader("⏱️ Análise Temporal: HIIT hoje → Fadiga futura? (Lag Analysis)")
-        
-        st.markdown("""
-        Esta análise verifica se dias de **HIIT sugerido pelo HRV-Guided** predizem estados de fadiga (NFOR, Overreaching, Accumulated Fatigue) após X dias.
-        """)
-        
-        # Definir lags para testar
-        lags = [1, 3, 5, 7, 14]
-        resultados_lag = []
-        
-        for lag in lags:
-            # Criar versões deslocadas dos eventos de fadiga
-            for mode, zones, mode_name in [
-                ('m1', ['Accumulated_Fatigue', 'Maladaptation'], 'Mode 1 (Fadiga)'),
-                ('m2', ['NFOR', 'Overreaching'], 'Mode 2 (Fadiga Severa)')
-            ]:
-                for zone in zones:
-                    # Shift nos dados do evento (futuro) vs HIIT atual
-                    df_lag = df_corr[['Data', 'hiit_ln', f'{mode}_{zone}']].copy()
-                    df_lag[f'{zone}_future'] = df_lag[f'{mode}_{zone}'].shift(-lag)  # Evento no futuro
-                    
-                    # Calcular correlação
-                    valid = df_lag[['hiit_ln', f'{zone}_future']].dropna()
-                    if len(valid) > 10:
-                        corr, p_val = stats.pearsonr(valid['hiit_ln'], valid[f'{zone}_future'])
-                        
-                        resultados_lag.append({
-                            'Lag (dias)': lag,
-                            'Modo': mode_name,
-                            'Evento Futuro': zone.replace('_', ' '),
-                            'Correlação': corr,
-                            'P-valor': p_val,
-                            'Significativo': "Sim" if p_val < 0.05 else "Não",
-                            'Interpretação': "Positiva" if corr > 0 else "Negativa"
-                        })
-        
-        if resultados_lag:
-            df_lag_results = pd.DataFrame(resultados_lag)
-            
-            # Mostrar resultados em tabela
-            st.markdown("**Correlações por período de latência:**")
-            
-            for lag in lags:
-                with st.expander(f"Lag de {lag} dias"):
-                    df_lag_day = df_lag_results[df_lag_results['Lag (dias)'] == lag]
-                    if not df_lag_day.empty:
-                        st.dataframe(
-                            df_lag_day[['Modo', 'Evento Futuro', 'Correlação', 'Interpretação', 'P-valor', 'Significativo']]
-                            .style.format({'Correlação': '{:.3f}', 'P-valor': '{:.4f}'})
-                            .apply(lambda x: ['background-color: rgba(231, 76, 60, 0.3)' if x['Correlação'] > 0.3 and x['Significativo'] == 'Sim' else '' for _ in x], axis=1),
-                            use_container_width=True,
-                            hide_index=True
-                        )
-            
-            # Identificar o lag mais preditivo
-            df_signif = df_lag_results[df_lag_results['Significativo'] == 'Sim']
-            if not df_signif.empty:
-                maior_corr = df_signif.loc[df_signif['Correlação'].idxmax()]
-                
-                st.markdown("---")
-                st.markdown("**🔍 Insight Principal:**")
-                
-                if maior_corr['Correlação'] > 0.3:
-                    st.warning(f"""
-                    **Preditor encontrado!**
-                    
-                    Fazer **HIIT hoje** tem correlação de **{maior_corr['Correlação']:.3f}** com aparecer **{maior_corr['Evento Futuro']}** em **{maior_corr['Lag (dias)']} dias**.
-                    
-                    **Interpretação:** O HRV-Guided está sugerindo HIIT em dias que, {maior_corr['Lag (dias)']} dias depois, resultam em estado de fadiga ({maior_corr['Evento Futuro']}).
-                    
-                    **Possíveis causas:**
-                    1. O baseline de {dias_fam}d do HRV-Guided está muito curto para captar a tendência de {maior_corr['Lag (dias)']}d
-                    2. Você pode estar fazendo HIIT em dias que parecem "bons" no curto prazo, mas que na verdade estavam em início de acúmulo de fadiga
-                    3. O HRV leva {maior_corr['Lag (dias)']} dias para refletir o estresse do HIIT neste caso específico
-                    
-                    **Recomendação:** Ajuste o HRV-Guided para usar baseline de pelo menos {maior_corr['Lag (dias)']}d quando este padrão aparecer.
-                    """)
-                else:
-                    st.info("""
-                    **Nenhum preditor forte encontrado.**
-                    
-                    As correlações temporais são fracas, sugerindo que o HRV-Guided está bem calibrado:
-                    - HIIT sugerido não está sistematicamente predizendo fadiga futura
-                    - A resposta ao treino está dentro do esperado
-                    """)
-        else:
-            st.info("Dados insuficientes para análise temporal (mínimo 10 observações por lag).")
-
-        # ════════════════════════════════════════════════════════════════════════
         # ANÁLISE 2: HF_Power-Guided Training (Javaloyes et al. 2020)
         # ════════════════════════════════════════════════════════════════════════
         st.markdown("---")
@@ -1842,17 +1615,6 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
         _hfp_col = next((c for c in ['hf_power','HF_Power','hf','HF','hrv_hf']
                          if c in _wc_hfp.columns), None)
 
-        # Debug — mostrar colunas e valores para diagnóstico
-        with st.expander("🔍 Debug HF_Power (remover após confirmar)", expanded=False):
-            st.write(f"Colunas disponíveis: {[c for c in _wc_hfp.columns if 'hf' in c.lower() or 'HF' in c]}")
-            st.write(f"Coluna detectada: {_hfp_col}")
-            if _hfp_col:
-                st.write("Últimos 5 valores brutos:")
-                st.write(_wc_hfp[['Data', _hfp_col]].tail(5))
-                st.write(f"Tipo dos dados: {_wc_hfp[_hfp_col].dtype}")
-                st.write(f"Valores não-nulos: {_wc_hfp[_hfp_col].notna().sum()}")
-                st.write(f"Valores > 0: {(_wc_hfp[_hfp_col] > 0).sum()}")
-
         if _hfp_col is None:
             st.info("ℹ️ Coluna HF_Power não encontrada no wellness. "
                     "Verifica que a coluna existe na sheet (nomes aceites: hf_power, HF_Power, hf, HF).")
@@ -1886,8 +1648,8 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
                     _trend_icon = {'positive':'↗ Subiu','negative':'↘ Caiu','neutral':'→ Estável'}.get(r['trend'],'—')
                     _rows5.append({
                         'Data':        r['Data'].strftime('%d/%m'),
-                        'HF_Power':    f"{r['hfp']:.0f}" if pd.notna(r['hfp']) else '—',
-                        'Referência':  f"{r['hfp_ref']:.0f}" if pd.notna(r['hfp_ref']) else '—',
+                        'HF_Power':    f"{r['hfp']:.4f}" if pd.notna(r['hfp']) else '—',
+                        'Referência':  f"{r['hfp_ref']:.4f}" if pd.notna(r['hfp_ref']) else '—',
                         'Tendência':   _trend_icon,
                         'Estado':      _cfg['label'],
                         'Prescrição':  ('✅ HIIT' if r['estado']=='HIIT'
