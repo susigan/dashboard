@@ -1842,6 +1842,17 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
         _hfp_col = next((c for c in ['hf_power','HF_Power','hf','HF','hrv_hf']
                          if c in _wc_hfp.columns), None)
 
+        # Debug — mostrar colunas e valores para diagnóstico
+        with st.expander("🔍 Debug HF_Power (remover após confirmar)", expanded=False):
+            st.write(f"Colunas disponíveis: {[c for c in _wc_hfp.columns if 'hf' in c.lower() or 'HF' in c]}")
+            st.write(f"Coluna detectada: {_hfp_col}")
+            if _hfp_col:
+                st.write("Últimos 5 valores brutos:")
+                st.write(_wc_hfp[['Data', _hfp_col]].tail(5))
+                st.write(f"Tipo dos dados: {_wc_hfp[_hfp_col].dtype}")
+                st.write(f"Valores não-nulos: {_wc_hfp[_hfp_col].notna().sum()}")
+                st.write(f"Valores > 0: {(_wc_hfp[_hfp_col] > 0).sum()}")
+
         if _hfp_col is None:
             st.info("ℹ️ Coluna HF_Power não encontrada no wellness. "
                     "Verifica que a coluna existe na sheet (nomes aceites: hf_power, HF_Power, hf, HF).")
