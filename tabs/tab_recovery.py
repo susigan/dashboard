@@ -1626,8 +1626,8 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
             if len(_wc_hfp) < 3:
                 st.info("Dados insuficientes de HF_Power (mínimo 3 dias).")
             else:
-                # Referência = média dos últimos 3 dias anteriores
-                _wc_hfp['hfp_ref'] = _wc_hfp['hfp'].shift(1).rolling(3, min_periods=1).mean()
+                # Referência = dia anterior (não média — Javaloyes usa comparação directa)
+                _wc_hfp['hfp_ref'] = _wc_hfp['hfp'].shift(1)
                 _wc_hfp['trend']   = _wc_hfp.apply(
                     lambda r: _hfp_trend(r['hfp'], r['hfp_ref']), axis=1)
 
@@ -1660,7 +1660,7 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
                                         else '🔵 Início'),
                     })
                 st.dataframe(pd.DataFrame(_rows5), hide_index=True, use_container_width=True)
-                st.caption("Referência = média HF_Power dos 3 dias anteriores. "
+                st.caption("Referência = HF_Power do dia anterior. "
                            "Margem de ruído: ±2% (variação instrumental).")
 
                 # ── Correlação estados HF_Power vs HRV-Guided ───────────────
