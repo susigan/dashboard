@@ -1687,30 +1687,61 @@ def _preencher_faltantes_lookback(df, coluna):
     return df
 
 
-def preproc_wellness(df):
+def preproc_wellness_v2(df):
     """
-    Limpeza wellness — igual ao ATHELTICA v12 DataPreprocessor.limpar_wellness():
+    Limpeza wellness V2 — preserva valores reais, não preenche faltantes.
+    
+    Regras:
     1. Ordenar por Data
     2. Remover duplicatas por Data (keep=first)
-    3. Z-score threshold=3.0 → NaN (picos)
-    4. Zeros inválidos → NaN (hrv, rhr, sleep_hours)
-    5. Preencher faltantes: mediana 7d anteriores → 14d → média global
+    3. Limites fisiológicos absolutos (NÃO z-score):
+       - hrv:  5-250 ms  → manter
+       - hrv:  <5 ou >250 ou 0 → NaN (erro claro)
+       - rhr:  30-120 bpm → manter
+       - sleep_hours: 2-14h → manter
+    4. Zeros → NaN (sem preenchimento!)
+    5. NÃO faz lookback fill — NaN permanecem NaN
+    6. Cria coluna hrv_raw = valor original antes de qualquer transformação
     """
-    if len(df) == 0: return df
+    if len(df) == 0: 
+        return df
+    
     df = df.copy().sort_values('Data')
     df = df.drop_duplicates(subset=['Data'], keep='first')
-    # [1] Remover picos Z-score
-    for c in [c for c in ['hrv', 'rhr', 'sleep_hours', 'sleep_quality',
-                           'stress', 'fatiga', 'humor', 'soreness', 'peso', 'fat']
-              if c in df.columns]:
-        df[c] = remove_zscore(df[c], 3.0)
-    # [2] Zeros inválidos → NaN
-    df = remove_zeros(df, ['hrv', 'rhr', 'sleep_hours'])
-    # [3] Preencher faltantes com lookback (sem data leakage)
-    for c in [c for c in ['hrv', 'rhr', 'sleep_quality', 'fatiga',
-                           'stress', 'humor', 'soreness']
-              if c in df.columns]:
-        df = _preencher_faltantes_lookback(df, c)
+    
+    # Criar hrv_raw ANTES de qualquer modificação
+    if 'hrv' in df.columns:
+        df['hrv_raw'] = df['hrv'].copy()
+    
+    # Limites fisiológicos absolutos (NÃO z-score)
+    # HRV: 5-250 ms (faixa fisiológica real para humanos)
+    if 'hrv' in df.columns:
+        df['hrv'] = pd.to_numeric(df['hrv'], errors='coerce')
+        df.loc[~df['hrv'].between(5, 250, inclusive='both'), 'hrv'] = np.nan
+        df.loc[df['hrv'] == 0, 'hrv'] = np.nan
+    
+    # RHR: 30-120 bpm
+    if 'rhr' in df.columns:
+        df['rhr'] = pd.to_numeric(df['rhr'], errors='coerce')
+        df.loc[~df['rhr'].between(30, 120, inclusive='both'), 'rhr'] = np.nan
+        df.loc[df['rhr'] == 0, 'rhr'] = np.nan
+    
+    # Sleep hours: 2-14h
+    if 'sleep_hours' in df.columns:
+        df['sleep_hours'] = pd.to_numeric(df['sleep_hours'], errors='coerce')
+        df.loc[~df['sleep_hours'].between(2, 14, inclusive='both'), 'sleep_hours'] = np.nan
+        df.loc[df['sleep_hours'] == 0, 'sleep_hours'] = np.nan
+    
+    # Wellness scores 1-5: só remove 0 (inválido), mantém 1-5
+    for c in ['sleep_quality', 'stress', 'fatiga', 'humor', 'soreness']:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors='coerce')
+            df.loc[df[c] == 0, c] = np.nan
+            # NÃO remove valores extremos (1 ou 5) — são reais
+    
+    # NÃO preenche faltantes — NaN permanecem NaN
+    # Isso faz com que o HRV-Guided mostre "Sem medição ⭐" em vez de valor fake
+    
     return df.reset_index(drop=True)
 
 def preproc_ativ(df):
