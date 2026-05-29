@@ -407,18 +407,18 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
                         line_width=1, yref='y2')
 
         fig_b.update_layout(
-            paper_bgcolor='white', plot_bgcolor='white',
-            font=dict(color='#111', size=12),
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+            font=dict(size=12),
             height=420,
             hovermode='x unified',
             margin=dict(t=40, b=70, l=60, r=80),
             legend=dict(orientation='h', y=-0.18,
-                        font=dict(color='#111', size=10),
-                        bgcolor='rgba(255,255,255,0.9)'),
+                        font=dict(size=10),
+                        bgcolor='rgba(0,0,0,0)'),
             yaxis=dict(
                 title='β (0–100)',
                 range=[0, 100],
-                showgrid=True, gridcolor='#eee',
+                showgrid=True, gridcolor='rgba(128,128,128,0.2)',
                 tickfont=dict(color='#2471A3'),
                 title_font=dict(color='#2471A3'),
             ),
@@ -430,7 +430,7 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
                 tickfont=dict(color='#888'),
                 title_font=dict(color='#888'),
             ),
-            xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111'))
+            xaxis=dict(showgrid=True, gridcolor='rgba(128,128,128,0.2)', tickfont=dict())
         )
 
         st.plotly_chart(fig_b, use_container_width=True,
@@ -742,20 +742,20 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
     ))
 
     fig.update_layout(
-        paper_bgcolor='white', plot_bgcolor='white',
-        font=dict(color='#111', size=12),
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+        font=dict(size=12),
         height=500, barmode='relative',
         hovermode='x unified',
         margin=dict(t=60, b=80, l=60, r=80),
         title=dict(
             text=f'{"Mode 1 — Altini" if "Mode 1" in modo_modelo else "Mode 2 — Plews"}'
                  f' | Baseline {baseline_w}d | CV thresholds: low={cv_low:.2f}% / high={cv_high:.2f}%',
-            font=dict(size=13, color='#111')),
-        legend=dict(orientation='h', y=-0.22, font=dict(color='#111', size=10),
-                    bgcolor='rgba(255,255,255,0.9)'),
+            font=dict(size=13)),
+        legend=dict(orientation='h', y=-0.22, font=dict(size=10),
+                    bgcolor='rgba(0,0,0,0)'),
         yaxis=dict(title='LnRMSSD',
-                   showgrid=True, gridcolor='#eee',
-                   tickfont=dict(color='#111'),
+                   showgrid=True, gridcolor='rgba(128,128,128,0.2)',
+                   tickfont=dict(),
                    range=[0, 8],
                    dtick=1),
         yaxis2=dict(title=f'CV% ({janela_cv}d)',
@@ -764,7 +764,7 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
                     tickfont=dict(color='#e67e22'),
                     title_font=dict(color='#e67e22'),
                     range=[0, max(3.0, df_plot['cv'].max() * 1.3)]),
-        xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111'))
+        xaxis=dict(showgrid=True, gridcolor='rgba(128,128,128,0.2)', tickfont=dict())
     )
 
     st.plotly_chart(fig, use_container_width=True,
@@ -1008,21 +1008,21 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
         ), row=2, col=1)
 
         _fig_hg.update_layout(
-            paper_bgcolor='white', plot_bgcolor='white',
-            font=dict(color='#111', size=11),
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+            font=dict(size=11),
             height=520,
             hovermode='x unified',
             margin=dict(t=60, b=70, l=60, r=40),
-            legend=dict(orientation='h', y=-0.18, font=dict(color='#111', size=10),
-                        bgcolor='rgba(255,255,255,0.9)')
+            legend=dict(orientation='h', y=-0.18, font=dict(size=10),
+                        bgcolor='rgba(0,0,0,0)')
         )
-        _fig_hg.update_xaxes(showgrid=True, gridcolor='#eee',
-                              tickfont=dict(color='#111'))
-        _fig_hg.update_yaxes(showgrid=True, gridcolor='#eee',
-                              tickfont=dict(color='#111'), row=1, col=1,
+        _fig_hg.update_xaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)',
+                              tickfont=dict())
+        _fig_hg.update_yaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)',
+                              tickfont=dict(), row=1, col=1,
                               title_text='LnRMSSD')
-        _fig_hg.update_yaxes(showgrid=True, gridcolor='#eee',
-                              tickfont=dict(color='#111'), row=2, col=1,
+        _fig_hg.update_yaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)',
+                              tickfont=dict(), row=2, col=1,
                               title_text='Desvio (DP)',
                               range=[-5, 5],  # ALTERADO: Range expandido para ±5
                               zeroline=True,
@@ -1530,13 +1530,12 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
                     showgrid=True,
                     gridcolor='rgba(128,128,128,0.2)'
                 ),
-                paper_bgcolor='white',
-                plot_bgcolor='white',
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
                 height=500,
                 showlegend=True,
                 legend=dict(
                     font=dict(color='black'),
-                    bgcolor='rgba(255,255,255,0.9)',
+                    bgcolor='rgba(0,0,0,0)',
                     bordercolor='black',
                     borderwidth=1
                 ),
@@ -1788,8 +1787,8 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
 
             _fig_j.update_layout(
                 height=380,
-                paper_bgcolor='white', plot_bgcolor='white',
-                font=dict(color='#111', size=11),
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                font=dict(size=11),
                 hovermode='x unified',
                 margin=dict(t=30, b=60, l=60, r=130),
                 legend=dict(orientation='h', y=-0.22, font=dict(size=10)),
@@ -1797,8 +1796,8 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
                     text='LnRMSSD rolling 7 dias — protocolo Javaloyes/Kiviniemi',
                     font=dict(size=13)
                 ),
-                xaxis=dict(showgrid=True, gridcolor='#eee'),
-                yaxis=dict(title='LnRMSSD₇', showgrid=True, gridcolor='#eee')
+                xaxis=dict(showgrid=True, gridcolor='rgba(128,128,128,0.2)'),
+                yaxis=dict(title='LnRMSSD₇', showgrid=True, gridcolor='rgba(128,128,128,0.2)')
             )
             st.plotly_chart(_fig_j, use_container_width=True,
                             config={'displayModeBar': False},
