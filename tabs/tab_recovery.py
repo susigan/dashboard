@@ -1683,8 +1683,8 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
             # ── Labels e cores ────────────────────────────────────────────────
             _COR_MAP = {'HIGH': '#27ae60', 'LOW': '#3498db', 'REST': '#e74c3c'}
             _LABEL_MAP = {
-                'HIGH': '🟢 HIGH — treino intenso (≥VT2)',
-                'LOW':  '🔵 LOW — treino leve (<VT1)',
+                'HIGH': '🟢 HIGH — treino intenso (acima VT2)',
+                'LOW':  '🔵 LOW — treino leve (abaixo VT1)',
                 'REST': '🔴 REST — descanso activo',
             }
             _ZONA_MAP = {
