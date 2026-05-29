@@ -281,90 +281,6 @@ def _hrv_trend(hrv_arr, window=7, return_slope=False):
     return trend_combined
 
 
-def kalman_ctlg(kj_series_daily: pd.Series, tau: float,
-                Q_frac: float = 0.02, R_obs: float = 0.5) -> pd.Series:
-    """
-    Kalman 1D para CTLγ — substitui EWM(fill_value=0).
-    Dias sem treino = ausência de observação (não enviesa a estimativa).
-    decay = exp(-1/τ), equivalente ao EWM mas sem artefacto do fill=0.
-    """
-    kj = kj_series_daily.values.astype(np.float64)
-    n  = len(kj)
-    if n == 0:
-        return kj_series_daily.copy()
-    decay  = np.exp(-1.0 / max(tau, 1.0))
-    _kj_std = float(np.nanstd(kj[kj > 0])) if (kj > 0).any() else 1.0
-    Q = (Q_frac * _kj_std) ** 2
-    _first_obs = kj[kj > 0]
-    x = float(_first_obs[0]) if len(_first_obs) > 0 else 0.0
-    P = float(_kj_std ** 2)
-    out = np.zeros(n)
-    for t in range(n):
-        x = decay * x
-        P = decay * P * decay + Q
-        if kj[t] > 0:
-            K = P / (P + R_obs)
-            x = x + K * (kj[t] - x)
-            P = (1 - K) * P
-        out[t] = x
-    return pd.Series(out, index=kj_series_daily.index)
-
-
-def _compute_kappa_kalman(series_list, window=28, tau_smooth=7,
-                          return_eigenvalues=False):
-    """
-    FMT scalar curvature κ(t) com suavização Kalman sobre a covariância rolling.
-
-    Della Mattia (2019): κ(t) = trace(cov(Δx)) — rolling window 28d.
-    O rolling covariance bruto é ruidoso (cada janela só tem 28 pontos).
-
-    Melhoria: após calcular κ_bruto via rolling covariance, aplica
-    EWM(span=tau_smooth) para separar sinal de ruído.
-    Isso equivale a um filtro passa-baixo sobre κ — o Della Mattia menciona
-    explicitamente que κ deve ser suave para ser interpretável.
-
-    Parâmetros:
-        series_list      : list of 1D arrays — dimensões do vector x(t)
-        window           : janela rolling para covariância (default 28)
-        tau_smooth       : EWM span para suavizar κ após cálculo (default 7)
-        return_eigenvalues: se True, retorna λ₁/Σλ também suavizado
-
-    Retorna: kappa (array n), [lambda1_frac (array n) se return_eigenvalues]
-    """
-    n   = len(series_list[0])
-    d   = len(series_list)
-    mat = np.full((n, d), np.nan)
-    for j, s in enumerate(series_list):
-        arr = np.array(s, dtype=np.float64)
-        mu, sd = np.nanmean(arr), np.nanstd(arr)
-        mat[:, j] = (arr - mu) / sd if sd > 1e-9 else (arr - mu)
-    delta = np.full_like(mat, np.nan)
-    delta[1:] = mat[1:] - mat[:-1]
-    kappa_raw    = np.full(n, np.nan)
-    lambda1_raw  = np.full(n, np.nan)
-    for t in range(window, n):
-        wd = delta[t - window:t]
-        valid = np.all(np.isfinite(wd), axis=1)
-        if valid.sum() < max(10, d + 2):
-            continue
-        try:
-            F = np.cov(wd[valid].T)
-            kappa_raw[t] = float(np.trace(F))
-            if return_eigenvalues and d >= 2:
-                eigs = np.sort(np.linalg.eigvalsh(F))[::-1]
-                eigs_pos = eigs[eigs > 0]
-                if len(eigs_pos) > 0:
-                    lambda1_raw[t] = float(eigs_pos[0] / eigs_pos.sum())
-        except Exception:
-            pass
-    # Suavizar κ com EWM — separa sinal de ruído sem distorcer transições
-    kappa_s = pd.Series(kappa_raw).ewm(span=tau_smooth, min_periods=3).mean().values
-    if return_eigenvalues:
-        lambda1_s = pd.Series(lambda1_raw).ewm(span=tau_smooth, min_periods=3).mean().values
-        return kappa_s, lambda1_s
-    return kappa_s
-
-
 def fit_gamma_performance(load_arr, perf_arr, gamma_range=(0.10, 0.90),
                           step=0.05, lag=0, max_lag=365,
                           smooth_perf=3):
@@ -1039,7 +955,7 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
     _tensor_dim = len(_dims_overall)
 
     if _tensor_dim >= 2:
-        _kappa_arr, _lambda1_arr = _compute_kappa_kalman(
+        _kappa_arr, _lambda1_arr = _compute_kappa(
             _dims_overall, _fmt_w, return_eigenvalues=True)
         ld['FMT_kappa']        = _kappa_arr
         ld['FMT_lambda1_frac'] = _lambda1_arr
@@ -1058,7 +974,7 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
             _dims_4d.append(_impute_rolling(ld['WEED_z'].values))
         _dims_4d.append(_impute_rolling(ld['wp_prime'].values))
         if len(_dims_4d) >= 2:
-            ld['FMT_kappa_4d'] = _compute_kappa_kalman(_dims_4d, _fmt_w)
+            ld['FMT_kappa_4d'] = _compute_kappa(_dims_4d, _fmt_w)
 
     # Per-modality 3×3: [CTLγ_mod, HRV_trend, WEED_z] — com imputação rolling
     for _mod in ['Bike', 'Row', 'Ski', 'Run']:
@@ -1071,7 +987,7 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
         if 'WEED_z' in ld.columns and ld['WEED_z'].notna().sum() >= 20:
             _dims_mod.append(_impute_rolling(ld['WEED_z'].values))
         if len(_dims_mod) >= 2:
-            ld[f'FMT_kappa_{_mod}'] = _compute_kappa_kalman(_dims_mod, _fmt_w)
+            ld[f'FMT_kappa_{_mod}'] = _compute_kappa(_dims_mod, _fmt_w)
 
     if hrv_trend_arr is not None:
         ld['HRV_trend'] = hrv_trend_arr
@@ -1687,61 +1603,42 @@ def _preencher_faltantes_lookback(df, coluna):
     return df
 
 
-def preproc_wellness_v2(df):
+def preproc_wellness(df):
     """
-    Limpeza wellness V2 — preserva valores reais, não preenche faltantes.
-    
-    Regras:
-    1. Ordenar por Data
-    2. Remover duplicatas por Data (keep=first)
-    3. Limites fisiológicos absolutos (NÃO z-score):
-       - hrv:  5-250 ms  → manter
-       - hrv:  <5 ou >250 ou 0 → NaN (erro claro)
-       - rhr:  30-120 bpm → manter
-       - sleep_hours: 2-14h → manter
-    4. Zeros → NaN (sem preenchimento!)
-    5. NÃO faz lookback fill — NaN permanecem NaN
-    6. Cria coluna hrv_raw = valor original antes de qualquer transformação
+    Limpeza wellness:
+    1. Ordenar por Data + deduplicar
+    2. HRV e RHR: SEM z-score — valores extremos reais são fisiologicamente válidos
+       (HRV alto após descanso, RHR elevado pós-febre, stress agudo, etc.)
+       Apenas zeros → NaN (sensor sem leitura)
+    3. Outros campos (sleep_quality, stress, etc.): z-score 3.0 mantido
+       (escalas limitadas 1-5, outliers nessas escalas = erro de input)
+    4. Guardar flag hrv_sem_medicao ANTES do preenchimento — usado no dashboard
+       para mostrar "SEM MEDIÇÃO" nos dias sem dado real
+    5. Preencher NaN: mediana 7d anteriores → 14d → média global (lookback)
     """
-    if len(df) == 0: 
-        return df
-    
+    if len(df) == 0: return df
     df = df.copy().sort_values('Data')
     df = df.drop_duplicates(subset=['Data'], keep='first')
-    
-    # Criar hrv_raw ANTES de qualquer modificação
+
+    # [1] Zeros inválidos → NaN (sensor sem leitura — não z-score)
+    df = remove_zeros(df, ['hrv', 'rhr', 'sleep_hours'])
+
+    # [2] Flag dias sem medição real de HRV (antes do preenchimento)
     if 'hrv' in df.columns:
-        df['hrv_raw'] = df['hrv'].copy()
-    
-    # Limites fisiológicos absolutos (NÃO z-score)
-    # HRV: 5-250 ms (faixa fisiológica real para humanos)
-    if 'hrv' in df.columns:
-        df['hrv'] = pd.to_numeric(df['hrv'], errors='coerce')
-        df.loc[~df['hrv'].between(5, 250, inclusive='both'), 'hrv'] = np.nan
-        df.loc[df['hrv'] == 0, 'hrv'] = np.nan
-    
-    # RHR: 30-120 bpm
-    if 'rhr' in df.columns:
-        df['rhr'] = pd.to_numeric(df['rhr'], errors='coerce')
-        df.loc[~df['rhr'].between(30, 120, inclusive='both'), 'rhr'] = np.nan
-        df.loc[df['rhr'] == 0, 'rhr'] = np.nan
-    
-    # Sleep hours: 2-14h
-    if 'sleep_hours' in df.columns:
-        df['sleep_hours'] = pd.to_numeric(df['sleep_hours'], errors='coerce')
-        df.loc[~df['sleep_hours'].between(2, 14, inclusive='both'), 'sleep_hours'] = np.nan
-        df.loc[df['sleep_hours'] == 0, 'sleep_hours'] = np.nan
-    
-    # Wellness scores 1-5: só remove 0 (inválido), mantém 1-5
-    for c in ['sleep_quality', 'stress', 'fatiga', 'humor', 'soreness']:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors='coerce')
-            df.loc[df[c] == 0, c] = np.nan
-            # NÃO remove valores extremos (1 ou 5) — são reais
-    
-    # NÃO preenche faltantes — NaN permanecem NaN
-    # Isso faz com que o HRV-Guided mostre "Sem medição ⭐" em vez de valor fake
-    
+        df['hrv_sem_medicao'] = df['hrv'].isna()
+
+    # [3] Z-score apenas em escalas limitadas (1-5): outliers = erro de input
+    for c in [c for c in ['sleep_hours', 'sleep_quality', 'stress',
+                           'fatiga', 'humor', 'soreness', 'peso', 'fat']
+              if c in df.columns]:
+        df[c] = remove_zscore(df[c], 3.0)
+
+    # [4] Preencher faltantes com lookback (sem data leakage)
+    for c in [c for c in ['hrv', 'rhr', 'sleep_quality', 'fatiga',
+                           'stress', 'humor', 'soreness']
+              if c in df.columns]:
+        df = _preencher_faltantes_lookback(df, c)
+
     return df.reset_index(drop=True)
 
 def preproc_ativ(df):
@@ -2086,19 +1983,16 @@ def calcular_alpha_polar(ac_full, gamma_map=None, session_state_key='alpha_polar
             result[mod] = {'ok': False, 'reason': 'sem colunas z1/z2/z3_kj'}
             continue
 
-        # CTLγ por zona — Kalman 1D em vez de EWM(fill=0)
-        # Dias sem treino tratados como ausência de observação, não como 0 kJ
+        # CTLγ por zona
         _date_range = pd.date_range(_ef['Data'].min(), pd.Timestamp.now().normalize(), freq='D')
         _ef_idx     = _ef.set_index('Data')
-        # Séries esparsas (NaN onde não há sessão, não 0)
-        _z1d = _ef_idx['z1'].reindex(_date_range)   # NaN = sem observação
-        _z2d = _ef_idx['z2'].reindex(_date_range)
-        _z3d = _ef_idx['z3'].reindex(_date_range)
-        # Para Kalman: preencher NaN com 0 só como sinal de "sem observação"
-        # O filtro ignora dias com kj=0 na actualização (só predição)
-        _cz1 = kalman_ctlg(_z1d.fillna(0), tau=float(span))
-        _cz2 = kalman_ctlg(_z2d.fillna(0), tau=float(span))
-        _cz3 = kalman_ctlg(_z3d.fillna(0), tau=float(span))
+        _z1d = _ef_idx['z1'].reindex(_date_range, fill_value=0)
+        _z2d = _ef_idx['z2'].reindex(_date_range, fill_value=0)
+        _z3d = _ef_idx['z3'].reindex(_date_range, fill_value=0)
+
+        _cz1 = _z1d.ewm(span=span).mean()
+        _cz2 = _z2d.ewm(span=span).mean()
+        _cz3 = _z3d.ewm(span=span).mean()
 
         # Mapear para datas das sessões
         _ef['cz1'] = _ef['Data'].map(_cz1.to_dict())
