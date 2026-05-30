@@ -2034,8 +2034,15 @@ def calcular_alpha_polar(ac_full, gamma_map=None, session_state_key='alpha_polar
         # Sessões com eFTP e zonas
         _ef = ac_full[ac_full[col_mod] == mod].copy()
         _ef[col_date] = pd.to_datetime(_ef[col_date]).dt.normalize()
-        _ef = (_ef.rename(columns={col_date: 'Data', col_eftp: 'eftp'})
-                  .sort_values('Data').drop_duplicates('Data').reset_index(drop=True))
+        # Rename seguro — só renomeia se o nome for diferente (evita coluna duplicada)
+        _rename_map = {}
+        if col_date != 'Data':   _rename_map[col_date] = 'Data'
+        if col_eftp != 'eftp':   _rename_map[col_eftp] = 'eftp'
+        if _rename_map:
+            _ef = _ef.rename(columns=_rename_map)
+        # Garantir que não há colunas duplicadas antes do sort
+        _ef = _ef.loc[:, ~_ef.columns.duplicated()]
+        _ef = _ef.sort_values('Data').drop_duplicates('Data').reset_index(drop=True)
         _ef['eftp'] = pd.to_numeric(_ef['eftp'], errors='coerce')
         _ef = _ef.dropna(subset=['eftp'])
 
