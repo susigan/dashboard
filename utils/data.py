@@ -281,6 +281,75 @@ def _hrv_trend(hrv_arr, window=7, return_slope=False):
     return trend_combined
 
 
+
+def kalman_ctlg(kj_series_daily: pd.Series, tau: float,
+                Q_frac: float = 0.02, R_obs: float = 0.5) -> pd.Series:
+    """
+    Kalman 1D para CTLγ — substitui EWM(fill_value=0).
+    Dias sem treino = ausência de observação (não enviesa a estimativa).
+    decay = exp(-1/τ), equivalente ao EWM mas sem artefacto do fill=0.
+    """
+    kj = kj_series_daily.values.astype(np.float64)
+    n  = len(kj)
+    if n == 0:
+        return kj_series_daily.copy()
+    decay   = np.exp(-1.0 / max(tau, 1.0))
+    _kj_std = float(np.nanstd(kj[kj > 0])) if (kj > 0).any() else 1.0
+    Q = (Q_frac * _kj_std) ** 2
+    _first_obs = kj[kj > 0]
+    x = float(_first_obs[0]) if len(_first_obs) > 0 else 0.0
+    P = float(_kj_std ** 2)
+    out = np.zeros(n)
+    for t in range(n):
+        x = decay * x
+        P = decay * P * decay + Q
+        if kj[t] > 0:
+            K = P / (P + R_obs)
+            x = x + K * (kj[t] - x)
+            P = (1 - K) * P
+        out[t] = x
+    return pd.Series(out, index=kj_series_daily.index)
+
+
+def _compute_kappa_kalman(series_list, window=28, tau_smooth=7,
+                          return_eigenvalues=False):
+    """
+    FMT κ(t) com suavização EWM após rolling covariance.
+    Della Mattia (2019): κ(t) = trace(cov(Δx)) — rolling 28d.
+    EWM(span=tau_smooth) suaviza κ_bruto para interpretabilidade.
+    """
+    n   = len(series_list[0])
+    d   = len(series_list)
+    mat = np.full((n, d), np.nan)
+    for j, s in enumerate(series_list):
+        arr = np.array(s, dtype=np.float64)
+        mu, sd = np.nanmean(arr), np.nanstd(arr)
+        mat[:, j] = (arr - mu) / sd if sd > 1e-9 else (arr - mu)
+    delta = np.full_like(mat, np.nan)
+    delta[1:] = mat[1:] - mat[:-1]
+    kappa_raw   = np.full(n, np.nan)
+    lambda1_raw = np.full(n, np.nan)
+    for t in range(window, n):
+        wd = delta[t - window:t]
+        valid = np.all(np.isfinite(wd), axis=1)
+        if valid.sum() < max(10, d + 2):
+            continue
+        try:
+            F = np.cov(wd[valid].T)
+            kappa_raw[t] = float(np.trace(F))
+            if return_eigenvalues and d >= 2:
+                eigs = np.sort(np.linalg.eigvalsh(F))[::-1]
+                eigs_pos = eigs[eigs > 0]
+                if len(eigs_pos) > 0:
+                    lambda1_raw[t] = float(eigs_pos[0] / eigs_pos.sum())
+        except Exception:
+            pass
+    kappa_s = pd.Series(kappa_raw).ewm(span=tau_smooth, min_periods=3).mean().values
+    if return_eigenvalues:
+        lambda1_s = pd.Series(lambda1_raw).ewm(span=tau_smooth, min_periods=3).mean().values
+        return kappa_s, lambda1_s
+    return kappa_s
+
 def fit_gamma_performance(load_arr, perf_arr, gamma_range=(0.10, 0.90),
                           step=0.05, lag=0, max_lag=365,
                           smooth_perf=3):
@@ -955,7 +1024,7 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
     _tensor_dim = len(_dims_overall)
 
     if _tensor_dim >= 2:
-        _kappa_arr, _lambda1_arr = _compute_kappa(
+        _kappa_arr, _lambda1_arr = _compute_kappa_kalman(
             _dims_overall, _fmt_w, return_eigenvalues=True)
         ld['FMT_kappa']        = _kappa_arr
         ld['FMT_lambda1_frac'] = _lambda1_arr
@@ -974,7 +1043,7 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
             _dims_4d.append(_impute_rolling(ld['WEED_z'].values))
         _dims_4d.append(_impute_rolling(ld['wp_prime'].values))
         if len(_dims_4d) >= 2:
-            ld['FMT_kappa_4d'] = _compute_kappa(_dims_4d, _fmt_w)
+            ld['FMT_kappa_4d'] = _compute_kappa_kalman(_dims_4d, _fmt_w)
 
     # Per-modality 3×3: [CTLγ_mod, HRV_trend, WEED_z] — com imputação rolling
     for _mod in ['Bike', 'Row', 'Ski', 'Run']:
@@ -987,7 +1056,7 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
         if 'WEED_z' in ld.columns and ld['WEED_z'].notna().sum() >= 20:
             _dims_mod.append(_impute_rolling(ld['WEED_z'].values))
         if len(_dims_mod) >= 2:
-            ld[f'FMT_kappa_{_mod}'] = _compute_kappa(_dims_mod, _fmt_w)
+            ld[f'FMT_kappa_{_mod}'] = _compute_kappa_kalman(_dims_mod, _fmt_w)
 
     if hrv_trend_arr is not None:
         ld['HRV_trend'] = hrv_trend_arr
@@ -1986,13 +2055,13 @@ def calcular_alpha_polar(ac_full, gamma_map=None, session_state_key='alpha_polar
         # CTLγ por zona
         _date_range = pd.date_range(_ef['Data'].min(), pd.Timestamp.now().normalize(), freq='D')
         _ef_idx     = _ef.set_index('Data')
-        _z1d = _ef_idx['z1'].reindex(_date_range, fill_value=0)
-        _z2d = _ef_idx['z2'].reindex(_date_range, fill_value=0)
-        _z3d = _ef_idx['z3'].reindex(_date_range, fill_value=0)
-
-        _cz1 = _z1d.ewm(span=span).mean()
-        _cz2 = _z2d.ewm(span=span).mean()
-        _cz3 = _z3d.ewm(span=span).mean()
+        # Kalman CTLγ por zona — dias sem treino = ausência de observação
+        _z1d = _ef_idx['z1'].reindex(_date_range).fillna(0)
+        _z2d = _ef_idx['z2'].reindex(_date_range).fillna(0)
+        _z3d = _ef_idx['z3'].reindex(_date_range).fillna(0)
+        _cz1 = kalman_ctlg(_z1d, tau=float(span))
+        _cz2 = kalman_ctlg(_z2d, tau=float(span))
+        _cz3 = kalman_ctlg(_z3d, tau=float(span))
 
         # Mapear para datas das sessões
         _ef['cz1'] = _ef['Data'].map(_cz1.to_dict())
