@@ -1316,13 +1316,19 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 f"({_KAPPA_P87:.2f})."
             )
 
-        # ── Carregar α do Modelo 2 (FTLM Polar) do session_state ──────────────
-        # Calculado em tab_eftp quando o utilizador visita essa tab.
-        # Contém: alpha_z3/z2/z1, r2, ctz_now, alvos por horizonte, kJ_zona_semana
+        # ── Carregar α do Modelo 2 (FTLM Polar) ───────────────────────────────
+        # Primeiro tenta o cache (populado pelo tab_eftp).
+        # Se vazio (utilizador ainda não visitou tab_eftp), calcula aqui.
         _alpha_p = st.session_state.get('alpha_polar_cache', {})
-
-        # α calculado no arranque (app.py) — sem recálculo aqui
-        # Se ainda vazio após recarregamento, mostrar mensagem informativa
+        if not _alpha_p:
+            try:
+                from utils.data import calcular_alpha_polar as _cap
+                _gamma_map_vg = st.session_state.get('gamma_map', {})
+                _alpha_p = _cap(_pf, gamma_map=_gamma_map_vg)
+                if _alpha_p:
+                    st.session_state['alpha_polar_cache'] = _alpha_p
+            except Exception:
+                _alpha_p = {}
 
         for mod in ['Bike','Row','Ski','Run']:
             _sub = _pf[_pf['type'].apply(norm_tipo)==mod].copy()
