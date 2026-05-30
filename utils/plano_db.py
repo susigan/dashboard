@@ -204,7 +204,7 @@ def criar_plano(modalidade: str, prazo_semanas: int, eftp_alvo_delta: int,
                 eftp_actual: float, kj_z3_inicial: float, kj_z2_inicial: float,
                 kj_z1_inicial: float, alpha_z3: float, alpha_z2: float,
                 alpha_z1: float, intercept: float, cz3_now: float,
-                cz2_now: float, cz1_now: float) -> int:
+                cz2_now: float, cz1_now: float, span: int = 28) -> int:
     """
     Cria um novo plano e gera todas as semanas da rampa.
     Desactiva planos anteriores desta modalidade.
@@ -221,7 +221,14 @@ def criar_plano(modalidade: str, prazo_semanas: int, eftp_alvo_delta: int,
     else:
         cz3_alvo = cz3_now * 1.10
 
-    kj_z3_alvo_final = float(cz3_alvo * 7)
+    # Inversão correcta do CTLγ → kJ/semana
+    # CTLγ é uma EWM: estado estacionário → kJ_diário = CTLγ × α_EWM
+    # α_EWM = 2/(span+1) para EWM span equivalente
+    _alpha_ewm = 2.0 / (span + 1)
+    _kj_diario_alvo = float(cz3_alvo) * _alpha_ewm
+    kj_z3_alvo_final = _kj_diario_alvo * 7  # kJ/semana
+    # Sanity check: alvo não pode ser mais que 3× o actual
+    kj_z3_alvo_final = min(kj_z3_alvo_final, kj_z3_inicial * 3.0 if kj_z3_inicial > 5 else kj_z3_alvo_final)
 
     try:
         conn = _get_conn()
