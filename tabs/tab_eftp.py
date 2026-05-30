@@ -914,22 +914,26 @@ IC 90% via σ_resid em ln-escala → convertido para Watts. Cap ±25% em 28d.
                 _alpha_result = calcular_alpha_polar(ac_full, gamma_map=_gamma_from_ld)
                 st.session_state['alpha_polar_cache'] = _alpha_result
             except Exception as _ae:
-                # Fallback: usar os α já calculados no Modelo 2
-                _alpha_result = {}
-                for _pr in _polar_rows:
-                    _mp2x = _pr['Modalidade']
-                    _alpha_result[_mp2x] = {
-                        'ok': True,
-                        'alpha_z3': float(_pr['α_Z3 (intenso)']),
-                        'alpha_z2': float(_pr['α_Z2 (limiar)']),
-                        'alpha_z1': float(_pr['α_Z1 (base)']),
-                        'r2': float(_pr['R² Modelo 2']),
-                        'eftp_now': _eftp_z_now.get(_mp2x, 0),
-                        'cz3_now': _ctlg_z_now.get(_mp2x, {}).get('Z3', 0),
-                        'cz2_now': _ctlg_z_now.get(_mp2x, {}).get('Z2', 0),
-                        'cz1_now': _ctlg_z_now.get(_mp2x, {}).get('Z1', 0),
-                    }
-                st.session_state['alpha_polar_cache'] = _alpha_result
+                # Fallback: _polar_rows pode ainda não estar definida aqui
+                # (erro ocorreu antes do Modelo 2 calcular)
+                # Usar cache anterior se disponível, senão dict vazio
+                _alpha_result = st.session_state.get('alpha_polar_cache', {})
+                if not _alpha_result:
+                    # Tentar usar _polar_rows se já existe
+                    try:
+                        _alpha_result = {}
+                        for _pr in _polar_rows:
+                            _mp2x = _pr['Modalidade']
+                            _alpha_result[_mp2x] = {
+                                'ok': True,
+                                'alpha_z3': float(_pr.get('α_Z3 (intenso)', 0)),
+                                'alpha_z2': float(_pr.get('α_Z2 (limiar)', 0)),
+                                'alpha_z1': float(_pr.get('α_Z1 (base)', 0)),
+                                'r2': float(_pr.get('R² Modelo 2', 0)),
+                            }
+                        st.session_state['alpha_polar_cache'] = _alpha_result
+                    except Exception:
+                        pass
 
         except Exception as _pe:
             import traceback as _tb
