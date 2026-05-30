@@ -1855,7 +1855,15 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                     _cz3_tgt = max(_cz3_tgt, _cz3_now)
                 else:
                     _cz3_tgt = _cz3_now * 1.10
-                _kj3_alvo_final = float(_cz3_tgt * 7)
+                # Inversão correcta CTLγ → kJ/semana via EWM
+                # α_EWM = 2/(span+1); kJ_diário = CTLγ × α_EWM; kJ_sem = × 7
+                _span_p = _ap_p.get('span', 28)
+                _alpha_ewm_p = 2.0 / (_span_p + 1)
+                _kj3_alvo_final = float(_cz3_tgt) * _alpha_ewm_p * 7
+                # Sanity: max 3× o actual (evita valores irreais)
+                _kj3_act_safe = _kj3_act if _kj3_act > 5 else 0
+                if _kj3_act_safe > 0:
+                    _kj3_alvo_final = min(_kj3_alvo_final, _kj3_act_safe * 3.0)
 
                 # Ler/criar plano no DB
                 _z3_feito_show = 0
@@ -1872,20 +1880,35 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                             kj_z1_inicial=_kj1_act,
                             alpha_z3=_a3p, alpha_z2=_a2p, alpha_z1=_a1p,
                             intercept=_intcp,
-                            cz3_now=_cz3_now, cz2_now=_cz2_now, cz1_now=_cz1_now)
+                            cz3_now=_cz3_now, cz2_now=_cz2_now, cz1_now=_cz1_now,
+                            span=_ap_p.get('span', 28))
                     _sem_info     = get_semana_atual(_mv_p)
-                    _sem_num_show = _sem_info.get('semana_num') or 1
-                    _concluido    = _sem_info.get('concluido', False)
+                    _sem_num_db   = _sem_info.get('semana_num') or 1
+                    # Usar override do user se for diferente do auto-detectado
+                    _sem_num_show = int(_sem_override) if _sem_override != _sem_num_db else _sem_num_db
+                    _concluido    = _sem_num_show > _prazo_sem
                     _dados        = _sem_info.get('dados')
                     # Actualizar feito com dados reais desta semana
                     _col_z3_p = next((c for c in ['Z3KJ','z3_kj','z3kj'] if c in _pf.columns), None)
                     _col_z2_p = next((c for c in ['Z2KJ','z2_kj','z2kj'] if c in _pf.columns), None)
                     _col_z1_p = next((c for c in ['Z1KJ','z1_kj','z1kj'] if c in _pf.columns), None)
-                    _sem_iso_p = _sem_info.get('semana_iso','')
+                    # Segunda-feira da semana actual (baseada no plano)
+                    _plano_info = _sem_info.get('plano') or {}
+                    _semana_inicio_str = _plano_info.get('semana_inicio', '')
+                    try:
+                        from datetime import date, timedelta
+                        _d_ini_p = date.fromisoformat(_semana_inicio_str) if _semana_inicio_str else date.today()
+                        _seg_atual = str(_d_ini_p + timedelta(weeks=_sem_num_show - 1))
+                        _seg_fim   = str(_d_ini_p + timedelta(weeks=_sem_num_show))
+                    except Exception:
+                        _seg_atual = _sem_info.get('semana_iso', '')
+                        _seg_fim   = ''
+                    _sem_iso_p = _seg_atual
                     if _col_z3_p and _sem_iso_p:
                         _pf_sem = _pf[
                             (_pf['type'].apply(norm_tipo)==_mv_p) &
-                            (_pf['Data'] >= pd.Timestamp(_sem_iso_p))]
+                            (_pf['Data'] >= pd.Timestamp(_sem_iso_p)) &
+                            (_pf['Data'] < pd.Timestamp(_seg_fim) if _seg_fim else True)]
                         _z3f = float(pd.to_numeric(_pf_sem[_col_z3_p],errors='coerce').fillna(0).sum()) if len(_pf_sem)>0 else 0
                         _z2f = float(pd.to_numeric(_pf_sem[_col_z2_p],errors='coerce').fillna(0).sum()) if len(_pf_sem)>0 and _col_z2_p else 0
                         _z1f = float(pd.to_numeric(_pf_sem[_col_z1_p],errors='coerce').fillna(0).sum()) if len(_pf_sem)>0 and _col_z1_p else 0
