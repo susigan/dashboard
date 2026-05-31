@@ -586,7 +586,7 @@ ou a acumular sobrecarga não compensada (allostatic overload), comparando
     @st.cache_data(show_spinner="A estimar K₁K₂T₁T₂ (Bayesian NLSS)...", ttl=7200)
     def _cached_nlss(_key_da, _key_wc, _mod, da_arg, wc_arg):
         from utils.data import calcular_nlss
-        return calcular_nlss(da_arg, df_wellness=wc_arg, mod=_mod)
+        return calcular_nlss(da_arg, df_wellness=wc_arg)
 
     _nlss_key_da = (str(da_full['Data'].max()) if 'Data' in da_full.columns else '', len(da_full))
     _nlss_key_wc = (str(wc['Data'].max()) if wc is not None and 'Data' in wc.columns else '',
@@ -715,7 +715,7 @@ ou a acumular sobrecarga não compensada (allostatic overload), comparando
                     return _ph_s[_pa_mask], _ph_s[_pr_mask]
                 try:
                     from utils.data import calcular_nlss
-                    _nlss_m = calcular_nlss(_da_mod, df_wellness=wc, mod=mod)
+                    _nlss_m = calcular_nlss(_da_mod, df_wellness=wc)
                     if _nlss_m and not _nlss_m.get("error") and "p_hat_series" in _nlss_m:
                         _ph_m = _nlss_m["p_hat_series"]
                         _ph_i = pd.DatetimeIndex(_ph_m.index)
@@ -775,7 +775,7 @@ ou a acumular sobrecarga não compensada (allostatic overload), comparando
                         _da_i = da_full[da_full["type"] == _mod_i]
                         if len(_da_i) < 20: continue
                         from utils.data import calcular_nlss
-                        _nlss_i = calcular_nlss(_da_i, df_wellness=wc, mod=_mod_i)
+                        _nlss_i = calcular_nlss(_da_i, df_wellness=wc)
                         if not _nlss_i or _nlss_i.get("error") or "p_hat_series" not in _nlss_i: continue
                         _ph_i   = _nlss_i["p_hat_series"]
                         _ph_ix  = pd.DatetimeIndex(_ph_i.index)
