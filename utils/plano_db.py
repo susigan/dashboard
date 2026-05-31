@@ -143,16 +143,18 @@ def get_plano_ativo(modalidade: str) -> dict | None:
     """Retorna o plano activo para uma modalidade, ou None."""
     try:
         conn = _get_conn()
-        row = conn.execute(
-            "SELECT * FROM planos WHERE modalidade=? AND ativo=1 ORDER BY id DESC LIMIT 1",
-            (modalidade,)).fetchone()
         conn.close()
-        if not row:
+        # Usar PRAGMA para obter colunas reais (robusto a migrações)
+        conn2 = _get_conn()
+        cursor = conn2.execute(
+            "SELECT * FROM planos WHERE modalidade=? AND ativo=1 ORDER BY id DESC LIMIT 1",
+            (modalidade,))
+        cols = [d[0] for d in cursor.description]
+        row2 = cursor.fetchone()
+        conn2.close()
+        if not row2:
             return None
-        cols = ['id','modalidade','criado_em','prazo_semanas','eftp_alvo_delta',
-                'eftp_actual','semana_inicio','kj_z3_inicial','kj_z2_inicial',
-                'kj_z1_inicial','ativo']
-        return dict(zip(cols, row))
+        return dict(zip(cols, row2))
     except Exception:
         return None
 
@@ -349,9 +351,13 @@ def get_historico_plano(modalidade: str) -> pd.DataFrame:
 
 def plano_mudou(modalidade: str, prazo_semanas: int, eftp_alvo_delta: int,
                 kj_z3_inicial: float = 0.0) -> bool:
-    """Verifica se os parâmetros mudaram em relação ao plano activo."""
+    """Verifica se os parâmetros mudaram OU se a lógica foi actualizada."""
     plano = get_plano_ativo(modalidade)
     if not plano:
         return True  # não há plano → criar
+    # Verificar versão da lógica de cálculo
+    if plano.get('logica_versao', 'v1') != PLANO_LOGICA_VERSAO:
+        return True  # lógica mudou → recriar automaticamente
+    # Verificar parâmetros do utilizador
     return (plano['prazo_semanas'] != prazo_semanas or
             plano['eftp_alvo_delta'] != eftp_alvo_delta)
