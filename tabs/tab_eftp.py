@@ -1118,6 +1118,12 @@ eFTP ~ α_Z3·CTLγ_Z3 + α_Z2·CTLγ_Z2 + α_Z1·CTLγ_Z1   [OLS múltipla]
                 # R² comparison with model 1
                 _r2_m1 = _r2_d.get(_mp, 0.0) if "_r2_d" in dir() else _r2_dict.get(_mp, 0.0)
 
+                # Slope Z3 em % do actual por semana (não kJ absolutos)
+                _sl_z3_pct_sem = (_sl_z3 * 7 / max(_cz3_now, 0.01)) * 100 if _cz3_now > 0.01 else 0.0
+                # kJ Z3/semana actual (inversão EWM: kJ_sem = CTLγ × α_ewm × 7)
+                _alpha_ewm_tab = 2.0 / (int(round(max(42.0*(1.0-_gam)+7.0*_gam,7.0))) + 1)
+                _kj_z3_sem_now = round(_cz3_now * _alpha_ewm_tab * 7, 0)
+
                 _polar_rows.append({
                     "Modalidade":          _mp,
                     "γ modal":             f"{_gam:.3f}",
@@ -1130,7 +1136,8 @@ eFTP ~ α_Z3·CTLγ_Z3 + α_Z2·CTLγ_Z2 + α_Z1·CTLγ_Z1   [OLS múltipla]
                     "eFTP proj +28d (W)":  f"{_eftp_28:.0f}",
                     "eFTP M1 proj (W)":    _rows[_mods_z.index(_mp)]["eFTP proj +28d (W)"] if "_rows" in dir() and _mp in _mods_z and _mods_z.index(_mp) < len(_rows) else "—",
                     "CTLγ_Z3 actual":      f"{_cz3_now:.2f}",
-                    "slope Z3 (%/sem)":    f"{_sl_z3*7:+.3f}",
+                    "kJ Z3/sem actual":    f"{_kj_z3_sem_now:.0f}",
+                    "slope Z3 (%/sem)":    f"{_sl_z3_pct_sem:+.1f}%",
                 })
 
             if not _polar_rows:
@@ -1267,7 +1274,7 @@ eFTP ~ α_Z3·CTLγ_Z3 + α_Z2·CTLγ_Z2 + α_Z1·CTLγ_Z1   [OLS múltipla]
                     "Modalidade","γ modal",
                     "α_Z3 (intenso)","α_Z2 (limiar)","α_Z1 (base)",
                     "R² Modelo 2","R² Modelo 1 (CTLγ)","ΔR²",
-                    "eFTP proj +28d (W)","CTLγ_Z3 actual","slope Z3 (%/sem)"]]
+                    "eFTP proj +28d (W)","CTLγ_Z3 actual","kJ Z3/sem actual","slope Z3 (%/sem)"]]
                 st.dataframe(_df_polar,use_container_width=True,hide_index=True)
 
                 # Insight automático
