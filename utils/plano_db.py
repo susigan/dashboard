@@ -109,8 +109,18 @@ def _init_db():
     CREATE INDEX IF NOT EXISTS idx_semanas_plano_id ON semanas_plano(plano_id);
     CREATE INDEX IF NOT EXISTS idx_semanas_iso ON semanas_plano(semana_iso, modalidade);
     """)
+    # Migração: adicionar logica_versao se não existir (DB criado antes desta versão)
+    try:
+        conn.execute("ALTER TABLE planos ADD COLUMN logica_versao TEXT DEFAULT 'v1'")
+        conn.commit()
+    except Exception:
+        pass  # Coluna já existe
     conn.commit()
     conn.close()
+
+# Versão actual da lógica de cálculo do plano
+# Incrementar quando a lógica mudar → força recriação automática
+PLANO_LOGICA_VERSAO = 'v3'  # v3 = kJ/sem reais, R² dinâmico, cap por R²
 
 def _get_conn() -> sqlite3.Connection:
     if not os.path.exists(_LOCAL_DB):
@@ -269,10 +279,10 @@ def criar_plano(modalidade: str, prazo_semanas: int, eftp_alvo_delta: int,
         cur = conn.execute(
             """INSERT INTO planos
                (modalidade,criado_em,prazo_semanas,eftp_alvo_delta,eftp_actual,
-                semana_inicio,kj_z3_inicial,kj_z2_inicial,kj_z1_inicial,ativo)
-               VALUES (?,?,?,?,?,?,?,?,?,1)""",
+                semana_inicio,kj_z3_inicial,kj_z2_inicial,kj_z1_inicial,ativo,logica_versao)
+               VALUES (?,?,?,?,?,?,?,?,?,1,?)""",
             (modalidade, criado_em, prazo_semanas, eftp_alvo_delta, eftp_actual,
-             hoje_seg, kj_z3_inicial, kj_z2_inicial, kj_z1_inicial))
+             hoje_seg, kj_z3_inicial, kj_z2_inicial, kj_z1_inicial, PLANO_LOGICA_VERSAO))
         plano_id = cur.lastrowid
 
         # Gerar semanas da rampa linear
@@ -337,7 +347,8 @@ def get_historico_plano(modalidade: str) -> pd.DataFrame:
     except Exception:
         return pd.DataFrame()
 
-def plano_mudou(modalidade: str, prazo_semanas: int, eftp_alvo_delta: int) -> bool:
+def plano_mudou(modalidade: str, prazo_semanas: int, eftp_alvo_delta: int,
+                kj_z3_inicial: float = 0.0) -> bool:
     """Verifica se os parâmetros mudaram em relação ao plano activo."""
     plano = get_plano_ativo(modalidade)
     if not plano:
