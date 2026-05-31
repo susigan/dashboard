@@ -1887,7 +1887,8 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                             alpha_z3=_a3p, alpha_z2=_a2p, alpha_z1=_a1p,
                             intercept=_intcp,
                             cz3_now=_cz3_now, cz2_now=_cz2_now, cz1_now=_cz1_now,
-                            span=_ap_p.get('span', 28))
+                            span=_ap_p.get('span', 28),
+                            r2_modelo=_ap_p.get('r2', 0.0))
                     _sem_info     = get_semana_atual(_mv_p)
                     _sem_num_db   = _sem_info.get('semana_num') or 1
                     # Usar override do user se for diferente do auto-detectado
