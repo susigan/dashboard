@@ -1738,6 +1738,25 @@ def preproc_ativ(df):
     # [6] Remover duração ≤ 60s
     if 'moving_time' in df.columns:
         df = df[pd.to_numeric(df['moving_time'], errors='coerce') > 60]
+    # [7] Converter MMP*_raw (string "Yes - 318w") → mmp*_w (float watts)
+    # Formatos Intervals.icu: "Yes - 318w" (PR nesta sessão) | "No (PR: 364w)" (PR histórico)
+    def _parse_mmp_w(v):
+        import re as _re
+        if v is None or (hasattr(v, '__float__') and v != v): return None
+        s = str(v).strip()
+        if s in ('', 'nan', 'None', '-'): return None
+        m = _re.search(r'(\d+(?:\.\d+)?)\s*[wW]', s)
+        if m: return float(m.group(1))
+        m = _re.search(r'(\d+(?:\.\d+)?)', s)
+        if m:
+            v2 = float(m.group(1))
+            return v2 if v2 > 10 else None
+        return None
+    for _dur in ['1','3','5','12','20','60']:
+        _raw_col = f'mmp{_dur}_raw'
+        _w_col   = f'mmp{_dur}_w'
+        if _raw_col in df.columns and _w_col not in df.columns:
+            df[_w_col] = df[_raw_col].apply(_parse_mmp_w)
     return df.reset_index(drop=True)
 
 def filtrar_datas(df, di, df_):
