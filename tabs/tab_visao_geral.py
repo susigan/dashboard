@@ -1845,9 +1845,33 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 _intcp    = _eftp_p - (_a3p*_ap_p.get('cz3_now',0)
                                        + _a2p*_ap_p.get('cz2_now',0)
                                        + _a1p*_ap_p.get('cz1_now',0))
-                _kj3_act  = _ap_p.get('kj_z3_semana_actual', 0)
-                _kj2_act  = _ap_p.get('kj_z2_semana_actual', 0)
-                _kj1_act  = _ap_p.get('kj_z1_semana_actual', 0)
+                # kJ histórico real — média semanal das últimas 8 semanas
+                # com sessões (não divide por 8 fixo — conta semanas com sessão)
+                _col_z3_p2 = next((c for c in ['Z3KJ','z3_kj','z3kj'] if c in _pf.columns), None)
+                _col_z2_p2 = next((c for c in ['Z2KJ','z2_kj','z2kj'] if c in _pf.columns), None)
+                _col_z1_p2 = next((c for c in ['Z1KJ','z1_kj','z1kj'] if c in _pf.columns), None)
+                _8sem_ago  = pd.Timestamp.now().normalize() - pd.Timedelta(weeks=8)
+
+                def _kj_media_semanal(df_mod, col):
+                    """Média semanal real: soma kJ / n_semanas com pelo menos 1 sessão."""
+                    if col is None or len(df_mod) == 0: return 0.0
+                    _s = pd.to_numeric(df_mod[col], errors='coerce').fillna(0)
+                    if _s.sum() == 0: return 0.0
+                    df_mod = df_mod.copy()
+                    df_mod['_sem'] = pd.to_datetime(df_mod['Data']).dt.to_period('W')
+                    _por_sem = df_mod.groupby('_sem')[col].apply(
+                        lambda x: pd.to_numeric(x, errors='coerce').fillna(0).sum()
+                    )
+                    _sems_com_kj = (_por_sem > 0).sum()
+                    return float(_por_sem.sum() / max(_sems_com_kj, 1))
+
+                _pf_mod_8 = _pf[
+                    (pd.to_datetime(_pf['Data']) >= _8sem_ago) &
+                    (_pf['type'].apply(norm_tipo) == _mv_p)
+                ]
+                _kj3_act = _kj_media_semanal(_pf_mod_8, _col_z3_p2) if _col_z3_p2 and len(_pf_mod_8) > 0 else _ap_p.get('kj_z3_semana_actual', 0)
+                _kj2_act = _kj_media_semanal(_pf_mod_8, _col_z2_p2) if _col_z2_p2 and len(_pf_mod_8) > 0 else _ap_p.get('kj_z2_semana_actual', 0)
+                _kj1_act = _kj_media_semanal(_pf_mod_8, _col_z1_p2) if _col_z1_p2 and len(_pf_mod_8) > 0 else _ap_p.get('kj_z1_semana_actual', 0)
                 _cz3_now  = _ap_p.get('cz3_now', 0)
                 _cz2_now  = _ap_p.get('cz2_now', 0)
                 _cz1_now  = _ap_p.get('cz1_now', 0)
@@ -1855,21 +1879,32 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 _r2_icon  = '🟢' if _r2_p >= 0.20 else ('🟡' if _r2_p >= 0.08 else '🔴')
                 _eftp_tgt_p = _eftp_p + _delta_eftp_input
 
-                # CTLγ_Z3 alvo
-                if abs(_a3p) > 0.01:
-                    _cz3_tgt = (_eftp_tgt_p - _a2p*_cz2_now - _a1p*_cz1_now - _intcp) / _a3p
-                    _cz3_tgt = max(_cz3_tgt, _cz3_now)
+                # ── kJ Z3 alvo final (semana prazo_sem) ─────────────────────
+                # Mesma lógica do plano_db — baseada em kJ/semana reais,
+                # não via CTLγ inverso que explode quando R² é baixo.
+                # R² vem directamente do calcular_alpha_polar (dinâmico, não fixo)
+                _usar_modelo_p = (_r2_p >= 0.25 and abs(_a3p) >= 0.05
+                                  and _kj3_act >= 5.0)
+                _delta_pct_p   = float(_delta_eftp_input) / max(_eftp_p, 1.0)
+
+                if _usar_modelo_p:
+                    _fator_p = min(1.0 + _delta_pct_p * 2.0, 1.50)
+                    _kj3_alvo_final = _kj3_act * _fator_p
+                elif _kj3_act >= 5.0:
+                    _kj3_alvo_final = _kj3_act * 1.05   # manutenção +5%
                 else:
-                    _cz3_tgt = _cz3_now * 1.10
-                # Inversão correcta CTLγ → kJ/semana via EWM
-                # α_EWM = 2/(span+1); kJ_diário = CTLγ × α_EWM; kJ_sem = × 7
-                _span_p = _ap_p.get('span', 28)
-                _alpha_ewm_p = 2.0 / (_span_p + 1)
-                _kj3_alvo_final = float(_cz3_tgt) * _alpha_ewm_p * 7
-                # Sanity: max 3× o actual (evita valores irreais)
-                _kj3_act_safe = _kj3_act if _kj3_act > 5 else 0
-                if _kj3_act_safe > 0:
-                    _kj3_alvo_final = min(_kj3_alvo_final, _kj3_act_safe * 3.0)
+                    _kj3_alvo_final = 20.0               # mínimo de base
+
+                # Cap por R²
+                if _r2_p >= 0.25 and _kj3_act >= 5.0:
+                    _max_kj3 = _kj3_act * 1.50
+                elif _kj3_act >= 5.0:
+                    _max_kj3 = _kj3_act * 1.10
+                else:
+                    _max_kj3 = 30.0
+                _kj3_alvo_final = float(
+                    max(max(_kj3_act, 1.0), min(_kj3_alvo_final, _max_kj3))
+                )
 
                 # Ler/criar plano no DB
                 _z3_feito_show = 0
@@ -1878,7 +1913,21 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 try:
                     from utils.plano_db import (get_semana_atual, plano_mudou,
                                                 criar_plano, actualizar_feito)
-                    if plano_mudou(_mv_p, _prazo_sem, _delta_eftp_input):
+                    # Reset forçado: se o utilizador clicou "Recriar plano"
+                    _reset_key = f'reset_plano_{_mv_p}'
+                    if st.session_state.get(_reset_key, False):
+                        st.session_state[_reset_key] = False
+                        # Forçar recriação apagando o plano actual do DB
+                        try:
+                            import sqlite3 as _sq3
+                            from utils.plano_db import DB_PATH as _DB_PATH, _upload_db as _udb
+                            _cn = _sq3.connect(_DB_PATH)
+                            _cn.execute("UPDATE planos SET ativo=0 WHERE modalidade=?", (_mv_p,))
+                            _cn.commit(); _cn.close(); _udb()
+                        except Exception: pass
+
+                    if plano_mudou(_mv_p, _prazo_sem, _delta_eftp_input) or st.session_state.get(f'force_recreate_{_mv_p}', False):
+                        st.session_state[f'force_recreate_{_mv_p}'] = False
                         criar_plano(
                             modalidade=_mv_p, prazo_semanas=_prazo_sem,
                             eftp_alvo_delta=_delta_eftp_input, eftp_actual=_eftp_p,
