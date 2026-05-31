@@ -204,7 +204,8 @@ def criar_plano(modalidade: str, prazo_semanas: int, eftp_alvo_delta: int,
                 eftp_actual: float, kj_z3_inicial: float, kj_z2_inicial: float,
                 kj_z1_inicial: float, alpha_z3: float, alpha_z2: float,
                 alpha_z1: float, intercept: float, cz3_now: float,
-                cz2_now: float, cz1_now: float, span: int = 28) -> int:
+                cz2_now: float, cz1_now: float, span: int = 28,
+                r2_modelo: float = 0.0) -> int:
     """
     Cria um novo plano e gera todas as semanas da rampa.
     Desactiva planos anteriores desta modalidade.
@@ -213,22 +214,52 @@ def criar_plano(modalidade: str, prazo_semanas: int, eftp_alvo_delta: int,
     hoje_seg   = _segunda_da_semana()
     criado_em  = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    # Calcular CTLγ_Z3 alvo via modelo inverso
-    eftp_tgt = eftp_actual + eftp_alvo_delta
-    if abs(alpha_z3) > 0.01:
-        cz3_alvo = (eftp_tgt - alpha_z2*cz2_now - alpha_z1*cz1_now - intercept) / alpha_z3
-        cz3_alvo = max(cz3_alvo, cz3_now)
-    else:
-        cz3_alvo = cz3_now * 1.10
+    # ── Calcular kJ_Z3 alvo final — directamente em kJ/semana ──────────────
+    #
+    # PRINCÍPIO: trabalhar em kJ/semana reais (não via CTLγ inverso).
+    # O CTLγ inverso dá valores irreais quando R² é baixo ou alpha_z3 ≈ 0.
+    #
+    # Critérios para usar modelo inverso (alpha_z3 fiável):
+    #   R² ≥ 0.25  E  alpha_z3 ≥ 0.05  E  kj_z3_inicial ≥ 5 kJ/sem
+    #
+    # Progressões em kJ/semana:
+    #   Modelo fiável: alvo = kj_z3_inicial × (1 + min(30%, delta_eftp/eftp×2))
+    #   R² baixo:      alvo = kj_z3_inicial × 1.15  (+15% conservador)
+    #   Sem histórico Z3: alvo = 20 kJ/sem (mínimo para construir base)
 
-    # Inversão correcta do CTLγ → kJ/semana
-    # CTLγ é uma EWM: estado estacionário → kJ_diário = CTLγ × α_EWM
-    # α_EWM = 2/(span+1) para EWM span equivalente
-    _alpha_ewm = 2.0 / (span + 1)
-    _kj_diario_alvo = float(cz3_alvo) * _alpha_ewm
-    kj_z3_alvo_final = _kj_diario_alvo * 7  # kJ/semana
-    # Sanity check: alvo não pode ser mais que 3× o actual
-    kj_z3_alvo_final = min(kj_z3_alvo_final, kj_z3_inicial * 3.0 if kj_z3_inicial > 5 else kj_z3_alvo_final)
+    eftp_tgt = eftp_actual + eftp_alvo_delta
+    _delta_pct = float(eftp_alvo_delta) / max(eftp_actual, 1.0)  # ex: 10/220 = 4.5%
+
+    _usar_modelo = (r2_modelo >= 0.25 and abs(alpha_z3) >= 0.05
+                    and kj_z3_inicial >= 5.0)
+
+    if _usar_modelo:
+        # Progressão proporcional ao delta eFTP pedido
+        # Cap de 50% acima do histórico para evitar saltos irreais
+        _fator = min(1.0 + _delta_pct * 2.0, 1.50)
+        kj_z3_alvo_final = kj_z3_inicial * _fator
+    elif kj_z3_inicial >= 5.0:
+        # Histórico existe mas modelo fraco (R² baixo):
+        # Manter o actual sem progressão — sem evidência de que mais Z3 → mais eFTP
+        # +5% apenas como margem mínima de manutenção
+        kj_z3_alvo_final = kj_z3_inicial * 1.05
+    else:
+        # Sem histórico Z3 (Ski fora de época, Run sem Z3) → mínimo base
+        kj_z3_alvo_final = 20.0
+
+    # Sanity checks — sempre em kJ/semana reais:
+    # Cap dependente de R²:
+    #   R² ≥ 0.25: pode progredir até +50% do histórico
+    #   R² < 0.25: manter próximo do actual (+10% máximo — sem evidência)
+    if r2_modelo >= 0.25 and kj_z3_inicial >= 5.0:
+        _max_alvo = kj_z3_inicial * 1.50
+    elif kj_z3_inicial >= 5.0:
+        _max_alvo = kj_z3_inicial * 1.10  # R² baixo → cap apertado
+    else:
+        _max_alvo = 30.0
+    kj_z3_alvo_final = float(np.clip(kj_z3_alvo_final,
+                                      max(kj_z3_inicial, 1.0),
+                                      _max_alvo))
 
     try:
         conn = _get_conn()
