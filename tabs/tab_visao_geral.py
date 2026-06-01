@@ -1504,9 +1504,12 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                     # Actualizar feito com dados reais se tiver colunas Z3
                     _col_z3_inline = next((c for c in ['Z3KJ','z3_kj','z3kj'] if c in _pf.columns), None)
                     if _col_z3_inline and _si.get('semana_iso'):
+                        _sem_ini_inline = pd.Timestamp(_si['semana_iso'])
+                        _sem_fim_inline = _sem_ini_inline + pd.Timedelta(days=7)
                         _pf_sem_inline = _pf[
                             (_pf['type'].apply(norm_tipo)==mod) &
-                            (_pf['Data'] >= pd.Timestamp(_si['semana_iso']))]
+                            (_pf['Data'] >= _sem_ini_inline) &
+                            (_pf['Data'] <  _sem_fim_inline)]
                         _z3_feito_sem = float(pd.to_numeric(
                             _pf_sem_inline[_col_z3_inline],errors='coerce').fillna(0).sum())
                 except Exception:
@@ -1825,14 +1828,12 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             st.markdown("**📅 Planeador de Progressão Z3 — por modalidade**")
             st.caption("Plano criado automaticamente. Muda prazo ou eFTP alvo → novo plano.")
 
-            _pc1, _pc2, _pc3 = st.columns(3)
+            _pc1, _pc2 = st.columns(2)
             _prazo_sem = _pc1.slider("Prazo (semanas)", 4, 24, 12, 2,
                                      key="prazo_sem_planeador")
             _delta_eftp_input = _pc2.slider("eFTP alvo (ganho em W)", 0, 30, 10, 1,
                                             key="delta_eftp_planeador")
-            _sem_override = _pc3.number_input("Semana actual (auto)", 1, _prazo_sem, 1,
-                                              key="sem_override_planeador",
-                                              help="Auto-detectado. Ajusta só se necessário.")
+            # Semana auto-detectada pelo DB — sem override manual
 
             _plan_rows = []
             for _mv_p in ['Bike','Row','Ski','Run']:
@@ -1908,26 +1909,12 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
 
                 # Ler/criar plano no DB
                 _z3_feito_show = 0
-                _sem_num_show  = 1
+                _sem_num_show  = 1  # fallback inicial
                 _concluido     = False
                 try:
                     from utils.plano_db import (get_semana_atual, plano_mudou,
                                                 criar_plano, actualizar_feito)
-                    # Reset forçado: se o utilizador clicou "Recriar plano"
-                    _reset_key = f'reset_plano_{_mv_p}'
-                    if st.session_state.get(_reset_key, False):
-                        st.session_state[_reset_key] = False
-                        # Forçar recriação apagando o plano actual do DB
-                        try:
-                            import sqlite3 as _sq3
-                            from utils.plano_db import DB_PATH as _DB_PATH, _upload_db as _udb
-                            _cn = _sq3.connect(_DB_PATH)
-                            _cn.execute("UPDATE planos SET ativo=0 WHERE modalidade=?", (_mv_p,))
-                            _cn.commit(); _cn.close(); _udb()
-                        except Exception: pass
-
-                    if plano_mudou(_mv_p, _prazo_sem, _delta_eftp_input) or st.session_state.get(f'force_recreate_{_mv_p}', False):
-                        st.session_state[f'force_recreate_{_mv_p}'] = False
+                    if plano_mudou(_mv_p, _prazo_sem, _delta_eftp_input):
                         criar_plano(
                             modalidade=_mv_p, prazo_semanas=_prazo_sem,
                             eftp_alvo_delta=_delta_eftp_input, eftp_actual=_eftp_p,
@@ -1939,32 +1926,31 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                             span=_ap_p.get('span', 28),
                             r2_modelo=_ap_p.get('r2', 0.0))
                     _sem_info     = get_semana_atual(_mv_p)
-                    _sem_num_db   = _sem_info.get('semana_num') or 1
-                    # Usar override do user se for diferente do auto-detectado
-                    _sem_num_show = int(_sem_override) if _sem_override != _sem_num_db else _sem_num_db
+                    # Semana auto-detectada: (hoje_segunda - inicio).days // 7 + 1
+                    _sem_num_show = _sem_info.get('semana_num') or 1
                     _concluido    = _sem_num_show > _prazo_sem
                     _dados        = _sem_info.get('dados')
                     # Actualizar feito com dados reais desta semana
                     _col_z3_p = next((c for c in ['Z3KJ','z3_kj','z3kj'] if c in _pf.columns), None)
                     _col_z2_p = next((c for c in ['Z2KJ','z2_kj','z2kj'] if c in _pf.columns), None)
                     _col_z1_p = next((c for c in ['Z1KJ','z1_kj','z1kj'] if c in _pf.columns), None)
-                    # Segunda-feira da semana actual (baseada no plano)
-                    _plano_info = _sem_info.get('plano') or {}
-                    _semana_inicio_str = _plano_info.get('semana_inicio', '')
-                    try:
-                        from datetime import date, timedelta
-                        _d_ini_p = date.fromisoformat(_semana_inicio_str) if _semana_inicio_str else date.today()
-                        _seg_atual = str(_d_ini_p + timedelta(weeks=_sem_num_show - 1))
-                        _seg_fim   = str(_d_ini_p + timedelta(weeks=_sem_num_show))
-                    except Exception:
-                        _seg_atual = _sem_info.get('semana_iso', '')
-                        _seg_fim   = ''
-                    _sem_iso_p = _seg_atual
+                    # Segunda-feira da semana actual — usar directamente o calculado
+                    # pelo get_semana_atual (hoje_segunda_feira, não baseado em _sem_num_show)
+                    # Isso evita que _sem_num_show=1 (fallback) use a data de início do plano
+                    # semana_iso = segunda-feira da semana actual (calculado pelo get_semana_atual)
+                    _sem_iso_p = _sem_info.get('semana_iso', '')
+                    if not _sem_iso_p:
+                        # Fallback: calcular a segunda-feira de hoje directamente
+                        from datetime import date as _date_cls, timedelta as _td_cls
+                        _hoje_d = _date_cls.today()
+                        _sem_iso_p = str(_hoje_d - _td_cls(days=_hoje_d.weekday()))
                     if _col_z3_p and _sem_iso_p:
+                        _sem_ini_ts = pd.Timestamp(_sem_iso_p)
+                        _sem_fim_ts = _sem_ini_ts + pd.Timedelta(days=7)  # sempre 7 dias
                         _pf_sem = _pf[
                             (_pf['type'].apply(norm_tipo)==_mv_p) &
-                            (_pf['Data'] >= pd.Timestamp(_sem_iso_p)) &
-                            (_pf['Data'] < pd.Timestamp(_seg_fim) if _seg_fim else True)]
+                            (_pf['Data'] >= _sem_ini_ts) &
+                            (_pf['Data'] <  _sem_fim_ts)]
                         _z3f = float(pd.to_numeric(_pf_sem[_col_z3_p],errors='coerce').fillna(0).sum()) if len(_pf_sem)>0 else 0
                         _z2f = float(pd.to_numeric(_pf_sem[_col_z2_p],errors='coerce').fillna(0).sum()) if len(_pf_sem)>0 and _col_z2_p else 0
                         _z1f = float(pd.to_numeric(_pf_sem[_col_z1_p],errors='coerce').fillna(0).sum()) if len(_pf_sem)>0 and _col_z1_p else 0
