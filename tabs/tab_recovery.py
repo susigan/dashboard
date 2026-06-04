@@ -1630,39 +1630,35 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
             _consec_high = 0
             _consec_rest = 0
 
+            _razoes = []  # razão da decisão (para label)
             for _, row in _wc_j.iterrows():
                 ln7 = row['ln7']
                 if pd.isna(ln7):
-                    _pres = 'LOW'
-                    _consec_high = 0
-                    _consec_rest = 0
+                    _pres = 'LOW'; _razao = 'sem dados'
+                    _consec_high = 0; _consec_rest = 0
                 elif ln7 > _swc_sup:
                     if _consec_high >= 2:
-                        _pres = 'LOW'
-                        _consec_high = 0
-                        _consec_rest = 0
+                        _pres = 'LOW'; _razao = 'HIGH forçado LOW (máx 2 consec.)'
+                        _consec_high = 0; _consec_rest = 0
                     else:
-                        _pres = 'HIGH'
-                        _consec_high += 1
-                        _consec_rest = 0
+                        _pres = 'HIGH'; _razao = 'Acima SWC sup'
+                        _consec_high += 1; _consec_rest = 0
                 elif ln7 >= _swc_inf:
-                    # Dentro da banda → LOW
-                    _pres = 'LOW'
-                    _consec_high = 0
-                    _consec_rest = 0
+                    _pres = 'LOW'; _razao = 'Dentro da banda'
+                    _consec_high = 0; _consec_rest = 0
                 else:
-                    # Abaixo → REST (máx 2 consecutivos)
                     _consec_high = 0
                     if _consec_rest >= 2:
-                        _pres = 'LOW'
+                        _pres = 'LOW'; _razao = 'REST forçado LOW (máx 2 consec.)'
                         _consec_rest = 0
                     else:
-                        _pres = 'REST'
+                        _pres = 'REST'; _razao = 'Abaixo SWC inf'
                         _consec_rest += 1
-
                 _prescricoes.append(_pres)
+                _razoes.append(_razao)
 
             _wc_j['prescricao'] = _prescricoes
+            _wc_j['razao']      = _razoes
 
             # ── Labels e cores ────────────────────────────────────────────────
             _COR_MAP = {'HIGH': '#27ae60', 'LOW': '#3498db', 'REST': '#e74c3c'}
@@ -1718,7 +1714,7 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
                 _rows5_j.append({
                     'Data':       r['Data'].strftime('%d/%m') + (' ⚠️' if _sem else ''),
                     'LnRMSSD₇':  f"{r['ln7']:.3f}" + (' (est.)' if _sem else ''),
-                    'Zona':       _ZONA_MAP.get(r['prescricao'], '—'),
+                    'Zona':       r.get('razao') or _ZONA_MAP.get(r['prescricao'], '—'),
                     'Prescrição': _LABEL_MAP.get(r['prescricao'], r['prescricao']),
                 })
             st.markdown("**Últimos 5 dias — protocolo Javaloyes:**")
