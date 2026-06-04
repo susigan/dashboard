@@ -1481,6 +1481,18 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                 _kj_z3_need = _alvo_3m.get('kj_z3_semana', 0)
                 _kj_z2_need = _alvo_3m.get('kj_z2_semana', 0)
                 _kj_z1_need = _alvo_3m.get('kj_z1_semana', 0)
+                # Sobrepor com alvo do plano DB desta semana se disponível
+                # (plano DB tem progressão rampa calibrada por R²)
+                try:
+                    from utils.plano_db import get_semana_atual as _gsa2
+                    _si2 = _gsa2(mod)
+                    _sd2 = _si2.get('dados')
+                    if _sd2 and _sd2.get('kj_z3_alvo', 0):
+                        _kj_z3_need = float(_sd2['kj_z3_alvo'])
+                    if _sd2 and _sd2.get('kj_z2_alvo', 0):
+                        _kj_z2_need = float(_sd2['kj_z2_alvo'])
+                except Exception:
+                    pass
                 _kj_z3_act  = _ap_mod.get('kj_z3_semana_actual', 0)
                 _kj_z2_act  = _ap_mod.get('kj_z2_semana_actual', 0)
                 _kj_z1_act  = _ap_mod.get('kj_z1_semana_actual', 0)
