@@ -1881,8 +1881,20 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
         if len(_rec_dl) == 0:
             st.info("Sem dados para exportar.")
         else:
-            _exp = _rec_dl[['Data','hrv','rhr','recovery_score',
-                             'hrv_baseline','hrv_cv_7d']].copy()
+            # Seleccionar só colunas que existem (rhr pode não estar em _rec_dl)
+            _base_cols = [c for c in ['Data','hrv','rhr','recovery_score',
+                                       'hrv_baseline','hrv_cv_7d','hrv_cv_30d',
+                                       'normal_range_inf','normal_range_sup',
+                                       'hrv_component','rhr_component',
+                                       'sleep_component','fatiga_component',
+                                       'stress_component']
+                          if c in _rec_dl.columns]
+            _exp = _rec_dl[_base_cols].copy()
+            # Juntar rhr do wellness se não veio do calcular_recovery
+            if 'rhr' not in _exp.columns and 'rhr' in _dw_csv.columns:
+                _exp = _exp.merge(
+                    _dw_csv[['Data','rhr']].drop_duplicates('Data'),
+                    on='Data', how='left')
             _exp['Data'] = pd.to_datetime(_exp['Data']).dt.normalize()
 
             # ── Wellness raw ─────────────────────────────────────────────────
