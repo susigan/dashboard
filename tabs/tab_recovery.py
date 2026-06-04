@@ -1865,56 +1865,119 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
     st.markdown("---")
     st.subheader("📥 Export Recovery CSV")
     st.caption(
-        "Histórico **completo** de recovery — independente do filtro global do sidebar. "
-        "Inclui: recovery_score, HRV baseline, CV, zonas Altini/Plews, slope LnrMSSD.")
+        "Histórico **completo** — independente do filtro sidebar. "
+        "Inclui todas as análises: Recovery Score, HRV-Guided (Altini/Plews), "
+        "Javaloyes (LnRMSSD₇/SWC/prescrição), Slope 7d, Modelo β, HF_Power, RPE.")
 
     try:
-        # Usar wc_full (histórico completo) se disponível; senão usa dw (filtrado)
-        _dw_csv = wc_full if (wc_full is not None and len(wc_full) > 0) else dw
-        # Integrar RPE do histórico completo de atividades
-        _da_csv = da_full if (da_full is not None and len(da_full) > 0) else (da if da is not None else pd.DataFrame())
+        _dw_csv = (wc_full if (wc_full is not None and len(wc_full) > 0)
+                   else dw).copy()
+        _da_csv = (da_full if (da_full is not None and len(da_full) > 0)
+                   else (da if da is not None else pd.DataFrame()))
+        _dw_csv['Data'] = pd.to_datetime(_dw_csv['Data']).dt.normalize()
 
-        # Integrar RPE no _dw_csv
-        _rpe_col_csv = next((c for c in ['icu_rpe', 'rpe', 'RPE'] if c in _da_csv.columns), None) if not _da_csv.empty else None
-        if _rpe_col_csv:
-            _da_rpe = _da_csv.copy()
-            _da_rpe['Data'] = pd.to_datetime(_da_rpe['Data']).dt.normalize()
-            _rpe_agg = _da_rpe.groupby('Data')[_rpe_col_csv].mean().reset_index()
-            _rpe_agg.columns = ['Data', 'rpe_diario']
-            _dw_csv = _dw_csv.copy()
-            _dw_csv['Data'] = pd.to_datetime(_dw_csv['Data']).dt.normalize()
-            _dw_csv = _dw_csv.merge(_rpe_agg, on='Data', how='left')
-
+        # ── Base: recovery_score ─────────────────────────────────────────────
         _rec_dl = calcular_recovery(_dw_csv)
-        if len(_rec_dl) > 0:
-            _dl_cols_rec = [c for c in [
-                'Data', 'hrv', 'rhr', 'recovery_score',
-                'hrv_baseline', 'hrv_cv_7d',
-                'sleep_quality', 'fatiga', 'stress', 'humor', 'soreness',
-            ] if c in _rec_dl.columns]
-            _df_rec_export = _rec_dl[_dl_cols_rec].copy()
+        if len(_rec_dl) == 0:
+            st.info("Sem dados para exportar.")
+        else:
+            _exp = _rec_dl[['Data','hrv','rhr','recovery_score',
+                             'hrv_baseline','hrv_cv_7d']].copy()
+            _exp['Data'] = pd.to_datetime(_exp['Data']).dt.normalize()
 
-            # Adicionar rpe_diario se disponível
-            if 'rpe_diario' in _dw_csv.columns:
-                _rpe_merge = _dw_csv[['Data', 'rpe_diario']].copy()
-                _rpe_merge['Data'] = pd.to_datetime(_rpe_merge['Data'])
-                _df_rec_export['Data'] = pd.to_datetime(_df_rec_export['Data'])
-                _df_rec_export = _df_rec_export.merge(_rpe_merge, on='Data', how='left')
+            # ── Wellness raw ─────────────────────────────────────────────────
+            for _wc in ['sleep_quality','fatiga','stress','humor','soreness',
+                        'peso','fat','hf_power']:
+                if _wc in _dw_csv.columns:
+                    _exp = _exp.merge(
+                        _dw_csv[['Data',_wc]].drop_duplicates('Data'),
+                        on='Data', how='left')
 
-            _df_rec_export['Data'] = _df_rec_export['Data'].astype(str)
-            _df_rec_export = _df_rec_export.round(4)
+            # ── RPE diário ───────────────────────────────────────────────────
+            if not _da_csv.empty:
+                _rpe_col = next((c for c in ['icu_rpe','rpe'] if c in _da_csv.columns), None)
+                if _rpe_col:
+                    _rpe_d = _da_csv.copy()
+                    _rpe_d['Data'] = pd.to_datetime(_rpe_d['Data']).dt.normalize()
+                    _rpe_d = _rpe_d.groupby('Data')[_rpe_col].mean().reset_index()
+                    _rpe_d.columns = ['Data','rpe_diario']
+                    _exp = _exp.merge(_rpe_d, on='Data', how='left')
+
+            # ── HRV-Guided Altini/Plews ──────────────────────────────────────
+            # df_hg existe no scope da tab se o bloco HRV-Guided correu
+            try:
+                _hg_exp = df_hg[['Data','LnrMSSD','bm','bs','linf','lsup',
+                                  'desvio','intens']].copy()
+                _hg_exp.columns = ['Data','LnrMSSD','HRVg_baseline','HRVg_sd',
+                                    'HRVg_linf','HRVg_lsup','HRVg_desvio',
+                                    'HRVg_prescricao']
+                _hg_exp['Data'] = pd.to_datetime(_hg_exp['Data']).dt.normalize()
+                _exp = _exp.merge(_hg_exp, on='Data', how='left')
+            except Exception:
+                pass
+
+            # ── Slope 7d LnrMSSD ────────────────────────────────────────────
+            try:
+                _sl_exp = df_corr[['Data','LnrMSSD','slope_7','baseline_7',
+                                    'std_7']].copy()
+                _sl_exp.columns = ['Data','LnrMSSD_raw','slope_7d',
+                                    'slope_baseline7','slope_std7']
+                _sl_exp['Data'] = pd.to_datetime(_sl_exp['Data']).dt.normalize()
+                _exp = _exp.merge(_sl_exp, on='Data', how='left')
+            except Exception:
+                pass
+
+            # ── Javaloyes: LnRMSSD₇, SWC, prescrição ────────────────────────
+            try:
+                _jav_exp = _wc_j[['Data','LnrMSSD','ln7','prescricao']].copy()
+                _jav_exp.columns = ['Data','LnrMSSD_jav','LnRMSSD7_jav',
+                                     'Javaloyes_prescricao']
+                _jav_exp['Data'] = pd.to_datetime(_jav_exp['Data']).dt.normalize()
+                # Adicionar SWC como colunas constantes
+                _jav_exp['Javaloyes_SWC_sup'] = round(_swc_sup, 4)
+                _jav_exp['Javaloyes_SWC_inf'] = round(_swc_inf, 4)
+                _exp = _exp.merge(_jav_exp, on='Data', how='left')
+            except Exception:
+                pass
+
+            # ── Modelo β ─────────────────────────────────────────────────────
+            try:
+                _beta_exp = beta_df[['LnrMSSD','beta','bm28','bs28']].copy()
+                _beta_exp.index.name = 'Data'
+                _beta_exp = _beta_exp.reset_index()
+                _beta_exp['Data'] = pd.to_datetime(_beta_exp['Data']).dt.normalize()
+                _beta_exp.columns = ['Data','LnrMSSD_beta','beta_score',
+                                      'beta_baseline28','beta_sd28']
+                _exp = _exp.merge(_beta_exp, on='Data', how='left')
+            except Exception:
+                pass
+
+            # ── sem_medicao flag ─────────────────────────────────────────────
+            if 'hrv_sem_medicao' in _dw_csv.columns:
+                _exp = _exp.merge(
+                    _dw_csv[['Data','hrv_sem_medicao']].drop_duplicates('Data'),
+                    on='Data', how='left')
+
+            # ── Finalizar ────────────────────────────────────────────────────
+            _exp['Data'] = _exp['Data'].astype(str)
+            _exp = _exp.drop_duplicates('Data').sort_values('Data')
+            _exp = _exp.round(4)
 
             _c_dl1, _c_dl2 = st.columns([2, 1])
             with _c_dl1:
-                st.dataframe(_df_rec_export.tail(14), use_container_width=True, hide_index=True)
-                st.caption(f"Mostrando últimos 14 de {len(_df_rec_export)} dias totais no CSV")
+                st.dataframe(_exp.tail(14), use_container_width=True,
+                             hide_index=True)
+                st.caption(f"Últimos 14 de {len(_exp)} dias | "
+                           f"{len(_exp.columns)} colunas")
             with _c_dl2:
-                st.metric("Dias no CSV", len(_df_rec_export))
+                st.metric("Dias no CSV", len(_exp))
+                st.metric("Colunas", len(_exp.columns))
                 st.metric("Sidebar (gráficos)", len(dw))
                 st.caption("CSV = histórico completo\nGráficos = período sidebar")
                 st.download_button(
                     label="📥 Download Recovery CSV",
-                    data=_df_rec_export.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
+                    data=_exp.to_csv(index=False, sep=';',
+                                     decimal=',').encode('utf-8'),
                     file_name="atheltica_recovery.csv",
                     mime="text/csv",
                     key="rec_dl_csv",
