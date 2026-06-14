@@ -1587,8 +1587,15 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
         # df_hg tem: Data, LnrMSSD, bm, bs, linf, lsup, intens, sem_medicao
         # Usar o mesmo LnrMSSD e o mesmo período — alinhado com o gráfico HRV-Guided
         # Rolling 7 dias sobre LnrMSSD (Javaloyes usa 7d, HRV-Guided usa 14d)
-        _wc_j = df_hg.copy()
+       _wc_j = (wc_full.copy() if (wc_full is not None and len(wc_full) > 0)
+                 else dw.copy())
         _wc_j['Data'] = pd.to_datetime(_wc_j['Data']).dt.normalize()
+        _wc_j = _wc_j.sort_values('Data').reset_index(drop=True)
+        _wc_j['LnrMSSD'] = np.where(
+            _wc_j['hrv'].notna() & (_wc_j['hrv'] > 0),
+            np.log(_wc_j['hrv']), np.nan
+        )
+        _wc_j['sem_medicao'] = _wc_j['LnrMSSD'].isna()
 
         if _wc_j['LnrMSSD'].notna().sum() < 14:
             st.info("Dados insuficientes para o protocolo Javaloyes (mínimo 14 dias).")
@@ -1599,13 +1606,11 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
             # ── Aviso dias sem medição real ───────────────────────────────────
             _n_sem_med = int(_wc_j['sem_medicao'].sum()) if 'sem_medicao' in _wc_j.columns else 0
             # Só mostrar se há dias sem medição COM ln7 calculado (dias dentro do período)
-            _n_sem_med_valido = int(
-                (_wc_j['sem_medicao'] & _wc_j['ln7'].notna()).sum()
-            ) if 'sem_medicao' in _wc_j.columns else 0
-            if _n_sem_med_valido > 0:
+            _n_sem_med_real = int(_wc_j['sem_medicao'].sum())
+            if _n_sem_med_real > 0:
                 st.warning(
-                    f"⚠️ **SEM MEDIÇÃO**: {_n_sem_med_valido} dias sem HRV real "
-                    "incluídos no rolling 7d. LnRMSSD₇ nesses dias é estimado."
+                    f"⚠️ **SEM MEDIÇÃO**: {_n_sem_med_real} dias sem HRV "
+                    "nos dados de wellness."
                 )
 
             # ── SWC: calculado sobre os primeiros 28 dias COM medição real ───
