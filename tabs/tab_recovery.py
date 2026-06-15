@@ -1601,8 +1601,7 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
             _wc_j['ln7'] = _wc_j['LnrMSSD'].rolling(7, min_periods=4).mean()
 
             # ── Aviso dias sem medição real ───────────────────────────────────
-            _n_sem_med = int(_wc_j['sem_medicao'].sum()) if 'sem_medicao' in _wc_j.columns else 0
-            # Só mostrar se há dias sem medição COM ln7 calculado (dias dentro do período)
+
             _n_sem_med_real = int(_wc_j['sem_medicao'].sum())
             if _n_sem_med_real > 0:
                 st.warning(
