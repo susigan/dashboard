@@ -490,16 +490,54 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
             _slope_start = _df_slope_plot['Data'].min() if len(_df_slope_plot) > 0 else pd.Timestamp.now().normalize() - pd.Timedelta(days=86)
             _df_slope_30 = df_corr[df_corr['Data'] >= _slope_start].copy()
             fig_slope_ind = go.Figure()
-            fig_slope_ind.add_trace(go.Scatter(x=_df_slope_30['Data'], y=_df_slope_30['slope_7'], name='Slope 7d', line=dict(color='#2c3e50', width=2), fill='tozeroy', fillcolor='rgba(44, 62, 80, 0.1)', hovertemplate='Data: %{x}<br>Slope: %{y:.4f}<extra></extra>'))
-            fig_slope_ind.add_hrect(y0=thresh_recuperacao, y1=slope_mean + (3*slope_std), fillcolor="rgba(39, 174, 96, 0.15)", line_width=0, annotation_text="Supercompensação", annotation_position="top right", annotation_font=dict(color='black', size=11))
-            fig_slope_ind.add_hrect(y0=thresh_estavel_sup, y1=thresh_recuperacao, fillcolor="rgba(46, 204, 113, 0.15)", line_width=0, annotation_text="Recuperação", annotation_position="right", annotation_font=dict(color='black', size=11))
-            fig_slope_ind.add_hrect(y0=thresh_estavel_inf, y1=thresh_estavel_sup, fillcolor="rgba(149, 165, 166, 0.15)", line_width=0, annotation_text="Estável", annotation_position="right", annotation_font=dict(color='black', size=11))
-            fig_slope_ind.add_hrect(y0=thresh_declinio, y1=thresh_estavel_inf, fillcolor="rgba(241, 196, 15, 0.15)", line_width=0, annotation_text="Declínio Leve", annotation_position="right", annotation_font=dict(color='black', size=11))
-            fig_slope_ind.add_hrect(y0=thresh_nfor, y1=thresh_declinio, fillcolor="rgba(231, 76, 60, 0.15)", line_width=0, annotation_text="Fadiga", annotation_position="right", annotation_font=dict(color='black', size=11))
-            fig_slope_ind.add_hrect(y0=slope_mean - (4*slope_std), y1=thresh_nfor, fillcolor="rgba(192, 57, 43, 0.2)", line_width=0, annotation_text="NFOR", annotation_position="bottom right", annotation_font=dict(color='black', size=11))
-            fig_slope_ind.add_hline(y=slope_mean, line_dash="solid", line_color="blue", line_width=2, annotation_text=f"Sua Média ({slope_mean:.3f})", annotation_position="right", annotation_font=dict(color='black', size=10))
-            fig_slope_ind.add_hline(y=thresh_nfor, line_dash="dash", line_color="red", line_width=3, annotation_text=f"Limite NFOR ({thresh_nfor:.3f})", annotation_position="bottom right", annotation_font=dict(color='black', size=10))
-            fig_slope_ind.update_layout(title=dict(text=f"Slope 7d Individualizado - Baseado em {len(slope_series)} dias", font=dict(color='black', size=14)), xaxis=dict(title=dict(text="Data", font=dict(color='black')), tickfont=dict(color='black'), showgrid=True, gridcolor='rgba(128,128,128,0.2)'), yaxis=dict(title=dict(text="Slope 7d do LnRMSSD", font=dict(color='black')), tickfont=dict(color='black'), showgrid=True, gridcolor='rgba(128,128,128,0.2)'), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', height=500, showlegend=True, legend=dict(font=dict(color='black'), bgcolor='rgba(0,0,0,0)', bordercolor='black', borderwidth=1), font=dict(color='black'))
+            # Linha slope — azul vivo, visível no dark mode
+            fig_slope_ind.add_trace(go.Scatter(
+                x=_df_slope_30['Data'], y=_df_slope_30['slope_7'],
+                name='Slope 7d',
+                line=dict(color='#5DADE2', width=3),
+                fill='tozeroy', fillcolor='rgba(93,173,226,0.15)',
+                hovertemplate='Data: %{x}<br>Slope: %{y:.4f}<extra></extra>'
+            ))
+            _af = dict(color='white', size=12)
+            fig_slope_ind.add_hrect(y0=thresh_recuperacao, y1=slope_mean + (3*slope_std),
+                fillcolor="rgba(39,174,96,0.30)", line_width=0,
+                annotation_text="🚀 Supercompensação", annotation_position="top right", annotation_font=_af)
+            fig_slope_ind.add_hrect(y0=thresh_estavel_sup, y1=thresh_recuperacao,
+                fillcolor="rgba(46,204,113,0.22)", line_width=0,
+                annotation_text="✅ Recuperação", annotation_position="right", annotation_font=_af)
+            fig_slope_ind.add_hrect(y0=thresh_estavel_inf, y1=thresh_estavel_sup,
+                fillcolor="rgba(149,165,166,0.20)", line_width=0,
+                annotation_text="⬜ Estável", annotation_position="right", annotation_font=_af)
+            fig_slope_ind.add_hrect(y0=thresh_declinio, y1=thresh_estavel_inf,
+                fillcolor="rgba(241,196,15,0.28)", line_width=0,
+                annotation_text="⚠️ Declínio Leve", annotation_position="right", annotation_font=_af)
+            fig_slope_ind.add_hrect(y0=thresh_nfor, y1=thresh_declinio,
+                fillcolor="rgba(231,76,60,0.30)", line_width=0,
+                annotation_text="🔴 Fadiga", annotation_position="right", annotation_font=_af)
+            fig_slope_ind.add_hrect(y0=slope_mean - (4*slope_std), y1=thresh_nfor,
+                fillcolor="rgba(192,57,43,0.40)", line_width=0,
+                annotation_text="🚨 NFOR", annotation_position="bottom right", annotation_font=_af)
+            fig_slope_ind.add_hline(y=slope_mean, line_dash="solid", line_color="#5DADE2", line_width=2.5,
+                annotation_text=f"Média ({slope_mean:.3f})", annotation_position="right",
+                annotation_font=dict(color='white', size=11))
+            fig_slope_ind.add_hline(y=thresh_nfor, line_dash="dash", line_color="#E74C3C", line_width=2.5,
+                annotation_text=f"Limite NFOR ({thresh_nfor:.3f})", annotation_position="bottom right",
+                annotation_font=dict(color='white', size=11))
+            fig_slope_ind.update_layout(
+                title=dict(text=f"Slope 7d Individualizado — {len(slope_series)} dias", font=dict(color='white', size=14)),
+                xaxis=dict(title=dict(text="Data", font=dict(color='white')), tickfont=dict(color='white'),
+                           showgrid=True, gridcolor='rgba(255,255,255,0.12)'),
+                yaxis=dict(title=dict(text="Slope 7d do LnRMSSD", font=dict(color='white')), tickfont=dict(color='white'),
+                           showgrid=True, gridcolor='rgba(255,255,255,0.12)',
+                           zeroline=True, zerolinecolor='rgba(255,255,255,0.3)', zerolinewidth=1),
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                height=520, hovermode='x unified',
+                showlegend=True,
+                legend=dict(font=dict(color='white', size=11), bgcolor='rgba(255,255,255,0.08)',
+                            bordercolor='rgba(255,255,255,0.25)', borderwidth=1),
+                font=dict(color='white'),
+                margin=dict(t=50, b=60, l=60, r=120)
+            )
             st.plotly_chart(fig_slope_ind, use_container_width=True, config={'displayModeBar': False})
             with st.expander("📋 Ver Histórico de Sequências (Streaks)"):
                 df_hist_seq = pd.DataFrame(todas_sequencias[-10:])
