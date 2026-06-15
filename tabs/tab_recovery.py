@@ -676,6 +676,119 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
                 else: st.info(f"Dados insuficientes ({len(_merged_j)} dias comuns).")
             except Exception as _j_err: st.info(f"Correlação indisponível: {_j_err}")
 
+            # ════════════════════════════════════════════════════════════════
+            # CORRELAÇÃO: Slope 7d Estados vs HRV-Guided (HIIT / Recuperação)
+            # Pergunta: que estados do slope correlacionam com HIIT vs Recuperação?
+            # ════════════════════════════════════════════════════════════════
+            st.markdown("---")
+            st.markdown("**📈 Correlação: Estados do Slope 7d vs HRV-Guided**")
+            st.caption(
+                "Que estados do slope individualizado ocorrem mais em dias de HIIT "
+                "vs dias de Recuperação/LOW? Correlação de Pearson (rolling 14d)."
+            )
+            try:
+                # df_corr tem zona_slope + intens (HIIT/Recuperação) do HRV-Guided
+                # Já está disponível no scope — calculado na Análise 1
+                _slope_zonas = [
+                    'Supercompensação', 'Recuperação', 'Estável',
+                    'Declínio Leve', 'Fadiga', 'NFOR Crítico'
+                ]
+                # Criar binárias para cada zona do slope
+                _df_sl_corr = df_corr[['Data', 'zona_slope', 'intens']].copy()
+                _df_sl_corr = _df_sl_corr[_df_sl_corr['intens'].isin(['HIIT', 'Recuperação'])].copy()
+                _df_sl_corr['hiit_bin'] = (_df_sl_corr['intens'] == 'HIIT').astype(int)
+                for _sz in _slope_zonas:
+                    _df_sl_corr[f'slope_{_sz}'] = (_df_sl_corr['zona_slope'] == _sz).astype(int)
+
+                # Rolling 14d
+                _df_sl_corr = _df_sl_corr.sort_values('Data')
+                _df_sl_corr['hiit_r14'] = _df_sl_corr['hiit_bin'].rolling(14, min_periods=7).mean()
+                for _sz in _slope_zonas:
+                    _df_sl_corr[f'slope_{_sz}_r14'] = _df_sl_corr[f'slope_{_sz}'].rolling(14, min_periods=7).mean()
+
+                from scipy import stats as _sst_sl
+                _sl_results = []
+                for _sz in _slope_zonas:
+                    _vd = _df_sl_corr[['hiit_r14', f'slope_{_sz}_r14']].dropna()
+                    if len(_vd) >= 10:
+                        _r_sl, _p_sl = _sst_sl.pearsonr(_vd['hiit_r14'], _vd[f'slope_{_sz}_r14'])
+                        _sl_results.append({
+                            'Estado Slope': _sz,
+                            'r': _r_sl,
+                            'p': _p_sl,
+                            'Sig.': '✅' if _p_sl < 0.05 else '—',
+                            'N': len(_vd),
+                        })
+
+                if _sl_results:
+                    _df_sl_res = pd.DataFrame(_sl_results).sort_values('r', ascending=False)
+
+                    # Separar em duas colunas: associados a HIIT vs Recuperação
+                    _hiit_assoc = _df_sl_res[_df_sl_res['r'] > 0].copy()
+                    _rec_assoc  = _df_sl_res[_df_sl_res['r'] <= 0].copy()
+                    _rec_assoc['r'] = _rec_assoc['r'].abs()  # mostrar magnitude
+
+                    _col_hiit, _col_rec = st.columns(2)
+
+                    with _col_hiit:
+                        st.markdown("**🟢 Associados a HIIT** *(r positivo)*")
+                        if len(_hiit_assoc) > 0:
+                            def _cor_hiit(val):
+                                try:
+                                    v = float(val)
+                                    if v >= 0.5: return 'background-color:rgba(39,174,96,0.35);font-weight:bold'
+                                    if v >= 0.3: return 'background-color:rgba(39,174,96,0.18)'
+                                    return ''
+                                except: return ''
+                            st.dataframe(
+                                _hiit_assoc[['Estado Slope','r','Sig.','N']]
+                                .style.map(_cor_hiit, subset=['r'])
+                                .format({'r': '{:+.3f}'}),
+                                use_container_width=True, hide_index=True
+                            )
+                        else:
+                            st.info("Nenhum estado positivamente associado a HIIT.")
+
+                    with _col_rec:
+                        st.markdown("**🔵 Associados a Recuperação/LOW** *(r negativo → magnitude)*")
+                        if len(_rec_assoc) > 0:
+                            def _cor_rec(val):
+                                try:
+                                    v = float(val)
+                                    if v >= 0.5: return 'background-color:rgba(52,152,219,0.35);font-weight:bold'
+                                    if v >= 0.3: return 'background-color:rgba(52,152,219,0.18)'
+                                    return ''
+                                except: return ''
+                            st.dataframe(
+                                _rec_assoc[['Estado Slope','r','Sig.','N']]
+                                .style.map(_cor_rec, subset=['r'])
+                                .format({'r': '{:.3f}'}),
+                                use_container_width=True, hide_index=True
+                            )
+                        else:
+                            st.info("Nenhum estado negativamente associado a HIIT.")
+
+                    with st.expander("ℹ️ Como interpretar"):
+                        st.markdown("""
+**Lógica da correlação:**
+- **r positivo** → estado do slope aparece mais em dias classificados como HIIT
+- **r negativo** → estado do slope aparece mais em dias classificados como Recuperação/LOW
+- Rolling 14d suaviza flutuações diárias — capta padrões de médio prazo
+
+**Exemplo prático:**
+- *Supercompensação* com r=+0.45 → quando o slope está em Supercompensação, 
+  a HRV tende a estar também em zona HIIT — os dois sistemas concordam
+- *Fadiga* com r=-0.52 → quando o slope detecta Fadiga, a HRV tende a prescrever 
+  Recuperação — boa convergência entre os dois métodos
+
+**✅ = significativo (p<0.05)** | N = dias com dados em ambas as séries
+                        """)
+                else:
+                    st.info("Dados insuficientes para calcular correlação Slope vs HRV-Guided.")
+            except Exception as _sl_corr_err:
+                st.info(f"Correlação Slope não disponível: {_sl_corr_err}")
+
+
     # ════════════════════════════════════════════════════════════════════════
     # EXPORT CSV
     # ════════════════════════════════════════════════════════════════════════
