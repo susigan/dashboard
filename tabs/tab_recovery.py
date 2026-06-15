@@ -1583,11 +1583,8 @@ ednacore AI. | Plews et al. (2013). Training adaptation and HRV in elite enduran
 5. **SWC actualizado**: a cada 4 semanas com os dados das últimas 4 semanas
             """)
 
-        # ── Reutilizar df_hg já construído pelo HRV-Guided ────────────────
-        # df_hg tem: Data, LnrMSSD, bm, bs, linf, lsup, intens, sem_medicao
-        # Usar o mesmo LnrMSSD e o mesmo período — alinhado com o gráfico HRV-Guided
-        # Rolling 7 dias sobre LnrMSSD (Javaloyes usa 7d, HRV-Guided usa 14d)
-       _wc_j = (wc_full.copy() if (wc_full is not None and len(wc_full) > 0)
+
+        _wc_j = (wc_full.copy() if (wc_full is not None and len(wc_full) > 0)
                  else dw.copy())
         _wc_j['Data'] = pd.to_datetime(_wc_j['Data']).dt.normalize()
         _wc_j = _wc_j.sort_values('Data').reset_index(drop=True)
