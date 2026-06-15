@@ -822,10 +822,20 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
                 _exp = _exp.merge(_hg_exp, on='Data', how='left')
             except Exception: pass
             try:
-                _sl_exp = df_corr[['Data','LnrMSSD','slope_7','baseline_7','std_7']].copy()
-                _sl_exp.columns = ['Data','LnrMSSD_raw','slope_7d','slope_baseline7','slope_std7']
+                # Slope 7d: valor numérico + nome do estado + baseline/std
+                _sl_exp = df_corr[['Data','slope_7','baseline_7','std_7']].copy()
+                _sl_exp.columns = ['Data','slope_7d','slope_baseline7','slope_std7']
+                # Adicionar zona_slope se existir (calculada na Análise 1.7)
+                if 'zona_slope' in df_corr.columns:
+                    _sl_exp['slope_estado'] = df_corr['zona_slope'].values
                 _sl_exp['Data'] = pd.to_datetime(_sl_exp['Data']).dt.normalize()
-                _exp = _exp.merge(_sl_exp, on='Data', how='left')
+                if 'slope_7d' not in _exp.columns:
+                    _exp = _exp.merge(_sl_exp, on='Data', how='left')
+                else:
+                    # Actualizar colunas em falta sem duplicar
+                    for _c in _sl_exp.columns:
+                        if _c != 'Data' and _c not in _exp.columns:
+                            _exp = _exp.merge(_sl_exp[['Data', _c]], on='Data', how='left')
             except Exception: pass
             try:
                 _jav_exp = _wc_j[['Data','LnrMSSD','ln7','prescricao']].copy()
@@ -835,10 +845,28 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
                 _exp = _exp.merge(_jav_exp, on='Data', how='left')
             except Exception: pass
             try:
-                _beta_exp = beta_df[['LnrMSSD','beta','bm28','bs28']].copy(); _beta_exp.index.name = 'Data'; _beta_exp = _beta_exp.reset_index()
+                # Modelo β: score + baseline + agudo + crónico
+                _beta_exp = beta_df[['LnrMSSD','beta','bm28','bs28','beta_agudo','beta_cronico']].copy()
+                _beta_exp.index.name = 'Data'
+                _beta_exp = _beta_exp.reset_index()
                 _beta_exp['Data'] = pd.to_datetime(_beta_exp['Data']).dt.normalize()
-                _beta_exp.columns = ['Data','LnrMSSD_beta','beta_score','beta_baseline28','beta_sd28']
-                _exp = _exp.merge(_beta_exp, on='Data', how='left')
+                _beta_exp.columns = ['Data','LnrMSSD_beta','beta_score',
+                                     'beta_baseline28','beta_sd28',
+                                     'beta_agudo','beta_cronico']
+                if 'beta_score' not in _exp.columns:
+                    _exp = _exp.merge(_beta_exp, on='Data', how='left')
+                else:
+                    for _c in _beta_exp.columns:
+                        if _c != 'Data' and _c not in _exp.columns:
+                            _exp = _exp.merge(_beta_exp[['Data', _c]], on='Data', how='left')
+            except Exception: pass
+            try:
+                # Mode 1 (Altini) e Mode 2 (Plews): zona + cor
+                _m12_exp = df_corr[['Data','mode1_zone','mode2_zone']].copy()
+                _m12_exp.columns = ['Data','altini_zona','plews_zona']
+                _m12_exp['Data'] = pd.to_datetime(_m12_exp['Data']).dt.normalize()
+                if 'altini_zona' not in _exp.columns:
+                    _exp = _exp.merge(_m12_exp, on='Data', how='left')
             except Exception: pass
             if 'hrv_sem_medicao' in _dw_csv.columns:
                 _exp = _exp.merge(_dw_csv[['Data','hrv_sem_medicao']].drop_duplicates('Data'), on='Data', how='left')
