@@ -540,24 +540,34 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
             if _dias_sem_hoje >= 1:
                 st.warning(f"⚠️ Última medição HRV há {_dias_sem_hoje} dia(s). LnRMSSD₇ de hoje é estimado.")
 
-            # SWC: primeiros 28 dias COM medição real
-            _ln_real = _wc_j[_wc_j['LnrMSSD'].notna()]['LnrMSSD']
-            _ln_base = _ln_real.head(28) if len(_ln_real) >= 7 else _ln_real
-            _swc_mean = float(_ln_base.mean()); _swc_sd = float(_ln_base.std())
-            _swc_sup = _swc_mean + 0.5 * _swc_sd; _swc_inf = _swc_mean - 0.5 * _swc_sd
+            # ── SWC rolling (Javaloyes 2020) ─────────────────────────────────
+            # Protocolo: SWC = mean ± 0.5×SD calculado em janela rolling 28 dias
+            # Actualizado a cada sessão (rolling sobre dias com medição real)
+            # Baseline para display: usar o SWC do dia mais recente com dados
+            _wc_j['swc_mean'] = _wc_j['LnrMSSD'].rolling(28, min_periods=7).mean()
+            _wc_j['swc_sd']   = _wc_j['LnrMSSD'].rolling(28, min_periods=7).std()
+            _wc_j['swc_sup']  = _wc_j['swc_mean'] + 0.5 * _wc_j['swc_sd']
+            _wc_j['swc_inf']  = _wc_j['swc_mean'] - 0.5 * _wc_j['swc_sd']
+            # Valores actuais (para cards e caption)
+            _ult_swc = _wc_j[_wc_j['swc_mean'].notna()].iloc[-1]
+            _swc_mean = float(_ult_swc['swc_mean']); _swc_sd = float(_ult_swc['swc_sd'])
+            _swc_sup  = float(_ult_swc['swc_sup']);  _swc_inf = float(_ult_swc['swc_inf'])
 
-            # Máquina de estados
+            # Máquina de estados — usa SWC rolling por dia (não valor fixo)
             _prescricoes = []; _consec_high = 0; _consec_rest = 0; _razoes = []
             for _, row in _wc_j.iterrows():
-                ln7 = row['ln7']
+                ln7  = row['ln7']
+                # SWC do dia actual (rolling 28d) — NaN nos primeiros dias sem baseline
+                _sup = row['swc_sup'] if pd.notna(row['swc_sup']) else _swc_sup
+                _inf = row['swc_inf'] if pd.notna(row['swc_inf']) else _swc_inf
                 if pd.isna(ln7):
                     _pres = 'LOW'; _razao = 'sem dados'; _consec_high = 0; _consec_rest = 0
-                elif ln7 > _swc_sup:
+                elif ln7 > _sup:
                     if _consec_high >= 2:
                         _pres = 'LOW'; _razao = 'HIGH forçado LOW (máx 2 consec.)'; _consec_high = 0; _consec_rest = 0
                     else:
                         _pres = 'HIGH'; _razao = 'Acima SWC sup'; _consec_high += 1; _consec_rest = 0
-                elif ln7 >= _swc_inf:
+                elif ln7 >= _inf:
                     _pres = 'LOW'; _razao = 'Dentro da banda'; _consec_high = 0; _consec_rest = 0
                 else:
                     _consec_high = 0
@@ -597,9 +607,20 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
             _df_plot = _wc_j_val.tail(n_hg).copy()
             import plotly.graph_objects as _go_j
             _fig_j = _go_j.Figure()
-            _fig_j.add_hrect(y0=_swc_inf, y1=_swc_sup, fillcolor='rgba(52,152,219,0.08)', line_width=0, annotation_text="LOW (dentro banda)", annotation_position="right", annotation_font_size=9, annotation_font_color='#3498db')
-            _fig_j.add_hline(y=_swc_sup, line_dash='dash', line_color='rgba(39,174,96,0.6)', line_width=1.2, annotation_text="SWC sup", annotation_position="right", annotation_font_color='#27ae60', annotation_font_size=9)
-            _fig_j.add_hline(y=_swc_inf, line_dash='dash', line_color='rgba(231,76,60,0.6)', line_width=1.2, annotation_text="SWC inf", annotation_position="right", annotation_font_color='#e74c3c', annotation_font_size=9)
+            # Banda SWC rolling — linhas dinâmicas (não fixas)
+            _df_plot_swc = _df_plot[_df_plot['swc_sup'].notna()]
+            if len(_df_plot_swc) > 0:
+                _fig_j.add_trace(_go_j.Scatter(
+                    x=_df_plot_swc['Data'], y=_df_plot_swc['swc_sup'],
+                    line=dict(color='rgba(39,174,96,0.6)', width=1.5, dash='dash'),
+                    name='SWC sup (rolling)', hovertemplate='SWC sup: %{y:.3f}<extra></extra>'
+                ))
+                _fig_j.add_trace(_go_j.Scatter(
+                    x=_df_plot_swc['Data'], y=_df_plot_swc['swc_inf'],
+                    fill='tonexty', fillcolor='rgba(52,152,219,0.08)',
+                    line=dict(color='rgba(231,76,60,0.6)', width=1.5, dash='dash'),
+                    name='SWC inf (rolling)', hovertemplate='SWC inf: %{y:.3f}<extra></extra>'
+                ))
             _fig_j.add_trace(_go_j.Scatter(x=_df_plot['Data'], y=_df_plot['ln7'], mode='lines', line=dict(color='rgba(44,62,80,0.35)', width=1.5), showlegend=False, hoverinfo='skip'))
             for _pg, _cg in _COR_MAP.items():
                 _sg = _df_plot[_df_plot['prescricao'] == _pg]
