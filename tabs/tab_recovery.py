@@ -1018,20 +1018,54 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
                 _exp = _exp.merge(_jav_exp, on='Data', how='left')
             except Exception: pass
             try:
-                # Modelo β: score + baseline + agudo + crónico
-                _beta_exp = beta_df[['LnrMSSD','beta','bm28','bs28','beta_agudo','beta_cronico']].copy()
-                _beta_exp.index.name = 'Data'
-                _beta_exp = _beta_exp.reset_index()
-                _beta_exp['Data'] = pd.to_datetime(_beta_exp['Data']).dt.normalize()
-                _beta_exp.columns = ['Data','LnrMSSD_beta','beta_score',
-                                     'beta_baseline28','beta_sd28',
-                                     'beta_agudo','beta_cronico']
+                # Modelo β — colunas completas para CSV:
+                # score, baseline, sd, z28, agudo, crónico, zona categórica, prescrição
+                _beta_full = beta_df[['LnrMSSD','bm28','bs28','z28','beta','beta_agudo','beta_cronico']].copy()                     if 'z28' in beta_df.columns else                     beta_df[['LnrMSSD','bm28','bs28','beta','beta_agudo','beta_cronico']].copy()
+                _beta_full.index.name = 'Data'
+                _beta_full = _beta_full.reset_index()
+                _beta_full['Data'] = pd.to_datetime(_beta_full['Data']).dt.normalize()
+                # Renomear colunas
+                _col_map = {'LnrMSSD':'LnrMSSD_beta','bm28':'beta_baseline28',
+                            'bs28':'beta_sd28','beta':'beta_score'}
+                if 'z28' in _beta_full.columns:
+                    _col_map['z28'] = 'beta_z28'
+                _beta_full = _beta_full.rename(columns=_col_map)
+                # Zona categórica (nome do estado)
+                def _bz_cat(b):
+                    if pd.isna(b):  return 'Sem dados'
+                    elif b >= 65:   return 'Alta frescura (≥65)'
+                    elif b >= 50:   return 'Zona funcional (50-65)'
+                    elif b >= 35:   return 'Possível fadiga (35-50)'
+                    else:           return 'Fadiga marcada (<35)'
+                _beta_full['beta_zona'] = _beta_full['beta_score'].apply(_bz_cat)
+                # Prescrição β (texto, com base na regra de convergência)
+                def _bz_pres(row):
+                    b  = row.get('beta_score', np.nan)
+                    ba = row.get('beta_agudo', np.nan)
+                    bc = row.get('beta_cronico', np.nan)
+                    if pd.isna(b): return 'Sem medição'
+                    n_pos = sum([
+                        1 if pd.notna(b)  and b  >= 60 else 0,
+                        1 if pd.notna(ba) and ba >= 1  else 0,
+                        1 if pd.notna(bc) and bc >= 1  else 0,
+                    ])
+                    n_neg = sum([
+                        1 if pd.notna(b)  and b  <= 40 else 0,
+                        1 if pd.notna(ba) and ba <= -1 else 0,
+                        1 if pd.notna(bc) and bc <= -1 else 0,
+                    ])
+                    if n_pos >= 2: return 'HIIT / Alta intensidade'
+                    elif n_neg >= 2: return 'Recuperação activa'
+                    elif n_neg >= 1: return 'Moderado Z1/Z2'
+                    else: return 'Zona neutra'
+                _beta_full['beta_prescricao'] = _beta_full.apply(_bz_pres, axis=1)
+                # Merge — verificar colunas existentes
                 if 'beta_score' not in _exp.columns:
-                    _exp = _exp.merge(_beta_exp, on='Data', how='left')
+                    _exp = _exp.merge(_beta_full, on='Data', how='left')
                 else:
-                    for _c in _beta_exp.columns:
+                    for _c in _beta_full.columns:
                         if _c != 'Data' and _c not in _exp.columns:
-                            _exp = _exp.merge(_beta_exp[['Data', _c]], on='Data', how='left')
+                            _exp = _exp.merge(_beta_full[['Data', _c]], on='Data', how='left')
             except Exception: pass
             try:
                 # Mode 1 (Altini) e Mode 2 (Plews): zona + cor
