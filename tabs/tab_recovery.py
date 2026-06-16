@@ -788,6 +788,179 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
             except Exception as _sl_corr_err:
                 st.info(f"Correlação Slope não disponível: {_sl_corr_err}")
 
+            # ════════════════════════════════════════════════════════════════
+            # CORRELAÇÃO: Estados Modelo β vs HRV-Guided (HIIT / Recuperação)
+            # Pergunta: que estados β (frescura/fadiga) ocorrem mais em HIIT vs Recuperação?
+            # ════════════════════════════════════════════════════════════════
+            st.markdown("---")
+            st.markdown("**🧠 Correlação: Estados Modelo β vs HRV-Guided**")
+            st.caption(
+                "Que zonas do Modelo β (score 0–100) ocorrem mais em dias de HIIT "
+                "vs dias de Recuperação/LOW? Rolling 14d — mesmo método das correlações anteriores."
+            )
+            try:
+                from scipy import stats as _sst_beta
+                # beta_df tem index=Data, colunas: LnrMSSD, bm28, bs28, beta, beta_agudo, beta_cronico
+                # df_hg tem Data + intens (HIIT/Recuperação/Sem medição)
+                # Cruzar pelo campo Data
+
+                # Preparar beta com zonas categóricas
+                _beta_c = beta_df[['beta', 'beta_agudo', 'beta_cronico']].copy()
+                _beta_c.index.name = 'Data'
+                _beta_c = _beta_c.reset_index()
+                _beta_c['Data'] = pd.to_datetime(_beta_c['Data']).dt.normalize()
+
+                # Classificar β em zonas (mesmo critério dos cards)
+                def _zona_beta(b):
+                    if pd.isna(b):      return 'Sem dados'
+                    elif b >= 65:       return 'Alta frescura (≥65)'
+                    elif b >= 50:       return 'Zona funcional (50-65)'
+                    elif b >= 35:       return 'Possível fadiga (35-50)'
+                    else:               return 'Fadiga marcada (<35)'
+
+                _beta_c['beta_zona'] = _beta_c['beta'].apply(_zona_beta)
+
+                # Merge com HRV-Guided
+                _hg_c = df_hg[['Data', 'intens']].copy()
+                _hg_c['Data'] = pd.to_datetime(_hg_c['Data']).dt.normalize()
+                _beta_merged = _beta_c.merge(_hg_c, on='Data', how='inner')
+                _beta_merged = _beta_merged[_beta_merged['intens'].isin(['HIIT', 'Recuperação'])].copy()
+                _beta_merged = _beta_merged.sort_values('Data').reset_index(drop=True)
+
+                if len(_beta_merged) >= 14:
+                    _beta_merged['hiit_bin'] = (_beta_merged['intens'] == 'HIIT').astype(int)
+
+                    # 1. Correlação β score contínuo vs HIIT
+                    _beta_merged['hiit_r14']  = _beta_merged['hiit_bin'].rolling(14, min_periods=7).mean()
+                    _beta_merged['beta_r14']  = _beta_merged['beta'].rolling(14, min_periods=7).mean()
+                    _beta_merged['bagudo_r14']  = _beta_merged['beta_agudo'].rolling(14, min_periods=7).mean()
+                    _beta_merged['bcron_r14']   = _beta_merged['beta_cronico'].rolling(14, min_periods=7).mean()
+
+                    _beta_zonas_list = [
+                        'Alta frescura (≥65)', 'Zona funcional (50-65)',
+                        'Possível fadiga (35-50)', 'Fadiga marcada (<35)'
+                    ]
+                    for _bz in _beta_zonas_list:
+                        _beta_merged[f'bz_{_bz}'] = (_beta_merged['beta_zona'] == _bz).astype(int)
+                        _beta_merged[f'bz_{_bz}_r14'] = _beta_merged[f'bz_{_bz}'].rolling(14, min_periods=7).mean()
+
+                    # Correlações contínuas (β, βAgudo, βCrónico)
+                    _cont_results = []
+                    for _col, _nome in [('beta_r14', 'β score (0–100)'),
+                                        ('bagudo_r14', 'βAgudo 3d (%)'),
+                                        ('bcron_r14', 'βCrónico 7d (%)')]:
+                        _vd = _beta_merged[['hiit_r14', _col]].dropna()
+                        if len(_vd) >= 10:
+                            _r, _p = _sst_beta.pearsonr(_vd['hiit_r14'], _vd[_col])
+                            _cont_results.append({
+                                'Indicador': _nome,
+                                'r': _r,
+                                'Sig.': '✅' if _p < 0.05 else '—',
+                                'N': len(_vd),
+                                'Interpretação': (
+                                    'Score β alto → mais HIIT' if _r > 0.3
+                                    else 'Score β baixo → mais HIIT' if _r < -0.3
+                                    else 'Sem relação clara'
+                                )
+                            })
+
+                    # Correlações por zona categórica
+                    _zona_results = []
+                    for _bz in _beta_zonas_list:
+                        _vd = _beta_merged[['hiit_r14', f'bz_{_bz}_r14']].dropna()
+                        if len(_vd) >= 10:
+                            _r, _p = _sst_beta.pearsonr(_vd['hiit_r14'], _vd[f'bz_{_bz}_r14'])
+                            _zona_results.append({
+                                'Zona β': _bz,
+                                'r': _r,
+                                'Sig.': '✅' if _p < 0.05 else '—',
+                                'N': len(_vd),
+                            })
+
+                    # Display — 2 secções
+                    st.markdown("**Indicadores contínuos β vs HIIT (rolling 14d):**")
+                    if _cont_results:
+                        _df_cont = pd.DataFrame(_cont_results)
+                        def _cor_cont(val):
+                            try:
+                                v = float(val)
+                                if v >= 0.5:  return 'background-color:rgba(39,174,96,0.35);font-weight:bold'
+                                if v >= 0.3:  return 'background-color:rgba(39,174,96,0.18)'
+                                if v <= -0.5: return 'background-color:rgba(231,76,60,0.35);font-weight:bold'
+                                if v <= -0.3: return 'background-color:rgba(231,76,60,0.18)'
+                                return ''
+                            except: return ''
+                        st.dataframe(
+                            _df_cont.style.map(_cor_cont, subset=['r']).format({'r': '{:+.3f}'}),
+                            use_container_width=True, hide_index=True
+                        )
+
+                    st.markdown("**Zonas β categóricas vs HIIT / Recuperação:**")
+                    if _zona_results:
+                        _df_zona = pd.DataFrame(_zona_results).sort_values('r', ascending=False)
+                        _col_b1, _col_b2 = st.columns(2)
+                        _hiit_bz  = _df_zona[_df_zona['r'] > 0].copy()
+                        _rec_bz   = _df_zona[_df_zona['r'] <= 0].copy()
+                        _rec_bz['r'] = _rec_bz['r'].abs()
+
+                        with _col_b1:
+                            st.markdown("**🟢 Associadas a HIIT** *(r positivo)*")
+                            if len(_hiit_bz) > 0:
+                                def _cb1(val):
+                                    try:
+                                        v = float(val)
+                                        return ('background-color:rgba(39,174,96,0.35);font-weight:bold'
+                                                if v >= 0.5 else
+                                                'background-color:rgba(39,174,96,0.18)'
+                                                if v >= 0.3 else '')
+                                    except: return ''
+                                st.dataframe(
+                                    _hiit_bz[['Zona β','r','Sig.','N']]
+                                    .style.map(_cb1, subset=['r'])
+                                    .format({'r': '{:+.3f}'}),
+                                    use_container_width=True, hide_index=True
+                                )
+                            else:
+                                st.info("Sem zonas β positivamente associadas a HIIT.")
+
+                        with _col_b2:
+                            st.markdown("**🔵 Associadas a Recuperação** *(magnitude r)*")
+                            if len(_rec_bz) > 0:
+                                def _cb2(val):
+                                    try:
+                                        v = float(val)
+                                        return ('background-color:rgba(52,152,219,0.35);font-weight:bold'
+                                                if v >= 0.5 else
+                                                'background-color:rgba(52,152,219,0.18)'
+                                                if v >= 0.3 else '')
+                                    except: return ''
+                                st.dataframe(
+                                    _rec_bz[['Zona β','r','Sig.','N']]
+                                    .style.map(_cb2, subset=['r'])
+                                    .format({'r': '{:.3f}'}),
+                                    use_container_width=True, hide_index=True
+                                )
+                            else:
+                                st.info("Sem zonas β negativamente associadas a HIIT.")
+
+                    with st.expander("ℹ️ Como interpretar"):
+                        st.markdown("""
+**Lógica:**
+- **β score alto (≥65) + r positivo** → quando o sistema autonómico está em alta frescura, a HRV também prescreve HIIT — convergência entre os dois métodos
+- **Fadiga marcada (<35) + r negativo** → quando β detecta fadiga, HRV tende a prescrever Recuperação — boa consistência
+- **βAgudo/βCrónico + r positivo** → tendência crescente de HRV correlaciona com mais dias HIIT
+
+**O que procurar:**
+- ✅ Alta convergência: *Alta frescura* associada a HIIT E *Fadiga marcada* associada a Recuperação
+- ⚠️ Baixa convergência: β diz frescura mas HRV prescreve Recuperação com frequência — possível dessincronização entre SNA e HRV de curto prazo
+                        """)
+                else:
+                    st.info(f"Dados insuficientes para correlação β vs HRV-Guided ({len(_beta_merged)} dias comuns).")
+            except Exception as _beta_corr_err:
+                st.info(f"Correlação β não disponível: {_beta_corr_err}")
+
+
+
 
     # ════════════════════════════════════════════════════════════════════════
     # EXPORT CSV
