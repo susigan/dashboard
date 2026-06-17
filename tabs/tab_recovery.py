@@ -592,11 +592,14 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
             if _dias_sem_hoje >= 1:
                 st.warning(f"⚠️ Última medição HRV há {_dias_sem_hoje} dia(s). LnRMSSD₇ de hoje é estimado.")
 
-            # ── SWC: primeiros 28 dias COM medição real (Javaloyes 2020 baseline) ──
-            # Protocolo: 4 semanas iniciais definem a banda SWC = mean ± 0.5×SD
-            # (sem_medicao=True são dias do reindex sem entrada real no wellness)
-            _ln_real = _wc_j[~_wc_j['sem_medicao']]['LnrMSSD'].dropna() if 'sem_medicao' in _wc_j.columns else _wc_j['LnrMSSD'].dropna()
-            _ln_base  = _ln_real.head(28) if len(_ln_real) >= 7 else _ln_real
+            # ── SWC: últimos 28 dias COM medição real (rolling, Javaloyes 2020) ──
+            # O paper usa "baseline weeks" como calibração contínua.
+            # Numa implementação com histórico multi-ano, os primeiros 28 dias
+            # são de anos atrás com HRV completamente diferente → SWC inválido.
+            # Correcto: usar os ÚLTIMOS 28 dias reais como janela de referência
+            # — é o mesmo princípio do rolling 28d que já usamos no Modelo β.
+            _ln_real  = _wc_j[~_wc_j['sem_medicao']]['LnrMSSD'].dropna() if 'sem_medicao' in _wc_j.columns else _wc_j['LnrMSSD'].dropna()
+            _ln_base  = _ln_real.tail(28) if len(_ln_real) >= 7 else _ln_real
             _swc_mean = float(_ln_base.mean())
             _swc_sd   = float(_ln_base.std())
             _swc_sup  = _swc_mean + 0.5 * _swc_sd
