@@ -138,214 +138,170 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
         st.warning("Sem dados de atividades para análise avançada.")
         return
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # §07 GLYCOGEN DEPLETION — Della Mattia, Fatigue Curves (2025)
-    # Estima o custo glicogénico por zona de intensidade relativa ao FTP
-    # Inputs: z1_kj (Z1KJ), z2_kj (Z2KJ), z3_kj (Z3KJ), icu_weight, FTP=223W Bike
-    # ══════════════════════════════════════════════════════════════════════════
-    st.subheader("🍬 §07 Depleção Glicogénica — Fatigue Curves (Della Mattia 2025)")
-    with st.expander("📖 Como é calculado", expanded=False):
-        st.markdown("""
-**Depleção Glicogénica por Zona (§07 — Della Mattia 2025)**
+    # ── Secção 1: Tabelas de Resumo ─────────────────────────────────────────
+    st.subheader("📋 Resumo de Atividades por Modalidade")
+    df_res = tabela_resumo_por_tipo_df(da_full)
+    if len(df_res) > 0:
+        st.dataframe(df_res, use_container_width=True, hide_index=True)
 
-Estima o custo em CHO (gramas) por sessão, proporcional à intensidade relativa ao FTP:
-
-```
-G_dep = k_z1 × kJ_z1 + k_z2 × kJ_z2 + k_z3 × kJ_z3
-G_dep_norm = G_dep / peso_kg   [g CHO / kg]
-```
-
-Coeficientes de custo glicogénico por zona (relativos ao FTP Bike=223W):
-- **Z1** (<55% FTP) → predominância aeróbica, baixo custo glicogénico (k=0.10)
-- **Z2** (55–75% FTP) → zona mista, custo moderado (k=0.25)
-- **Z3** (>75% FTP) → predominância anaeróbica/glicogénica, alto custo (k=0.55)
-
-A **dívida glicogénica rolling 7d** indica a acumulação semanal — valores acima
-do p75 histórico sinalizam necessidade de repleção activa (CHO strategy).
-
-*Calibrado nos dados deste atleta — percentis relativos ao histórico individual.*
-        """)
-
-    _FTP_BIKE = 223.0  # W — FTP Bike deste atleta
-    _K_ZONES  = {'z1': 0.10, 'z2': 0.25, 'z3': 0.55}  # coeficientes por zona
-
-    _gly_df = filtrar_principais(da_full).copy()
-    _gly_df['Data'] = pd.to_datetime(_gly_df['Data']).dt.normalize()
-    _gly_df['type'] = _gly_df['type'].apply(norm_tipo)
-    _gly_df = _gly_df[_gly_df['type'].isin(['Bike', 'Row', 'Run', 'Ski'])]
-
-    # Colunas kJ por zona
-    _z1_col = next((c for c in ['z1_kj','Z1KJ','z1kj'] if c in _gly_df.columns), None)
-    _z2_col = next((c for c in ['z2_kj','Z2KJ','z2kj'] if c in _gly_df.columns), None)
-    _z3_col = next((c for c in ['z3_kj','Z3KJ','z3kj'] if c in _gly_df.columns), None)
-    if _z1_col and _z2_col and _z3_col:
-        _gly_df['_z1'] = pd.to_numeric(_gly_df[_z1_col], errors='coerce').fillna(0)
-        _gly_df['_z2'] = pd.to_numeric(_gly_df[_z2_col], errors='coerce').fillna(0)
-        _gly_df['_z3'] = pd.to_numeric(_gly_df[_z3_col], errors='coerce').fillna(0)
-
-        # Peso: puxar do wellness sheet (dw) — coluna 'peso', igual à tab_corporal
-        # Fallback: icu_weight das actividades → mediana global → 75 kg
-        _peso_wc = None
-        if dw is not None and len(dw) > 0:
-            _peso_col_wc = next((c for c in ['peso','Peso','weight','Weight']
-                                  if c in dw.columns and pd.to_numeric(
-                                      dw[c], errors='coerce').notna().any()), None)
-            if _peso_col_wc:
-                _wc_peso = dw[['Data', _peso_col_wc]].copy()
-                _wc_peso['Data'] = pd.to_datetime(_wc_peso['Data']).dt.normalize()
-                _wc_peso['_pw'] = pd.to_numeric(_wc_peso[_peso_col_wc], errors='coerce').replace(0, np.nan)
-                _wc_peso = _wc_peso.dropna(subset=['_pw']).sort_values('Data')
-                if len(_wc_peso) > 0:
-                    # rolling 30d da média do wellness, reindexado para datas das actividades
-                    _wc_daily = (_wc_peso.set_index('Data')['_pw']
-                                          .rolling('30D', min_periods=1).mean())
-                    _peso_wc = _wc_daily  # Series indexed by date
-
-        def _get_peso(data):
-            if _peso_wc is not None:
-                # Pegar o valor mais recente até essa data
-                _sub = _peso_wc[_peso_wc.index <= pd.Timestamp(data)]
-                if len(_sub) > 0:
-                    return float(_sub.iloc[-1])
-            return 75.0  # fallback
-
-        _gly_df['_peso'] = _gly_df['Data'].apply(_get_peso)
-        # Garantir sem zeros ou NaN
-        _gly_df['_peso'] = _gly_df['_peso'].replace(0, np.nan).fillna(75.0)
-
-        # Custo glicogénico por sessão (g CHO) — normalizado por peso
-        _gly_df['G_dep']      = (_K_ZONES['z1'] * _gly_df['_z1'] +
-                                  _K_ZONES['z2'] * _gly_df['_z2'] +
-                                  _K_ZONES['z3'] * _gly_df['_z3'])
-        _gly_df['G_dep_norm'] = (_gly_df['G_dep'] / _gly_df['_peso']).round(2)
-
-        # Série diária
-        _gly_daily = (_gly_df.groupby('Data')
-                              .agg(G_dep=('G_dep','sum'),
-                                   G_norm=('G_dep_norm','sum'),
-                                   z1_kj=('_z1','sum'),
-                                   z2_kj=('_z2','sum'),
-                                   z3_kj=('_z3','sum'))
-                              .reset_index()
-                              .sort_values('Data'))
-
-        # Rolling 7d — dívida glicogénica
-        _gly_idx  = pd.date_range(_gly_daily['Data'].min(),
-                                   pd.Timestamp.now().normalize(), freq='D')
-        _gly_full = _gly_daily.set_index('Data').reindex(_gly_idx, fill_value=0).reset_index()
-        _gly_full.columns = ['Data'] + list(_gly_full.columns[1:])
-        _gly_full['G_roll7'] = _gly_full['G_norm'].rolling(7, min_periods=1).sum()
-
-        # Percentis históricos para semáforo
-        _p25 = float(_gly_full['G_roll7'].quantile(0.25)) if len(_gly_full) > 14 else 5.0
-        _p75 = float(_gly_full['G_roll7'].quantile(0.75)) if len(_gly_full) > 14 else 15.0
-        _g_hoje     = float(_gly_full['G_norm'].iloc[-1])
-        _g_roll7    = float(_gly_full['G_roll7'].iloc[-1])
-        _g_max_hist = float(_gly_full['G_roll7'].max())
-        _g_pct_max  = _g_roll7 / max(_g_max_hist, 0.01) * 100
-
-        # Cards de resumo
-        _gc1, _gc2, _gc3, _gc4 = st.columns(4)
-        _gc1.metric("G_dep hoje (g CHO/kg)", f"{_g_hoje:.1f}",
-                    help="Custo glicogénico estimado da sessão de hoje.")
-        _gc2.metric("G_dep rolling 7d (g CHO/kg)", f"{_g_roll7:.1f}",
-                    help="Acumulação glicogénica dos últimos 7 dias.")
-        _gc3.metric("% do máximo histórico", f"{_g_pct_max:.0f}%",
-                    help="Percentagem do pico máximo de dívida glicogénica do atleta.")
-        _semaforo = ("🔴 Alta" if _g_roll7 > _p75 else
-                     "🟡 Média" if _g_roll7 > _p25 else "🟢 Baixa")
-        _gc4.metric("Dívida glicogénica", _semaforo,
-                    help=f"Calibrado nos percentis deste atleta: p25={_p25:.1f} / p75={_p75:.1f}")
-
-        # Gráfico stacked: Z1, Z2, Z3 por sessão (últimas 60d)
-        _gly_plot = _gly_full[_gly_full['G_norm'] > 0].tail(60).copy()
-        _fig_gly = go.Figure()
-
-        _ZONE_COLS = {'Z1': ('#3498db', 'z1_kj'), 'Z2': ('#f39c12', 'z2_kj'), 'Z3': ('#e74c3c', 'z3_kj')}
-        for _zn, (_zc, _zcol) in _ZONE_COLS.items():
-            # Convert kJ to g CHO contribution
-            _k = _K_ZONES[_zn.lower()]
-            _vals = (_gly_plot[_zcol] * _k / _gly_plot['Data'].map(
-                _gly_df.set_index('Data')['_peso'].to_dict()).fillna(75)).fillna(0)
-            _fig_gly.add_trace(go.Bar(
-                x=_gly_plot['Data'].tolist(), y=_vals.round(2).tolist(),
-                name=f"{_zn} (<55% FTP)" if _zn=='Z1' else
-                      f"{_zn} (55–75%)" if _zn=='Z2' else f"{_zn} (>75% FTP)",
-                marker_color=_zc, marker_line_width=0, opacity=0.85,
-                hovertemplate=f"{_zn}: %{{y:.1f}} g CHO/kg<extra></extra>"))
-
-        # Rolling 7d overlay
-        _gly_full_plot = _gly_full.tail(60)
-        _fig_gly.add_trace(go.Scatter(
-            x=_gly_full_plot['Data'].tolist(),
-            y=_gly_full_plot['G_roll7'].round(2).tolist(),
-            name='Rolling 7d',
-            line=dict(color='#2c3e50', width=2.5),
-            hovertemplate='Rolling 7d: %{y:.1f} g CHO/kg<extra></extra>'))
-
-        # Linhas de threshold p25/p75
-        _fig_gly.add_hline(y=_p75, line_dash='dash', line_color='#e74c3c', line_width=1,
-                            annotation_text=f'p75={_p75:.1f}', annotation_font_size=10)
-        _fig_gly.add_hline(y=_p25, line_dash='dash', line_color='#27ae60', line_width=1,
-                            annotation_text=f'p25={_p25:.1f}', annotation_font_size=10)
-
-        _fig_gly.update_layout(
-            paper_bgcolor='white', plot_bgcolor='white',
-            barmode='stack', height=360,
-            margin=dict(t=40, b=70, l=65, r=20),
-            font=dict(color='#222', size=11),
-            hovermode='x unified',
-            title=dict(text='Depleção Glicogénica por Sessão (g CHO/kg) — últimas 60 sessões',
-                       font=dict(size=13, color='#222')),
-            legend=dict(orientation='h', y=-0.22, font=dict(color='#333', size=11)),
-            xaxis=dict(tickfont=dict(color='#333'), gridcolor='rgba(0,0,0,0.04)',
-                       tickangle=-30),
-            yaxis=dict(title='g CHO / kg', tickfont=dict(color='#333'),
-                       gridcolor='rgba(0,0,0,0.05)'))
-        st.plotly_chart(_fig_gly, use_container_width=True,
-                        config={'displayModeBar': False}, key='gly_dep_chart')
-
-        # Dívida por modalidade
-        st.markdown("##### Dívida glicogénica 7d por modalidade")
-        _gly_mod = (_gly_df.assign(
-            week=lambda d: d['Data'].dt.to_period('W').apply(lambda p: p.start_time)
-        ).groupby(['week','type'])['G_dep_norm'].sum().reset_index())
-        _last_week = _gly_mod['week'].max()
-        _gly_lw = _gly_mod[_gly_mod['week'] == _last_week].set_index('type')['G_dep_norm']
-
-        _mod_cols = st.columns(4)
-        for _mi, _mod in enumerate(['Bike','Row','Ski','Run']):
-            _val = float(_gly_lw.get(_mod, 0))
-            _all_vals = _gly_mod[_gly_mod['type']==_mod]['G_dep_norm']
-            _p75m = float(_all_vals.quantile(0.75)) if len(_all_vals) > 4 else 10.0
-            _p25m = float(_all_vals.quantile(0.25)) if len(_all_vals) > 4 else 3.0
-            _sem  = "🔴 Alta" if _val > _p75m else ("🟡 Média" if _val > _p25m else "🟢 Baixa")
-            _mod_cols[_mi].metric(f"{_mod}", f"{_val:.1f} g/kg", delta=_sem, delta_color="off")
-
-        # Download
-        _gly_dl = _gly_full[['Data','G_norm','G_roll7','z1_kj','z2_kj','z3_kj']].copy()
-        _gly_dl['Data'] = _gly_dl['Data'].astype(str)
-        st.download_button(
-            "📥 Download Depleção Glicogénica (.csv)",
-            data=_gly_dl.round(3).to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
-            file_name="atheltica_glycogen_depletion.csv", mime="text/csv",
-            key="gly_dl_btn")
-
-    else:
-        st.info(
-            "Colunas z1_kj / z2_kj / z3_kj não encontradas. "
-            "Confirma que as colunas Z1KJ, Z2KJ, Z3KJ estão na sheet de actividades."
-        )
+    st.subheader("🏆 Top 10 Sessões por Potência Média")
+    df_rank = tabela_ranking_power_df(da_full, n=10)
+    if len(df_rank) > 0:
+        st.dataframe(df_rank, use_container_width=True, hide_index=True)
 
     st.markdown("---")
 
-        # ── Secção 4: BPE Heatmap ───────────────────────────────────────────────
+    # ── Secção 2: Training Load Mensal Stacked ──────────────────────────────
+    st.subheader("📊 Training Load Mensal por Modalidade (TRIMP = min × RPE)")
+    df_tl = filtrar_principais(da_full).copy()
+    df_tl = add_tempo(df_tl)
+    if 'moving_time' in df_tl.columns and 'rpe' in df_tl.columns:
+        df_tl['rpe_fill']    = df_tl['rpe'].fillna(df_tl['rpe'].median())
+        df_tl['session_rpe'] = (pd.to_numeric(df_tl['moving_time'], errors='coerce') / 60) * df_tl['rpe_fill']
+        df_tl = df_tl[df_tl['type'].isin(['Bike', 'Run', 'Row', 'Ski', 'WeightTraining'])]
+        pivot_tl = df_tl.pivot_table(index='mes', columns='type', values='session_rpe', aggfunc='sum', fill_value=0).sort_index()
+        CORES_MOD = {'Bike': CORES['vermelho'], 'Run': CORES['verde'], 'Row': CORES['azul'], 'Ski': CORES['roxo'], 'WeightTraining': CORES['laranja']}
+        _fig_sb = go.Figure()
+        if len(pivot_tl) > 0:
+            for _tc in [c for c in pivot_tl.columns if c in CORES_MOD]:
+                _fig_sb.add_trace(go.Bar(x=[str(x) for x in pivot_tl.index],
+                    y=pivot_tl[_tc].tolist(), name=_tc,
+                    marker_color=CORES_MOD.get(_tc,'gray'),
+                    marker_line_width=0, opacity=0.85))
+        _fig_sb.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='#111'), margin=dict(t=50,b=70,l=55,r=20), barmode='stack', height=340,
+            legend=dict(orientation='h', y=-0.25, font=dict(color='#111')),
+            xaxis=dict(tickangle=-45, showgrid=False, gridcolor='#eee', tickfont=dict(color='#111')),
+            yaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')))
+        st.plotly_chart(_fig_sb, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, key="analises_training_load")
+
+    st.markdown("---")
+
+    # ── Secção 3: Polynomial CTL/ATL ────────────────────────────────────────
+    st.subheader("📈 CTL/ATL — Polynomial Fit (Overall e por Modalidade)")
+    with st.spinner("Calculando polynomial fits..."):
+        poli = calcular_polinomios_carga(da_full)
+
+    if poli is None:
+        st.warning("Sem dados suficientes para polynomial analysis.")
+    else:
+        _ld = poli['_ld']
+        _MC_ANA = {'displayModeBar': False, 'responsive': True, 'scrollZoom': False}
+        _POLY_COLORS = {'CTL': CORES['azul'], 'ATL': CORES['vermelho']}
+        _POLY_DASH   = {2: 'dash', 3: 'dot'}
+
+        def _poly_fig(res_met, ld_df, title):
+            dates = pd.to_datetime(ld_df['Data']).tolist()
+            fp = go.Figure()
+            for met, cor in _POLY_COLORS.items():
+                y_raw = ld_df[met].tolist() if met in ld_df.columns else []
+                if y_raw:
+                    fp.add_trace(go.Scatter(
+                        x=dates, y=y_raw, mode='lines', name=met,
+                        line=dict(color=cor, width=2), opacity=0.45,
+                        hovertemplate=f'{met}: %{{y:.1f}}<extra></extra>'))
+                for grau_k, gd in res_met.get(met, {}).items():
+                    grau_n = int(grau_k[-1])
+                    r2 = gd['r2']; xarr = gd['x']; poly = gd['poly']
+                    fp.add_trace(go.Scatter(
+                        x=dates[:len(xarr)], y=poly(xarr).tolist(),
+                        mode='lines',
+                        name=f'{met} G{grau_n} R²={r2:.3f}',
+                        line=dict(color=cor, width=2.5,
+                                  dash=_POLY_DASH.get(grau_n, 'solid')),
+                        hovertemplate=f'{met} poly: %{{y:.1f}}<extra></extra>'))
+            fp.update_layout(
+                paper_bgcolor='white', plot_bgcolor='white',
+                font=dict(color='#111', size=11), height=380,
+                margin=dict(t=55, b=80, l=55, r=20), hovermode='x unified',
+                title=dict(text=title, font=dict(size=13, color='#111')),
+                legend=dict(orientation='h', y=-0.28, font=dict(color='#111', size=10)),
+                xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111')),
+                yaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111'),
+                           title='CTL / ATL'))
+            return fp
+
+        # Overall
+        _fonte_lbl = poli['_ld'].get('_fonte', poli['_ld']['_fonte'].iloc[0] if '_fonte' in poli['_ld'].columns else 'session_rpe')
+        st.markdown(f"**Overall CTL vs ATL** — fonte: `{_fonte_lbl}`")
+        st.caption("Mesma métrica de carga do PMC — valores comparáveis.")
+        st.plotly_chart(
+            _poly_fig(poli['overall'], _ld, 'CTL/ATL Overall — Polynomial Fit'),
+            use_container_width=True, config=_MC_ANA, key="ana_poly_overall")
+
+        # ── Download Overall ──────────────────────────────────────────────────
+        _dl_ov = _ld[['Data', 'CTL', 'ATL']].copy()
+        _dl_ov['Data'] = _dl_ov['Data'].astype(str)
+        for _m_ov in ['CTL', 'ATL']:
+            for _gk_ov, _gd_ov in poli['overall'].get(_m_ov, {}).items():
+                _col_ov = f'{_m_ov}_poly_G{_gk_ov[-1]}'
+                _yp_ov  = _gd_ov['poly'](_gd_ov['x'])
+                _dl_ov[_col_ov] = np.nan
+                _dl_ov.iloc[:len(_yp_ov), _dl_ov.columns.get_loc(_col_ov)] = _yp_ov
+        st.download_button(
+            label="📥 Download Overall CTL/ATL + Polynomial (.csv)",
+            data=_dl_ov.round(3).to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
+            file_name="atheltica_poly_overall.csv",
+            mime="text/csv",
+            key="poly_dl_overall",
+        )
+
+        # Per modality — 2-column grid
+        tipos_poli = {k.replace('tipo_', ''): k for k in poli if k.startswith('tipo_')}
+        if tipos_poli:
+            st.markdown("**Por Modalidade**")
+            _mods_ord = [m for m in ['Bike', 'Row', 'Ski', 'Run'] if m in tipos_poli]
+            for _mi in range(0, len(_mods_ord), 2):
+                _cols = st.columns(2)
+                for _ci, mod in enumerate(_mods_ord[_mi:_mi+2]):
+                    res_mod = poli[tipos_poli[mod]]
+                    # Get x range from first available metric
+                    _xarr = None
+                    for _m in ['CTL', 'ATL']:
+                        for _gd in res_mod.get(_m, {}).values():
+                            _xarr = _gd['x']; break
+                        if _xarr is not None: break
+                    if _xarr is None: continue
+                    # Build ld_mod with raw CTL/ATL values from stored 'y'
+                    _ld_mod = _ld[['Data']].iloc[:len(_xarr)].copy().reset_index(drop=True)
+                    for _m in ['CTL', 'ATL']:
+                        _best = (res_mod.get(_m, {}).get('grau2') or
+                                 res_mod.get(_m, {}).get('grau3'))
+                        _ld_mod[_m] = pd.Series(_best['y'][:len(_xarr)] if _best else
+                                                  np.zeros(len(_xarr)))
+                    with _cols[_ci]:
+                        st.plotly_chart(
+                            _poly_fig(res_mod, _ld_mod,
+                                      f'{mod} — CTL/ATL Polynomial Fit'),
+                            use_container_width=True,
+                            config=_MC_ANA, key=f"ana_poly_{mod}")
+                        # Download per modality
+                        _dl_mod = _ld_mod[['Data', 'CTL', 'ATL']].copy()
+                        _dl_mod['Data'] = _dl_mod['Data'].astype(str)
+                        for _m2 in ['CTL', 'ATL']:
+                            for _gk2, _gd2 in res_mod.get(_m2, {}).items():
+                                _col2 = f'{_m2}_poly_{_gk2[-1]}'
+                                _yp2 = _gd2['poly'](_gd2['x'])
+                                _dl_mod[_col2] = np.nan
+                                _dl_mod.iloc[:len(_yp2), _dl_mod.columns.get_loc(_col2)] = _yp2
+                        st.download_button(
+                            label=f"📥 {mod} (.csv)",
+                            data=_dl_mod.round(3).to_csv(
+                                index=False, sep=';', decimal=',').encode('utf-8'),
+                            file_name=f"atheltica_poly_{mod.lower()}.csv",
+                            mime="text/csv",
+                            key=f"poly_dl_{mod}",
+                        )
+    st.markdown("---")
+
+    # ── Secção 4: BPE Heatmap ───────────────────────────────────────────────
     st.subheader("🗓️ BPE — Mapa de Estados Semanal")
     if len(dw) >= 14:
         mets_bpe = [m for m in ['hrv', 'rhr', 'sleep_quality', 'fatiga', 'stress', 'humor', 'soreness']
                     if m in dw.columns and dw[m].notna().sum() >= 14]
-        n_sem_max = max(4, len(dw) // 7)
-        n_sem_bpe = st.slider("Semanas BPE", 4, min(52, n_sem_max), min(16, n_sem_max), key="bpe_an")
+        n_sem_max = max(5, len(dw) // 7)
+        _bpe_max  = min(52, n_sem_max)
+        _bpe_def  = min(16, _bpe_max - 1) if _bpe_max > 4 else _bpe_max
+        n_sem_bpe = st.slider("Semanas BPE", 4, _bpe_max, _bpe_def, key="bpe_an")
         dados_bpe = {m: calcular_bpe(dw, m, 60).tail(n_sem_bpe) for m in mets_bpe}
         dados_bpe = {k: v for k, v in dados_bpe.items() if len(v) > 0}
         if dados_bpe:
@@ -609,6 +565,31 @@ do p75 histórico sinalizam necessidade de repleção activa (CHO strategy).
 
     st.markdown("---")
 
+    # ── Secção 8: Resumo Geral ──────────────────────────────────────────────
+    st.subheader("📋 Resumo Geral (CTL/ATL/TSB actual)")
+    ld_s, _ = calcular_series_carga(da_full)
+    if len(ld_s) > 0:
+        u_s = ld_s.iloc[-1]
+        df7 = filtrar_principais(da_full).copy()
+        df7['Data'] = pd.to_datetime(df7['Data'])
+        df7 = df7[df7['Data'] >= (pd.Timestamp.now() - pd.Timedelta(days=7))]
+        horas7 = pd.to_numeric(df7.get('moving_time', pd.Series()), errors='coerce').sum() / 3600
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("CTL (Fitness)",  f"{u_s['CTL']:.0f}")
+        c2.metric("ATL (Fadiga)",   f"{u_s['ATL']:.0f}")
+        c3.metric("TSB (Forma)",    f"{u_s['CTL']-u_s['ATL']:+.0f}")
+        c4.metric("Atividades 7d",  len(df7))
+        c5.metric("Horas 7d",       fmt_dur(horas7))
+    if len(dw) > 0:
+        cw1, cw2 = st.columns(2)
+        if 'hrv' in dw.columns:
+            hrv7 = pd.to_numeric(dw['hrv'], errors='coerce').dropna().tail(7).mean()
+            if not pd.isna(hrv7): cw1.metric("HRV médio (7d)", f"{hrv7:.0f} ms")
+        if 'rhr' in dw.columns:
+            rhr_u = pd.to_numeric(dw['rhr'], errors='coerce').dropna()
+            if len(rhr_u) > 0: cw2.metric("RHR último", f"{rhr_u.iloc[-1]:.0f} bpm")
+
+    # Resumo final textual
     with st.expander("✅ ANÁLISE AVANÇADA — Resumo de Interpretação"):
         st.markdown("""
 **O que cada métrica significa:**
