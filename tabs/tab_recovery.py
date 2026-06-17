@@ -559,8 +559,25 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
 3. **Decisão**: Acima SWC sup → HIGH | Dentro → LOW | Abaixo SWC inf → REST
 4. **Restrições**: Máx 2 HIGH consecutivos → força LOW | Máx 2 REST consecutivos → força LOW""")
 
-        # Usar df_hg directamente — mesma fonte do HRV-Guided, SWC consistente
-        _wc_j = df_hg.copy()
+        # ── Javaloyes: sempre usa wc_full (histórico completo, ignora sidebar) ──
+        # O SWC e o gráfico NÃO devem mudar com o filtro de período global.
+        # Apenas as correlações no final usam df_hg (que respeita o sidebar).
+        _wc_j_src = (wc_full.copy() if (wc_full is not None and len(wc_full) > 0)
+                     else dw.copy())
+        _wc_j_src['Data'] = pd.to_datetime(_wc_j_src['Data']).dt.normalize()
+        _wc_j_src = _wc_j_src.sort_values('Data').reset_index(drop=True)
+        # Reindex para calendário completo (igual ao df_hg) para manter sem_medicao
+        _wc_j_src = _wc_j_src.set_index('Data')
+        _wc_j_dr  = pd.date_range(_wc_j_src.index.min(), _wc_j_src.index.max(), freq='D')
+        _wc_j_src = _wc_j_src.reindex(_wc_j_dr)
+        _wc_j_src.index.name = 'Data'
+        _wc_j_src = _wc_j_src.reset_index()
+        _wc_j_src['LnrMSSD'] = np.where(
+            _wc_j_src['hrv'].notna() & (_wc_j_src['hrv'] > 0),
+            np.log(_wc_j_src['hrv']), np.nan
+        )
+        _wc_j_src['sem_medicao'] = _wc_j_src['LnrMSSD'].isna()
+        _wc_j = _wc_j_src.copy()
         _wc_j['Data'] = pd.to_datetime(_wc_j['Data']).dt.normalize()
 
         if _wc_j['LnrMSSD'].notna().sum() < 14:
