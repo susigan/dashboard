@@ -299,9 +299,13 @@ def tab_analises(da_full, dw, dfs_annual=None, df_annual=None):
         mets_bpe = [m for m in ['hrv', 'rhr', 'sleep_quality', 'fatiga', 'stress', 'humor', 'soreness']
                     if m in dw.columns and dw[m].notna().sum() >= 14]
         n_sem_max = max(5, len(dw) // 7)
-        _bpe_max  = min(52, n_sem_max)
-        _bpe_def  = min(16, _bpe_max - 1) if _bpe_max > 4 else _bpe_max
-        n_sem_bpe = st.slider("Semanas BPE", 4, _bpe_max, _bpe_def, key="bpe_an")
+        if n_sem_max <= 4:
+            st.info(f"Período muito curto ({len(dw)} dias) para o BPE. Alarga o período global.")
+            n_sem_bpe = 4
+        else:
+            _bpe_max = min(52, n_sem_max)
+            _bpe_def = min(16, _bpe_max - 1)
+            n_sem_bpe = st.slider("Semanas BPE", 4, _bpe_max, _bpe_def, key="bpe_an")
         dados_bpe = {m: calcular_bpe(dw, m, 60).tail(n_sem_bpe) for m in mets_bpe}
         dados_bpe = {k: v for k, v in dados_bpe.items() if len(v) > 0}
         if dados_bpe:
