@@ -1472,6 +1472,163 @@ ou a acumular sobrecarga não compensada (allostatic overload), comparando
     else:
         st.info("CTLγ por modalidade não disponível — sem dados suficientes.")
 
+    # ════════════════════════════════════════════════════════════════════════
+    # GRÁFICO 2b — PLT (Pure-Load Tensor) por modalidade
+    # Della Mattia / enydog — github.com/enydog/PLT (Part I do framework)
+    # Pipeline: vector de carga por sessão → impulso u_plt → IR fitness-fatigue
+    # ════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.subheader("🧬 PLT — Pure-Load Tensor (Impulse-Response) por Modalidade")
+    st.caption(
+        "Modelo **PLT** (Della Mattia/enydog) — distinto do FMT e do NLSS. "
+        "Impulso diário `u_plt = softplus(Σβᵢ·z(xᵢ))` com xᵢ = [TSS, Ekg, "
+        "decoupling (Hq4−Hq1), HRV drop], alimentando um IR fitness-fatigue "
+        "(F τ≈42d, G τ≈7d → P̂ = P0 + k_f·F − k_g·G). "
+        "Peso vem do **wellness** · kJ de `icu_joules` · HRV **morning**. "
+        "Parâmetros ajustados ao **MMP real** (não eFTP) quando há ≥6 PRs; "
+        "senão usa os fixos do paper (τf=42, τg=7, k_f=1, k_g=2)."
+    )
+
+    try:
+        from utils.plt_model import compute_plt_ir as _compute_plt_ir
+
+        # MMP real por modalidade: mmp5_w (Row/Ski) | mmp20_w (Bike/Run) — NUNCA eFTP
+        def _mmp_target_for(_mod):
+            _mc = 'mmp5_w' if _mod in ('Row', 'Ski') else 'mmp20_w'
+            if (da_full is None or _mc not in da_full.columns
+                    or 'type' not in da_full.columns):
+                return None
+            _sub = da_full[da_full['type'].apply(norm_tipo) == _mod]
+            if _mc not in _sub.columns or _sub[_mc].notna().sum() < 6:
+                return None
+            _s = (_sub.dropna(subset=[_mc])
+                      .assign(Data=lambda d: pd.to_datetime(d['Data']))
+                      .groupby('Data')[_mc].max())
+            return _s if len(_s) >= 6 else None
+
+        _plt_mods = [m for m in ['Bike', 'Row', 'Ski', 'Run']
+                     if (da_full is not None and 'type' in da_full.columns
+                         and m in da_full['type'].apply(norm_tipo).unique())]
+
+        # Calcular PLT-IR para cada modalidade disponível
+        _plt_results = {}
+        for _pm in _plt_mods:
+            _res = _compute_plt_ir(da_full, wc, modality=_pm,
+                                   mmp_target=_mmp_target_for(_pm))
+            if _res['ok']:
+                _plt_results[_pm] = _res
+
+        if _plt_results:
+            _n_pmods = len(_plt_results)
+            _mods_ok = list(_plt_results.keys())
+
+            from plotly.subplots import make_subplots as _msp_plt
+            fig_plt = _msp_plt(
+                rows=1, cols=_n_pmods,
+                subplot_titles=_mods_ok,
+                shared_yaxes=False,
+                specs=[[{'secondary_y': True}] * _n_pmods],
+            )
+
+            for _ci, _pm in enumerate(_mods_ok, 1):
+                _res  = _plt_results[_pm]
+                _d    = _res['daily']
+                _par  = _res['params']
+                _cor  = _CORES_MOD_PMC.get(_pm, '#888')
+                _xd   = _d['Data'].tolist()
+
+                # Y1 (esq): P̂ latente (performance prevista pelo PLT-IR)
+                fig_plt.add_trace(go.Scatter(
+                    x=_xd, y=_d['P_hat_plt'].tolist(), mode='lines',
+                    name=(f'{_pm} P̂ '
+                          + (f'τf={_par["tau_f"]:.0f} τg={_par["tau_g"]:.0f} '
+                             f'[MMP n={_par.get("n_target",0)}]' if _par.get('fitted')
+                             else '[paper fixo]')),
+                    line=dict(color=_cor, width=2.5),
+                    legendgroup=f'phat_{_pm}', showlegend=True,
+                    hovertemplate=f'<b>{_pm} P̂</b>: %{{y:.1f}}<extra></extra>',
+                ), row=1, col=_ci, secondary_y=False)
+
+                # Y2 (dir): impulso diário u_plt (barras suaves de contexto)
+                fig_plt.add_trace(go.Scatter(
+                    x=_xd, y=_d['u_plt'].tolist(), mode='lines',
+                    name=f'{_pm} u_plt (impulso)',
+                    line=dict(color=_cor, width=1.0, dash='dot'),
+                    opacity=0.40,
+                    legendgroup=f'uplt_{_pm}', showlegend=True,
+                    hovertemplate=f'<b>{_pm} u_plt</b>: %{{y:.2f}}<extra></extra>',
+                ), row=1, col=_ci, secondary_y=True)
+
+                fig_plt.update_yaxes(
+                    title_text='P̂ (latente)', title_font=dict(size=8, color=_cor),
+                    showgrid=True, gridcolor='#eee',
+                    tickfont=dict(color='#111', size=8),
+                    row=1, col=_ci, secondary_y=False)
+                fig_plt.update_yaxes(
+                    title_text='u_plt', title_font=dict(size=8, color='#888'),
+                    showgrid=False, tickfont=dict(color='#888', size=8),
+                    row=1, col=_ci, secondary_y=True)
+
+            fig_plt.update_layout(
+                paper_bgcolor='white', plot_bgcolor='white',
+                font=dict(color='#111', size=10),
+                height=400, margin=dict(t=65, b=90, l=50, r=50),
+                hovermode='x unified',
+                legend=dict(orientation='h', y=-0.32,
+                            font=dict(color='#111', size=9),
+                            bgcolor='rgba(255,255,255,0.9)'),
+                title=dict(
+                    text='P̂ latente (Y esq, sólido) | impulso u_plt (Y dir, pontilhado)',
+                    font=dict(size=12, color='#111')),
+            )
+            fig_plt.update_xaxes(showgrid=True, gridcolor='#eee',
+                                 tickangle=-45, tickfont=dict(color='#111', size=9))
+            st.plotly_chart(fig_plt, use_container_width=True,
+                            config={'displayModeBar': False, 'responsive': True},
+                            key="pmc_plt_mod")
+
+            # ── Cards de parâmetros IR por modalidade ────────────────────────
+            st.markdown("**🔍 Parâmetros IR do PLT por Modalidade**")
+            _cols_plt = st.columns(len(_mods_ok))
+            for _ci3, _pm in enumerate(_mods_ok):
+                _par = _plt_results[_pm]['params']
+                with _cols_plt[_ci3]:
+                    st.markdown(f"**{_pm}**")
+                    if _par.get('fitted'):
+                        st.caption(f"✅ Ajustado ao MMP real (n={_par.get('n_target',0)})")
+                    else:
+                        st.caption("⚙️ Fixos do paper (sem MMP suficiente)")
+                    st.caption(
+                        f"τf={_par['tau_f']:.0f}d · τg={_par['tau_g']:.0f}d  \n"
+                        f"k_f={_par['k_f']:.2f} · k_g={_par['k_g']:.2f}")
+
+            st.caption(
+                "ℹ️ O PLT é **complementar** ao FMT (curvatura κ) e ao NLSS "
+                "(K₁K₂T₁T₂). Aqui o impulso `u_plt` integra carga + decoupling + "
+                "HRV num só sinal; o IR projecta a performance latente P̂. "
+                "Dias sem treino → impulso 0 (decaimento natural de F e G)."
+            )
+
+            # ── Download PLT por modalidade ──────────────────────────────────
+            _plt_dl_frames = []
+            for _pm in _mods_ok:
+                _dd = _plt_results[_pm]['daily'].copy()
+                _dd.insert(1, 'Modalidade', _pm)
+                _plt_dl_frames.append(_dd)
+            if _plt_dl_frames:
+                _plt_dl = pd.concat(_plt_dl_frames, ignore_index=True)
+                _plt_dl['Data'] = _plt_dl['Data'].astype(str)
+                _plt_dl = _plt_dl.round(4)
+                st.download_button(
+                    label="📥 Download PLT por modalidade (.csv)",
+                    data=_plt_dl.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
+                    file_name="atheltica_plt_modalidade.csv",
+                    mime="text/csv", key="pmc_dl_plt")
+        else:
+            st.info("PLT não disponível — sem dados de carga/HR suficientes por modalidade.")
+    except Exception as _e_plt:
+        st.warning(f"PLT não pôde ser calculado: {_e_plt}")
+
     # ── FMT Tensor — explicação + resultados actuais ──────────────────────────
     with st.expander("🧮 FMT Tensor κ — Curvatura do Estado Fisiológico", expanded=False):
         try:
@@ -1493,7 +1650,8 @@ ou a acumular sobrecarga não compensada (allostatic overload), comparando
                 "O TSS colapsa uma sessão complexa num único número — perde informação sobre como cada "
                 "dimensão fisiológica mudou. O FMT constrói uma **matriz de covariância** das variações "
                 "diárias de múltiplos sinais: `F(t) = cov(Δx)` sobre janela 28 dias, onde "
-                "`x(t) = [CTLγ, HRV, WEED, Sleep, W', HR_drift]`. "
+                "`x(t) = [Load, HRV, W', Sleep, WEED]` (5 dims do paper), com "
+                "**Load = CTLγ + HR quartiles (Hq4−Hq1)**. "
                 "**κ = trace(F)** — curvatura escalar do estado fisiológico."
             )
             st.markdown(
@@ -1606,7 +1764,6 @@ ou a acumular sobrecarga não compensada (allostatic overload), comparando
             'WEED_z', 'sleep_z', 'w_stress', 'hq_drift_z',
             'wp_prime',
             'FMT_kappa', 'FMT_lambda1_frac', 'FMT_kappa_4d',
-            'FMT_kappa_Bike', 'FMT_kappa_Row', 'FMT_kappa_Ski', 'FMT_kappa_Run',
         ]
         _avail_cols = [c for c in _dl_cols_ftlm if c in _ld_frac.columns]
         _dl_df = _ld_frac[_avail_cols].copy()
