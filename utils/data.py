@@ -1005,26 +1005,47 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
         # Só preencher NaN (não substituir valores reais)
         return np.where(s.isna(), fill, s).astype(float)
 
-    # Overall — começa sempre com CTLγ; adiciona dimensões se disponíveis
-    # Cada dimensão é imputada por rolling mean 7d antes de entrar no tensor
-    _dims_overall = [_impute_rolling(ld['CTLg_perf'].values)]
-    _dim_names    = ['CTLγ']
+    # ── FMT 5×5 fiel ao paper (Della Mattia 2019, Definition 1 / Fig.1) ──────
+    # Vector de estado x = [Load, HRV, W', Sleep, WEED] (5 dimensões).
+    # Paper: "Load: TSS, E_kg, HR quartiles" → HR quartiles vivem DENTRO de Load,
+    #         não como dimensão separada. Aqui Load = combinação z-scored de
+    #         CTLγ_perf (TSS fraccionário) + hq_drift_z (HR-decoupling Hq4−Hq1).
+    # As dims HRV / WEED / Sleep / W' são sinais do atleta (estado global).
+    #
+    # _zc(): z-score local (mediana/std) para combinar sinais de escalas diferentes
+    #        ANTES de entrarem no tensor — senão CTLγ (~5-10) esmagaria hq_drift (~±2).
+    def _zc(arr):
+        a = np.array(arr, dtype=float)
+        mu, sd = np.nanmean(a), np.nanstd(a)
+        return (a - mu) / sd if sd > 1e-9 else (a - mu)
 
+    # Dimensão 1 — LOAD (composta): CTLγ + HR-decoupling (paper: Load = TSS+HRq)
+    _load_parts = [_zc(_impute_rolling(ld['CTLg_perf'].values))]
+    _load_has_hr = False
+    if 'hq_drift_z' in ld.columns and ld['hq_drift_z'].notna().sum() >= 20:
+        _load_parts.append(_zc(_impute_rolling(ld['hq_drift_z'].values)))
+        _load_has_hr = True
+    _load_dim = np.nanmean(np.column_stack(_load_parts), axis=1)
+
+    _dims_overall = [_load_dim]
+    _dim_names    = ['Load(CTLγ+HRq)' if _load_has_hr else 'Load(CTLγ)']
+
+    # Dimensão 2 — HRV (estado autonómico do atleta)
     if 'HRV_trend' in ld.columns and ld['HRV_trend'].notna().sum() >= 20:
         _dims_overall.append(_impute_rolling(ld['HRV_trend'].values))
         _dim_names.append('HRV')
-    if 'WEED_z' in ld.columns and ld['WEED_z'].notna().sum() >= 20:
-        _dims_overall.append(_impute_rolling(ld['WEED_z'].values))
-        _dim_names.append('WEED')
-    if 'sleep_z' in ld.columns and ld['sleep_z'].notna().sum() >= 20:
-        _dims_overall.append(_impute_rolling(ld['sleep_z'].values))
-        _dim_names.append('Sleep')
+    # Dimensão 3 — W' (reserva anaeróbica consumida)
     if 'w_stress' in ld.columns and ld['w_stress'].notna().sum() >= 20:
         _dims_overall.append(_impute_rolling(ld['w_stress'].values))
         _dim_names.append("W'")
-    if 'hq_drift_z' in ld.columns and ld['hq_drift_z'].notna().sum() >= 20:
-        _dims_overall.append(_impute_rolling(ld['hq_drift_z'].values))
-        _dim_names.append('HR_drift')
+    # Dimensão 4 — Sleep
+    if 'sleep_z' in ld.columns and ld['sleep_z'].notna().sum() >= 20:
+        _dims_overall.append(_impute_rolling(ld['sleep_z'].values))
+        _dim_names.append('Sleep')
+    # Dimensão 5 — WEED (water/energy/electrolytes/digestive → readiness subjectivo)
+    if 'WEED_z' in ld.columns and ld['WEED_z'].notna().sum() >= 20:
+        _dims_overall.append(_impute_rolling(ld['WEED_z'].values))
+        _dim_names.append('WEED')
 
     _tensor_dim = len(_dims_overall)
 
@@ -1033,7 +1054,7 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
             _dims_overall, _fmt_w, return_eigenvalues=True)
         ld['FMT_kappa']        = _kappa_arr
         ld['FMT_lambda1_frac'] = _lambda1_arr
-        ld['FMT_tensor_dim']   = _tensor_dim   # dimensão actual do tensor
+        ld['FMT_tensor_dim']   = _tensor_dim   # dimensão actual do tensor (alvo: 5)
     else:
         ld['FMT_kappa']        = np.nan
         ld['FMT_lambda1_frac'] = np.nan
