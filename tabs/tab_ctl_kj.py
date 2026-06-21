@@ -17,8 +17,8 @@ warnings.filterwarnings('ignore')
 def tab_ctl_kj(da_full):
     st.header("⚗️ CTL vs KJ — Coeficiente de Carga")
     st.caption(
-        "Modelo comportamental: TRIMP ~ KJ_work × tipo. "
-        "Bike: corrige warm-up (30min). IF removido (colinear com tipo). "
+        "Modelo comportamental: TRIMP ~ KJ × tipo. "
+        "kJ total (icu_joules), sem desconto de warm-up. IF removido (colinear com tipo). "
         "Densidade = IF×RPE. Eficiência = TRIMP/KJ rolling.")
 
     if da_full is None or len(da_full) == 0:
@@ -61,10 +61,12 @@ def tab_ctl_kj(da_full):
         df['IF'] = np.nan
     has_if = df['IF'].notna().sum() > len(df) * 0.2
 
-    # ── Bike: correcção warm-up ───────────────────────────────────────────────
-    df['work_fraction'] = ((df['moving_time'] - 1800) / df['moving_time']).clip(0.1, 1.0)
-    df.loc[df['type'] != 'Bike', 'work_fraction'] = 1.0
-    df['KJ_work'] = df['KJ'] * df['work_fraction']
+    # ── kJ TOTAL (sem desconto de warm-up — decisão de projecto) ──────────────
+    # work_fraction mantido = 1.0 para todas as modalidades (compat. downstream).
+    # KJ_work passa a ser idêntico ao KJ total, alinhado com tab_corporal /
+    # tab_correlacoes / PLT que usam sempre o kJ total (icu_joules/1000).
+    df['work_fraction'] = 1.0
+    df['KJ_work'] = df['KJ']
 
     # ── Densidade = IF × RPE (proxy: tempo em alta intensidade) ──────────────
     if has_if:
