@@ -941,12 +941,16 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
                      .reindex(_date_idx, fill_value=np.nan))
         ld['wp_prime'] = _wp_daily.rolling(7, min_periods=3).mean().values
 
-    # ── HR quartil drift (hq_4 / hq_1) ──────────────────────────────────────
+    # ── HR quartil decoupling (hq_4 − hq_1) ─────────────────────────────────
     # Paper FMT 2019: HR quartiles são dimensão Load do vector de estado x(t)
-    # hq_4/hq_1 = HR drift ratio = quão concentrada foi a FC no final da sessão
-    # Sessão aeróbica leve: hq_4 ≈ hq_1 (ratio ≈ 1.1)
-    # Sessão intensa/drift: hq_4 >> hq_1 (ratio ≈ 1.3+)
-    # Rolling 14d z-score: captura padrão crónico de intensidade intra-sessão
+    # PLT (Della Mattia / enydog, implementation.py): o sinal de HR quartil que
+    #   entra no impulso de carga é decoupling = HR_Q4 − HR_Q1 (DIFERENÇA em bpm),
+    #   não o rácio. Difference é o decoupling cardíaco clássico (drift em bpm):
+    #     Sessão aeróbica leve / curta: hq_4 ≈ hq_1  (decoupling ≈ 0-3 bpm)
+    #     Sessão intensa / com drift:   hq_4 >> hq_1  (decoupling ≈ 8-15+ bpm)
+    # Mantém-se o nome de coluna hq_drift_z para não quebrar exports/downstream
+    #   (tab_pmc / tab_fmt_tensor download CSV e dimensão do tensor global).
+    # Rolling 14d z-score: captura padrão crónico de decoupling intra-sessão.
     # hq_1..hq_4: HR quartile means per session (Hq1..Hq4 in sheet)
     # Values of 0 are invalid (no HR data for that quartile) → treat as NaN
     if 'hq_1' in df.columns:
@@ -959,13 +963,14 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
         _df_hq = df.copy()
         _hq1   = pd.to_numeric(_df_hq['hq_1'], errors='coerce')
         _hq4   = pd.to_numeric(_df_hq['hq_4'], errors='coerce')
-        # Ratio hq_4/hq_1 só onde hq_1 > 40 bpm (evita artefactos)
-        _hq_ratio = np.where(_hq1 > 40, _hq4 / _hq1, np.nan)
-        _df_hq['_hq_ratio'] = _hq_ratio
-        _hq_daily = (_df_hq.groupby('Data')['_hq_ratio']
+        # Decoupling hq_4 − hq_1 (bpm) só onde ambos os quartis são fisiológicos
+        # (hq_1 e hq_4 > 40 bpm) — evita artefactos de sessões sem FC válida
+        _hq_decoup = np.where((_hq1 > 40) & (_hq4 > 40), _hq4 - _hq1, np.nan)
+        _df_hq['_hq_decoup'] = _hq_decoup
+        _hq_daily = (_df_hq.groupby('Data')['_hq_decoup']
                      .mean()
                      .reindex(_date_idx, fill_value=np.nan))
-        # Z-score rolante 14d: desvio do padrão pessoal de HR drift
+        # Z-score rolante 14d: desvio do padrão pessoal de decoupling
         _hq_mu  = _hq_daily.rolling(14, min_periods=5).mean()
         _hq_sd  = _hq_daily.rolling(14, min_periods=5).std()
         ld['hq_drift_z'] = ((_hq_daily - _hq_mu) / _hq_sd.replace(0, np.nan)).values
@@ -1045,18 +1050,18 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
         if len(_dims_4d) >= 2:
             ld['FMT_kappa_4d'] = _compute_kappa_kalman(_dims_4d, _fmt_w)
 
-    # Per-modality 3×3: [CTLγ_mod, HRV_trend, WEED_z] — com imputação rolling
-    for _mod in ['Bike', 'Row', 'Ski', 'Run']:
-        _ctlg_col = f'CTLg_{_mod}'
-        if _ctlg_col not in ld.columns or ld[_ctlg_col].notna().sum() < 20:
-            continue
-        _dims_mod = [_impute_rolling(ld[_ctlg_col].values)]
-        if 'HRV_trend' in ld.columns and ld['HRV_trend'].notna().sum() >= 20:
-            _dims_mod.append(_impute_rolling(ld['HRV_trend'].values))
-        if 'WEED_z' in ld.columns and ld['WEED_z'].notna().sum() >= 20:
-            _dims_mod.append(_impute_rolling(ld['WEED_z'].values))
-        if len(_dims_mod) >= 2:
-            ld[f'FMT_kappa_{_mod}'] = _compute_kappa_kalman(_dims_mod, _fmt_w)
+    # ── FMT_kappa por modalidade: REMOVIDO (fiel ao paper Della Mattia 2019) ──
+    # O FMT é definido como o tensor do ESTADO DO ATLETA, não de uma modalidade
+    # (paper §02, Definition 1, e cohort §09 = um FMT por atleta, multi-desporto).
+    # As dimensões HRV / WEED / Sleep / W' são sinais do organismo inteiro — não
+    # existe "HRV de Run" vs "HRV de Ski". A versão modal anterior construía
+    # [CTLγ_mod, HRV_trend, WEED_z] em que 2 de 3 dimensões eram GLOBAIS e
+    # idênticas entre modalidades, dominando o trace → κ_Run ≈ κ_Ski ≈ κ_Bike
+    # (correlação medida = 1.000), tornando os κ modais informativamente falsos.
+    # Mantém-se apenas o κ GLOBAL (acima), que é o que o paper define.
+    # NB: tab_pmc e tab_fmt_tensor referenciam FMT_kappa_{mod} apenas nas listas
+    #     de download CSV, já auto-filtradas por [c for c in ... if c in cols],
+    #     pelo que a ausência destas colunas não quebra nada.
 
     if hrv_trend_arr is not None:
         ld['HRV_trend'] = hrv_trend_arr
