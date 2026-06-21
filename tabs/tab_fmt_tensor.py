@@ -813,7 +813,8 @@ O TSS colapsa uma sessão complexa num único número. Duas sessões com o mesmo
 Stress de treino e frescura fisiológica não são variáveis independentes. São dimensões covariantes da mesma entidade fisiológica. Apenas um tensor representa esta covariação completamente.
 
 ```
-x(t) = [CTLγ, HRV_trend, WEED_z, Sleep_z, W'_stress, HR_drift]
+x(t) = [Load, HRV, W', Sleep, WEED]   ← 5 dimensões (paper Definition 1)
+       Load = TSS (CTLγ) + HR quartiles (Hq4−Hq1)  ← paper: "Load: TSS, E_kg, HR quartiles"
 F(t) = cov(Δx) sobre janela 28 dias
 κ(t) = trace(F(t))   ← curvatura escalar
 ```
@@ -848,8 +849,7 @@ F(t) = cov(Δx) sobre janela 28 dias
     st.markdown("---")
     _dl_cols = ['Data','CTL','ATL','TSB','CTLg_perf','HRV_trend','WEED_z',
                 'sleep_z','w_stress','hq_drift_z','wp_prime',
-                'FMT_kappa','FMT_lambda1_frac','FMT_kappa_4d',
-                'FMT_kappa_Bike','FMT_kappa_Row','FMT_kappa_Ski','FMT_kappa_Run']
+                'FMT_kappa','FMT_lambda1_frac','FMT_kappa_4d']
     _avail = [c for c in _dl_cols if c in ld.columns]
     _dl_df = ld[_avail].copy()
     _dl_df['_regime'] = regimes
