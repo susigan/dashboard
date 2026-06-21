@@ -1485,37 +1485,26 @@ ou a acumular sobrecarga não compensada (allostatic overload), comparando
         "decoupling (Hq4−Hq1), HRV drop], alimentando um IR fitness-fatigue "
         "(F τ≈42d, G τ≈7d → P̂ = P0 + k_f·F − k_g·G). "
         "Peso vem do **wellness** · kJ de `icu_joules` · HRV **morning**. "
-        "Parâmetros ajustados ao **MMP real** (não eFTP) quando há ≥6 PRs; "
-        "senão usa os fixos do paper (τf=42, τg=7, k_f=1, k_g=2)."
+        "Parâmetros IR **fixos do paper** (τf=42, τg=7, k_f=1, k_g=2). "
+        "P̂ em **unidades relativas** (dinâmica fitness−fatigue, não watts): "
+        "o eFTP não representa o CP/FTP real e o MMP real é escasso para fit fiável."
     )
 
     try:
         from utils.plt_model import compute_plt_ir as _compute_plt_ir
-
-        # MMP real por modalidade: mmp5_w (Row/Ski) | mmp20_w (Bike/Run) — NUNCA eFTP
-        def _mmp_target_for(_mod):
-            _mc = 'mmp5_w' if _mod in ('Row', 'Ski') else 'mmp20_w'
-            if (da_full is None or _mc not in da_full.columns
-                    or 'type' not in da_full.columns):
-                return None
-            _sub = da_full[da_full['type'].apply(norm_tipo) == _mod]
-            if _mc not in _sub.columns or _sub[_mc].notna().sum() < 6:
-                return None
-            _s = (_sub.dropna(subset=[_mc])
-                      .assign(Data=lambda d: pd.to_datetime(d['Data']))
-                      .groupby('Data')[_mc].max())
-            return _s if len(_s) >= 6 else None
+        from utils.plt_model import latest_real_mmp as _latest_real_mmp
 
         _plt_mods = [m for m in ['Bike', 'Row', 'Ski', 'Run']
                      if (da_full is not None and 'type' in da_full.columns
                          and m in da_full['type'].apply(norm_tipo).unique())]
 
-        # Calcular PLT-IR para cada modalidade disponível
+        # Calcular PLT-IR para cada modalidade disponível (IR fixo do paper)
         _plt_results = {}
         for _pm in _plt_mods:
-            _res = _compute_plt_ir(da_full, wc, modality=_pm,
-                                   mmp_target=_mmp_target_for(_pm))
+            _res = _compute_plt_ir(da_full, wc, modality=_pm)
             if _res['ok']:
+                # MMP real mais recente — só informativo (não entra no IR)
+                _res['mmp_ref'] = _latest_real_mmp(da_full, _pm)
                 _plt_results[_pm] = _res
 
         if _plt_results:
@@ -1537,16 +1526,14 @@ ou a acumular sobrecarga não compensada (allostatic overload), comparando
                 _cor  = _CORES_MOD_PMC.get(_pm, '#888')
                 _xd   = _d['Data'].tolist()
 
-                # Y1 (esq): P̂ latente (performance prevista pelo PLT-IR)
+                # Y1 (esq): P̂ latente relativo (trajectória fitness−fatigue)
                 fig_plt.add_trace(go.Scatter(
                     x=_xd, y=_d['P_hat_plt'].tolist(), mode='lines',
-                    name=(f'{_pm} P̂ '
-                          + (f'τf={_par["tau_f"]:.0f} τg={_par["tau_g"]:.0f} '
-                             f'[MMP n={_par.get("n_target",0)}]' if _par.get('fitted')
-                             else '[paper fixo]')),
+                    name=(f'{_pm} P̂ (rel) τf={_par["tau_f"]:.0f} '
+                          f'τg={_par["tau_g"]:.0f} [paper]'),
                     line=dict(color=_cor, width=2.5),
                     legendgroup=f'phat_{_pm}', showlegend=True,
-                    hovertemplate=f'<b>{_pm} P̂</b>: %{{y:.1f}}<extra></extra>',
+                    hovertemplate=f'<b>{_pm} P̂</b> (rel): %{{y:.2f}}<extra></extra>',
                 ), row=1, col=_ci, secondary_y=False)
 
                 # Y2 (dir): impulso diário u_plt (barras suaves de contexto)
@@ -1560,7 +1547,7 @@ ou a acumular sobrecarga não compensada (allostatic overload), comparando
                 ), row=1, col=_ci, secondary_y=True)
 
                 fig_plt.update_yaxes(
-                    title_text='P̂ (latente)', title_font=dict(size=8, color=_cor),
+                    title_text='P̂ (relativo)', title_font=dict(size=8, color=_cor),
                     showgrid=True, gridcolor='#eee',
                     tickfont=dict(color='#111', size=8),
                     row=1, col=_ci, secondary_y=False)
@@ -1578,7 +1565,7 @@ ou a acumular sobrecarga não compensada (allostatic overload), comparando
                             font=dict(color='#111', size=9),
                             bgcolor='rgba(255,255,255,0.9)'),
                 title=dict(
-                    text='P̂ latente (Y esq, sólido) | impulso u_plt (Y dir, pontilhado)',
+                    text='P̂ relativo (Y esq, sólido) | impulso u_plt (Y dir, pontilhado)',
                     font=dict(size=12, color='#111')),
             )
             fig_plt.update_xaxes(showgrid=True, gridcolor='#eee',
@@ -1592,20 +1579,25 @@ ou a acumular sobrecarga não compensada (allostatic overload), comparando
             _cols_plt = st.columns(len(_mods_ok))
             for _ci3, _pm in enumerate(_mods_ok):
                 _par = _plt_results[_pm]['params']
+                _mmp_ref = _plt_results[_pm].get('mmp_ref')
                 with _cols_plt[_ci3]:
                     st.markdown(f"**{_pm}**")
-                    if _par.get('fitted'):
-                        st.caption(f"✅ Ajustado ao MMP real (n={_par.get('n_target',0)})")
-                    else:
-                        st.caption("⚙️ Fixos do paper (sem MMP suficiente)")
+                    st.caption("⚙️ Parâmetros fixos do paper")
                     st.caption(
                         f"τf={_par['tau_f']:.0f}d · τg={_par['tau_g']:.0f}d  \n"
                         f"k_f={_par['k_f']:.2f} · k_g={_par['k_g']:.2f}")
+                    if _mmp_ref is not None:
+                        _md = 'MMP5' if _pm in ('Row', 'Ski') else 'MMP20'
+                        st.caption(f"📌 {_md} real recente: **{_mmp_ref:.0f}W** "
+                                   f"(referência, não entra no IR)")
 
             st.caption(
                 "ℹ️ O PLT é **complementar** ao FMT (curvatura κ) e ao NLSS "
-                "(K₁K₂T₁T₂). Aqui o impulso `u_plt` integra carga + decoupling + "
-                "HRV num só sinal; o IR projecta a performance latente P̂. "
+                "(K₁K₂T₁T₂). O impulso `u_plt` integra carga + decoupling + HRV "
+                "num só sinal; o IR (parâmetros fixos do paper) projecta a "
+                "trajectória **P̂ em unidades relativas** — mostra a *dinâmica* "
+                "fitness−fatigue, não watts absolutos. O eFTP não é usado (não "
+                "representa o CP/FTP real); o MMP real recente é só referência. "
                 "Dias sem treino → impulso 0 (decaimento natural de F e G)."
             )
 
