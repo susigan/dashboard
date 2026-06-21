@@ -56,27 +56,47 @@ def _val_text(v, total, unit='', decimals=1):
     return f"{v:.{decimals}f}{unit}"
 
 
+def _fmt_h(horas):
+    """Formata horas decimais como 'Hh MMm' / 'MMmin'. Ex: 2.7 → '2h42', 0.8 → '48min'."""
+    if horas is None or horas <= 0:
+        return ''
+    total_min = int(round(horas * 60))
+    h, m = divmod(total_min, 60)
+    if h == 0:
+        return f"{m}min"
+    if m == 0:
+        return f"{h}h"
+    return f"{h}h{m:02d}"
+
+
 def _stacked_pct(pivot, order, cmap, title, ytitle, key, show_mean_line=False,
-                 unit='', decimals=1):
+                 unit='', decimals=1, fmt_func=None):
     fig = go.Figure()
     totals = pivot.sum(axis=1)
     for cat in order:
         if cat not in pivot.columns:
             continue
         y = pivot[cat]
+        if fmt_func is not None:
+            # Usa formatador dedicado (ex: horas → 'Hh MMm'), respeitando threshold 5%
+            txt = [fmt_func(v) if (t > 0 and v / t >= 0.05) else ''
+                   for v, t in zip(y, totals)]
+        else:
+            txt = [_val_text(v, t, unit, decimals) for v, t in zip(y, totals)]
         fig.add_trace(go.Bar(
             x=[str(x) for x in pivot.index], y=y.tolist(),
             name=cat, marker_color=cmap.get(cat, '#888'),
             marker_line_width=0, opacity=0.88,
-            text=[_val_text(v, t, unit, decimals) for v, t in zip(y, totals)],
+            text=txt,
             textposition='inside', textfont=dict(color='white', size=12),
             hovertemplate=f'<b>{cat}</b><br>%{{x}}: <b>%{{y:.1f}}{unit}</b><extra></extra>',
         ))
     if show_mean_line and len(totals) > 0:
         mean_val = float(totals.mean())
+        _mean_lbl = fmt_func(mean_val) if fmt_func is not None else f"{mean_val:.1f}{unit}"
         fig.add_hline(
             y=mean_val, line_dash='dash', line_color='#2c3e50', line_width=1.5,
-            annotation_text=f"Média: {mean_val:.1f}{unit}",
+            annotation_text=f"Média: {_mean_lbl}",
             annotation_position="top right",
             annotation_font=dict(color='#2c3e50', size=10))
     fig.update_layout(**_LAY, barmode='stack', height=360,
@@ -194,7 +214,7 @@ def tab_volume(da, dw):
         st.plotly_chart(
             _stacked_pct(pivot_h, _CICLICOS, _CORES_MOD,
                          f'Horas — {_p1}', 'Horas', 'vol_h_cic',
-                         show_mean_line=True, unit='h', decimals=1),
+                         show_mean_line=True, fmt_func=_fmt_h),
             use_container_width=True, config=MC, key="vol_h_cic")
 
         with st.expander("📋 Tabela: % e total horas por modalidade", expanded=False):
@@ -282,7 +302,7 @@ def tab_volume(da, dw):
             st.plotly_chart(
                 _stacked_pct(pivot_rpe, ['Leve', 'Moderado', 'Pesado'],
                              _CORES_RPE, f'Horas por Intensidade — {_p3}',
-                             'Horas', 'vol_rpe', unit='h', decimals=1),
+                             'Horas', 'vol_rpe', fmt_func=_fmt_h),
                 use_container_width=True, config=MC, key="vol_rpe")
 
             with st.expander("📋 Tabela: % por RPE por modalidade", expanded=False):
