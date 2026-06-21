@@ -490,7 +490,6 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
             _slope_start = _df_slope_plot['Data'].min() if len(_df_slope_plot) > 0 else pd.Timestamp.now().normalize() - pd.Timedelta(days=86)
             _df_slope_30 = df_corr[df_corr['Data'] >= _slope_start].copy()
             fig_slope_ind = go.Figure()
-            # Linha slope — azul vivo, visível no dark mode
             fig_slope_ind.add_trace(go.Scatter(
                 x=_df_slope_30['Data'], y=_df_slope_30['slope_7'],
                 name='Slope 7d',
@@ -551,13 +550,23 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
         # ════════════════════════════════════════════════════════════════════════
         st.markdown("---")
         st.subheader("📊 Análise 2: HRV-Guided Protocol — Javaloyes et al.")
-        st.caption("Protocolo publicado: Javaloyes A et al. (2018/2020). LnRMSSD rolling 7 dias vs SWC (mean ± 0.5×SD do baseline). Máx 2 sessões consecutivas de alta intensidade. Máx 2 dias REST consecutivos.")
+        st.caption("Protocolo publicado: Javaloyes A et al. (2018/2020), modificação do esquema de Kiviniemi et al. (2007). LnRMSSD rolling 7 dias vs SWC (mean ± 0.5×SD do baseline). HIGH permitido quando ln7 está ACIMA ou DENTRO da banda SWC; LOW/REST apenas quando ln7 cai ABAIXO do limite inferior. Máx 2 HIGH consecutivos → força LOW. Máx 2 REST consecutivos → força LOW.")
         with st.expander("📖 Metodologia — como funciona", expanded=False):
-            st.markdown("""**Protocolo Javaloyes et al. 2018/2020**
-1. **Métrica**: LnRMSSD rolling 7 dias
-2. **Banda SWC**: mean ± 0.5 × SD (primeiros 28 dias reais)
-3. **Decisão**: Acima SWC sup → HIGH | Dentro → LOW | Abaixo SWC inf → REST
-4. **Restrições**: Máx 2 HIGH consecutivos → força LOW | Máx 2 REST consecutivos → força LOW""")
+            st.markdown("""**Protocolo Javaloyes et al. 2018/2020 (mod. Kiviniemi 2007)**
+
+1. **Métrica**: LnRMSSD rolling 7 dias (`ln7`)
+2. **Banda SWC**: mean ± 0.5 × SD (últimos 28 dias reais)
+3. **Sinal HRV+/HRV−** (do diagrama de decisão Kiviniemi):
+   - **HRV+** = `ln7` igual ou superior ao dia anterior (subiu ou não mudou)
+   - **HRV−** = `ln7` desceu vs dia anterior
+4. **Decisão (regra publicada — "above OR within SWC → HIGH")**:
+   - `ln7` **DENTRO ou ACIMA** da banda → **HIGH** permitido
+   - `ln7` **ABAIXO** do limite inferior → **LOW** (se HRV+, a recuperar) ou **REST** (se HRV−, ainda a cair)
+5. **Restrições de sequência**:
+   - Máx **2 HIGH** consecutivos → força **LOW** no 3.º dia
+   - Máx **2 REST** consecutivos → força **LOW** no 3.º dia
+
+> ⚠️ **Correcção importante:** a versão anterior prescrevia LOW sempre que `ln7` estava dentro da banda, o que prendia o atleta em LOW/REST durante meses. A literatura (Javaloyes 2019/2020; Kiviniemi 2007; Frontiers 2025; MDPI 2020) é explícita: *"High-intensity sessions were prescribed when HRV was above **or within** the SWC"*. Estar dentro da banda é o estado recuperado — é exactamente quando se deve fazer HIIT.""")
 
         # ── Javaloyes: sempre usa wc_full (histórico completo, ignora sidebar) ──
         # O SWC e o gráfico NÃO devem mudar com o filtro de período global.
@@ -605,27 +614,81 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
             _swc_sup  = _swc_mean + 0.5 * _swc_sd
             _swc_inf  = _swc_mean - 0.5 * _swc_sd
 
-            # Máquina de estados — SWC fixo (baseline das primeiras 4 semanas)
-            _prescricoes = []; _consec_high = 0; _consec_rest = 0; _razoes = []
+            # ════════════════════════════════════════════════════════════════
+            # MÁQUINA DE ESTADOS — esquema Kiviniemi/Javaloyes (corrigido)
+            # ════════════════════════════════════════════════════════════════
+            # Regra publicada (Javaloyes 2019/2020; Kiviniemi 2007; Frontiers
+            # 2025; MDPI 2020):
+            #   "High-intensity sessions were prescribed when HRV was ABOVE or
+            #    WITHIN the SWC, while low-intensity sessions were recommended
+            #    if HRV was BELOW the lower limit of the SWC."
+            #
+            # Sinal do diagrama Kiviniemi:
+            #   HRV+ = increased OR not changed HRV (ln7 hoje >= ln7 ontem)
+            #   HRV− = decreased HRV            (ln7 hoje <  ln7 ontem)
+            #
+            # Lógica:
+            #   ln7 DENTRO ou ACIMA da banda  → HIGH (até 2 consec.; 3.º→LOW)
+            #   ln7 ABAIXO do limite inferior → LOW se HRV+ (a recuperar)
+            #                                    REST se HRV− (ainda a cair)
+            #                                    (até 2 REST consec.; 3.º→LOW)
+            # ════════════════════════════════════════════════════════════════
+            _prescricoes = []; _consec_high = 0; _consec_rest = 0
+            _razoes = []; _sinais_hrv = []
+            _ln7_prev = np.nan
             for _, row in _wc_j.iterrows():
                 ln7 = row['ln7']
-                if pd.isna(ln7):
-                    _pres = 'LOW'; _razao = 'sem dados'; _consec_high = 0; _consec_rest = 0
-                elif ln7 > _swc_sup:
-                    if _consec_high >= 2:
-                        _pres = 'LOW'; _razao = 'HIGH forçado LOW (máx 2 consec.)'; _consec_high = 0; _consec_rest = 0
-                    else:
-                        _pres = 'HIGH'; _razao = 'Acima SWC sup'; _consec_high += 1; _consec_rest = 0
-                elif ln7 >= _swc_inf:
-                    _pres = 'LOW'; _razao = 'Dentro da banda'; _consec_high = 0; _consec_rest = 0
+
+                # Sinal HRV+/HRV− (direcção vs dia anterior)
+                if pd.isna(ln7) or pd.isna(_ln7_prev):
+                    _hrv_sig = '·'          # indeterminado
+                elif ln7 >= _ln7_prev:
+                    _hrv_sig = 'HRV+'       # subiu ou não mudou
                 else:
+                    _hrv_sig = 'HRV−'       # desceu
+
+                if pd.isna(ln7):
+                    _pres = 'LOW'; _razao = 'sem dados'
+                    _consec_high = 0; _consec_rest = 0
+
+                elif ln7 >= _swc_inf:
+                    # DENTRO ou ACIMA da banda → HIGH permitido
+                    if _consec_high >= 2:
+                        _pres = 'LOW'
+                        _razao = 'HIGH forçado LOW (máx 2 consec.)'
+                        _consec_high = 0; _consec_rest = 0
+                    else:
+                        _pres = 'HIGH'
+                        _razao = ('Acima SWC sup' if ln7 > _swc_sup
+                                  else 'Dentro da banda (≥ SWC inf)')
+                        _consec_high += 1; _consec_rest = 0
+
+                else:
+                    # ABAIXO do limite inferior → LOW ou REST conforme HRV+/−
                     _consec_high = 0
                     if _consec_rest >= 2:
-                        _pres = 'LOW'; _razao = 'REST forçado LOW (máx 2 consec.)'; _consec_rest = 0
+                        _pres = 'LOW'
+                        _razao = 'REST forçado LOW (máx 2 consec.)'
+                        _consec_rest = 0
+                    elif _hrv_sig == 'HRV+':
+                        # Abaixo da banda mas a recuperar → LOW (não REST)
+                        _pres = 'LOW'
+                        _razao = 'Abaixo SWC inf, mas HRV+ (a recuperar)'
+                        _consec_rest = 0
                     else:
-                        _pres = 'REST'; _razao = 'Abaixo SWC inf'; _consec_rest += 1
-                _prescricoes.append(_pres); _razoes.append(_razao)
-            _wc_j['prescricao'] = _prescricoes; _wc_j['razao'] = _razoes
+                        # Abaixo da banda e ainda a cair (ou indeterminado) → REST
+                        _pres = 'REST'
+                        _razao = 'Abaixo SWC inf + HRV− (ainda a cair)'
+                        _consec_rest += 1
+
+                _prescricoes.append(_pres)
+                _razoes.append(_razao)
+                _sinais_hrv.append(_hrv_sig)
+                if pd.notna(ln7):
+                    _ln7_prev = ln7
+            _wc_j['prescricao'] = _prescricoes
+            _wc_j['razao'] = _razoes
+            _wc_j['hrv_sinal'] = _sinais_hrv
 
             _COR_MAP = {'HIGH': '#27ae60', 'LOW': '#3498db', 'REST': '#e74c3c'}
             _LABEL_MAP = {'HIGH': '🟢 HIGH — treino intenso', 'LOW': '🔵 LOW — treino leve', 'REST': '🔴 REST — descanso activo'}
@@ -634,36 +697,37 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
             if len(_wc_j_val) > 0:
                 _ult_j = _wc_j_val.iloc[-1]; _pres_hoje = _ult_j['prescricao']
                 _ln7_hoje = _ult_j['ln7']; _sem_hoje = bool(_ult_j.get('sem_medicao', False))
+                _sig_hoje = _ult_j.get('hrv_sinal', '·')
                 _cj1, _cj2, _cj3, _cj4 = st.columns(4)
-                _cj1.metric("LnRMSSD₇ avg", f"{_ln7_hoje:.3f}" + (" ⚠️" if _sem_hoje else ""), help="Rolling 7 dias. ⚠️ = estimado.")
-                _cj2.metric("SWC superior", f"{_swc_sup:.3f}", help=f"mean {_swc_mean:.3f} + 0.5×SD → HIGH acima daqui")
-                _cj3.metric("SWC inferior", f"{_swc_inf:.3f}", help=f"mean {_swc_mean:.3f} - 0.5×SD → REST abaixo daqui")
+                _cj1.metric("LnRMSSD₇ avg", f"{_ln7_hoje:.3f}" + (" ⚠️" if _sem_hoje else ""), delta=_sig_hoje if _sig_hoje != '·' else None, help="Rolling 7 dias. Delta = sinal HRV+/HRV− (direcção vs dia anterior).")
+                _cj2.metric("SWC superior", f"{_swc_sup:.3f}", help=f"mean {_swc_mean:.3f} + 0.5×SD")
+                _cj3.metric("SWC inferior", f"{_swc_inf:.3f}", help=f"mean {_swc_mean:.3f} - 0.5×SD → abaixo daqui = LOW/REST")
                 _cj4.metric("Prescrição HOJE", _LABEL_MAP.get(_pres_hoje, _pres_hoje))
                 _cor_j = _COR_MAP.get(_pres_hoje, '#888')
                 _rj, _gj, _bj = int(_cor_j[1:3],16), int(_cor_j[3:5],16), int(_cor_j[5:7],16)
-                st.markdown(f'<div style="padding:14px 20px;border-radius:8px;margin:8px 0;background:rgba({_rj},{_gj},{_bj},0.10);border-left:5px solid {_cor_j};"><b style="font-size:1.1em;color:{_cor_j};">{_LABEL_MAP.get(_pres_hoje, _pres_hoje)}</b><span style="color:#888;margin-left:12px;font-size:0.9em;">LnRMSSD₇={_ln7_hoje:.3f} | SWC [{_swc_inf:.3f}, {_swc_sup:.3f}]</span></div>', unsafe_allow_html=True)
+                st.markdown(f'<div style="padding:14px 20px;border-radius:8px;margin:8px 0;background:rgba({_rj},{_gj},{_bj},0.10);border-left:5px solid {_cor_j};"><b style="font-size:1.1em;color:{_cor_j};">{_LABEL_MAP.get(_pres_hoje, _pres_hoje)}</b><span style="color:#888;margin-left:12px;font-size:0.9em;">LnRMSSD₇={_ln7_hoje:.3f} | SWC [{_swc_inf:.3f}, {_swc_sup:.3f}] | {_sig_hoje}</span></div>', unsafe_allow_html=True)
 
             # Tabela últimos 5 dias
             _ult5_j = _wc_j_val.tail(5).copy(); _rows5_j = []
             for _, r in _ult5_j.iterrows():
                 _sem = bool(r.get('sem_medicao', False))
-                _rows5_j.append({'Data': r['Data'].strftime('%d/%m') + (' ⚠️' if _sem else ''), 'LnRMSSD₇': f"{r['ln7']:.3f}" + (' (est.)' if _sem else ''), 'Zona': r.get('razao') or '—', 'Prescrição': _LABEL_MAP.get(r['prescricao'], r['prescricao'])})
+                _rows5_j.append({'Data': r['Data'].strftime('%d/%m') + (' ⚠️' if _sem else ''), 'LnRMSSD₇': f"{r['ln7']:.3f}" + (' (est.)' if _sem else ''), 'HRV': r.get('hrv_sinal', '·'), 'Zona': r.get('razao') or '—', 'Prescrição': _LABEL_MAP.get(r['prescricao'], r['prescricao'])})
             st.markdown("**Últimos 5 dias — protocolo Javaloyes:**")
             st.dataframe(pd.DataFrame(_rows5_j), hide_index=True, use_container_width=True)
-            st.caption(f"SWC baseline (primeiros 28 dias reais): mean={_swc_mean:.3f} ± 0.5×SD={0.5*_swc_sd:.3f} → banda [{_swc_inf:.3f}, {_swc_sup:.3f}]. Máx 2 HIGH consecutivos → força LOW. Máx 2 REST consecutivos → força LOW.")
+            st.caption(f"SWC baseline (últimos 28 dias reais): mean={_swc_mean:.3f} ± 0.5×SD={0.5*_swc_sd:.3f} → banda [{_swc_inf:.3f}, {_swc_sup:.3f}]. HIGH = dentro/acima da banda. LOW/REST = abaixo do limite inferior (REST se HRV− a cair; LOW se HRV+ a recuperar). Máx 2 HIGH consec. → LOW. Máx 2 REST consec. → LOW.")
 
             # Gráfico — usa n_hg do slider do HRV-Guided (mesmo período, sem slider novo)
             _df_plot = _wc_j_val.tail(n_hg).copy()
             import plotly.graph_objects as _go_j
             _fig_j = _go_j.Figure()
-            _fig_j.add_hrect(y0=_swc_inf, y1=_swc_sup, fillcolor='rgba(52,152,219,0.08)', line_width=0, annotation_text="LOW (dentro banda)", annotation_position="right", annotation_font_size=9, annotation_font_color='#3498db')
+            _fig_j.add_hrect(y0=_swc_inf, y1=_swc_sup, fillcolor='rgba(39,174,96,0.08)', line_width=0, annotation_text="HIGH (dentro/acima da banda)", annotation_position="right", annotation_font_size=9, annotation_font_color='#27ae60')
             _fig_j.add_hline(y=_swc_sup, line_dash='dash', line_color='rgba(39,174,96,0.6)', line_width=1.2, annotation_text="SWC sup", annotation_position="right", annotation_font_color='#27ae60', annotation_font_size=9)
-            _fig_j.add_hline(y=_swc_inf, line_dash='dash', line_color='rgba(231,76,60,0.6)', line_width=1.2, annotation_text="SWC inf", annotation_position="right", annotation_font_color='#e74c3c', annotation_font_size=9)
+            _fig_j.add_hline(y=_swc_inf, line_dash='dash', line_color='rgba(231,76,60,0.6)', line_width=1.2, annotation_text="SWC inf → abaixo = LOW/REST", annotation_position="right", annotation_font_color='#e74c3c', annotation_font_size=9)
             _fig_j.add_trace(_go_j.Scatter(x=_df_plot['Data'], y=_df_plot['ln7'], mode='lines', line=dict(color='rgba(44,62,80,0.35)', width=1.5), showlegend=False, hoverinfo='skip'))
             for _pg, _cg in _COR_MAP.items():
                 _sg = _df_plot[_df_plot['prescricao'] == _pg]
                 if len(_sg) > 0:
-                    _fig_j.add_trace(_go_j.Scatter(x=_sg['Data'], y=_sg['ln7'], mode='markers', name=_LABEL_MAP[_pg], marker=dict(color=_cg, size=7, line=dict(width=1.5, color='white')), hovertemplate='%{x|%d/%m}<br>LnRMSSD₇: %{y:.3f}<extra></extra>'))
+                    _fig_j.add_trace(_go_j.Scatter(x=_sg['Data'], y=_sg['ln7'], mode='markers', name=_LABEL_MAP[_pg], marker=dict(color=_cg, size=7, line=dict(width=1.5, color='white')), customdata=_sg['hrv_sinal'], hovertemplate='%{x|%d/%m}<br>LnRMSSD₇: %{y:.3f}<br>%{customdata}<extra></extra>'))
             if 'sem_medicao' in _df_plot.columns:
                 _sem_plot = _df_plot[_df_plot['sem_medicao'].astype(bool)]
                 if len(_sem_plot) > 0:
@@ -698,7 +762,6 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
 
             # ════════════════════════════════════════════════════════════════
             # CORRELAÇÃO: Slope 7d Estados vs HRV-Guided (HIIT / Recuperação)
-            # Pergunta: que estados do slope correlacionam com HIIT vs Recuperação?
             # ════════════════════════════════════════════════════════════════
             st.markdown("---")
             st.markdown("**📈 Correlação: Estados do Slope 7d vs HRV-Guided**")
@@ -707,20 +770,16 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
                 "vs dias de Recuperação/LOW? Correlação de Pearson (rolling 14d)."
             )
             try:
-                # df_corr tem zona_slope + intens (HIIT/Recuperação) do HRV-Guided
-                # Já está disponível no scope — calculado na Análise 1
                 _slope_zonas = [
                     'Supercompensação', 'Recuperação', 'Estável',
                     'Declínio Leve', 'Fadiga', 'NFOR Crítico'
                 ]
-                # Criar binárias para cada zona do slope
                 _df_sl_corr = df_corr[['Data', 'zona_slope', 'intens']].copy()
                 _df_sl_corr = _df_sl_corr[_df_sl_corr['intens'].isin(['HIIT', 'Recuperação'])].copy()
                 _df_sl_corr['hiit_bin'] = (_df_sl_corr['intens'] == 'HIIT').astype(int)
                 for _sz in _slope_zonas:
                     _df_sl_corr[f'slope_{_sz}'] = (_df_sl_corr['zona_slope'] == _sz).astype(int)
 
-                # Rolling 14d
                 _df_sl_corr = _df_sl_corr.sort_values('Data')
                 _df_sl_corr['hiit_r14'] = _df_sl_corr['hiit_bin'].rolling(14, min_periods=7).mean()
                 for _sz in _slope_zonas:
@@ -742,11 +801,9 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
 
                 if _sl_results:
                     _df_sl_res = pd.DataFrame(_sl_results).sort_values('r', ascending=False)
-
-                    # Separar em duas colunas: associados a HIIT vs Recuperação
                     _hiit_assoc = _df_sl_res[_df_sl_res['r'] > 0].copy()
                     _rec_assoc  = _df_sl_res[_df_sl_res['r'] <= 0].copy()
-                    _rec_assoc['r'] = _rec_assoc['r'].abs()  # mostrar magnitude
+                    _rec_assoc['r'] = _rec_assoc['r'].abs()
 
                     _col_hiit, _col_rec = st.columns(2)
 
@@ -810,7 +867,6 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
 
             # ════════════════════════════════════════════════════════════════
             # CORRELAÇÃO: Estados Modelo β vs HRV-Guided (HIIT / Recuperação)
-            # Pergunta: que estados β (frescura/fadiga) ocorrem mais em HIIT vs Recuperação?
             # ════════════════════════════════════════════════════════════════
             st.markdown("---")
             st.markdown("**🧠 Correlação: Estados Modelo β vs HRV-Guided**")
@@ -820,17 +876,11 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
             )
             try:
                 from scipy import stats as _sst_beta
-                # beta_df tem index=Data, colunas: LnrMSSD, bm28, bs28, beta, beta_agudo, beta_cronico
-                # df_hg tem Data + intens (HIIT/Recuperação/Sem medição)
-                # Cruzar pelo campo Data
-
-                # Preparar beta com zonas categóricas
                 _beta_c = beta_df[['beta', 'beta_agudo', 'beta_cronico']].copy()
                 _beta_c.index.name = 'Data'
                 _beta_c = _beta_c.reset_index()
                 _beta_c['Data'] = pd.to_datetime(_beta_c['Data']).dt.normalize()
 
-                # Classificar β em zonas (mesmo critério dos cards)
                 def _zona_beta(b):
                     if pd.isna(b):      return 'Sem dados'
                     elif b >= 65:       return 'Alta frescura (≥65)'
@@ -840,7 +890,6 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
 
                 _beta_c['beta_zona'] = _beta_c['beta'].apply(_zona_beta)
 
-                # Merge com HRV-Guided
                 _hg_c = df_hg[['Data', 'intens']].copy()
                 _hg_c['Data'] = pd.to_datetime(_hg_c['Data']).dt.normalize()
                 _beta_merged = _beta_c.merge(_hg_c, on='Data', how='inner')
@@ -849,8 +898,6 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
 
                 if len(_beta_merged) >= 14:
                     _beta_merged['hiit_bin'] = (_beta_merged['intens'] == 'HIIT').astype(int)
-
-                    # 1. Correlação β score contínuo vs HIIT
                     _beta_merged['hiit_r14']  = _beta_merged['hiit_bin'].rolling(14, min_periods=7).mean()
                     _beta_merged['beta_r14']  = _beta_merged['beta'].rolling(14, min_periods=7).mean()
                     _beta_merged['bagudo_r14']  = _beta_merged['beta_agudo'].rolling(14, min_periods=7).mean()
@@ -864,7 +911,6 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
                         _beta_merged[f'bz_{_bz}'] = (_beta_merged['beta_zona'] == _bz).astype(int)
                         _beta_merged[f'bz_{_bz}_r14'] = _beta_merged[f'bz_{_bz}'].rolling(14, min_periods=7).mean()
 
-                    # Correlações contínuas (β, βAgudo, βCrónico)
                     _cont_results = []
                     for _col, _nome in [('beta_r14', 'β score (0–100)'),
                                         ('bagudo_r14', 'βAgudo 3d (%)'),
@@ -884,7 +930,6 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
                                 )
                             })
 
-                    # Correlações por zona categórica
                     _zona_results = []
                     for _bz in _beta_zonas_list:
                         _vd = _beta_merged[['hiit_r14', f'bz_{_bz}_r14']].dropna()
@@ -897,7 +942,6 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
                                 'N': len(_vd),
                             })
 
-                    # Display — 2 secções
                     st.markdown("**Indicadores contínuos β vs HIIT (rolling 14d):**")
                     if _cont_results:
                         _df_cont = pd.DataFrame(_cont_results)
@@ -1015,42 +1059,35 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
                 _exp = _exp.merge(_hg_exp, on='Data', how='left')
             except Exception: pass
             try:
-                # Slope 7d: valor numérico + nome do estado + baseline/std
                 _sl_exp = df_corr[['Data','slope_7','baseline_7','std_7']].copy()
                 _sl_exp.columns = ['Data','slope_7d','slope_baseline7','slope_std7']
-                # Adicionar zona_slope se existir (calculada na Análise 1.7)
                 if 'zona_slope' in df_corr.columns:
                     _sl_exp['slope_estado'] = df_corr['zona_slope'].values
                 _sl_exp['Data'] = pd.to_datetime(_sl_exp['Data']).dt.normalize()
                 if 'slope_7d' not in _exp.columns:
                     _exp = _exp.merge(_sl_exp, on='Data', how='left')
                 else:
-                    # Actualizar colunas em falta sem duplicar
                     for _c in _sl_exp.columns:
                         if _c != 'Data' and _c not in _exp.columns:
                             _exp = _exp.merge(_sl_exp[['Data', _c]], on='Data', how='left')
             except Exception: pass
             try:
-                _jav_exp = _wc_j[['Data','LnrMSSD','ln7','prescricao']].copy()
-                _jav_exp.columns = ['Data','LnrMSSD_jav','LnRMSSD7_jav','Javaloyes_prescricao']
+                _jav_exp = _wc_j[['Data','LnrMSSD','ln7','prescricao','hrv_sinal']].copy()
+                _jav_exp.columns = ['Data','LnrMSSD_jav','LnRMSSD7_jav','Javaloyes_prescricao','Javaloyes_hrv_sinal']
                 _jav_exp['Data'] = pd.to_datetime(_jav_exp['Data']).dt.normalize()
                 _jav_exp['Javaloyes_SWC_sup'] = round(_swc_sup, 4); _jav_exp['Javaloyes_SWC_inf'] = round(_swc_inf, 4)
                 _exp = _exp.merge(_jav_exp, on='Data', how='left')
             except Exception: pass
             try:
-                # Modelo β — colunas completas para CSV:
-                # score, baseline, sd, z28, agudo, crónico, zona categórica, prescrição
                 _beta_full = beta_df[['LnrMSSD','bm28','bs28','z28','beta','beta_agudo','beta_cronico']].copy()                     if 'z28' in beta_df.columns else                     beta_df[['LnrMSSD','bm28','bs28','beta','beta_agudo','beta_cronico']].copy()
                 _beta_full.index.name = 'Data'
                 _beta_full = _beta_full.reset_index()
                 _beta_full['Data'] = pd.to_datetime(_beta_full['Data']).dt.normalize()
-                # Renomear colunas
                 _col_map = {'LnrMSSD':'LnrMSSD_beta','bm28':'beta_baseline28',
                             'bs28':'beta_sd28','beta':'beta_score'}
                 if 'z28' in _beta_full.columns:
                     _col_map['z28'] = 'beta_z28'
                 _beta_full = _beta_full.rename(columns=_col_map)
-                # Zona categórica (nome do estado)
                 def _bz_cat(b):
                     if pd.isna(b):  return 'Sem dados'
                     elif b >= 65:   return 'Alta frescura (≥65)'
@@ -1058,7 +1095,6 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
                     elif b >= 35:   return 'Possível fadiga (35-50)'
                     else:           return 'Fadiga marcada (<35)'
                 _beta_full['beta_zona'] = _beta_full['beta_score'].apply(_bz_cat)
-                # Prescrição β (texto, com base na regra de convergência)
                 def _bz_pres(row):
                     b  = row.get('beta_score', np.nan)
                     ba = row.get('beta_agudo', np.nan)
@@ -1079,7 +1115,6 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
                     elif n_neg >= 1: return 'Moderado Z1/Z2'
                     else: return 'Zona neutra'
                 _beta_full['beta_prescricao'] = _beta_full.apply(_bz_pres, axis=1)
-                # Merge — verificar colunas existentes
                 if 'beta_score' not in _exp.columns:
                     _exp = _exp.merge(_beta_full, on='Data', how='left')
                 else:
@@ -1088,7 +1123,6 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
                             _exp = _exp.merge(_beta_full[['Data', _c]], on='Data', how='left')
             except Exception: pass
             try:
-                # Mode 1 (Altini) e Mode 2 (Plews): zona + cor
                 _m12_exp = df_corr[['Data','mode1_zone','mode2_zone']].copy()
                 _m12_exp.columns = ['Data','altini_zona','plews_zona']
                 _m12_exp['Data'] = pd.to_datetime(_m12_exp['Data']).dt.normalize()
