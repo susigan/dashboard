@@ -127,6 +127,55 @@ def _gridfit_ir(u: np.ndarray, y: np.ndarray) -> dict:
 
 # ── Construção do impulso diário u_plt ────────────────────────────────────────
 
+def parse_mmp_real(val):
+    """
+    Extrai watts de MMP no formato real da sheet — fiel ao parse_mmp do tab_cp_model.
+    Formatos:
+        "Yes - 618w"   → 618.0  (season best REALMENTE atingido — USAR)
+        "No (PR: 383w)" → None  (PR histórico não atingido — IGNORAR)
+    Só devolve valor quando a string começa por "Yes".
+
+    NB: o _parse_mmp_w do data.py NÃO faz esta distinção (aceita o nº de
+    "No (PR: 364w)" como se fosse real). Por isso para o MMP real/recente deve
+    usar-se ESTA função sobre as colunas *_raw, não as colunas mmp*_w do data.py.
+    """
+    import re as _re
+    if not isinstance(val, str) or not val.strip():
+        return None
+    v = val.strip()
+    if not v.lower().startswith('yes'):
+        return None
+    m = _re.search(r'-\s*(\d+(?:\.\d+)?)\s*w', v, _re.IGNORECASE)
+    return float(m.group(1)) if m else None
+
+
+def latest_real_mmp(df_act: pd.DataFrame, modality: str):
+    """
+    Devolve o MMP-âncora REAL mais recente para uma modalidade (1 valor escalar),
+    replicando a lógica do tab_cp_model: lê a coluna *_raw da duração-âncora,
+    só aceita "Yes - Xw", e pega o mais recente por data.
+      Bike/Run → MMP20 (mmp20_raw)
+      Row/Ski  → MMP5  (mmp5_raw)
+    Retorna float (watts) ou None. NÃO acumula históricos — só o último real.
+    """
+    from utils.helpers import norm_tipo
+    if df_act is None or len(df_act) == 0 or 'type' not in df_act.columns:
+        return None
+    _raw_col = 'mmp5_raw' if modality in ('Row', 'Ski') else 'mmp20_raw'
+    if _raw_col not in df_act.columns or 'Data' not in df_act.columns:
+        return None
+    _sub = df_act[df_act['type'].apply(norm_tipo) == modality].copy()
+    if len(_sub) == 0:
+        return None
+    _sub['Data'] = pd.to_datetime(_sub['Data'])
+    _sub = _sub.sort_values('Data', ascending=False)
+    for _, _rr in _sub.iterrows():
+        _mv = parse_mmp_real(str(_rr[_raw_col]))
+        if _mv is not None:
+            return _mv
+    return None
+
+
 def build_daily_plt(df_act: pd.DataFrame,
                     df_wellness: pd.DataFrame = None,
                     modality: str = None) -> pd.DataFrame:
@@ -253,18 +302,21 @@ def build_daily_plt(df_act: pd.DataFrame,
 
 def compute_plt_ir(df_act: pd.DataFrame,
                    df_wellness: pd.DataFrame = None,
-                   modality: str = None,
-                   mmp_target: pd.Series = None) -> dict:
+                   modality: str = None) -> dict:
     """
     Pipeline completo PLT → IR para uma modalidade.
 
-    mmp_target : Série indexada por Data com o MMP real (mmp20_w/mmp5_w) para fit.
-                 Se None ou insuficiente (<6 pontos) → usa parâmetros fixos do paper.
-                 NUNCA passar eFTP aqui (é estimador ruidoso).
+    Parâmetros IR: SEMPRE os fixos do paper (τf=42, τg=7, k_f=1, k_g=2, P0=0).
+    Decisão de projecto: NÃO se ajusta a MMP nem a eFTP.
+      - eFTP é estimador ruidoso (não representa o CP/FTP real do atleta).
+      - MMP fiável exige parsing "Yes - Xw" mais recente (ver parse_mmp_real);
+        como série temporal para fit é instável e escassa por modalidade.
+    Por isso P̂ é uma trajectória em UNIDADES RELATIVAS (não em watts):
+    mostra a forma/dinâmica fitness−fatigue, não um valor absoluto de potência.
 
     Devolve dict:
       'daily'   — DataFrame (Data, v_*, u_plt, F_plt, G_plt, P_hat_plt)
-      'params'  — dict de parâmetros IR usados (+ flag 'fitted')
+      'params'  — dict de parâmetros IR usados (fixos do paper)
       'ok'      — bool
       'reason'  — str (se ok=False)
     """
@@ -280,15 +332,8 @@ def compute_plt_ir(df_act: pd.DataFrame,
     daily['u_plt'] = daily['u_plt'].fillna(0.0)  # dia sem treino → impulso 0
     u = daily['u_plt'].values.astype(float)
 
-    # Alinhar alvo MMP à grelha diária (para o fit)
-    y = np.full(len(daily), np.nan)
-    if mmp_target is not None and len(mmp_target) > 0:
-        _mt = mmp_target.copy()
-        _mt.index = pd.to_datetime(_mt.index)
-        _y_ser = _mt.reindex(daily['Data'])
-        y = pd.to_numeric(_y_ser, errors='coerce').values
-
-    params = _gridfit_ir(u, y)
+    # IR com parâmetros FIXOS do paper (sem fit a MMP/eFTP)
+    params = dict(_IR_DEFAULT, fitted=False)
     F, G, P_hat = _simulate_ir(u, u, params['tau_f'], params['tau_g'],
                                params['k_f'], params['k_g'], params['P0'])
     daily['F_plt']     = F
