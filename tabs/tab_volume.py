@@ -49,7 +49,15 @@ def _pct_text(v, total):
     return f"{v/total*100:.0f}%" if total > 0 and v/total >= 0.05 else ''
 
 
-def _stacked_pct(pivot, order, cmap, title, ytitle, key, show_mean_line=False):
+def _val_text(v, total, unit='', decimals=1):
+    """Texto de valor absoluto dentro da coluna (em vez de %)."""
+    if total <= 0 or v / total < 0.05:
+        return ''
+    return f"{v:.{decimals}f}{unit}"
+
+
+def _stacked_pct(pivot, order, cmap, title, ytitle, key, show_mean_line=False,
+                 unit='', decimals=1):
     fig = go.Figure()
     totals = pivot.sum(axis=1)
     for cat in order:
@@ -60,15 +68,15 @@ def _stacked_pct(pivot, order, cmap, title, ytitle, key, show_mean_line=False):
             x=[str(x) for x in pivot.index], y=y.tolist(),
             name=cat, marker_color=cmap.get(cat, '#888'),
             marker_line_width=0, opacity=0.88,
-            text=[_pct_text(v, t) for v, t in zip(y, totals)],
-            textposition='inside', textfont=dict(color='white', size=9),
-            hovertemplate=f'<b>{cat}</b><br>%{{x}}: <b>%{{y:.1f}}</b><extra></extra>',
+            text=[_val_text(v, t, unit, decimals) for v, t in zip(y, totals)],
+            textposition='inside', textfont=dict(color='white', size=12),
+            hovertemplate=f'<b>{cat}</b><br>%{{x}}: <b>%{{y:.1f}}{unit}</b><extra></extra>',
         ))
     if show_mean_line and len(totals) > 0:
         mean_val = float(totals.mean())
         fig.add_hline(
             y=mean_val, line_dash='dash', line_color='#2c3e50', line_width=1.5,
-            annotation_text=f"Média: {mean_val:.1f}",
+            annotation_text=f"Média: {mean_val:.1f}{unit}",
             annotation_position="top right",
             annotation_font=dict(color='#2c3e50', size=10))
     fig.update_layout(**_LAY, barmode='stack', height=360,
@@ -186,7 +194,7 @@ def tab_volume(da, dw):
         st.plotly_chart(
             _stacked_pct(pivot_h, _CICLICOS, _CORES_MOD,
                          f'Horas — {_p1}', 'Horas', 'vol_h_cic',
-                         show_mean_line=True),
+                         show_mean_line=True, unit='h', decimals=1),
             use_container_width=True, config=MC, key="vol_h_cic")
 
         with st.expander("📋 Tabela: % e total horas por modalidade", expanded=False):
@@ -212,7 +220,7 @@ def tab_volume(da, dw):
         st.plotly_chart(
             _stacked_pct(pivot_km, _CICLICOS, _CORES_MOD,
                          f'Distância (km) — {_p2}', 'km', 'vol_km_cic',
-                         show_mean_line=True),
+                         show_mean_line=True, unit='km', decimals=1),
             use_container_width=True, config=MC, key="vol_km_cic")
 
         with st.expander("📋 Tabela: % e total km por modalidade", expanded=False):
@@ -220,6 +228,39 @@ def tab_volume(da, dw):
                                 _CICLICOS, 'km', 'km_cic')
     else:
         st.info("Sem dados de distância.")
+
+    st.markdown("---")
+
+    # ════════════════════════════════════════════════════════════════════════
+    # 2b. kJ — Cíclicos (z1_kj + z2_kj + z3_kj)
+    # ════════════════════════════════════════════════════════════════════════
+    st.subheader("🔥 kJ por Modalidade — cíclicos")
+    _kj_cols = [c for c in ['z1_kj', 'z2_kj', 'z3_kj'] if c in df.columns]
+    if _kj_cols:
+        df_kj = df[df['type'].isin(_CICLICOS)].copy()
+        df_kj['kj'] = sum(
+            pd.to_numeric(df_kj[c], errors='coerce').fillna(0) for c in _kj_cols)
+        df_kj = df_kj[df_kj['kj'] > 0]
+        if len(df_kj) > 0:
+            _pkj = st.selectbox("Período", list(_PERIODO_OPTS.keys()),
+                                key="vol_pkj", index=1)
+            _pckj = _PERIODO_OPTS[_pkj]
+            pivot_kj = (df_kj.pivot_table(index=_pckj, columns='type',
+                                          values='kj', aggfunc='sum', fill_value=0)
+                            .sort_index())
+            st.plotly_chart(
+                _stacked_pct(pivot_kj, _CICLICOS, _CORES_MOD,
+                             f'Trabalho (kJ) — {_pkj}', 'kJ', 'vol_kj_cic',
+                             show_mean_line=True, unit='', decimals=0),
+                use_container_width=True, config=MC, key="vol_kj_cic")
+
+            with st.expander("📋 Tabela: % e total kJ por modalidade", expanded=False):
+                _summary_table_raw(df_kj, _pckj, 'kj', _pckj, 'type',
+                                    _CICLICOS, 'kJ', 'kj_cic')
+        else:
+            st.info("Sem dados de kJ por zona.")
+    else:
+        st.info("Colunas z1_kj/z2_kj/z3_kj não disponíveis.")
 
     st.markdown("---")
 
@@ -241,7 +282,7 @@ def tab_volume(da, dw):
             st.plotly_chart(
                 _stacked_pct(pivot_rpe, ['Leve', 'Moderado', 'Pesado'],
                              _CORES_RPE, f'Horas por Intensidade — {_p3}',
-                             'Horas', 'vol_rpe'),
+                             'Horas', 'vol_rpe', unit='h', decimals=1),
                 use_container_width=True, config=MC, key="vol_rpe")
 
             with st.expander("📋 Tabela: % por RPE por modalidade", expanded=False):
