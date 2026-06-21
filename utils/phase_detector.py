@@ -87,10 +87,18 @@ def _rolling_mode_3(phases: np.ndarray) -> np.ndarray:
     """
     Smooth phase array: replace each day with majority vote of [t-2, t-1, t].
     Eliminates single-day flicker between adjacent phases.
+
+    EXCEPÇÃO: o último dia (hoje) NUNCA é suavizado — mantém sempre a sua fase
+    raw real. Caso contrário, uma maioria de 2 dias passados (já desactualizados)
+    sobrepõe-se ao estado real de hoje (bug: Run mostrava FATIGUE de ontem
+    apesar de hoje já estar em BUILD/RECOVERY).
     """
     n   = len(phases)
     out = phases.copy()
     for t in range(2, n):
+        # Não suavizar o último dia — preserva a fase raw de hoje
+        if t == n - 1:
+            continue
         window = [phases[t-2], phases[t-1], phases[t]]
         # majority: if any value appears 2+ times use it, else keep current
         from collections import Counter
@@ -125,6 +133,24 @@ def detect_phases(ld: pd.DataFrame,
 
     # ── ΔCTLγ — rolling slope 14d ─────────────────────────────────────────────
     dctlg = _rolling_slope(ctlg, window=slope_window)
+
+    # ── Dias desde o último treino (gate de carga recente) ───────────────────
+    # Sem série de carga directa por dia, infere-se treino a partir de subidas
+    # do CTLγ: quando há treino, CTLγ sobe (Δ > tol); sem treino, decai por EWM.
+    # dias_sem_treino[t] = nº de dias consecutivos sem subida de CTLγ até t.
+    # Usado para impedir FATIGUE/OVERREACH/BUILD quando não há treino recente
+    # (o slope 14d pode ficar positivo por inércia mesmo sem carga nova).
+    _ctlg_diff = np.diff(ctlg, prepend=ctlg[0] if len(ctlg) else 0.0)
+    _tol = 1e-4
+    dias_sem_treino = np.zeros(len(ctlg), dtype=float)
+    _cnt = 0
+    for t in range(len(ctlg)):
+        if np.isfinite(_ctlg_diff[t]) and _ctlg_diff[t] > _tol:
+            _cnt = 0          # houve subida → treino hoje
+        else:
+            _cnt += 1         # sem subida → mais um dia sem treino
+        dias_sem_treino[t] = _cnt
+    GAP_TREINO = 7            # >7 dias sem treino → sem fases de carga
 
     # ── HRV_trend — relative to 60d baseline ─────────────────────────────────
     if 'HRV_trend' in ld.columns and ld['HRV_trend'].notna().sum() >= 20:
@@ -186,6 +212,20 @@ def detect_phases(ld: pd.DataFrame,
         if not d_ok:
             continue
 
+        # Gate de carga recente: sem treino há > GAP_TREINO dias, as fases que
+        # implicam carga activa (OVERREACH/FATIGUE/BUILD) não fazem sentido —
+        # o slope 14d pode estar positivo só por inércia do EWM sem carga nova.
+        _sem_carga = dias_sem_treino[t] > GAP_TREINO
+
+        if _sem_carga:
+            # Sem carga recente → estado de descanso/destreino:
+            #   HRV a recuperar (≥ p50) → RECOVERY; caso contrário → TRANSITION.
+            if hrv_ok and np.isfinite(h50) and hv > h50:
+                phases[t] = 'RECOVERY'
+            else:
+                phases[t] = 'TRANSITION'
+            continue
+
         # OVERREACH: HRV very low + high stress + carga alta (confirma overreach real)
         # dCTL > p50 distingue de "baixo HRV por sono/stress sem carga"
         if hrv_ok and weed_ok and hv < h10 and wd > w90 and dc > d50:
@@ -224,6 +264,7 @@ def detect_phases(ld: pd.DataFrame,
     # ── Build output ──────────────────────────────────────────────────────────
     out['CTLg']         = np.round(ctlg,        3)
     out['dCTLg_14d']    = np.round(dctlg,       5)
+    out['dias_sem_treino'] = dias_sem_treino.astype(int)
     out['HRV_rel']      = np.round(hrv_rel,      3)
     out['WEED_z']       = np.round(weed,         3)
     out['CTLg_z']       = np.round(ctl_z,        3)
