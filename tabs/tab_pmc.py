@@ -1511,61 +1511,131 @@ ou a acumular sobrecarga não compensada (allostatic overload), comparando
             _n_pmods = len(_plt_results)
             _mods_ok = list(_plt_results.keys())
 
+            # ── Slider de range de dias (zoom temporal) ──────────────────────
+            # Maior período disponível entre as modalidades
+            _max_dias = max(
+                int((_plt_results[_pm]['daily']['Data'].max()
+                     - _plt_results[_pm]['daily']['Data'].min()).days) + 1
+                for _pm in _mods_ok)
+            _max_dias = max(_max_dias, 60)
+            _opcoes_range = [("30 dias", 30), ("90 dias", 90), ("180 dias", 180),
+                             ("1 ano", 365), ("2 anos", 730),
+                             (f"Tudo ({_max_dias}d)", _max_dias)]
+            _opcoes_validas = [(_lbl, _v) for _lbl, _v in _opcoes_range
+                               if _v <= _max_dias] or [(f"Tudo ({_max_dias}d)", _max_dias)]
+            if _opcoes_validas[-1][1] != _max_dias:
+                _opcoes_validas.append((f"Tudo ({_max_dias}d)", _max_dias))
+            _labels_range = [_l for _l, _ in _opcoes_validas]
+            # default: 180 dias (ou o maior disponível abaixo disso)
+            _def_idx = next((i for i, (_l, _v) in enumerate(_opcoes_validas)
+                             if _v == 180), len(_opcoes_validas) - 1)
+            _sel_range = st.select_slider(
+                "📅 Janela temporal do PLT", options=_labels_range,
+                value=_labels_range[_def_idx], key="pmc_plt_range")
+            _dias_show = dict(_opcoes_validas)[_sel_range]
+
             from plotly.subplots import make_subplots as _msp_plt
             fig_plt = _msp_plt(
                 rows=1, cols=_n_pmods,
                 subplot_titles=_mods_ok,
                 shared_yaxes=False,
                 specs=[[{'secondary_y': True}] * _n_pmods],
+                horizontal_spacing=0.06 if _n_pmods <= 3 else 0.045,
             )
+
+            _hoje = pd.Timestamp.now().normalize()
 
             for _ci, _pm in enumerate(_mods_ok, 1):
                 _res  = _plt_results[_pm]
-                _d    = _res['daily']
+                _d    = _res['daily'].copy()
                 _par  = _res['params']
                 _cor  = _CORES_MOD_PMC.get(_pm, '#888')
-                _xd   = _d['Data'].tolist()
 
-                # Y1 (esq): P̂ latente relativo (trajectória fitness−fatigue)
-                fig_plt.add_trace(go.Scatter(
-                    x=_xd, y=_d['P_hat_plt'].tolist(), mode='lines',
-                    name=(f'{_pm} P̂ (rel) τf={_par["tau_f"]:.0f} '
-                          f'τg={_par["tau_g"]:.0f} [paper]'),
-                    line=dict(color=_cor, width=2.5),
-                    legendgroup=f'phat_{_pm}', showlegend=True,
-                    hovertemplate=f'<b>{_pm} P̂</b> (rel): %{{y:.2f}}<extra></extra>',
-                ), row=1, col=_ci, secondary_y=False)
+                # Filtrar pela janela escolhida (últimos _dias_show dias)
+                _d['Data'] = pd.to_datetime(_d['Data'])
+                _corte = _d['Data'].max() - pd.Timedelta(days=_dias_show)
+                _d = _d[_d['Data'] >= _corte].reset_index(drop=True)
+                _xd = _d['Data'].tolist()
 
-                # Y2 (dir): impulso diário u_plt (barras suaves de contexto)
-                fig_plt.add_trace(go.Scatter(
-                    x=_xd, y=_d['u_plt'].tolist(), mode='lines',
-                    name=f'{_pm} u_plt (impulso)',
-                    line=dict(color=_cor, width=1.0, dash='dot'),
-                    opacity=0.40,
+                # P̂ suavizado (média móvel 7d) — tendência fitness−fatigue
+                _phat_s = (_d['P_hat_plt'].rolling(7, min_periods=1, center=True)
+                           .mean())
+                # u_plt em barras (carga diária; dias sem treino ficam vazios)
+                _uplt = _d['u_plt'].copy()
+                _uplt_show = _uplt.where(_uplt > 1e-6)  # esconder zeros
+
+                _hx_b = _cor.lstrip('#')
+                _rb, _gb, _bb = (int(_hx_b[0:2], 16), int(_hx_b[2:4], 16),
+                                 int(_hx_b[4:6], 16))
+                _rgba = f'rgba({_rb},{_gb},{_bb},0.35)'
+
+                # Y2 (dir): impulso u_plt como BARRAS suaves (fundo de contexto)
+                fig_plt.add_trace(go.Bar(
+                    x=_xd, y=_uplt_show.tolist(),
+                    name=f'{_pm} u_plt (carga)',
+                    marker=dict(color=_rgba, line=dict(width=0)),
                     legendgroup=f'uplt_{_pm}', showlegend=True,
                     hovertemplate=f'<b>{_pm} u_plt</b>: %{{y:.2f}}<extra></extra>',
                 ), row=1, col=_ci, secondary_y=True)
 
+                # Y1 (esq): P̂ suavizado 7d (linha principal)
+                fig_plt.add_trace(go.Scatter(
+                    x=_xd, y=_phat_s.tolist(), mode='lines',
+                    name=(f'{_pm} P̂ (7d) τf={_par["tau_f"]:.0f} '
+                          f'τg={_par["tau_g"]:.0f} [paper]'),
+                    line=dict(color=_cor, width=2.8),
+                    legendgroup=f'phat_{_pm}', showlegend=True,
+                    hovertemplate=f'<b>{_pm} P̂</b> (7d): %{{y:.2f}}<extra></extra>',
+                ), row=1, col=_ci, secondary_y=False)
+
+                # P̂ cru (cinza ténue, por baixo) — detalhe diário opcional
+                fig_plt.add_trace(go.Scatter(
+                    x=_xd, y=_d['P_hat_plt'].tolist(), mode='lines',
+                    name=f'{_pm} P̂ (cru)',
+                    line=dict(color='rgba(150,150,150,0.30)', width=0.8),
+                    legendgroup=f'phatcru_{_pm}', showlegend=False,
+                    hoverinfo='skip',
+                ), row=1, col=_ci, secondary_y=False)
+
+                # Banda dos últimos 30 dias (foco no estado actual)
+                if len(_d) > 0:
+                    try:
+                        _b0 = max(_d['Data'].max() - pd.Timedelta(days=30),
+                                  _d['Data'].min())
+                        fig_plt.add_vrect(
+                            x0=_b0, x1=_d['Data'].max(),
+                            fillcolor='rgba(120,120,120,0.07)', line_width=0,
+                            row=1, col=_ci)
+                        # Marca "hoje" (se dentro do range)
+                        if _d['Data'].min() <= _hoje <= _d['Data'].max():
+                            fig_plt.add_vline(
+                                x=_hoje, line=dict(color='#666', width=1,
+                                                   dash='dot'),
+                                row=1, col=_ci)
+                    except Exception:
+                        pass  # marcações são decorativas; não quebrar o gráfico
+
                 fig_plt.update_yaxes(
-                    title_text='P̂ (relativo)', title_font=dict(size=8, color=_cor),
+                    title_text='P̂ (rel, 7d)', title_font=dict(size=8, color=_cor),
                     showgrid=True, gridcolor='#eee',
                     tickfont=dict(color='#111', size=8),
                     row=1, col=_ci, secondary_y=False)
                 fig_plt.update_yaxes(
-                    title_text='u_plt', title_font=dict(size=8, color='#888'),
-                    showgrid=False, tickfont=dict(color='#888', size=8),
+                    title_text='carga', title_font=dict(size=8, color='#aaa'),
+                    showgrid=False, tickfont=dict(color='#aaa', size=8),
                     row=1, col=_ci, secondary_y=True)
 
             fig_plt.update_layout(
                 paper_bgcolor='white', plot_bgcolor='white',
                 font=dict(color='#111', size=10),
-                height=400, margin=dict(t=65, b=90, l=50, r=50),
-                hovermode='x unified',
-                legend=dict(orientation='h', y=-0.32,
+                height=420, margin=dict(t=70, b=95, l=50, r=50),
+                hovermode='x unified', bargap=0.0,
+                legend=dict(orientation='h', y=-0.30,
                             font=dict(color='#111', size=9),
                             bgcolor='rgba(255,255,255,0.9)'),
                 title=dict(
-                    text='P̂ relativo (Y esq, sólido) | impulso u_plt (Y dir, pontilhado)',
+                    text=(f'P̂ (média 7d, sólido) | carga u_plt (barras) · '
+                          f'janela: {_sel_range}'),
                     font=dict(size=12, color='#111')),
             )
             fig_plt.update_xaxes(showgrid=True, gridcolor='#eee',
