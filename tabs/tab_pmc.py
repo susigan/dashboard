@@ -1691,6 +1691,68 @@ ou a acumular sobrecarga não compensada (allostatic overload), comparando
     except Exception as _e_plt:
         st.warning(f"PLT não pôde ser calculado: {_e_plt}")
 
+    # ════════════════════════════════════════════════════════════════════════
+    # [TEMPORÁRIO] Comparador de métodos de parametrização do IR do PLT
+    # Gera CSV com 4 métodos (paper / NLSS-kfix / NLSS-kfit / gridfit) para
+    # análise offline. Decidir qual implementar no PMC depois de ver os dados.
+    # Remover este expander quando a decisão estiver tomada.
+    # ════════════════════════════════════════════════════════════════════════
+    with st.expander("🔬 [Experimental] Comparar métodos de parametrização do PLT-IR",
+                     expanded=False):
+        st.caption(
+            "Gera o P̂ por 4 métodos para comparares offline e decidires qual usar:\n"
+            "**paper** (τf=42,τg=7,kf=1,kg=2 fixos) · **nlss_kfix** (τf←T1,τg←T2 do "
+            "NLSS + k fixo) · **nlss_kfit** (τ herdado + k ajustado ao MMP) · "
+            "**gridfit** (varre τf,τg,kf,kg vs MMP). Âncoras MMP = melhor 'Yes - Xw' "
+            "por período. Não usa eFTP."
+        )
+        _periodo_cmp = st.radio(
+            "Período dos pontos-âncora MMP",
+            options=['year', 'semester', 'quarter'],
+            format_func=lambda x: {'year': 'Anual (1 pico/ano)',
+                                   'semester': 'Semestral',
+                                   'quarter': 'Trimestral'}[x],
+            horizontal=True, key="pmc_plt_cmp_period")
+
+        if st.button("⚙️ Gerar comparação (.csv)", key="pmc_plt_cmp_btn"):
+            try:
+                from utils.plt_compare import compare_all_to_csv
+                try:
+                    from utils.data import calcular_nlss as _nlss_fn
+                except Exception:
+                    _nlss_fn = None
+                with st.spinner("A calcular os 4 métodos por modalidade..."):
+                    _df_long, _df_params = compare_all_to_csv(
+                        da_full, wc, nlss_fn=_nlss_fn,
+                        period=_periodo_cmp, start_date='2021-01-01')
+                if len(_df_long) > 0:
+                    st.success(f"✅ Gerado: {len(_df_long)} linhas, "
+                               f"{_df_long['Modalidade'].nunique()} modalidades.")
+                    st.markdown("**Parâmetros escolhidos por método:**")
+                    st.dataframe(_df_params, use_container_width=True)
+
+                    _ser_csv = (_df_long.assign(
+                        Data=pd.to_datetime(_df_long['Data']).astype(str))
+                        .round(4).to_csv(index=False, sep=';', decimal=',')
+                        .encode('utf-8'))
+                    _par_csv = (_df_params.round(4)
+                        .to_csv(index=False, sep=';', decimal=',').encode('utf-8'))
+                    _c1, _c2 = st.columns(2)
+                    with _c1:
+                        st.download_button(
+                            "📥 Séries dos 4 métodos (.csv)", _ser_csv,
+                            f"plt_comparacao_series_{_periodo_cmp}.csv",
+                            "text/csv", key="pmc_dl_cmp_series")
+                    with _c2:
+                        st.download_button(
+                            "📥 Parâmetros + MSE (.csv)", _par_csv,
+                            f"plt_comparacao_params_{_periodo_cmp}.csv",
+                            "text/csv", key="pmc_dl_cmp_params")
+                else:
+                    st.warning("Sem dados suficientes para a comparação.")
+            except Exception as _e_cmp:
+                st.error(f"Erro ao gerar comparação: {_e_cmp}")
+
     # ── FMT Tensor — explicação + resultados actuais ──────────────────────────
     with st.expander("🧮 FMT Tensor κ — Curvatura do Estado Fisiológico", expanded=False):
         try:
