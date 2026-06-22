@@ -152,25 +152,41 @@ def parse_mmp_real(val):
 def latest_real_mmp(df_act: pd.DataFrame, modality: str):
     """
     Devolve o MMP-âncora REAL mais recente para uma modalidade (1 valor escalar),
-    replicando a lógica do tab_cp_model: lê a coluna *_raw da duração-âncora,
+    replicando a lógica do tab_cp_model: lê a coluna MMP da duração-âncora,
     só aceita "Yes - Xw", e pega o mais recente por data.
-      Bike/Run → MMP20 (mmp20_raw)
-      Row/Ski  → MMP5  (mmp5_raw)
+      Bike/Run → MMP20
+      Row/Ski  → MMP5
     Retorna float (watts) ou None. NÃO acumula históricos — só o último real.
+
+    IMPORTANTE — qual coluna ler:
+      A coluna ORIGINAL da sheet ('MMP20'/'MMP5', maiúscula) contém as strings
+      "Yes - 318w". A coluna mapeada 'mmp20_raw'/'mmp5_raw' está DESTRUÍDA —
+      o carregar_atividades aplica-lhe br_float() (não está na lista TEXTO),
+      convertendo "Yes - 318w" → NaN. Por isso lemos 'MMP20'/'MMP5' como o
+      tab_cp_model faz, com fallbacks defensivos.
     """
     from utils.helpers import norm_tipo
     if df_act is None or len(df_act) == 0 or 'type' not in df_act.columns:
         return None
-    _raw_col = 'mmp5_raw' if modality in ('Row', 'Ski') else 'mmp20_raw'
-    if _raw_col not in df_act.columns or 'Data' not in df_act.columns:
+    if 'Data' not in df_act.columns:
         return None
+
+    # Candidatos de coluna por ordem de preferência (original primeiro)
+    if modality in ('Row', 'Ski'):
+        _cands = ['MMP5', 'mmp5', 'Mmp5']
+    else:
+        _cands = ['MMP20', 'mmp20', 'Mmp20']
+    _col = next((c for c in _cands if c in df_act.columns), None)
+    if _col is None:
+        return None
+
     _sub = df_act[df_act['type'].apply(norm_tipo) == modality].copy()
     if len(_sub) == 0:
         return None
     _sub['Data'] = pd.to_datetime(_sub['Data'])
     _sub = _sub.sort_values('Data', ascending=False)
     for _, _rr in _sub.iterrows():
-        _mv = parse_mmp_real(str(_rr[_raw_col]))
+        _mv = parse_mmp_real(str(_rr[_col]))
         if _mv is not None:
             return _mv
     return None
