@@ -178,7 +178,8 @@ def latest_real_mmp(df_act: pd.DataFrame, modality: str):
 
 def build_daily_plt(df_act: pd.DataFrame,
                     df_wellness: pd.DataFrame = None,
-                    modality: str = None) -> pd.DataFrame:
+                    modality: str = None,
+                    start_date: str = '2021-01-01') -> pd.DataFrame:
     """
     Constrói a série diária do PLT para uma modalidade (ou todas se modality=None).
 
@@ -187,6 +188,10 @@ def build_daily_plt(df_act: pd.DataFrame,
                     hq_1, hq_4; moving_time/power_avg como fallback de kJ)
       df_wellness — wellness (precisa: Data, peso, hrv)  [peso = WELLNESS, não icu_weight]
       modality    — 'Bike'|'Row'|'Ski'|'Run' ou None (atleta inteiro)
+      start_date  — data mínima a considerar (default '2021-01-01'). Antes disto
+                    não há wellness/HRV completo no ATHELTICA, pelo que o impulso
+                    seria construído só com carga (sem o termo HRV). Limitar a 2021
+                    garante que todos os sinais (TSS, Ekg, decoupling, HRV) coexistem.
 
     Output DataFrame (por dia): Data, v_tss, v_ekg, v_decoupling, v_hrv_drop, u_plt
     """
@@ -196,6 +201,9 @@ def build_daily_plt(df_act: pd.DataFrame,
     if 'Data' not in df.columns:
         return pd.DataFrame()
     df['Data'] = pd.to_datetime(df['Data'])
+    # Corte temporal: só considerar dados a partir de start_date (default 2021)
+    if start_date is not None:
+        df = df[df['Data'] >= pd.to_datetime(start_date)]
     if 'type' in df.columns:
         df['_tipo'] = df['type'].apply(norm_tipo)
         if modality is not None:
@@ -302,7 +310,8 @@ def build_daily_plt(df_act: pd.DataFrame,
 
 def compute_plt_ir(df_act: pd.DataFrame,
                    df_wellness: pd.DataFrame = None,
-                   modality: str = None) -> dict:
+                   modality: str = None,
+                   start_date: str = '2021-01-01') -> dict:
     """
     Pipeline completo PLT → IR para uma modalidade.
 
@@ -314,13 +323,16 @@ def compute_plt_ir(df_act: pd.DataFrame,
     Por isso P̂ é uma trajectória em UNIDADES RELATIVAS (não em watts):
     mostra a forma/dinâmica fitness−fatigue, não um valor absoluto de potência.
 
+    start_date : corte temporal (default '2021-01-01'). Antes disto não há
+                 wellness/HRV completo no ATHELTICA.
+
     Devolve dict:
       'daily'   — DataFrame (Data, v_*, u_plt, F_plt, G_plt, P_hat_plt)
       'params'  — dict de parâmetros IR usados (fixos do paper)
       'ok'      — bool
       'reason'  — str (se ok=False)
     """
-    daily = build_daily_plt(df_act, df_wellness, modality)
+    daily = build_daily_plt(df_act, df_wellness, modality, start_date=start_date)
     if len(daily) == 0 or daily['u_plt'].notna().sum() < 10:
         return {'ok': False, 'reason': 'dados insuficientes para PLT',
                 'daily': daily, 'params': dict(_IR_DEFAULT, fitted=False)}
