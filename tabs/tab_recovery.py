@@ -419,30 +419,69 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
             yaxis=dict(title='LnRMSSD₇', showgrid=True, gridcolor='rgba(128,128,128,0.2)'))
         st.plotly_chart(_fig_hg, use_container_width=True, config={'displayModeBar': False, 'responsive': True}, key="rec_hg_chart")
 
-        # ── GRÁFICO 2: Kiviniemi (HF power, mesmo molde) ─────────────────────
+        # ── GRÁFICO 2: Kiviniemi — réplica da Fig.2 do estudo ────────────────
+        # Painel (a): HF power (barras) + referência 10d (linha espessa)
+        # Painel (b): prescrição no eixo Y = High / Low / Rest (como Fig.2b/2d)
         if _tem_hf_h:
-            _fig_k = go.Figure()
-            _fig_k.add_trace(go.Scatter(x=_df_p['Data'], y=_df_p['hf_ref'], mode='lines',
-                line=dict(color='rgba(231,76,60,0.5)', width=1, dash='dash'),
-                name='Ref 10d (mean−1SD)',
-                hovertemplate='Ref: %{y:.4f}<extra></extra>'))
-            _fig_k.add_trace(go.Scatter(x=_df_p['Data'], y=_df_p['hf_metric'], mode='lines',
-                line=dict(color='rgba(44,62,80,0.30)', width=1.5),
-                showlegend=False, hoverinfo='skip'))
+            from plotly.subplots import make_subplots as _msp_k
+            _fig_k = _msp_k(rows=2, cols=1, shared_xaxes=True,
+                            row_heights=[0.60, 0.40], vertical_spacing=0.08,
+                            subplot_titles=[
+                                'HF ln power vs referência 10d (mean − 1·SD)',
+                                'Exercise prescription'])
+
+            # ── Painel (a): HF power em BARRAS, coloridas pela prescrição ─────
             for _pg, _cg in _COR.items():
                 _sk2 = _df_p[_df_p['prescricao_k'] == _pg]
                 if len(_sk2) > 0:
-                    _fig_k.add_trace(go.Scatter(x=_sk2['Data'], y=_sk2['hf_metric'], mode='markers',
-                        name=_LBL[_pg], marker=dict(color=_cg, size=9, symbol='diamond',
-                        line=dict(width=1.3, color='white')), customdata=_sk2['hf_sinal'],
-                        hovertemplate='%{x|%d/%m}<br>HF: %{y:.4f}<br>%{customdata}<extra></extra>'))
+                    _fig_k.add_trace(go.Bar(
+                        x=_sk2['Data'], y=_sk2['hf_metric'],
+                        name=_LBL[_pg], marker=dict(color=_cg, line=dict(width=0)),
+                        customdata=_sk2['hf_sinal'],
+                        hovertemplate='%{x|%d/%m}<br>HF: %{y:.4f}<br>%{customdata}<extra></extra>'),
+                        row=1, col=1)
+            # Referência 10d — linha ESPESSA (não pontilhada fina)
+            _fig_k.add_trace(go.Scatter(
+                x=_df_p['Data'], y=_df_p['hf_ref'], mode='lines',
+                line=dict(color='#c0392b', width=3),
+                name='Ref 10d (mean−1SD)',
+                hovertemplate='Ref: %{y:.4f}<extra></extra>'),
+                row=1, col=1)
+
+            # ── Painel (b): prescrição no eixo Y (High=2, Low=1, Rest=0) ──────
+            _pres_num = {'REST': 0, 'LOW': 1, 'HIGH': 2}
+            _dfp_k = _df_p.copy()
+            _dfp_k['_pres_y'] = _dfp_k['prescricao_k'].map(_pres_num)
+            # linha em degraus ligando as prescrições
+            _fig_k.add_trace(go.Scatter(
+                x=_dfp_k['Data'], y=_dfp_k['_pres_y'], mode='lines',
+                line=dict(color='rgba(120,120,120,0.5)', width=1.5, shape='hv'),
+                showlegend=False, hoverinfo='skip'), row=2, col=1)
+            # marcadores coloridos por estado
+            for _pg, _cg in _COR.items():
+                _sk3 = _dfp_k[_dfp_k['prescricao_k'] == _pg]
+                if len(_sk3) > 0:
+                    _fig_k.add_trace(go.Scatter(
+                        x=_sk3['Data'], y=_sk3['_pres_y'], mode='markers',
+                        name=_LBL[_pg], marker=dict(color=_cg, size=11,
+                        symbol='square', line=dict(width=1.3, color='white')),
+                        showlegend=False,
+                        hovertemplate='%{x|%d/%m}<br>' + _pg + '<extra></extra>'),
+                        row=2, col=1)
+
             _fig_k.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                font=dict(size=11), height=340, hovermode='x unified',
-                margin=dict(t=50, b=50, l=60, r=130),
-                legend=dict(orientation='h', y=-0.20, font=dict(size=10)),
-                title=dict(text='Kiviniemi — HF power vs referência 10d (mean−1·SD)', font=dict(size=13)),
-                xaxis=dict(showgrid=True, gridcolor='rgba(128,128,128,0.2)'),
-                yaxis=dict(title='HF power', showgrid=True, gridcolor='rgba(128,128,128,0.2)'))
+                font=dict(size=11), height=480, hovermode='x unified',
+                margin=dict(t=50, b=50, l=60, r=130), bargap=0.15,
+                legend=dict(orientation='h', y=-0.16, font=dict(size=10)),
+                title=dict(text='Kiviniemi (2007) — réplica Fig.2', font=dict(size=13)))
+            _fig_k.update_xaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+            _fig_k.update_yaxes(title_text='HF ln power', row=1, col=1,
+                                showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+            # Eixo Y do painel (b): rótulos High/Low/Rest
+            _fig_k.update_yaxes(
+                row=2, col=1, tickmode='array', tickvals=[0, 1, 2],
+                ticktext=['🔴 Rest', '🔵 Low', '🟢 High'],
+                range=[-0.5, 2.5], showgrid=True, gridcolor='rgba(128,128,128,0.2)')
             st.plotly_chart(_fig_k, use_container_width=True, config={'displayModeBar': False, 'responsive': True}, key="rec_kiv_chart")
         else:
             st.info("Gráfico Kiviniemi indisponível: sem dados suficientes de HF Power.")
