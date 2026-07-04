@@ -119,11 +119,12 @@ def preproc_wellness(df):
     df = df.drop_duplicates(subset=['Data'], keep='first')
     # [1] Remover picos Z-score
     for c in [c for c in ['hrv', 'rhr', 'sleep_hours', 'sleep_quality',
-                           'stress', 'fatiga', 'humor', 'soreness', 'peso', 'fat']
+                           'stress', 'fatiga', 'humor', 'soreness', 'peso', 'fat',
+                           'hf_power']
               if c in df.columns]:
         df[c] = remove_zscore(df[c], 3.0)
     # [2] Zeros inválidos → NaN
-    df = remove_zeros(df, ['hrv', 'rhr', 'sleep_hours'])
+    df = remove_zeros(df, ['hrv', 'rhr', 'sleep_hours', 'hf_power'])
     # [3] Preencher faltantes com lookback (sem data leakage)
     for c in [c for c in ['hrv', 'rhr', 'sleep_quality', 'fatiga',
                            'stress', 'humor', 'soreness']
