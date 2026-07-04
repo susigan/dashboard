@@ -315,49 +315,164 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
         df_hg_raw['desvio_dp_raw'] = (df_hg_raw['RMSSD'] - df_hg_raw['bm_raw']) / df_hg_raw['bs_raw'].replace(0, np.nan)
         df_hg_raw['intens_raw'] = df_hg_raw.apply(lambda r: ('Sem medição ⭐' if pd.isna(r['RMSSD']) else 'HIIT' if pd.notna(r['bm_raw']) and (r['bm_raw'] - 0.5*r['bs_raw']) <= r['RMSSD'] <= (r['bm_raw'] + 0.5*r['bs_raw']) else ('Recuperação' if pd.notna(r['bm_raw']) else 'Sem dados')), axis=1)
 
-        df_p = df_hg.tail(n_hg).copy()
-        COR_MAP = {'HIIT': '#27ae60', 'Recuperação': '#f39c12', 'Sem dados': '#95a5a6', 'Sem medição ⭐': '#cccccc'}
-        _fig_hg = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.65, 0.35], vertical_spacing=0.06, subplot_titles=[f'LnrMSSD — Baseline {dias_fam}d ± 0.5 DP', 'Desvio do Baseline (unidades de DP) — Range ±5'])
-        for intensidade, cor in COR_MAP.items():
-            df_i = df_p[df_p['intens'] == intensidade]
-            if len(df_i) == 0: continue
-            if intensidade == 'Sem medição ⭐':
-                y_vals = df_i['bm'].fillna(df_i['LnrMSSD'].mean())
-                _fig_hg.add_trace(go.Scatter(x=df_i['Data'], y=y_vals, mode='markers', name='Sem medição ⭐', marker=dict(color='#aaaaaa', size=14, symbol='star', line=dict(width=1.5, color='white')), hovertemplate='<b>⭐ Sem medição HRV</b><br>%{x|%d/%m/%Y}<br>Prescrição: Recuperação (por precaução)<extra></extra>'), row=1, col=1)
-            else:
-                _fig_hg.add_trace(go.Scatter(x=df_i['Data'], y=df_i['LnrMSSD'], mode='markers', name=intensidade, marker=dict(color=cor, size=10, line=dict(width=1.5, color='white')), hovertemplate=f'<b>{intensidade}</b><br>%{{x|%d/%m}}: %{{y:.3f}}<extra></extra>'), row=1, col=1)
-        _fig_hg.add_trace(go.Scatter(x=df_p['Data'], y=df_p['lsup'], line=dict(color='rgba(39,174,96,0.4)', width=1), showlegend=False, hoverinfo='skip'), row=1, col=1)
-        _fig_hg.add_trace(go.Scatter(x=df_p['Data'], y=df_p['linf'], fill='tonexty', fillcolor='rgba(39,174,96,0.12)', line=dict(color='rgba(39,174,96,0.4)', width=1), name='Zona HIIT (±0.5 DP)', hoverinfo='skip'), row=1, col=1)
-        _fig_hg.add_trace(go.Scatter(x=df_p['Data'], y=df_p['bm'], name=f'Baseline {dias_fam}d', line=dict(color='#2c3e50', width=2, dash='dash'), hovertemplate='Baseline: %{y:.3f}<extra></extra>'), row=1, col=1)
-        _fig_hg.add_hrect(y0=-0.5, y1=0.5, fillcolor='rgba(39,174,96,0.20)', line_width=0, row=2, col=1, annotation_text="Zona HIIT", annotation_position="left")
-        _fig_hg.add_hrect(y0=-5, y1=-0.5, fillcolor='rgba(243,156,18,0.10)', line_width=0, row=2, col=1)
-        _fig_hg.add_hrect(y0=0.5, y1=5, fillcolor='rgba(243,156,18,0.10)', line_width=0, row=2, col=1)
-        _fig_hg.add_hline(y=0, line_dash='solid', line_color='#27ae60', line_width=1.5, row=2, col=1)
-        _fig_hg.add_hline(y=0.5, line_dash='dot', line_color='#f39c12', line_width=1, row=2, col=1)
-        _fig_hg.add_hline(y=-0.5, line_dash='dot', line_color='#f39c12', line_width=1, row=2, col=1)
-        for intensidade, cor in COR_MAP.items():
-            df_i = df_p[df_p['intens'] == intensidade]
-            if len(df_i) == 0: continue
-            _fig_hg.add_trace(go.Scatter(x=df_i['Data'], y=df_i['desvio_dp'], mode='markers', name=intensidade, showlegend=False, marker=dict(color=cor, size=7, opacity=0.8, line=dict(width=1, color='white')), hovertemplate=f'%{{x|%d/%m}}: %{{y:.2f}} DP<extra></extra>'), row=2, col=1)
-        _fig_hg.add_trace(go.Scatter(x=df_p['Data'], y=df_p['desvio_dp'], mode='lines', line=dict(color='#7f8c8d', width=1, dash='dot'), showlegend=False, hoverinfo='skip'), row=2, col=1)
-        _fig_hg.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(size=11), height=520, hovermode='x unified', margin=dict(t=60, b=70, l=60, r=40), legend=dict(orientation='h', y=-0.18, font=dict(size=10), bgcolor='rgba(0,0,0,0)'))
-        _fig_hg.update_xaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)', tickfont=dict())
-        _fig_hg.update_yaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)', tickfont=dict(), row=1, col=1, title_text='LnRMSSD')
-        _fig_hg.update_yaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)', tickfont=dict(), row=2, col=1, title_text='Desvio (DP)', range=[-5, 5], zeroline=True, zerolinecolor='#27ae60', zerolinewidth=1.5)
-        st.plotly_chart(_fig_hg, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, key="rec_hg_chart")
+        # ════════════════════════════════════════════════════════════════════
+        # MÁQUINA DE ESTADOS — Javaloyes (LnRMSSD 7d) + Kiviniemi (HF power 10d)
+        # Substitui a classificação estática. df_hg['intens'] mantém-se calculado
+        # acima (usado pelas Análises 1/slope/correlações downstream).
+        # ════════════════════════════════════════════════════════════════════
+        # Baseline SWC (Javaloyes): últimos 28 dias reais, mean ± 0.5·SD
+        _ln_real_h = df_hg[~df_hg['sem_medicao']]['LnrMSSD'].dropna()
+        _lnb_h = _ln_real_h.tail(28) if len(_ln_real_h) >= 7 else _ln_real_h
+        _swc_m_h = float(_lnb_h.mean()); _swc_s_h = float(_lnb_h.std())
+        _swc_sup_h = _swc_m_h + 0.5 * _swc_s_h
+        _swc_inf_h = _swc_m_h - 0.5 * _swc_s_h
+        df_hg['ln7'] = df_hg['LnrMSSD'].rolling(7, min_periods=4).mean()
 
-        df_val = df_hg[df_hg['bm'].notna()]
-        if len(df_val) > 0:
-            hiit_n = (df_val['intens'] == 'HIIT').sum(); rec_n = (df_val['intens'] == 'Recuperação').sum(); total_n = len(df_val)
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Dias HIIT", f"{hiit_n} ({hiit_n/total_n*100:.0f}%)")
-            m2.metric("Dias Recuperação", f"{rec_n} ({rec_n/total_n*100:.0f}%)")
-            _ultimo_hg = df_val.iloc[-1]; _data_ultimo = _ultimo_hg['Data']
-            _data_hoje = pd.Timestamp('today').normalize(); _dias_sem = (_data_hoje - _data_ultimo).days if pd.notna(_data_ultimo) else 999
-            if _ultimo_hg['intens'] == 'Sem medição ⭐' or _dias_sem > 0: _pres_hoje = f'⭐ Sem medição ({_dias_sem}d) — Recuperação'
-            elif _ultimo_hg['intens'] == 'HIIT': _pres_hoje = '✅ HIIT'
-            else: _pres_hoje = '🟠 Recuperação'
-            m3.metric("Prescrição HOJE", _pres_hoje)
+        _LBL = {'HIGH': '🟢 HIGH', 'LOW': '🔵 LOW', 'REST': '🔴 REST'}
+        _COR = {'HIGH': '#27ae60', 'LOW': '#3498db', 'REST': '#e74c3c'}
+
+        # Máquina de estados fiel à Fig.1 (Kiviniemi/Javaloyes), sinal pela banda
+        def _state_machine(vals, sig_fn):
+            pres = []; sig = []; estado = 'START'; ch = 0; cr = 0
+            prev = np.nan; prev2 = np.nan
+            for i, v in enumerate(vals):
+                s = sig_fn(i, v, prev, prev2)
+                if pd.isna(v) or s == '·':
+                    p = 'LOW'; estado = 'LOW'; ch = 0; cr = 0
+                elif estado == 'START':
+                    p = 'LOW'; estado = 'LOW'; ch = 0; cr = 0
+                elif estado == 'HIGH':
+                    if s.endswith('+'):
+                        if ch >= 2: p = 'LOW'; estado = 'LOW'; ch = 0
+                        else: p = 'HIGH'; estado = 'HIGH'; ch += 1
+                    else: p = 'LOW'; estado = 'LOW'; ch = 0
+                    cr = 0
+                elif estado == 'LOW':
+                    if s.endswith('+'): p = 'HIGH'; estado = 'HIGH'; ch = 1; cr = 0
+                    else: p = 'REST'; estado = 'REST'; cr = 1
+                elif estado == 'REST':
+                    if cr >= 2: p = 'LOW'; estado = 'LOW'; cr = 0
+                    elif s.endswith('+'): p = 'LOW'; estado = 'LOW'; cr = 0
+                    else: p = 'REST'; estado = 'REST'; cr += 1
+                    ch = 0
+                else:
+                    p = 'LOW'; estado = 'LOW'
+                pres.append(p); sig.append(s)
+                if pd.notna(v): prev2 = prev; prev = v
+            return pres, sig
+
+        # Javaloyes: sinal pela banda (ln7 dentro/acima vs abaixo)
+        def _sig_jav(i, v, p, p2):
+            if pd.isna(v): return '·'
+            return 'HRV+' if v >= _swc_inf_h else 'HRV−'
+        _pj_h, _sj_h = _state_machine(df_hg['ln7'].tolist(), _sig_jav)
+        df_hg['prescricao'] = _pj_h; df_hg['hrv_sinal'] = _sj_h
+
+        # Kiviniemi: HF power, referência 10d (mean − 1·SD) + tendência 2 dias
+        _tem_hf_h = ('hf_power' in df_hg.columns and
+                     df_hg['hf_power'].notna().sum() >= 5)
+        if _tem_hf_h:
+            _hf_h = pd.to_numeric(df_hg['hf_power'], errors='coerce').replace(0, np.nan)
+            _med_h = _hf_h.median()
+            df_hg['hf_metric'] = (np.log(_hf_h.where(_hf_h > 0))
+                                  if _med_h > 10 else _hf_h)
+            df_hg['hf_mean10'] = df_hg['hf_metric'].rolling(10, min_periods=5).mean()
+            df_hg['hf_sd10'] = df_hg['hf_metric'].rolling(10, min_periods=5).std()
+            df_hg['hf_ref'] = df_hg['hf_mean10'] - 1.0 * df_hg['hf_sd10']
+            _refs_h = df_hg['hf_ref'].tolist()
+            def _sig_kiv(i, v, p, p2):
+                ref = _refs_h[i]
+                if pd.isna(v) or pd.isna(ref): return '·'
+                below = v < ref
+                trend = (pd.notna(p) and pd.notna(p2)
+                         and (p2 - p) > 0.1 and (p - v) > 0.1)
+                return 'HF−' if (below or trend) else 'HF+'
+            _pk_h, _sk_h = _state_machine(df_hg['hf_metric'].tolist(), _sig_kiv)
+            df_hg['prescricao_k'] = _pk_h; df_hg['hf_sinal'] = _sk_h
+
+        _df_p = df_hg.tail(n_hg).copy()
+
+        # ── GRÁFICO 1: Javaloyes (máquina de estados) ────────────────────────
+        _fig_hg = go.Figure()
+        _fig_hg.add_hrect(y0=_swc_inf_h, y1=_swc_sup_h, fillcolor='rgba(39,174,96,0.08)',
+                          line_width=0, annotation_text="Banda SWC (±0.5·SD)",
+                          annotation_position="right", annotation_font_size=9,
+                          annotation_font_color='#27ae60')
+        _fig_hg.add_hline(y=_swc_sup_h, line_dash='dash', line_color='rgba(39,174,96,0.5)', line_width=1)
+        _fig_hg.add_hline(y=_swc_inf_h, line_dash='dash', line_color='rgba(231,76,60,0.5)', line_width=1)
+        _fig_hg.add_trace(go.Scatter(x=_df_p['Data'], y=_df_p['ln7'], mode='lines',
+                          line=dict(color='rgba(44,62,80,0.30)', width=1.5),
+                          showlegend=False, hoverinfo='skip'))
+        for _pg, _cg in _COR.items():
+            _sg = _df_p[_df_p['prescricao'] == _pg]
+            if len(_sg) > 0:
+                _fig_hg.add_trace(go.Scatter(x=_sg['Data'], y=_sg['ln7'], mode='markers',
+                    name=_LBL[_pg], marker=dict(color=_cg, size=9, line=dict(width=1.3, color='white')),
+                    customdata=_sg['hrv_sinal'],
+                    hovertemplate='%{x|%d/%m}<br>LnRMSSD₇: %{y:.3f}<br>%{customdata}<extra></extra>'))
+        _fig_hg.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+            font=dict(size=11), height=340, hovermode='x unified',
+            margin=dict(t=50, b=50, l=60, r=130),
+            legend=dict(orientation='h', y=-0.20, font=dict(size=10)),
+            title=dict(text='Javaloyes — LnRMSSD₇ vs banda SWC (máquina de estados)', font=dict(size=13)),
+            xaxis=dict(showgrid=True, gridcolor='rgba(128,128,128,0.2)'),
+            yaxis=dict(title='LnRMSSD₇', showgrid=True, gridcolor='rgba(128,128,128,0.2)'))
+        st.plotly_chart(_fig_hg, use_container_width=True, config={'displayModeBar': False, 'responsive': True}, key="rec_hg_chart")
+
+        # ── GRÁFICO 2: Kiviniemi (HF power, mesmo molde) ─────────────────────
+        if _tem_hf_h:
+            _fig_k = go.Figure()
+            _fig_k.add_trace(go.Scatter(x=_df_p['Data'], y=_df_p['hf_ref'], mode='lines',
+                line=dict(color='rgba(231,76,60,0.5)', width=1, dash='dash'),
+                name='Ref 10d (mean−1SD)',
+                hovertemplate='Ref: %{y:.4f}<extra></extra>'))
+            _fig_k.add_trace(go.Scatter(x=_df_p['Data'], y=_df_p['hf_metric'], mode='lines',
+                line=dict(color='rgba(44,62,80,0.30)', width=1.5),
+                showlegend=False, hoverinfo='skip'))
+            for _pg, _cg in _COR.items():
+                _sk2 = _df_p[_df_p['prescricao_k'] == _pg]
+                if len(_sk2) > 0:
+                    _fig_k.add_trace(go.Scatter(x=_sk2['Data'], y=_sk2['hf_metric'], mode='markers',
+                        name=_LBL[_pg], marker=dict(color=_cg, size=9, symbol='diamond',
+                        line=dict(width=1.3, color='white')), customdata=_sk2['hf_sinal'],
+                        hovertemplate='%{x|%d/%m}<br>HF: %{y:.4f}<br>%{customdata}<extra></extra>'))
+            _fig_k.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                font=dict(size=11), height=340, hovermode='x unified',
+                margin=dict(t=50, b=50, l=60, r=130),
+                legend=dict(orientation='h', y=-0.20, font=dict(size=10)),
+                title=dict(text='Kiviniemi — HF power vs referência 10d (mean−1·SD)', font=dict(size=13)),
+                xaxis=dict(showgrid=True, gridcolor='rgba(128,128,128,0.2)'),
+                yaxis=dict(title='HF power', showgrid=True, gridcolor='rgba(128,128,128,0.2)'))
+            st.plotly_chart(_fig_k, use_container_width=True, config={'displayModeBar': False, 'responsive': True}, key="rec_kiv_chart")
+        else:
+            st.info("Gráfico Kiviniemi indisponível: sem dados suficientes de HF Power.")
+
+        # ── TABELA DE COMPARAÇÃO (data · ln7 · Javaloyes · HF · Kiviniemi · =) ─
+        _cmp_rows = []
+        for _, r in _df_p.iterrows():
+            _jav = _LBL.get(r.get('prescricao'), '—')
+            _kiv = _LBL.get(r.get('prescricao_k'), '—') if _tem_hf_h else '—'
+            _eq = '✓' if (_tem_hf_h and r.get('prescricao') == r.get('prescricao_k')) else ('✗' if _tem_hf_h else '—')
+            _cmp_rows.append({
+                'Data': r['Data'].strftime('%d/%m'),
+                'LnRMSSD₇': f"{r['ln7']:.3f}" if pd.notna(r.get('ln7')) else '—',
+                'Javaloyes': _jav,
+                'HF métrica': f"{r['hf_metric']:.3f}" if (_tem_hf_h and pd.notna(r.get('hf_metric'))) else '—',
+                'Kiviniemi': _kiv,
+                '=?': _eq,
+            })
+        if _cmp_rows:
+            st.dataframe(pd.DataFrame(_cmp_rows), hide_index=True, use_container_width=True)
+            if _tem_hf_h:
+                _cval = df_hg[df_hg['ln7'].notna() & df_hg['hf_metric'].notna()]
+                if len(_cval) > 0:
+                    _cc = int((_cval['prescricao'] == _cval['prescricao_k']).sum())
+                    st.caption(
+                        f"**Javaloyes:** LnRMSSD 7d, banda mean±0.5·SD [{_swc_inf_h:.3f}, {_swc_sup_h:.3f}]. "
+                        f"**Kiviniemi:** HF power, ref 10d mean−1·SD. Concordância: "
+                        f"{_cc}/{len(_cval)} dias ({_cc/len(_cval)*100:.0f}%). "
+                        "Ambos: máquina de estados START→LOW; HIGH↔LOW; LOW+sinal− → REST; máx 2 HIGH/2 REST.")
+
 
         # ════════════════════════════════════════════════════════════════════════
         # ANÁLISE 1: HIIT LnRMSSD vs Recovery Modes
@@ -545,475 +660,93 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
                     st.dataframe(df_hist_seq[['Data Fim', 'zona', 'dias']].rename(columns={'zona': 'Zona', 'dias': 'Duração (dias)'}), use_container_width=True, hide_index=True)
         else: st.info(f"Dados insuficientes ({len(slope_series)} dias, mínimo 20) para análise individualizada.")
 
-        # ════════════════════════════════════════════════════════════════════════
-        # ANÁLISE 2: Javaloyes et al. — SEM SLIDERS AQUI
-        # ════════════════════════════════════════════════════════════════════════
+        # ════════════════════════════════════════════════════════════════
+        # CORRELAÇÃO: Slope 7d Estados vs HRV-Guided (HIIT / Recuperação)
+        # ════════════════════════════════════════════════════════════════
         st.markdown("---")
-        st.subheader("📊 Análise 2: HRV-Guided Protocol — Javaloyes et al.")
-        st.caption("Protocolo publicado: Javaloyes A et al. (2018/2020), modificação do esquema de Kiviniemi et al. (2007). LnRMSSD rolling 7 dias vs SWC (mean ± 0.5×SD do baseline). HIGH permitido quando ln7 está ACIMA ou DENTRO da banda SWC; LOW/REST apenas quando ln7 cai ABAIXO do limite inferior. Máx 2 HIGH consecutivos → força LOW. Máx 2 REST consecutivos → força LOW.")
-        with st.expander("📖 Metodologia — como funciona", expanded=False):
-            st.markdown("""**Protocolo Javaloyes et al. 2018/2020 (mod. Kiviniemi 2007)**
-
-1. **Métrica**: LnRMSSD rolling 7 dias (`ln7`)
-2. **Banda SWC**: mean ± 0.5 × SD (últimos 28 dias reais)
-3. **Sinal HRV+/HRV−** (do diagrama de decisão Kiviniemi):
-   - **HRV+** = `ln7` igual ou superior ao dia anterior (subiu ou não mudou)
-   - **HRV−** = `ln7` desceu vs dia anterior
-4. **Decisão (regra publicada — "above OR within SWC → HIGH")**:
-   - `ln7` **DENTRO ou ACIMA** da banda → **HIGH** permitido
-   - `ln7` **ABAIXO** do limite inferior → **LOW** (se HRV+, a recuperar) ou **REST** (se HRV−, ainda a cair)
-5. **Restrições de sequência**:
-   - Máx **2 HIGH** consecutivos → força **LOW** no 3.º dia
-   - Máx **2 REST** consecutivos → força **LOW** no 3.º dia
-
-> ⚠️ **Correcção importante:** a versão anterior prescrevia LOW sempre que `ln7` estava dentro da banda, o que prendia o atleta em LOW/REST durante meses. A literatura (Javaloyes 2019/2020; Kiviniemi 2007; Frontiers 2025; MDPI 2020) é explícita: *"High-intensity sessions were prescribed when HRV was above **or within** the SWC"*. Estar dentro da banda é o estado recuperado — é exactamente quando se deve fazer HIIT.""")
-
-        # ── Javaloyes: sempre usa wc_full (histórico completo, ignora sidebar) ──
-        # O SWC e o gráfico NÃO devem mudar com o filtro de período global.
-        # Apenas as correlações no final usam df_hg (que respeita o sidebar).
-        _wc_j_src = (wc_full.copy() if (wc_full is not None and len(wc_full) > 0)
-                     else dw.copy())
-        _wc_j_src['Data'] = pd.to_datetime(_wc_j_src['Data']).dt.normalize()
-        _wc_j_src = _wc_j_src.sort_values('Data').reset_index(drop=True)
-        # Reindex para calendário completo (igual ao df_hg) para manter sem_medicao
-        _wc_j_src = _wc_j_src.set_index('Data')
-        _wc_j_dr  = pd.date_range(_wc_j_src.index.min(), _wc_j_src.index.max(), freq='D')
-        _wc_j_src = _wc_j_src.reindex(_wc_j_dr)
-        _wc_j_src.index.name = 'Data'
-        _wc_j_src = _wc_j_src.reset_index()
-        _wc_j_src['LnrMSSD'] = np.where(
-            _wc_j_src['hrv'].notna() & (_wc_j_src['hrv'] > 0),
-            np.log(_wc_j_src['hrv']), np.nan
+        st.markdown("**📈 Correlação: Estados do Slope 7d vs HRV-Guided**")
+        st.caption(
+            "Que estados do slope individualizado ocorrem mais em dias de HIIT "
+            "vs dias de Recuperação/LOW? Correlação de Pearson (rolling 14d)."
         )
-        _wc_j_src['sem_medicao'] = _wc_j_src['LnrMSSD'].isna()
-        _wc_j = _wc_j_src.copy()
-        _wc_j['Data'] = pd.to_datetime(_wc_j['Data']).dt.normalize()
+        try:
+            _slope_zonas = [
+                'Supercompensação', 'Recuperação', 'Estável',
+                'Declínio Leve', 'Fadiga', 'NFOR Crítico'
+            ]
+            _df_sl_corr = df_corr[['Data', 'zona_slope', 'intens']].copy()
+            _df_sl_corr = _df_sl_corr[_df_sl_corr['intens'].isin(['HIIT', 'Recuperação'])].copy()
+            _df_sl_corr['hiit_bin'] = (_df_sl_corr['intens'] == 'HIIT').astype(int)
+            for _sz in _slope_zonas:
+                _df_sl_corr[f'slope_{_sz}'] = (_df_sl_corr['zona_slope'] == _sz).astype(int)
 
-        if _wc_j['LnrMSSD'].notna().sum() < 14:
-            st.info("Dados insuficientes para o protocolo Javaloyes (mínimo 14 dias).")
-        else:
-            _wc_j['ln7'] = _wc_j['LnrMSSD'].rolling(7, min_periods=4).mean()
+            _df_sl_corr = _df_sl_corr.sort_values('Data')
+            _df_sl_corr['hiit_r14'] = _df_sl_corr['hiit_bin'].rolling(14, min_periods=7).mean()
+            for _sz in _slope_zonas:
+                _df_sl_corr[f'slope_{_sz}_r14'] = _df_sl_corr[f'slope_{_sz}'].rolling(14, min_periods=7).mean()
 
-            # Aviso apenas se hoje não tem medição
-            _hoje_ts = pd.Timestamp.now().normalize()
-            _ultima_med_jav = _wc_j[_wc_j['LnrMSSD'].notna()]['Data'].max()
-            _dias_sem_hoje = int((_hoje_ts - _ultima_med_jav).days) if pd.notna(_ultima_med_jav) else 999
-            if _dias_sem_hoje >= 1:
-                st.warning(f"⚠️ Última medição HRV há {_dias_sem_hoje} dia(s). LnRMSSD₇ de hoje é estimado.")
+            from scipy import stats as _sst_sl
+            _sl_results = []
+            for _sz in _slope_zonas:
+                _vd = _df_sl_corr[['hiit_r14', f'slope_{_sz}_r14']].dropna()
+                if len(_vd) >= 10:
+                    _r_sl, _p_sl = _sst_sl.pearsonr(_vd['hiit_r14'], _vd[f'slope_{_sz}_r14'])
+                    _sl_results.append({
+                        'Estado Slope': _sz,
+                        'r': _r_sl,
+                        'p': _p_sl,
+                        'Sig.': '✅' if _p_sl < 0.05 else '—',
+                        'N': len(_vd),
+                    })
 
-            # ── SWC: últimos 28 dias COM medição real (rolling, Javaloyes 2020) ──
-            # O paper usa "baseline weeks" como calibração contínua.
-            # Numa implementação com histórico multi-ano, os primeiros 28 dias
-            # são de anos atrás com HRV completamente diferente → SWC inválido.
-            # Correcto: usar os ÚLTIMOS 28 dias reais como janela de referência
-            # — é o mesmo princípio do rolling 28d que já usamos no Modelo β.
-            _ln_real  = _wc_j[~_wc_j['sem_medicao']]['LnrMSSD'].dropna() if 'sem_medicao' in _wc_j.columns else _wc_j['LnrMSSD'].dropna()
-            _ln_base  = _ln_real.tail(28) if len(_ln_real) >= 7 else _ln_real
-            _swc_mean = float(_ln_base.mean())
-            _swc_sd   = float(_ln_base.std())
-            _swc_sup  = _swc_mean + 0.5 * _swc_sd
-            _swc_inf  = _swc_mean - 0.5 * _swc_sd
+            if _sl_results:
+                _df_sl_res = pd.DataFrame(_sl_results).sort_values('r', ascending=False)
+                _hiit_assoc = _df_sl_res[_df_sl_res['r'] > 0].copy()
+                _rec_assoc  = _df_sl_res[_df_sl_res['r'] <= 0].copy()
+                _rec_assoc['r'] = _rec_assoc['r'].abs()
 
-            # ════════════════════════════════════════════════════════════════
-            # MÁQUINA DE ESTADOS — fiel à Figura 1 de Kiviniemi (2007)
-            # e ao esquema de decisão de Javaloyes (2020, Figura 2)
-            # ════════════════════════════════════════════════════════════════
-            # Sinal HRV+/HRV− definido pela BANDA (fiel aos papers):
-            #   Javaloyes (2020): "When LnRMSSD7day-roll-avg fell outside the SWC,
-            #     training intensity changed from high-intensity to low/rest";
-            #     "high-intensity only when [...] remained inside SWC limits".
-            #   Kiviniemi (2007), legenda Fig.1: "HRV+ = increased or not changed;
-            #     HRV− = decreased HRV", com referência = 10-day mean − SD.
-            #   → HRV+ = ln7 DENTRO/ACIMA da banda (≥ limite inferior)
-            #     HRV− = ln7 ABAIXO do limite inferior
-            #
-            # Nós da Figura 1 (Kiviniemi) — transições exactas:
-            #   Start → Low (dia 1)
-            #   High:            HRV+ → High (fica); HRV− → Low
-            #                    (após 2 High consecutivos → força Low)
-            #   Low (de High↓):  HRV+ → High;  HRV− → Rest
-            #   Low (de HIIT):   HRV+ → High;  HRV− → Rest   (mesma regra de saída)
-            #   Rest (1º):       HRV+ → Low;   HRV− → Rest (2º)
-            #   Rest (2º):       HRV+/− → Low  (máx 2 rest consecutivos)
-            # Estado interno: nó actual + contadores de consecutivos.
-            _prescricoes = []; _razoes = []; _sinais_hrv = []
-            _estado = 'START'          # START | HIGH | LOW | REST
-            _consec_high = 0; _consec_rest = 0
-            for _, row in _wc_j.iterrows():
-                ln7 = row['ln7']
+                _col_hiit, _col_rec = st.columns(2)
 
-                # Sinal pela BANDA (fiel ao paper): dentro/acima vs abaixo
-                if pd.isna(ln7):
-                    _hrv_sig = '·'
-                elif ln7 >= _swc_inf:
-                    _hrv_sig = 'HRV+'   # dentro ou acima da banda
-                else:
-                    _hrv_sig = 'HRV−'   # abaixo do limite inferior
-
-                if pd.isna(ln7):
-                    _pres = 'LOW'; _razao = 'sem dados'
-                    _estado = 'LOW'; _consec_high = 0; _consec_rest = 0
-
-                elif _estado == 'START':
-                    # Início do bloco → Low (dia 1), depois sobe se HRV+
-                    _pres = 'LOW'; _razao = 'Início do bloco (dia 1)'
-                    _estado = 'LOW'; _consec_high = 0; _consec_rest = 0
-
-                elif _estado == 'HIGH':
-                    if _hrv_sig == 'HRV+':
-                        if _consec_high >= 2:
-                            _pres = 'LOW'
-                            _razao = 'HIGH→LOW (máx 2 HIGH consec.)'
-                            _estado = 'LOW'; _consec_high = 0
-                        else:
-                            _pres = 'HIGH'
-                            _razao = ('Acima SWC sup' if ln7 > _swc_sup
-                                      else 'Dentro/acima banda → HIGH')
-                            _estado = 'HIGH'; _consec_high += 1
-                    else:  # HRV− → cai para LOW
-                        _pres = 'LOW'; _razao = 'HIGH + HRV− (abaixo banda) → LOW'
-                        _estado = 'LOW'; _consec_high = 0
-                    _consec_rest = 0
-
-                elif _estado == 'LOW':
-                    if _hrv_sig == 'HRV+':
-                        # Recuperado (dentro/acima banda) → volta a HIGH
-                        _pres = 'HIGH'
-                        _razao = ('Acima SWC sup' if ln7 > _swc_sup
-                                  else 'LOW→HIGH (recuperado, dentro banda)')
-                        _estado = 'HIGH'; _consec_high = 1
-                    else:  # ainda abaixo da banda → REST
-                        _pres = 'REST'; _razao = 'LOW + HRV− (ainda abaixo) → REST'
-                        _estado = 'REST'; _consec_rest = 1
-                    _consec_rest = _consec_rest if _pres == 'REST' else 0
-
-                elif _estado == 'REST':
-                    if _consec_rest >= 2:
-                        # Máx 2 rest consecutivos → força LOW (indep. do sinal)
-                        _pres = 'LOW'; _razao = 'REST→LOW (máx 2 REST consec.)'
-                        _estado = 'LOW'; _consec_rest = 0
-                    elif _hrv_sig == 'HRV+':
-                        _pres = 'LOW'; _razao = 'REST + HRV+ (recuperado) → LOW'
-                        _estado = 'LOW'; _consec_rest = 0
-                    else:  # continua abaixo → 2.º REST
-                        _pres = 'REST'; _razao = 'REST + HRV− (ainda abaixo) → REST'
-                        _estado = 'REST'; _consec_rest += 1
-                    _consec_high = 0
-
-                else:
-                    _pres = 'LOW'; _razao = 'estado indefinido'
-                    _estado = 'LOW'
-
-                _prescricoes.append(_pres)
-                _razoes.append(_razao)
-                _sinais_hrv.append(_hrv_sig)
-            _wc_j['prescricao'] = _prescricoes
-            _wc_j['razao'] = _razoes
-            _wc_j['hrv_sinal'] = _sinais_hrv
-
-            _COR_MAP = {'HIGH': '#27ae60', 'LOW': '#3498db', 'REST': '#e74c3c'}
-            _LABEL_MAP = {'HIGH': '🟢 HIGH — treino intenso', 'LOW': '🔵 LOW — treino leve', 'REST': '🔴 REST — descanso activo'}
-
-            _wc_j_val = _wc_j[_wc_j['ln7'].notna()]
-            if len(_wc_j_val) > 0:
-                _ult_j = _wc_j_val.iloc[-1]; _pres_hoje = _ult_j['prescricao']
-                _ln7_hoje = _ult_j['ln7']; _sem_hoje = bool(_ult_j.get('sem_medicao', False))
-                _sig_hoje = _ult_j.get('hrv_sinal', '·')
-                _cj1, _cj2, _cj3, _cj4 = st.columns(4)
-                _cj1.metric("LnRMSSD₇ avg", f"{_ln7_hoje:.3f}" + (" ⚠️" if _sem_hoje else ""), delta=_sig_hoje if _sig_hoje != '·' else None, help="Rolling 7 dias. Delta = sinal HRV+/HRV− (direcção vs dia anterior).")
-                _cj2.metric("SWC superior", f"{_swc_sup:.3f}", help=f"mean {_swc_mean:.3f} + 0.5×SD")
-                _cj3.metric("SWC inferior", f"{_swc_inf:.3f}", help=f"mean {_swc_mean:.3f} - 0.5×SD → abaixo daqui = LOW/REST")
-                _cj4.metric("Prescrição HOJE", _LABEL_MAP.get(_pres_hoje, _pres_hoje))
-                _cor_j = _COR_MAP.get(_pres_hoje, '#888')
-                _rj, _gj, _bj = int(_cor_j[1:3],16), int(_cor_j[3:5],16), int(_cor_j[5:7],16)
-                st.markdown(f'<div style="padding:14px 20px;border-radius:8px;margin:8px 0;background:rgba({_rj},{_gj},{_bj},0.10);border-left:5px solid {_cor_j};"><b style="font-size:1.1em;color:{_cor_j};">{_LABEL_MAP.get(_pres_hoje, _pres_hoje)}</b><span style="color:#888;margin-left:12px;font-size:0.9em;">LnRMSSD₇={_ln7_hoje:.3f} | SWC [{_swc_inf:.3f}, {_swc_sup:.3f}] | {_sig_hoje}</span></div>', unsafe_allow_html=True)
-
-            st.caption(f"SWC baseline (últimos 28 dias reais): mean={_swc_mean:.3f} ± 0.5×SD={0.5*_swc_sd:.3f} → banda [{_swc_inf:.3f}, {_swc_sup:.3f}]. Sinal HRV+/HRV− pela BANDA (fiel ao paper): HRV+ = ln7 dentro/acima; HRV− = abaixo do limite inferior. Máquina de estados Fig.1 Kiviniemi: START→LOW; HIGH↔LOW conforme sinal (máx 2 HIGH→LOW); LOW+HRV− → REST; máx 2 REST→LOW.")
-
-            # (gráfico conjunto Javaloyes + Kiviniemi é desenhado mais abaixo,
-            #  depois do cálculo do método Kiviniemi)
-
-            # ════════════════════════════════════════════════════════════════
-            # COMPARAÇÃO: método KIVINIEMI (2007) — HF power, 10d, mean − 1·SD
-            # ════════════════════════════════════════════════════════════════
-            # Fiel ao paper original: métrica = HF power (não RMSSD);
-            # referência = 10-day HF mean − SD (banda de 1 SD, não 0.5);
-            # critério secundário = tendência decrescente > 0.1 ln ms² por 2 dias.
-            # A coluna 'hf_power' vem do wellness (formato ex.: 0.0512, 1.125...).
-            # Mesma máquina de estados Fig.1, mas com o sinal HF-based.
-            st.markdown("---")
-            st.markdown("**⚖️ Comparação: método Kiviniemi (2007) — HF Power**")
-            _tem_hf = ('hf_power' in _wc_j.columns and
-                       _wc_j['hf_power'].notna().sum() >= 10)
-            if not _tem_hf:
-                st.info(
-                    "Método Kiviniemi indisponível: sem dados suficientes de **HF Power** "
-                    "no wellness (coluna 'HF Power'). O Kiviniemi original usa HF power "
-                    "(não RMSSD) com referência 10-dias (mean − 1·SD)."
-                )
-            else:
-                # HF power: aplicar ln (o paper trabalha em ln ms²; valores da sheet
-                # em ms² → ln). Se já vierem em ln (valores pequenos ~0.05-5), usa-se
-                # directamente a métrica tal como está, de forma robusta.
-                _wc_k = _wc_j.copy()
-                _hf = pd.to_numeric(_wc_k['hf_power'], errors='coerce')
-                # Heurística: se a mediana > 10, assume ms² → aplica ln; senão usa cru
-                _hf_ln = np.log(_hf.where(_hf > 0)) if _hf.median() > 10 else _hf
-                _wc_k['hf_metric'] = _hf_ln
-                # Referência rolling 10 dias: mean − 1·SD (fiel ao Kiviniemi)
-                _wc_k['hf_mean10'] = _wc_k['hf_metric'].rolling(10, min_periods=5).mean()
-                _wc_k['hf_sd10']   = _wc_k['hf_metric'].rolling(10, min_periods=5).std()
-                _wc_k['hf_ref']    = _wc_k['hf_mean10'] - 1.0 * _wc_k['hf_sd10']
-
-                # Máquina de estados idêntica (Fig.1), sinal pela referência 10d
-                _pk=[]; _rk=[]; _sk=[]
-                _estado_k='START'; _ch_k=0; _cr_k=0
-                _hf_prev=np.nan; _hf_prev2=np.nan
-                for _, rowk in _wc_k.iterrows():
-                    _hfv = rowk['hf_metric']; _ref = rowk['hf_ref']
-                    # Sinal HF+/HF− pela banda + critério de tendência 2 dias
-                    if pd.isna(_hfv) or pd.isna(_ref):
-                        _sigk='·'
+                with _col_hiit:
+                    st.markdown("**🟢 Associados a HIIT** *(r positivo)*")
+                    if len(_hiit_assoc) > 0:
+                        def _cor_hiit(val):
+                            try:
+                                v = float(val)
+                                if v >= 0.5: return 'background-color:rgba(39,174,96,0.35);font-weight:bold'
+                                if v >= 0.3: return 'background-color:rgba(39,174,96,0.18)'
+                                return ''
+                            except: return ''
+                        st.dataframe(
+                            _hiit_assoc[['Estado Slope','r','Sig.','N']]
+                            .style.map(_cor_hiit, subset=['r'])
+                            .format({'r': '{:+.3f}'}),
+                            use_container_width=True, hide_index=True
+                        )
                     else:
-                        _below = _hfv < _ref
-                        # tendência decrescente 2 dias > 0.1
-                        _trend = (pd.notna(_hf_prev) and pd.notna(_hf_prev2)
-                                  and (_hf_prev2 - _hf_prev) > 0.1
-                                  and (_hf_prev - _hfv) > 0.1)
-                        _sigk = 'HF−' if (_below or _trend) else 'HF+'
-                    # Transições (mesma Fig.1)
-                    if pd.isna(_hfv) or _sigk == '·':
-                        # Sem medição OU sem referência 10d válida ainda →
-                        # LOW neutro (não REST). Não avança a máquina até haver
-                        # baseline; evita REST espúrio nos primeiros ~10 dias.
-                        _p='LOW'; _r='sem ref 10d (baseline a formar)'
-                        _estado_k='LOW'; _ch_k=0; _cr_k=0
-                    elif _estado_k=='START':
-                        _p='LOW'; _r='início'; _estado_k='LOW'; _ch_k=0; _cr_k=0
-                    elif _estado_k=='HIGH':
-                        if _sigk=='HF+':
-                            if _ch_k>=2: _p='LOW'; _r='máx 2 HIGH→LOW'; _estado_k='LOW'; _ch_k=0
-                            else: _p='HIGH'; _r='HF+ → HIGH'; _estado_k='HIGH'; _ch_k+=1
-                        else: _p='LOW'; _r='HF− → LOW'; _estado_k='LOW'; _ch_k=0
-                        _cr_k=0
-                    elif _estado_k=='LOW':
-                        if _sigk=='HF+': _p='HIGH'; _r='LOW→HIGH (HF+)'; _estado_k='HIGH'; _ch_k=1; _cr_k=0
-                        else: _p='REST'; _r='LOW+HF− → REST'; _estado_k='REST'; _cr_k=1
-                    elif _estado_k=='REST':
-                        if _cr_k>=2: _p='LOW'; _r='máx 2 REST→LOW'; _estado_k='LOW'; _cr_k=0
-                        elif _sigk=='HF+': _p='LOW'; _r='REST+HF+ → LOW'; _estado_k='LOW'; _cr_k=0
-                        else: _p='REST'; _r='REST+HF− → REST'; _estado_k='REST'; _cr_k+=1
-                        _ch_k=0
+                        st.info("Nenhum estado positivamente associado a HIIT.")
+
+                with _col_rec:
+                    st.markdown("**🔵 Associados a Recuperação/LOW** *(r negativo → magnitude)*")
+                    if len(_rec_assoc) > 0:
+                        def _cor_rec(val):
+                            try:
+                                v = float(val)
+                                if v >= 0.5: return 'background-color:rgba(52,152,219,0.35);font-weight:bold'
+                                if v >= 0.3: return 'background-color:rgba(52,152,219,0.18)'
+                                return ''
+                            except: return ''
+                        st.dataframe(
+                            _rec_assoc[['Estado Slope','r','Sig.','N']]
+                            .style.map(_cor_rec, subset=['r'])
+                            .format({'r': '{:.3f}'}),
+                            use_container_width=True, hide_index=True
+                        )
                     else:
-                        _p='LOW'; _r='indef'; _estado_k='LOW'
-                    _pk.append(_p); _rk.append(_r); _sk.append(_sigk)
-                    if pd.notna(_hfv):
-                        _hf_prev2=_hf_prev; _hf_prev=_hfv
-                _wc_k['prescricao_k']=_pk; _wc_k['razao_k']=_rk; _wc_k['hf_sinal']=_sk
+                        st.info("Nenhum estado negativamente associado a HIIT.")
 
-                _wc_k_val = _wc_k[_wc_k['hf_metric'].notna()]
-                if len(_wc_k_val) > 0:
-                    _ult_k = _wc_k_val.iloc[-1]
-                    _ck1,_ck2,_ck3,_ck4 = st.columns(4)
-                    _ck1.metric("HF métrica (hoje)", f"{_ult_k['hf_metric']:.3f}",
-                                delta=_ult_k['hf_sinal'] if _ult_k['hf_sinal']!='·' else None)
-                    _ck2.metric("Ref 10d (mean−1SD)", f"{_ult_k['hf_ref']:.3f}",
-                                help="Kiviniemi: abaixo daqui = HF− (reduz intensidade)")
-                    _ck3.metric("Prescrição Kiviniemi", _LABEL_MAP.get(_ult_k['prescricao_k'], _ult_k['prescricao_k']))
-                    # concordância Javaloyes vs Kiviniemi
-                    _cmpjk = _wc_k[_wc_k['ln7'].notna() & _wc_k['hf_metric'].notna()]
-                    if len(_cmpjk) >= 10:
-                        _conc = int((_cmpjk['prescricao']==_cmpjk['prescricao_k']).sum())
-                        _ck4.metric("Concord. Jav↔Kiv", f"{_conc/len(_cmpjk)*100:.0f}%",
-                                    f"{_conc}/{len(_cmpjk)} dias")
-
-                # ── GRÁFICO CONJUNTO Javaloyes + Kiviniemi (sem tabelas) ────────
-                import plotly.graph_objects as _go_jk
-                from plotly.subplots import make_subplots as _msp_jk
-                _dfp = _wc_k.tail(n_hg).copy()
-                _fig_jk = _msp_jk(
-                    rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.10,
-                    subplot_titles=[
-                        'Javaloyes — LnRMSSD₇ vs banda SWC (±0.5·SD)',
-                        'Kiviniemi — HF power vs referência 10d (mean−1·SD)'])
-
-                # Painel 1 — Javaloyes
-                _fig_jk.add_hrect(y0=_swc_inf, y1=_swc_sup, fillcolor='rgba(39,174,96,0.08)',
-                                  line_width=0, row=1, col=1)
-                _fig_jk.add_hline(y=_swc_sup, line_dash='dash', line_color='rgba(39,174,96,0.5)',
-                                  line_width=1, row=1, col=1)
-                _fig_jk.add_hline(y=_swc_inf, line_dash='dash', line_color='rgba(231,76,60,0.5)',
-                                  line_width=1, row=1, col=1)
-                _fig_jk.add_trace(_go_jk.Scatter(
-                    x=_dfp['Data'], y=_dfp['ln7'], mode='lines',
-                    line=dict(color='rgba(44,62,80,0.30)', width=1.5),
-                    showlegend=False, hoverinfo='skip'), row=1, col=1)
-                for _pg, _cg in _COR_MAP.items():
-                    _sg = _dfp[_dfp['prescricao'] == _pg]
-                    if len(_sg) > 0:
-                        _fig_jk.add_trace(_go_jk.Scatter(
-                            x=_sg['Data'], y=_sg['ln7'], mode='markers',
-                            name=f'Jav {_pg}', marker=dict(color=_cg, size=8,
-                            line=dict(width=1.2, color='white')),
-                            legendgroup='jav', customdata=_sg['hrv_sinal'],
-                            hovertemplate='%{x|%d/%m}<br>LnRMSSD₇: %{y:.3f}<br>Jav: '
-                                          + _pg + ' (%{customdata})<extra></extra>'),
-                            row=1, col=1)
-
-                # Painel 2 — Kiviniemi
-                _fig_jk.add_trace(_go_jk.Scatter(
-                    x=_dfp['Data'], y=_dfp['hf_ref'], mode='lines',
-                    line=dict(color='rgba(231,76,60,0.5)', width=1, dash='dash'),
-                    name='Ref 10d (mean−1SD)', legendgroup='kiv_ref',
-                    hovertemplate='Ref: %{y:.4f}<extra></extra>'), row=2, col=1)
-                _fig_jk.add_trace(_go_jk.Scatter(
-                    x=_dfp['Data'], y=_dfp['hf_metric'], mode='lines',
-                    line=dict(color='rgba(44,62,80,0.30)', width=1.5),
-                    showlegend=False, hoverinfo='skip'), row=2, col=1)
-                for _pg, _cg in _COR_MAP.items():
-                    _sk2 = _dfp[_dfp['prescricao_k'] == _pg]
-                    if len(_sk2) > 0:
-                        _fig_jk.add_trace(_go_jk.Scatter(
-                            x=_sk2['Data'], y=_sk2['hf_metric'], mode='markers',
-                            name=f'Kiv {_pg}', marker=dict(color=_cg, size=8, symbol='diamond',
-                            line=dict(width=1.2, color='white')),
-                            legendgroup='kiv', customdata=_sk2['hf_sinal'],
-                            hovertemplate='%{x|%d/%m}<br>HF: %{y:.4f}<br>Kiv: '
-                                          + _pg + ' (%{customdata})<extra></extra>'),
-                            row=2, col=1)
-
-                _fig_jk.update_layout(
-                    height=560, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                    font=dict(size=10), hovermode='x unified',
-                    margin=dict(t=50, b=70, l=60, r=40),
-                    legend=dict(orientation='h', y=-0.14, font=dict(size=9)))
-                _fig_jk.update_xaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
-                _fig_jk.update_yaxes(title_text='LnRMSSD₇', row=1, col=1,
-                                     showgrid=True, gridcolor='rgba(128,128,128,0.2)')
-                _fig_jk.update_yaxes(title_text='HF power', row=2, col=1,
-                                     showgrid=True, gridcolor='rgba(128,128,128,0.2)')
-                st.plotly_chart(_fig_jk, use_container_width=True,
-                                config={'displayModeBar': False}, key='jav_kiv_chart')
-                st.caption(
-                    "**Javaloyes:** LnRMSSD, rolling 7d, banda mean±0.5·SD. "
-                    "**Kiviniemi:** HF power, referência 10d mean−1·SD (+ tendência "
-                    "decrescente 2 dias). Ambos usam a mesma máquina de estados (Fig.1): "
-                    "START→LOW; HIGH↔LOW; LOW+sinal− → REST; máx 2 HIGH e 2 REST. "
-                    "Círculos = Javaloyes; losangos = Kiviniemi. Cores: 🟢HIGH 🔵LOW 🔴REST."
-                )
-
-            # Correlação Javaloyes vs HRV-Guided
-            st.markdown("**Correlação: protocolo Javaloyes vs HRV-Guided (Altini/Plews):**")
-            try:
-                _df_hg_corr = df_hg[['Data', 'intens']].copy(); _df_hg_corr['Data'] = pd.to_datetime(_df_hg_corr['Data']).dt.normalize()
-                _wc_j_corr = _wc_j[_wc_j['ln7'].notna()][['Data', 'prescricao']].copy(); _wc_j_corr['Data'] = pd.to_datetime(_wc_j_corr['Data']).dt.normalize()
-                _merged_j = _wc_j_corr.merge(_df_hg_corr, on='Data', how='inner')
-                _merged_j = _merged_j[_merged_j['intens'].isin(['HIIT', 'Recuperação'])].copy()
-                _merged_j['high_hrv'] = (_merged_j['intens'] == 'HIIT').astype(int)
-                _merged_j['high_jav'] = (_merged_j['prescricao'] == 'HIGH').astype(int)
-                if len(_merged_j) >= 10:
-                    from scipy import stats as _sst_j
-                    _n_j = len(_merged_j); _concord_j = int((_merged_j['high_hrv'] == _merged_j['high_jav']).sum()); _pct_j = _concord_j / _n_j * 100
-                    _r_j, _p_j = _sst_j.pearsonr(_merged_j['high_hrv'], _merged_j['high_jav'])
-                    _ct_j = pd.crosstab(_merged_j['intens'].map({'HIIT': 'HRV-Guided: HIIT', 'Recuperação': 'HRV-Guided: Recuperação'}), _merged_j['prescricao'].map({'HIGH': 'Javaloyes: HIGH', 'LOW': 'Javaloyes: LOW', 'REST': 'Javaloyes: REST'}))
-                    st.dataframe(_ct_j, use_container_width=True)
-                    _cc1, _cc2, _cc3 = st.columns(3)
-                    _cc1.metric("Concordância", f"{_pct_j:.0f}%", f"{_concord_j}/{_n_j} dias")
-                    _cc2.metric("Correlação r", f"{_r_j:.3f}", "p<0.05" if _p_j < 0.05 else f"p={_p_j:.3f}")
-                    _cc3.metric("Dias analisados", _n_j)
-                    _hh = int(((_merged_j['high_hrv']==1)&(_merged_j['high_jav']==1)).sum()); _hr = int(((_merged_j['high_hrv']==1)&(_merged_j['high_jav']==0)).sum())
-                    _rh = int(((_merged_j['high_hrv']==0)&(_merged_j['high_jav']==1)).sum()); _rr = int(((_merged_j['high_hrv']==0)&(_merged_j['high_jav']==0)).sum())
-                    st.caption(f"Ambos HIGH/HIIT: {_hh}d | Ambos Rec/LOW/REST: {_rr}d | HRV-G HIIT mas Jav LOW/REST: {_hr}d | HRV-G Rec mas Jav HIGH: {_rh}d")
-                else: st.info(f"Dados insuficientes ({len(_merged_j)} dias comuns).")
-            except Exception as _j_err: st.info(f"Correlação indisponível: {_j_err}")
-
-            # ════════════════════════════════════════════════════════════════
-            # CORRELAÇÃO: Slope 7d Estados vs HRV-Guided (HIIT / Recuperação)
-            # ════════════════════════════════════════════════════════════════
-            st.markdown("---")
-            st.markdown("**📈 Correlação: Estados do Slope 7d vs HRV-Guided**")
-            st.caption(
-                "Que estados do slope individualizado ocorrem mais em dias de HIIT "
-                "vs dias de Recuperação/LOW? Correlação de Pearson (rolling 14d)."
-            )
-            try:
-                _slope_zonas = [
-                    'Supercompensação', 'Recuperação', 'Estável',
-                    'Declínio Leve', 'Fadiga', 'NFOR Crítico'
-                ]
-                _df_sl_corr = df_corr[['Data', 'zona_slope', 'intens']].copy()
-                _df_sl_corr = _df_sl_corr[_df_sl_corr['intens'].isin(['HIIT', 'Recuperação'])].copy()
-                _df_sl_corr['hiit_bin'] = (_df_sl_corr['intens'] == 'HIIT').astype(int)
-                for _sz in _slope_zonas:
-                    _df_sl_corr[f'slope_{_sz}'] = (_df_sl_corr['zona_slope'] == _sz).astype(int)
-
-                _df_sl_corr = _df_sl_corr.sort_values('Data')
-                _df_sl_corr['hiit_r14'] = _df_sl_corr['hiit_bin'].rolling(14, min_periods=7).mean()
-                for _sz in _slope_zonas:
-                    _df_sl_corr[f'slope_{_sz}_r14'] = _df_sl_corr[f'slope_{_sz}'].rolling(14, min_periods=7).mean()
-
-                from scipy import stats as _sst_sl
-                _sl_results = []
-                for _sz in _slope_zonas:
-                    _vd = _df_sl_corr[['hiit_r14', f'slope_{_sz}_r14']].dropna()
-                    if len(_vd) >= 10:
-                        _r_sl, _p_sl = _sst_sl.pearsonr(_vd['hiit_r14'], _vd[f'slope_{_sz}_r14'])
-                        _sl_results.append({
-                            'Estado Slope': _sz,
-                            'r': _r_sl,
-                            'p': _p_sl,
-                            'Sig.': '✅' if _p_sl < 0.05 else '—',
-                            'N': len(_vd),
-                        })
-
-                if _sl_results:
-                    _df_sl_res = pd.DataFrame(_sl_results).sort_values('r', ascending=False)
-                    _hiit_assoc = _df_sl_res[_df_sl_res['r'] > 0].copy()
-                    _rec_assoc  = _df_sl_res[_df_sl_res['r'] <= 0].copy()
-                    _rec_assoc['r'] = _rec_assoc['r'].abs()
-
-                    _col_hiit, _col_rec = st.columns(2)
-
-                    with _col_hiit:
-                        st.markdown("**🟢 Associados a HIIT** *(r positivo)*")
-                        if len(_hiit_assoc) > 0:
-                            def _cor_hiit(val):
-                                try:
-                                    v = float(val)
-                                    if v >= 0.5: return 'background-color:rgba(39,174,96,0.35);font-weight:bold'
-                                    if v >= 0.3: return 'background-color:rgba(39,174,96,0.18)'
-                                    return ''
-                                except: return ''
-                            st.dataframe(
-                                _hiit_assoc[['Estado Slope','r','Sig.','N']]
-                                .style.map(_cor_hiit, subset=['r'])
-                                .format({'r': '{:+.3f}'}),
-                                use_container_width=True, hide_index=True
-                            )
-                        else:
-                            st.info("Nenhum estado positivamente associado a HIIT.")
-
-                    with _col_rec:
-                        st.markdown("**🔵 Associados a Recuperação/LOW** *(r negativo → magnitude)*")
-                        if len(_rec_assoc) > 0:
-                            def _cor_rec(val):
-                                try:
-                                    v = float(val)
-                                    if v >= 0.5: return 'background-color:rgba(52,152,219,0.35);font-weight:bold'
-                                    if v >= 0.3: return 'background-color:rgba(52,152,219,0.18)'
-                                    return ''
-                                except: return ''
-                            st.dataframe(
-                                _rec_assoc[['Estado Slope','r','Sig.','N']]
-                                .style.map(_cor_rec, subset=['r'])
-                                .format({'r': '{:.3f}'}),
-                                use_container_width=True, hide_index=True
-                            )
-                        else:
-                            st.info("Nenhum estado negativamente associado a HIIT.")
-
-                    with st.expander("ℹ️ Como interpretar"):
-                        st.markdown("""
+                with st.expander("ℹ️ Como interpretar"):
+                    st.markdown("""
 **Lógica da correlação:**
 - **r positivo** → estado do slope aparece mais em dias classificados como HIIT
 - **r negativo** → estado do slope aparece mais em dias classificados como Recuperação/LOW
@@ -1027,155 +760,155 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
 
 **✅ = significativo (p<0.05)** | N = dias com dados em ambas as séries
                         """)
-                else:
-                    st.info("Dados insuficientes para calcular correlação Slope vs HRV-Guided.")
-            except Exception as _sl_corr_err:
-                st.info(f"Correlação Slope não disponível: {_sl_corr_err}")
+            else:
+                st.info("Dados insuficientes para calcular correlação Slope vs HRV-Guided.")
+        except Exception as _sl_corr_err:
+            st.info(f"Correlação Slope não disponível: {_sl_corr_err}")
 
-            # ════════════════════════════════════════════════════════════════
-            # CORRELAÇÃO: Estados Modelo β vs HRV-Guided (HIIT / Recuperação)
-            # ════════════════════════════════════════════════════════════════
-            st.markdown("---")
-            st.markdown("**🧠 Correlação: Estados Modelo β vs HRV-Guided**")
-            st.caption(
-                "Que zonas do Modelo β (score 0–100) ocorrem mais em dias de HIIT "
-                "vs dias de Recuperação/LOW? Rolling 14d — mesmo método das correlações anteriores."
-            )
-            try:
-                from scipy import stats as _sst_beta
-                _beta_c = beta_df[['beta', 'beta_agudo', 'beta_cronico']].copy()
-                _beta_c.index.name = 'Data'
-                _beta_c = _beta_c.reset_index()
-                _beta_c['Data'] = pd.to_datetime(_beta_c['Data']).dt.normalize()
+        # ════════════════════════════════════════════════════════════════
+        # CORRELAÇÃO: Estados Modelo β vs HRV-Guided (HIIT / Recuperação)
+        # ════════════════════════════════════════════════════════════════
+        st.markdown("---")
+        st.markdown("**🧠 Correlação: Estados Modelo β vs HRV-Guided**")
+        st.caption(
+            "Que zonas do Modelo β (score 0–100) ocorrem mais em dias de HIIT "
+            "vs dias de Recuperação/LOW? Rolling 14d — mesmo método das correlações anteriores."
+        )
+        try:
+            from scipy import stats as _sst_beta
+            _beta_c = beta_df[['beta', 'beta_agudo', 'beta_cronico']].copy()
+            _beta_c.index.name = 'Data'
+            _beta_c = _beta_c.reset_index()
+            _beta_c['Data'] = pd.to_datetime(_beta_c['Data']).dt.normalize()
 
-                def _zona_beta(b):
-                    if pd.isna(b):      return 'Sem dados'
-                    elif b >= 65:       return 'Alta frescura (≥65)'
-                    elif b >= 50:       return 'Zona funcional (50-65)'
-                    elif b >= 35:       return 'Possível fadiga (35-50)'
-                    else:               return 'Fadiga marcada (<35)'
+            def _zona_beta(b):
+                if pd.isna(b):      return 'Sem dados'
+                elif b >= 65:       return 'Alta frescura (≥65)'
+                elif b >= 50:       return 'Zona funcional (50-65)'
+                elif b >= 35:       return 'Possível fadiga (35-50)'
+                else:               return 'Fadiga marcada (<35)'
 
-                _beta_c['beta_zona'] = _beta_c['beta'].apply(_zona_beta)
+            _beta_c['beta_zona'] = _beta_c['beta'].apply(_zona_beta)
 
-                _hg_c = df_hg[['Data', 'intens']].copy()
-                _hg_c['Data'] = pd.to_datetime(_hg_c['Data']).dt.normalize()
-                _beta_merged = _beta_c.merge(_hg_c, on='Data', how='inner')
-                _beta_merged = _beta_merged[_beta_merged['intens'].isin(['HIIT', 'Recuperação'])].copy()
-                _beta_merged = _beta_merged.sort_values('Data').reset_index(drop=True)
+            _hg_c = df_hg[['Data', 'intens']].copy()
+            _hg_c['Data'] = pd.to_datetime(_hg_c['Data']).dt.normalize()
+            _beta_merged = _beta_c.merge(_hg_c, on='Data', how='inner')
+            _beta_merged = _beta_merged[_beta_merged['intens'].isin(['HIIT', 'Recuperação'])].copy()
+            _beta_merged = _beta_merged.sort_values('Data').reset_index(drop=True)
 
-                if len(_beta_merged) >= 14:
-                    _beta_merged['hiit_bin'] = (_beta_merged['intens'] == 'HIIT').astype(int)
-                    _beta_merged['hiit_r14']  = _beta_merged['hiit_bin'].rolling(14, min_periods=7).mean()
-                    _beta_merged['beta_r14']  = _beta_merged['beta'].rolling(14, min_periods=7).mean()
-                    _beta_merged['bagudo_r14']  = _beta_merged['beta_agudo'].rolling(14, min_periods=7).mean()
-                    _beta_merged['bcron_r14']   = _beta_merged['beta_cronico'].rolling(14, min_periods=7).mean()
+            if len(_beta_merged) >= 14:
+                _beta_merged['hiit_bin'] = (_beta_merged['intens'] == 'HIIT').astype(int)
+                _beta_merged['hiit_r14']  = _beta_merged['hiit_bin'].rolling(14, min_periods=7).mean()
+                _beta_merged['beta_r14']  = _beta_merged['beta'].rolling(14, min_periods=7).mean()
+                _beta_merged['bagudo_r14']  = _beta_merged['beta_agudo'].rolling(14, min_periods=7).mean()
+                _beta_merged['bcron_r14']   = _beta_merged['beta_cronico'].rolling(14, min_periods=7).mean()
 
-                    _beta_zonas_list = [
-                        'Alta frescura (≥65)', 'Zona funcional (50-65)',
-                        'Possível fadiga (35-50)', 'Fadiga marcada (<35)'
-                    ]
-                    for _bz in _beta_zonas_list:
-                        _beta_merged[f'bz_{_bz}'] = (_beta_merged['beta_zona'] == _bz).astype(int)
-                        _beta_merged[f'bz_{_bz}_r14'] = _beta_merged[f'bz_{_bz}'].rolling(14, min_periods=7).mean()
+                _beta_zonas_list = [
+                    'Alta frescura (≥65)', 'Zona funcional (50-65)',
+                    'Possível fadiga (35-50)', 'Fadiga marcada (<35)'
+                ]
+                for _bz in _beta_zonas_list:
+                    _beta_merged[f'bz_{_bz}'] = (_beta_merged['beta_zona'] == _bz).astype(int)
+                    _beta_merged[f'bz_{_bz}_r14'] = _beta_merged[f'bz_{_bz}'].rolling(14, min_periods=7).mean()
 
-                    _cont_results = []
-                    for _col, _nome in [('beta_r14', 'β score (0–100)'),
-                                        ('bagudo_r14', 'βAgudo 3d (%)'),
-                                        ('bcron_r14', 'βCrónico 7d (%)')]:
-                        _vd = _beta_merged[['hiit_r14', _col]].dropna()
-                        if len(_vd) >= 10:
-                            _r, _p = _sst_beta.pearsonr(_vd['hiit_r14'], _vd[_col])
-                            _cont_results.append({
-                                'Indicador': _nome,
-                                'r': _r,
-                                'Sig.': '✅' if _p < 0.05 else '—',
-                                'N': len(_vd),
-                                'Interpretação': (
-                                    'Score β alto → mais HIIT' if _r > 0.3
-                                    else 'Score β baixo → mais HIIT' if _r < -0.3
-                                    else 'Sem relação clara'
-                                )
-                            })
+                _cont_results = []
+                for _col, _nome in [('beta_r14', 'β score (0–100)'),
+                                    ('bagudo_r14', 'βAgudo 3d (%)'),
+                                    ('bcron_r14', 'βCrónico 7d (%)')]:
+                    _vd = _beta_merged[['hiit_r14', _col]].dropna()
+                    if len(_vd) >= 10:
+                        _r, _p = _sst_beta.pearsonr(_vd['hiit_r14'], _vd[_col])
+                        _cont_results.append({
+                            'Indicador': _nome,
+                            'r': _r,
+                            'Sig.': '✅' if _p < 0.05 else '—',
+                            'N': len(_vd),
+                            'Interpretação': (
+                                'Score β alto → mais HIIT' if _r > 0.3
+                                else 'Score β baixo → mais HIIT' if _r < -0.3
+                                else 'Sem relação clara'
+                            )
+                        })
 
-                    _zona_results = []
-                    for _bz in _beta_zonas_list:
-                        _vd = _beta_merged[['hiit_r14', f'bz_{_bz}_r14']].dropna()
-                        if len(_vd) >= 10:
-                            _r, _p = _sst_beta.pearsonr(_vd['hiit_r14'], _vd[f'bz_{_bz}_r14'])
-                            _zona_results.append({
-                                'Zona β': _bz,
-                                'r': _r,
-                                'Sig.': '✅' if _p < 0.05 else '—',
-                                'N': len(_vd),
-                            })
+                _zona_results = []
+                for _bz in _beta_zonas_list:
+                    _vd = _beta_merged[['hiit_r14', f'bz_{_bz}_r14']].dropna()
+                    if len(_vd) >= 10:
+                        _r, _p = _sst_beta.pearsonr(_vd['hiit_r14'], _vd[f'bz_{_bz}_r14'])
+                        _zona_results.append({
+                            'Zona β': _bz,
+                            'r': _r,
+                            'Sig.': '✅' if _p < 0.05 else '—',
+                            'N': len(_vd),
+                        })
 
-                    st.markdown("**Indicadores contínuos β vs HIIT (rolling 14d):**")
-                    if _cont_results:
-                        _df_cont = pd.DataFrame(_cont_results)
-                        def _cor_cont(val):
-                            try:
-                                v = float(val)
-                                if v >= 0.5:  return 'background-color:rgba(39,174,96,0.35);font-weight:bold'
-                                if v >= 0.3:  return 'background-color:rgba(39,174,96,0.18)'
-                                if v <= -0.5: return 'background-color:rgba(231,76,60,0.35);font-weight:bold'
-                                if v <= -0.3: return 'background-color:rgba(231,76,60,0.18)'
-                                return ''
-                            except: return ''
-                        st.dataframe(
-                            _df_cont.style.map(_cor_cont, subset=['r']).format({'r': '{:+.3f}'}),
-                            use_container_width=True, hide_index=True
-                        )
+                st.markdown("**Indicadores contínuos β vs HIIT (rolling 14d):**")
+                if _cont_results:
+                    _df_cont = pd.DataFrame(_cont_results)
+                    def _cor_cont(val):
+                        try:
+                            v = float(val)
+                            if v >= 0.5:  return 'background-color:rgba(39,174,96,0.35);font-weight:bold'
+                            if v >= 0.3:  return 'background-color:rgba(39,174,96,0.18)'
+                            if v <= -0.5: return 'background-color:rgba(231,76,60,0.35);font-weight:bold'
+                            if v <= -0.3: return 'background-color:rgba(231,76,60,0.18)'
+                            return ''
+                        except: return ''
+                    st.dataframe(
+                        _df_cont.style.map(_cor_cont, subset=['r']).format({'r': '{:+.3f}'}),
+                        use_container_width=True, hide_index=True
+                    )
 
-                    st.markdown("**Zonas β categóricas vs HIIT / Recuperação:**")
-                    if _zona_results:
-                        _df_zona = pd.DataFrame(_zona_results).sort_values('r', ascending=False)
-                        _col_b1, _col_b2 = st.columns(2)
-                        _hiit_bz  = _df_zona[_df_zona['r'] > 0].copy()
-                        _rec_bz   = _df_zona[_df_zona['r'] <= 0].copy()
-                        _rec_bz['r'] = _rec_bz['r'].abs()
+                st.markdown("**Zonas β categóricas vs HIIT / Recuperação:**")
+                if _zona_results:
+                    _df_zona = pd.DataFrame(_zona_results).sort_values('r', ascending=False)
+                    _col_b1, _col_b2 = st.columns(2)
+                    _hiit_bz  = _df_zona[_df_zona['r'] > 0].copy()
+                    _rec_bz   = _df_zona[_df_zona['r'] <= 0].copy()
+                    _rec_bz['r'] = _rec_bz['r'].abs()
 
-                        with _col_b1:
-                            st.markdown("**🟢 Associadas a HIIT** *(r positivo)*")
-                            if len(_hiit_bz) > 0:
-                                def _cb1(val):
-                                    try:
-                                        v = float(val)
-                                        return ('background-color:rgba(39,174,96,0.35);font-weight:bold'
-                                                if v >= 0.5 else
-                                                'background-color:rgba(39,174,96,0.18)'
-                                                if v >= 0.3 else '')
-                                    except: return ''
-                                st.dataframe(
-                                    _hiit_bz[['Zona β','r','Sig.','N']]
-                                    .style.map(_cb1, subset=['r'])
-                                    .format({'r': '{:+.3f}'}),
-                                    use_container_width=True, hide_index=True
-                                )
-                            else:
-                                st.info("Sem zonas β positivamente associadas a HIIT.")
+                    with _col_b1:
+                        st.markdown("**🟢 Associadas a HIIT** *(r positivo)*")
+                        if len(_hiit_bz) > 0:
+                            def _cb1(val):
+                                try:
+                                    v = float(val)
+                                    return ('background-color:rgba(39,174,96,0.35);font-weight:bold'
+                                            if v >= 0.5 else
+                                            'background-color:rgba(39,174,96,0.18)'
+                                            if v >= 0.3 else '')
+                                except: return ''
+                            st.dataframe(
+                                _hiit_bz[['Zona β','r','Sig.','N']]
+                                .style.map(_cb1, subset=['r'])
+                                .format({'r': '{:+.3f}'}),
+                                use_container_width=True, hide_index=True
+                            )
+                        else:
+                            st.info("Sem zonas β positivamente associadas a HIIT.")
 
-                        with _col_b2:
-                            st.markdown("**🔵 Associadas a Recuperação** *(magnitude r)*")
-                            if len(_rec_bz) > 0:
-                                def _cb2(val):
-                                    try:
-                                        v = float(val)
-                                        return ('background-color:rgba(52,152,219,0.35);font-weight:bold'
-                                                if v >= 0.5 else
-                                                'background-color:rgba(52,152,219,0.18)'
-                                                if v >= 0.3 else '')
-                                    except: return ''
-                                st.dataframe(
-                                    _rec_bz[['Zona β','r','Sig.','N']]
-                                    .style.map(_cb2, subset=['r'])
-                                    .format({'r': '{:.3f}'}),
-                                    use_container_width=True, hide_index=True
-                                )
-                            else:
-                                st.info("Sem zonas β negativamente associadas a HIIT.")
+                    with _col_b2:
+                        st.markdown("**🔵 Associadas a Recuperação** *(magnitude r)*")
+                        if len(_rec_bz) > 0:
+                            def _cb2(val):
+                                try:
+                                    v = float(val)
+                                    return ('background-color:rgba(52,152,219,0.35);font-weight:bold'
+                                            if v >= 0.5 else
+                                            'background-color:rgba(52,152,219,0.18)'
+                                            if v >= 0.3 else '')
+                                except: return ''
+                            st.dataframe(
+                                _rec_bz[['Zona β','r','Sig.','N']]
+                                .style.map(_cb2, subset=['r'])
+                                .format({'r': '{:.3f}'}),
+                                use_container_width=True, hide_index=True
+                            )
+                        else:
+                            st.info("Sem zonas β negativamente associadas a HIIT.")
 
-                    with st.expander("ℹ️ Como interpretar"):
-                        st.markdown("""
+                with st.expander("ℹ️ Como interpretar"):
+                    st.markdown("""
 **Lógica:**
 - **β score alto (≥65) + r positivo** → quando o sistema autonómico está em alta frescura, a HRV também prescreve HIIT — convergência entre os dois métodos
 - **Fadiga marcada (<35) + r negativo** → quando β detecta fadiga, HRV tende a prescrever Recuperação — boa consistência
@@ -1185,10 +918,10 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
 - ✅ Alta convergência: *Alta frescura* associada a HIIT E *Fadiga marcada* associada a Recuperação
 - ⚠️ Baixa convergência: β diz frescura mas HRV prescreve Recuperação com frequência — possível dessincronização entre SNA e HRV de curto prazo
                         """)
-                else:
-                    st.info(f"Dados insuficientes para correlação β vs HRV-Guided ({len(_beta_merged)} dias comuns).")
-            except Exception as _beta_corr_err:
-                st.info(f"Correlação β não disponível: {_beta_corr_err}")
+            else:
+                st.info(f"Dados insuficientes para correlação β vs HRV-Guided ({len(_beta_merged)} dias comuns).")
+        except Exception as _beta_corr_err:
+            st.info(f"Correlação β não disponível: {_beta_corr_err}")
 
 
 
@@ -1239,10 +972,17 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
                             _exp = _exp.merge(_sl_exp[['Data', _c]], on='Data', how='left')
             except Exception: pass
             try:
-                _jav_exp = _wc_j[['Data','LnrMSSD','ln7','prescricao','hrv_sinal']].copy()
-                _jav_exp.columns = ['Data','LnrMSSD_jav','LnRMSSD7_jav','Javaloyes_prescricao','Javaloyes_hrv_sinal']
+                _jav_cols = ['Data','LnrMSSD','ln7','prescricao','hrv_sinal']
+                _jav_exp = df_hg[[c for c in _jav_cols if c in df_hg.columns]].copy()
+                _jav_exp.columns = ['Data','LnrMSSD_jav','LnRMSSD7_jav','Javaloyes_prescricao','Javaloyes_hrv_sinal'][:len(_jav_exp.columns)]
                 _jav_exp['Data'] = pd.to_datetime(_jav_exp['Data']).dt.normalize()
-                _jav_exp['Javaloyes_SWC_sup'] = round(_swc_sup, 4); _jav_exp['Javaloyes_SWC_inf'] = round(_swc_inf, 4)
+                _jav_exp['Javaloyes_SWC_sup'] = round(_swc_sup_h, 4); _jav_exp['Javaloyes_SWC_inf'] = round(_swc_inf_h, 4)
+                # Colunas Kiviniemi (se disponível)
+                if 'prescricao_k' in df_hg.columns:
+                    _kiv_exp = df_hg[['Data','hf_metric','hf_ref','prescricao_k','hf_sinal']].copy()
+                    _kiv_exp.columns = ['Data','Kiviniemi_HFmetric','Kiviniemi_ref10d','Kiviniemi_prescricao','Kiviniemi_hf_sinal']
+                    _kiv_exp['Data'] = pd.to_datetime(_kiv_exp['Data']).dt.normalize()
+                    _jav_exp = _jav_exp.merge(_kiv_exp, on='Data', how='left')
                 _exp = _exp.merge(_jav_exp, on='Data', how='left')
             except Exception: pass
             try:
