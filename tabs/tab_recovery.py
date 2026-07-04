@@ -728,33 +728,10 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
                 _rj, _gj, _bj = int(_cor_j[1:3],16), int(_cor_j[3:5],16), int(_cor_j[5:7],16)
                 st.markdown(f'<div style="padding:14px 20px;border-radius:8px;margin:8px 0;background:rgba({_rj},{_gj},{_bj},0.10);border-left:5px solid {_cor_j};"><b style="font-size:1.1em;color:{_cor_j};">{_LABEL_MAP.get(_pres_hoje, _pres_hoje)}</b><span style="color:#888;margin-left:12px;font-size:0.9em;">LnRMSSD₇={_ln7_hoje:.3f} | SWC [{_swc_inf:.3f}, {_swc_sup:.3f}] | {_sig_hoje}</span></div>', unsafe_allow_html=True)
 
-            # Tabela últimos 5 dias
-            _ult5_j = _wc_j_val.tail(5).copy(); _rows5_j = []
-            for _, r in _ult5_j.iterrows():
-                _sem = bool(r.get('sem_medicao', False))
-                _rows5_j.append({'Data': r['Data'].strftime('%d/%m') + (' ⚠️' if _sem else ''), 'LnRMSSD₇': f"{r['ln7']:.3f}" + (' (est.)' if _sem else ''), 'HRV': r.get('hrv_sinal', '·'), 'Zona': r.get('razao') or '—', 'Prescrição': _LABEL_MAP.get(r['prescricao'], r['prescricao'])})
-            st.markdown("**Últimos 5 dias — protocolo Javaloyes:**")
-            st.dataframe(pd.DataFrame(_rows5_j), hide_index=True, use_container_width=True)
             st.caption(f"SWC baseline (últimos 28 dias reais): mean={_swc_mean:.3f} ± 0.5×SD={0.5*_swc_sd:.3f} → banda [{_swc_inf:.3f}, {_swc_sup:.3f}]. Sinal HRV+/HRV− pela BANDA (fiel ao paper): HRV+ = ln7 dentro/acima; HRV− = abaixo do limite inferior. Máquina de estados Fig.1 Kiviniemi: START→LOW; HIGH↔LOW conforme sinal (máx 2 HIGH→LOW); LOW+HRV− → REST; máx 2 REST→LOW.")
 
-            # Gráfico — usa n_hg do slider do HRV-Guided (mesmo período, sem slider novo)
-            _df_plot = _wc_j_val.tail(n_hg).copy()
-            import plotly.graph_objects as _go_j
-            _fig_j = _go_j.Figure()
-            _fig_j.add_hrect(y0=_swc_inf, y1=_swc_sup, fillcolor='rgba(39,174,96,0.08)', line_width=0, annotation_text="HIGH (dentro/acima da banda)", annotation_position="right", annotation_font_size=9, annotation_font_color='#27ae60')
-            _fig_j.add_hline(y=_swc_sup, line_dash='dash', line_color='rgba(39,174,96,0.6)', line_width=1.2, annotation_text="SWC sup", annotation_position="right", annotation_font_color='#27ae60', annotation_font_size=9)
-            _fig_j.add_hline(y=_swc_inf, line_dash='dash', line_color='rgba(231,76,60,0.6)', line_width=1.2, annotation_text="SWC inf → abaixo = LOW/REST", annotation_position="right", annotation_font_color='#e74c3c', annotation_font_size=9)
-            _fig_j.add_trace(_go_j.Scatter(x=_df_plot['Data'], y=_df_plot['ln7'], mode='lines', line=dict(color='rgba(44,62,80,0.35)', width=1.5), showlegend=False, hoverinfo='skip'))
-            for _pg, _cg in _COR_MAP.items():
-                _sg = _df_plot[_df_plot['prescricao'] == _pg]
-                if len(_sg) > 0:
-                    _fig_j.add_trace(_go_j.Scatter(x=_sg['Data'], y=_sg['ln7'], mode='markers', name=_LABEL_MAP[_pg], marker=dict(color=_cg, size=7, line=dict(width=1.5, color='white')), customdata=_sg['hrv_sinal'], hovertemplate='%{x|%d/%m}<br>LnRMSSD₇: %{y:.3f}<br>%{customdata}<extra></extra>'))
-            if 'sem_medicao' in _df_plot.columns:
-                _sem_plot = _df_plot[_df_plot['sem_medicao'].astype(bool)]
-                if len(_sem_plot) > 0:
-                    _fig_j.add_trace(_go_j.Scatter(x=_sem_plot['Data'], y=_sem_plot['ln7'], mode='markers', name='Sem medição', marker=dict(symbol='star', color='gray', size=9, line=dict(width=1, color='white')), hovertemplate='%{x|%d/%m}<br>Estimado: %{y:.3f}<extra></extra>'))
-            _fig_j.update_layout(height=380, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(size=11), hovermode='x unified', margin=dict(t=30, b=60, l=60, r=130), legend=dict(orientation='h', y=-0.22, font=dict(size=10)), title=dict(text='LnRMSSD rolling 7 dias — protocolo Javaloyes/Kiviniemi', font=dict(size=13)), xaxis=dict(showgrid=True, gridcolor='rgba(128,128,128,0.2)'), yaxis=dict(title='LnRMSSD₇', showgrid=True, gridcolor='rgba(128,128,128,0.2)'))
-            st.plotly_chart(_fig_j, use_container_width=True, config={'displayModeBar': False}, key='javaloyes_hrv_chart')
+            # (gráfico conjunto Javaloyes + Kiviniemi é desenhado mais abaixo,
+            #  depois do cálculo do método Kiviniemi)
 
             # ════════════════════════════════════════════════════════════════
             # COMPARAÇÃO: método KIVINIEMI (2007) — HF power, 10d, mean − 1·SD
@@ -805,8 +782,12 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
                                   and (_hf_prev - _hfv) > 0.1)
                         _sigk = 'HF−' if (_below or _trend) else 'HF+'
                     # Transições (mesma Fig.1)
-                    if pd.isna(_hfv):
-                        _p='LOW'; _r='sem dados'; _estado_k='LOW'; _ch_k=0; _cr_k=0
+                    if pd.isna(_hfv) or _sigk == '·':
+                        # Sem medição OU sem referência 10d válida ainda →
+                        # LOW neutro (não REST). Não avança a máquina até haver
+                        # baseline; evita REST espúrio nos primeiros ~10 dias.
+                        _p='LOW'; _r='sem ref 10d (baseline a formar)'
+                        _estado_k='LOW'; _ch_k=0; _cr_k=0
                     elif _estado_k=='START':
                         _p='LOW'; _r='início'; _estado_k='LOW'; _ch_k=0; _cr_k=0
                     elif _estado_k=='HIGH':
@@ -846,24 +827,79 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
                         _ck4.metric("Concord. Jav↔Kiv", f"{_conc/len(_cmpjk)*100:.0f}%",
                                     f"{_conc}/{len(_cmpjk)} dias")
 
-                # Tabela comparativa lado a lado (últimos 10 dias)
-                _cmp_tail = _wc_k_val.tail(10).copy(); _rows_cmp=[]
-                for _, r in _cmp_tail.iterrows():
-                    _rows_cmp.append({
-                        'Data': r['Data'].strftime('%d/%m'),
-                        'LnRMSSD₇': f"{r['ln7']:.3f}" if pd.notna(r.get('ln7')) else '—',
-                        'Javaloyes': _LABEL_MAP.get(r.get('prescricao'), '—').split(' — ')[0],
-                        'HF métrica': f"{r['hf_metric']:.3f}",
-                        'Kiviniemi': _LABEL_MAP.get(r.get('prescricao_k'), '—').split(' — ')[0],
-                        'Igual?': '✓' if r.get('prescricao')==r.get('prescricao_k') else '✗',
-                    })
-                st.dataframe(pd.DataFrame(_rows_cmp), hide_index=True, use_container_width=True)
+                # ── GRÁFICO CONJUNTO Javaloyes + Kiviniemi (sem tabelas) ────────
+                import plotly.graph_objects as _go_jk
+                from plotly.subplots import make_subplots as _msp_jk
+                _dfp = _wc_k.tail(n_hg).copy()
+                _fig_jk = _msp_jk(
+                    rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.10,
+                    subplot_titles=[
+                        'Javaloyes — LnRMSSD₇ vs banda SWC (±0.5·SD)',
+                        'Kiviniemi — HF power vs referência 10d (mean−1·SD)'])
+
+                # Painel 1 — Javaloyes
+                _fig_jk.add_hrect(y0=_swc_inf, y1=_swc_sup, fillcolor='rgba(39,174,96,0.08)',
+                                  line_width=0, row=1, col=1)
+                _fig_jk.add_hline(y=_swc_sup, line_dash='dash', line_color='rgba(39,174,96,0.5)',
+                                  line_width=1, row=1, col=1)
+                _fig_jk.add_hline(y=_swc_inf, line_dash='dash', line_color='rgba(231,76,60,0.5)',
+                                  line_width=1, row=1, col=1)
+                _fig_jk.add_trace(_go_jk.Scatter(
+                    x=_dfp['Data'], y=_dfp['ln7'], mode='lines',
+                    line=dict(color='rgba(44,62,80,0.30)', width=1.5),
+                    showlegend=False, hoverinfo='skip'), row=1, col=1)
+                for _pg, _cg in _COR_MAP.items():
+                    _sg = _dfp[_dfp['prescricao'] == _pg]
+                    if len(_sg) > 0:
+                        _fig_jk.add_trace(_go_jk.Scatter(
+                            x=_sg['Data'], y=_sg['ln7'], mode='markers',
+                            name=f'Jav {_pg}', marker=dict(color=_cg, size=8,
+                            line=dict(width=1.2, color='white')),
+                            legendgroup='jav', customdata=_sg['hrv_sinal'],
+                            hovertemplate='%{x|%d/%m}<br>LnRMSSD₇: %{y:.3f}<br>Jav: '
+                                          + _pg + ' (%{customdata})<extra></extra>'),
+                            row=1, col=1)
+
+                # Painel 2 — Kiviniemi
+                _fig_jk.add_trace(_go_jk.Scatter(
+                    x=_dfp['Data'], y=_dfp['hf_ref'], mode='lines',
+                    line=dict(color='rgba(231,76,60,0.5)', width=1, dash='dash'),
+                    name='Ref 10d (mean−1SD)', legendgroup='kiv_ref',
+                    hovertemplate='Ref: %{y:.4f}<extra></extra>'), row=2, col=1)
+                _fig_jk.add_trace(_go_jk.Scatter(
+                    x=_dfp['Data'], y=_dfp['hf_metric'], mode='lines',
+                    line=dict(color='rgba(44,62,80,0.30)', width=1.5),
+                    showlegend=False, hoverinfo='skip'), row=2, col=1)
+                for _pg, _cg in _COR_MAP.items():
+                    _sk2 = _dfp[_dfp['prescricao_k'] == _pg]
+                    if len(_sk2) > 0:
+                        _fig_jk.add_trace(_go_jk.Scatter(
+                            x=_sk2['Data'], y=_sk2['hf_metric'], mode='markers',
+                            name=f'Kiv {_pg}', marker=dict(color=_cg, size=8, symbol='diamond',
+                            line=dict(width=1.2, color='white')),
+                            legendgroup='kiv', customdata=_sk2['hf_sinal'],
+                            hovertemplate='%{x|%d/%m}<br>HF: %{y:.4f}<br>Kiv: '
+                                          + _pg + ' (%{customdata})<extra></extra>'),
+                            row=2, col=1)
+
+                _fig_jk.update_layout(
+                    height=560, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                    font=dict(size=10), hovermode='x unified',
+                    margin=dict(t=50, b=70, l=60, r=40),
+                    legend=dict(orientation='h', y=-0.14, font=dict(size=9)))
+                _fig_jk.update_xaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+                _fig_jk.update_yaxes(title_text='LnRMSSD₇', row=1, col=1,
+                                     showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+                _fig_jk.update_yaxes(title_text='HF power', row=2, col=1,
+                                     showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+                st.plotly_chart(_fig_jk, use_container_width=True,
+                                config={'displayModeBar': False}, key='jav_kiv_chart')
                 st.caption(
-                    "**Kiviniemi (2007):** métrica = HF power (não RMSSD); referência = "
-                    "**10-dias mean − 1·SD** (banda de 1 SD); + critério de tendência "
-                    "decrescente > 0.1 ln ms² por 2 dias. Mesma máquina de estados Fig.1. "
-                    "A diferença vs Javaloyes vem da métrica (HF vs lnRMSSD), da janela "
-                    "(10 vs 7 dias) e da largura da banda (1·SD vs 0.5·SD)."
+                    "**Javaloyes:** LnRMSSD, rolling 7d, banda mean±0.5·SD. "
+                    "**Kiviniemi:** HF power, referência 10d mean−1·SD (+ tendência "
+                    "decrescente 2 dias). Ambos usam a mesma máquina de estados (Fig.1): "
+                    "START→LOW; HIGH↔LOW; LOW+sinal− → REST; máx 2 HIGH e 2 REST. "
+                    "Círculos = Javaloyes; losangos = Kiviniemi. Cores: 🟢HIGH 🔵LOW 🔴REST."
                 )
 
             # Correlação Javaloyes vs HRV-Guided
