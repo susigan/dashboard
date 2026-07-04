@@ -332,40 +332,54 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
         _COR = {'HIGH': '#27ae60', 'LOW': '#3498db', 'REST': '#e74c3c'}
 
         # Máquina de estados fiel à Fig.1 (Kiviniemi/Javaloyes), sinal pela banda
-        def _state_machine(vals, sig_fn):
-            pres = []; sig = []; estado = 'START'; ch = 0; cr = 0
+        def _state_machine(vals, sig_fn, max_high=2, max_train_days=None):
+            # max_high: teto de HIGH consecutivos (Javaloyes=2; Kiviniemi=None)
+            # max_train_days: teto de dias de treino consecutivos (High OU Low)
+            #                 → força REST (Kiviniemi=9; Javaloyes=None)
+            pres = []; sig = []; estado = 'START'; ch = 0; cr = 0; ct = 0
             prev = np.nan; prev2 = np.nan
             for i, v in enumerate(vals):
                 s = sig_fn(i, v, prev, prev2)
                 if pd.isna(v) or s == '·':
-                    p = 'LOW'; estado = 'LOW'; ch = 0; cr = 0
+                    p = 'LOW'; estado = 'LOW'; ch = 0; cr = 0; ct = 0
                 elif estado == 'START':
-                    p = 'LOW'; estado = 'LOW'; ch = 0; cr = 0
+                    p = 'LOW'; estado = 'LOW'; ch = 0; cr = 0; ct = 1
+                # Regra dos N dias (Kiviniemi): Rest forçado após max_train_days
+                # de treino consecutivo (High ou Low), independente do sinal.
+                elif max_train_days is not None and ct >= max_train_days:
+                    p = 'REST'; estado = 'REST'; cr = 1; ch = 0; ct = 0
                 elif estado == 'HIGH':
                     if s.endswith('+'):
-                        if ch >= 2: p = 'LOW'; estado = 'LOW'; ch = 0
-                        else: p = 'HIGH'; estado = 'HIGH'; ch += 1
-                    else: p = 'LOW'; estado = 'LOW'; ch = 0
+                        if max_high is not None and ch >= max_high:
+                            p = 'LOW'; estado = 'LOW'; ch = 0; ct += 1
+                        else:
+                            p = 'HIGH'; estado = 'HIGH'; ch += 1; ct += 1
+                    else:
+                        p = 'LOW'; estado = 'LOW'; ch = 0; ct += 1
                     cr = 0
                 elif estado == 'LOW':
-                    if s.endswith('+'): p = 'HIGH'; estado = 'HIGH'; ch = 1; cr = 0
-                    else: p = 'REST'; estado = 'REST'; cr = 1
+                    if s.endswith('+'):
+                        p = 'HIGH'; estado = 'HIGH'; ch = 1; cr = 0; ct += 1
+                    else:
+                        p = 'REST'; estado = 'REST'; cr = 1; ct = 0
                 elif estado == 'REST':
-                    if cr >= 2: p = 'LOW'; estado = 'LOW'; cr = 0
-                    elif s.endswith('+'): p = 'LOW'; estado = 'LOW'; cr = 0
-                    else: p = 'REST'; estado = 'REST'; cr += 1
+                    if cr >= 2: p = 'LOW'; estado = 'LOW'; cr = 0; ct = 1
+                    elif s.endswith('+'): p = 'LOW'; estado = 'LOW'; cr = 0; ct = 1
+                    else: p = 'REST'; estado = 'REST'; cr += 1; ct = 0
                     ch = 0
                 else:
-                    p = 'LOW'; estado = 'LOW'
+                    p = 'LOW'; estado = 'LOW'; ct = 1
                 pres.append(p); sig.append(s)
                 if pd.notna(v): prev2 = prev; prev = v
             return pres, sig
 
         # Javaloyes: sinal pela banda (ln7 dentro/acima vs abaixo)
+        # Teto de 2 HIGH consecutivos (fiel a "only 2 consecutive high-intensity")
         def _sig_jav(i, v, p, p2):
             if pd.isna(v): return '·'
             return 'HRV+' if v >= _swc_inf_h else 'HRV−'
-        _pj_h, _sj_h = _state_machine(df_hg['ln7'].tolist(), _sig_jav)
+        _pj_h, _sj_h = _state_machine(df_hg['ln7'].tolist(), _sig_jav,
+                                      max_high=2, max_train_days=None)
         df_hg['prescricao'] = _pj_h; df_hg['hrv_sinal'] = _sj_h
 
         # Kiviniemi: HF power, referência 10d (mean − 1·SD) + tendência 2 dias
@@ -387,7 +401,10 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
                 trend = (pd.notna(p) and pd.notna(p2)
                          and (p2 - p) > 0.1 and (p - v) > 0.1)
                 return 'HF−' if (below or trend) else 'HF+'
-            _pk_h, _sk_h = _state_machine(df_hg['hf_metric'].tolist(), _sig_kiv)
+            # Kiviniemi: SEM teto de 2 HIGH (mantém High enquanto HRV+);
+            # Rest forçado após 9 dias de treino consecutivo (regra do paper).
+            _pk_h, _sk_h = _state_machine(df_hg['hf_metric'].tolist(), _sig_kiv,
+                                          max_high=None, max_train_days=9)
             df_hg['prescricao_k'] = _pk_h; df_hg['hf_sinal'] = _sk_h
 
         _df_p = df_hg.tail(n_hg).copy()
