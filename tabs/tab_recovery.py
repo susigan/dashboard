@@ -615,77 +615,98 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
             _swc_inf  = _swc_mean - 0.5 * _swc_sd
 
             # ════════════════════════════════════════════════════════════════
-            # MÁQUINA DE ESTADOS — esquema Kiviniemi/Javaloyes (corrigido)
+            # MÁQUINA DE ESTADOS — fiel à Figura 1 de Kiviniemi (2007)
+            # e ao esquema de decisão de Javaloyes (2020, Figura 2)
             # ════════════════════════════════════════════════════════════════
-            # Regra publicada (Javaloyes 2019/2020; Kiviniemi 2007; Frontiers
-            # 2025; MDPI 2020):
-            #   "High-intensity sessions were prescribed when HRV was ABOVE or
-            #    WITHIN the SWC, while low-intensity sessions were recommended
-            #    if HRV was BELOW the lower limit of the SWC."
+            # Sinal HRV+/HRV− definido pela BANDA (fiel aos papers):
+            #   Javaloyes (2020): "When LnRMSSD7day-roll-avg fell outside the SWC,
+            #     training intensity changed from high-intensity to low/rest";
+            #     "high-intensity only when [...] remained inside SWC limits".
+            #   Kiviniemi (2007), legenda Fig.1: "HRV+ = increased or not changed;
+            #     HRV− = decreased HRV", com referência = 10-day mean − SD.
+            #   → HRV+ = ln7 DENTRO/ACIMA da banda (≥ limite inferior)
+            #     HRV− = ln7 ABAIXO do limite inferior
             #
-            # Sinal do diagrama Kiviniemi:
-            #   HRV+ = increased OR not changed HRV (ln7 hoje >= ln7 ontem)
-            #   HRV− = decreased HRV            (ln7 hoje <  ln7 ontem)
-            #
-            # Lógica:
-            #   ln7 DENTRO ou ACIMA da banda  → HIGH (até 2 consec.; 3.º→LOW)
-            #   ln7 ABAIXO do limite inferior → LOW se HRV+ (a recuperar)
-            #                                    REST se HRV− (ainda a cair)
-            #                                    (até 2 REST consec.; 3.º→LOW)
-            # ════════════════════════════════════════════════════════════════
-            _prescricoes = []; _consec_high = 0; _consec_rest = 0
-            _razoes = []; _sinais_hrv = []
-            _ln7_prev = np.nan
+            # Nós da Figura 1 (Kiviniemi) — transições exactas:
+            #   Start → Low (dia 1)
+            #   High:            HRV+ → High (fica); HRV− → Low
+            #                    (após 2 High consecutivos → força Low)
+            #   Low (de High↓):  HRV+ → High;  HRV− → Rest
+            #   Low (de HIIT):   HRV+ → High;  HRV− → Rest   (mesma regra de saída)
+            #   Rest (1º):       HRV+ → Low;   HRV− → Rest (2º)
+            #   Rest (2º):       HRV+/− → Low  (máx 2 rest consecutivos)
+            # Estado interno: nó actual + contadores de consecutivos.
+            _prescricoes = []; _razoes = []; _sinais_hrv = []
+            _estado = 'START'          # START | HIGH | LOW | REST
+            _consec_high = 0; _consec_rest = 0
             for _, row in _wc_j.iterrows():
                 ln7 = row['ln7']
 
-                # Sinal HRV+/HRV− (direcção vs dia anterior)
-                if pd.isna(ln7) or pd.isna(_ln7_prev):
-                    _hrv_sig = '·'          # indeterminado
-                elif ln7 >= _ln7_prev:
-                    _hrv_sig = 'HRV+'       # subiu ou não mudou
+                # Sinal pela BANDA (fiel ao paper): dentro/acima vs abaixo
+                if pd.isna(ln7):
+                    _hrv_sig = '·'
+                elif ln7 >= _swc_inf:
+                    _hrv_sig = 'HRV+'   # dentro ou acima da banda
                 else:
-                    _hrv_sig = 'HRV−'       # desceu
+                    _hrv_sig = 'HRV−'   # abaixo do limite inferior
 
                 if pd.isna(ln7):
                     _pres = 'LOW'; _razao = 'sem dados'
-                    _consec_high = 0; _consec_rest = 0
+                    _estado = 'LOW'; _consec_high = 0; _consec_rest = 0
 
-                elif ln7 >= _swc_inf:
-                    # DENTRO ou ACIMA da banda → HIGH permitido
-                    if _consec_high >= 2:
-                        _pres = 'LOW'
-                        _razao = 'HIGH forçado LOW (máx 2 consec.)'
-                        _consec_high = 0; _consec_rest = 0
-                    else:
+                elif _estado == 'START':
+                    # Início do bloco → Low (dia 1), depois sobe se HRV+
+                    _pres = 'LOW'; _razao = 'Início do bloco (dia 1)'
+                    _estado = 'LOW'; _consec_high = 0; _consec_rest = 0
+
+                elif _estado == 'HIGH':
+                    if _hrv_sig == 'HRV+':
+                        if _consec_high >= 2:
+                            _pres = 'LOW'
+                            _razao = 'HIGH→LOW (máx 2 HIGH consec.)'
+                            _estado = 'LOW'; _consec_high = 0
+                        else:
+                            _pres = 'HIGH'
+                            _razao = ('Acima SWC sup' if ln7 > _swc_sup
+                                      else 'Dentro/acima banda → HIGH')
+                            _estado = 'HIGH'; _consec_high += 1
+                    else:  # HRV− → cai para LOW
+                        _pres = 'LOW'; _razao = 'HIGH + HRV− (abaixo banda) → LOW'
+                        _estado = 'LOW'; _consec_high = 0
+                    _consec_rest = 0
+
+                elif _estado == 'LOW':
+                    if _hrv_sig == 'HRV+':
+                        # Recuperado (dentro/acima banda) → volta a HIGH
                         _pres = 'HIGH'
                         _razao = ('Acima SWC sup' if ln7 > _swc_sup
-                                  else 'Dentro da banda (≥ SWC inf)')
-                        _consec_high += 1; _consec_rest = 0
+                                  else 'LOW→HIGH (recuperado, dentro banda)')
+                        _estado = 'HIGH'; _consec_high = 1
+                    else:  # ainda abaixo da banda → REST
+                        _pres = 'REST'; _razao = 'LOW + HRV− (ainda abaixo) → REST'
+                        _estado = 'REST'; _consec_rest = 1
+                    _consec_rest = _consec_rest if _pres == 'REST' else 0
+
+                elif _estado == 'REST':
+                    if _consec_rest >= 2:
+                        # Máx 2 rest consecutivos → força LOW (indep. do sinal)
+                        _pres = 'LOW'; _razao = 'REST→LOW (máx 2 REST consec.)'
+                        _estado = 'LOW'; _consec_rest = 0
+                    elif _hrv_sig == 'HRV+':
+                        _pres = 'LOW'; _razao = 'REST + HRV+ (recuperado) → LOW'
+                        _estado = 'LOW'; _consec_rest = 0
+                    else:  # continua abaixo → 2.º REST
+                        _pres = 'REST'; _razao = 'REST + HRV− (ainda abaixo) → REST'
+                        _estado = 'REST'; _consec_rest += 1
+                    _consec_high = 0
 
                 else:
-                    # ABAIXO do limite inferior → LOW ou REST conforme HRV+/−
-                    _consec_high = 0
-                    if _consec_rest >= 2:
-                        _pres = 'LOW'
-                        _razao = 'REST forçado LOW (máx 2 consec.)'
-                        _consec_rest = 0
-                    elif _hrv_sig == 'HRV+':
-                        # Abaixo da banda mas a recuperar → LOW (não REST)
-                        _pres = 'LOW'
-                        _razao = 'Abaixo SWC inf, mas HRV+ (a recuperar)'
-                        _consec_rest = 0
-                    else:
-                        # Abaixo da banda e ainda a cair (ou indeterminado) → REST
-                        _pres = 'REST'
-                        _razao = 'Abaixo SWC inf + HRV− (ainda a cair)'
-                        _consec_rest += 1
+                    _pres = 'LOW'; _razao = 'estado indefinido'
+                    _estado = 'LOW'
 
                 _prescricoes.append(_pres)
                 _razoes.append(_razao)
                 _sinais_hrv.append(_hrv_sig)
-                if pd.notna(ln7):
-                    _ln7_prev = ln7
             _wc_j['prescricao'] = _prescricoes
             _wc_j['razao'] = _razoes
             _wc_j['hrv_sinal'] = _sinais_hrv
@@ -714,7 +735,7 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
                 _rows5_j.append({'Data': r['Data'].strftime('%d/%m') + (' ⚠️' if _sem else ''), 'LnRMSSD₇': f"{r['ln7']:.3f}" + (' (est.)' if _sem else ''), 'HRV': r.get('hrv_sinal', '·'), 'Zona': r.get('razao') or '—', 'Prescrição': _LABEL_MAP.get(r['prescricao'], r['prescricao'])})
             st.markdown("**Últimos 5 dias — protocolo Javaloyes:**")
             st.dataframe(pd.DataFrame(_rows5_j), hide_index=True, use_container_width=True)
-            st.caption(f"SWC baseline (últimos 28 dias reais): mean={_swc_mean:.3f} ± 0.5×SD={0.5*_swc_sd:.3f} → banda [{_swc_inf:.3f}, {_swc_sup:.3f}]. HIGH = dentro/acima da banda. LOW/REST = abaixo do limite inferior (REST se HRV− a cair; LOW se HRV+ a recuperar). Máx 2 HIGH consec. → LOW. Máx 2 REST consec. → LOW.")
+            st.caption(f"SWC baseline (últimos 28 dias reais): mean={_swc_mean:.3f} ± 0.5×SD={0.5*_swc_sd:.3f} → banda [{_swc_inf:.3f}, {_swc_sup:.3f}]. Sinal HRV+/HRV− pela BANDA (fiel ao paper): HRV+ = ln7 dentro/acima; HRV− = abaixo do limite inferior. Máquina de estados Fig.1 Kiviniemi: START→LOW; HIGH↔LOW conforme sinal (máx 2 HIGH→LOW); LOW+HRV− → REST; máx 2 REST→LOW.")
 
             # Gráfico — usa n_hg do slider do HRV-Guided (mesmo período, sem slider novo)
             _df_plot = _wc_j_val.tail(n_hg).copy()
@@ -734,6 +755,116 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
                     _fig_j.add_trace(_go_j.Scatter(x=_sem_plot['Data'], y=_sem_plot['ln7'], mode='markers', name='Sem medição', marker=dict(symbol='star', color='gray', size=9, line=dict(width=1, color='white')), hovertemplate='%{x|%d/%m}<br>Estimado: %{y:.3f}<extra></extra>'))
             _fig_j.update_layout(height=380, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(size=11), hovermode='x unified', margin=dict(t=30, b=60, l=60, r=130), legend=dict(orientation='h', y=-0.22, font=dict(size=10)), title=dict(text='LnRMSSD rolling 7 dias — protocolo Javaloyes/Kiviniemi', font=dict(size=13)), xaxis=dict(showgrid=True, gridcolor='rgba(128,128,128,0.2)'), yaxis=dict(title='LnRMSSD₇', showgrid=True, gridcolor='rgba(128,128,128,0.2)'))
             st.plotly_chart(_fig_j, use_container_width=True, config={'displayModeBar': False}, key='javaloyes_hrv_chart')
+
+            # ════════════════════════════════════════════════════════════════
+            # COMPARAÇÃO: método KIVINIEMI (2007) — HF power, 10d, mean − 1·SD
+            # ════════════════════════════════════════════════════════════════
+            # Fiel ao paper original: métrica = HF power (não RMSSD);
+            # referência = 10-day HF mean − SD (banda de 1 SD, não 0.5);
+            # critério secundário = tendência decrescente > 0.1 ln ms² por 2 dias.
+            # A coluna 'hf_power' vem do wellness (formato ex.: 0.0512, 1.125...).
+            # Mesma máquina de estados Fig.1, mas com o sinal HF-based.
+            st.markdown("---")
+            st.markdown("**⚖️ Comparação: método Kiviniemi (2007) — HF Power**")
+            _tem_hf = ('hf_power' in _wc_j.columns and
+                       _wc_j['hf_power'].notna().sum() >= 10)
+            if not _tem_hf:
+                st.info(
+                    "Método Kiviniemi indisponível: sem dados suficientes de **HF Power** "
+                    "no wellness (coluna 'HF Power'). O Kiviniemi original usa HF power "
+                    "(não RMSSD) com referência 10-dias (mean − 1·SD)."
+                )
+            else:
+                # HF power: aplicar ln (o paper trabalha em ln ms²; valores da sheet
+                # em ms² → ln). Se já vierem em ln (valores pequenos ~0.05-5), usa-se
+                # directamente a métrica tal como está, de forma robusta.
+                _wc_k = _wc_j.copy()
+                _hf = pd.to_numeric(_wc_k['hf_power'], errors='coerce')
+                # Heurística: se a mediana > 10, assume ms² → aplica ln; senão usa cru
+                _hf_ln = np.log(_hf.where(_hf > 0)) if _hf.median() > 10 else _hf
+                _wc_k['hf_metric'] = _hf_ln
+                # Referência rolling 10 dias: mean − 1·SD (fiel ao Kiviniemi)
+                _wc_k['hf_mean10'] = _wc_k['hf_metric'].rolling(10, min_periods=5).mean()
+                _wc_k['hf_sd10']   = _wc_k['hf_metric'].rolling(10, min_periods=5).std()
+                _wc_k['hf_ref']    = _wc_k['hf_mean10'] - 1.0 * _wc_k['hf_sd10']
+
+                # Máquina de estados idêntica (Fig.1), sinal pela referência 10d
+                _pk=[]; _rk=[]; _sk=[]
+                _estado_k='START'; _ch_k=0; _cr_k=0
+                _hf_prev=np.nan; _hf_prev2=np.nan
+                for _, rowk in _wc_k.iterrows():
+                    _hfv = rowk['hf_metric']; _ref = rowk['hf_ref']
+                    # Sinal HF+/HF− pela banda + critério de tendência 2 dias
+                    if pd.isna(_hfv) or pd.isna(_ref):
+                        _sigk='·'
+                    else:
+                        _below = _hfv < _ref
+                        # tendência decrescente 2 dias > 0.1
+                        _trend = (pd.notna(_hf_prev) and pd.notna(_hf_prev2)
+                                  and (_hf_prev2 - _hf_prev) > 0.1
+                                  and (_hf_prev - _hfv) > 0.1)
+                        _sigk = 'HF−' if (_below or _trend) else 'HF+'
+                    # Transições (mesma Fig.1)
+                    if pd.isna(_hfv):
+                        _p='LOW'; _r='sem dados'; _estado_k='LOW'; _ch_k=0; _cr_k=0
+                    elif _estado_k=='START':
+                        _p='LOW'; _r='início'; _estado_k='LOW'; _ch_k=0; _cr_k=0
+                    elif _estado_k=='HIGH':
+                        if _sigk=='HF+':
+                            if _ch_k>=2: _p='LOW'; _r='máx 2 HIGH→LOW'; _estado_k='LOW'; _ch_k=0
+                            else: _p='HIGH'; _r='HF+ → HIGH'; _estado_k='HIGH'; _ch_k+=1
+                        else: _p='LOW'; _r='HF− → LOW'; _estado_k='LOW'; _ch_k=0
+                        _cr_k=0
+                    elif _estado_k=='LOW':
+                        if _sigk=='HF+': _p='HIGH'; _r='LOW→HIGH (HF+)'; _estado_k='HIGH'; _ch_k=1; _cr_k=0
+                        else: _p='REST'; _r='LOW+HF− → REST'; _estado_k='REST'; _cr_k=1
+                    elif _estado_k=='REST':
+                        if _cr_k>=2: _p='LOW'; _r='máx 2 REST→LOW'; _estado_k='LOW'; _cr_k=0
+                        elif _sigk=='HF+': _p='LOW'; _r='REST+HF+ → LOW'; _estado_k='LOW'; _cr_k=0
+                        else: _p='REST'; _r='REST+HF− → REST'; _estado_k='REST'; _cr_k+=1
+                        _ch_k=0
+                    else:
+                        _p='LOW'; _r='indef'; _estado_k='LOW'
+                    _pk.append(_p); _rk.append(_r); _sk.append(_sigk)
+                    if pd.notna(_hfv):
+                        _hf_prev2=_hf_prev; _hf_prev=_hfv
+                _wc_k['prescricao_k']=_pk; _wc_k['razao_k']=_rk; _wc_k['hf_sinal']=_sk
+
+                _wc_k_val = _wc_k[_wc_k['hf_metric'].notna()]
+                if len(_wc_k_val) > 0:
+                    _ult_k = _wc_k_val.iloc[-1]
+                    _ck1,_ck2,_ck3,_ck4 = st.columns(4)
+                    _ck1.metric("HF métrica (hoje)", f"{_ult_k['hf_metric']:.3f}",
+                                delta=_ult_k['hf_sinal'] if _ult_k['hf_sinal']!='·' else None)
+                    _ck2.metric("Ref 10d (mean−1SD)", f"{_ult_k['hf_ref']:.3f}",
+                                help="Kiviniemi: abaixo daqui = HF− (reduz intensidade)")
+                    _ck3.metric("Prescrição Kiviniemi", _LABEL_MAP.get(_ult_k['prescricao_k'], _ult_k['prescricao_k']))
+                    # concordância Javaloyes vs Kiviniemi
+                    _cmpjk = _wc_k[_wc_k['ln7'].notna() & _wc_k['hf_metric'].notna()]
+                    if len(_cmpjk) >= 10:
+                        _conc = int((_cmpjk['prescricao']==_cmpjk['prescricao_k']).sum())
+                        _ck4.metric("Concord. Jav↔Kiv", f"{_conc/len(_cmpjk)*100:.0f}%",
+                                    f"{_conc}/{len(_cmpjk)} dias")
+
+                # Tabela comparativa lado a lado (últimos 10 dias)
+                _cmp_tail = _wc_k_val.tail(10).copy(); _rows_cmp=[]
+                for _, r in _cmp_tail.iterrows():
+                    _rows_cmp.append({
+                        'Data': r['Data'].strftime('%d/%m'),
+                        'LnRMSSD₇': f"{r['ln7']:.3f}" if pd.notna(r.get('ln7')) else '—',
+                        'Javaloyes': _LABEL_MAP.get(r.get('prescricao'), '—').split(' — ')[0],
+                        'HF métrica': f"{r['hf_metric']:.3f}",
+                        'Kiviniemi': _LABEL_MAP.get(r.get('prescricao_k'), '—').split(' — ')[0],
+                        'Igual?': '✓' if r.get('prescricao')==r.get('prescricao_k') else '✗',
+                    })
+                st.dataframe(pd.DataFrame(_rows_cmp), hide_index=True, use_container_width=True)
+                st.caption(
+                    "**Kiviniemi (2007):** métrica = HF power (não RMSSD); referência = "
+                    "**10-dias mean − 1·SD** (banda de 1 SD); + critério de tendência "
+                    "decrescente > 0.1 ln ms² por 2 dias. Mesma máquina de estados Fig.1. "
+                    "A diferença vs Javaloyes vem da métrica (HF vs lnRMSSD), da janela "
+                    "(10 vs 7 dias) e da largura da banda (1·SD vs 0.5·SD)."
+                )
 
             # Correlação Javaloyes vs HRV-Guided
             st.markdown("**Correlação: protocolo Javaloyes vs HRV-Guided (Altini/Plews):**")
