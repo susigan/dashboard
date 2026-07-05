@@ -105,8 +105,76 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
         cb4.metric("Sinais convergentes", f"{max(n_pos, n_neg)}/3", delta=f"+{n_pos} pos | -{n_neg} neg | ~{n_inc} inc", delta_color="normal" if n_pos >= 2 else ("inverse" if n_neg >= 2 else "off"))
         h_r, h_g, h_b = int(cor_pres[1:3], 16), int(cor_pres[3:5], 16), int(cor_pres[5:7], 16)
         st.markdown(f'<div style="padding:16px 20px;border-radius:10px;margin:12px 0;background:rgba({h_r},{h_g},{h_b},0.10);border-left:6px solid {cor_pres};"><span style="font-size:1.15em;font-weight:700;color:{cor_pres};">Prescrição Modelo β: {prescricao}</span></div>', unsafe_allow_html=True)
-        with st.expander("🔍 Detalhe dos 3 indicadores β", expanded=False):
-            st.markdown("**Regra de decisão:** actuar apenas quando ≥2 dos 3 indicadores convergem na mesma direcção.")
+        with st.expander("🔍 Detalhe dos 3 indicadores β — métricas, cálculo e fundamentação", expanded=False):
+            st.markdown("""
+**Origem:** o **Modelo β** é de **Gabriel Della Mattia** (ednacore AI / ednaLabs),
+descrito em *"El Modelo β: Cómo Medir la Frescura del Atleta Más Allá de la Carga"*
+(2025) e no white paper *Beta Model — FPCA HRV Recovery* (2019, N=35 atletas, 3.3M
+amostras HRV). É a mesma família dos outros modelos que usas (FMT, PLT, NLSS).
+
+**Porque existe:** a VFC diária tem um coeficiente de variação intrínseco de **8–12%**
+mesmo em condições idênticas — um valor isolado tem demasiado ruído para ser
+accionável. O β converte esse ruído em sinal, aplicando três filtros temporais.
+
+**Princípio central — precisão relativa:** *"No importa tanto el número de hoy, sino
+hacia dónde se está moviendo el sistema"* (Della Mattia). O β nunca reage a um valor
+isolado; lê-se sempre pela **tendência**.
+
+**O que o β integra:** segundo Della Mattia, o β sintetiza **várias variáveis
+fisiológicas — sono, frequência cardíaca mínima e carga de treino recente** — além do
+HRV, num índice único de frescura. A ideia é que a VFC já integra os "fatores
+invisíveis" do SNA (homeostase energética, osmolaridade, microinflamação via nervo
+vago, barorreflexo) que o atleta não sente conscientemente.
+
+> ⚠️ **Nota sobre esta implementação:** a versão actual do ATHELTICA calcula o β a
+> partir do **LnRMSSD** (proxy autonómico principal). Para ficar 100% fiel ao β
+> original faltaria fundir também **sono, FC min e carga recente** no score — é uma
+> extensão possível (posso implementá-la se quiseres).
+
+**Os 3 componentes** (leem-se sempre em conjunto, nunca isolados):
+
+| Componente | O que mede | Janela | Cálculo (esta implementação) |
+|---|---|---|---|
+| **β — Frescura actual** | Estado autonómico integrado de hoje (0–100) | pontual | percentil de `z28 = (LnRMSSD − média₂₈d)/SD₂₈d` via CDF normal |
+| **βAgudo** | Resposta **imediata** do SNA a carga/sono/hidratação/inflamação | **3 dias** | `(média₃d − média₇d)/média₇d × 100` |
+| **βCrónico** | **Adaptação**: sistema a melhorar, estagnar ou deteriorar | **7 dias** | `(média₇d − média₂₈d)/média₂₈d × 100` |
+
+**Escala do β (Della Mattia):** **>80** alta frescura · **65–80** zona funcional ·
+**<65** possível fadiga. *(Esta implementação usa cortes 60/40 na convergência — ajustável para 80/65.)*
+
+**O papel de cada um** (segundo o autor):
+- **βAgudo (3d)** → *"sinaliza variações rápidas. Um βAgudo negativo persistente com β
+  alto = fadiga a acumular-se silenciosamente."* É o alerta precoce.
+- **βCrónico (7d)** → *"a referência da direcção do sistema. É o árbitro final entre
+  sinais contraditórios de β e βAgudo."* Estável, ignora ruído.
+- **β (pontual)** → nunca se interpreta sozinho.
+
+**Matriz de decisão do Della Mattia** (actuar só quando ≥2 dos 3 convergem):
+
+| β diário | βAgudo | βCrónico | Interpretação | Acção |
+|---|---|---|---|---|
+| Alto | estável/sobe | sobe | Adaptação real — sistema em ascensão | Carga completa ou aumentar |
+| **Alto** | **desce** | estável | **⚠ Armadilha clássica: β alto enganoso, fadiga a acumular** | Reduzir carga 20%; rever fatores invisíveis |
+| Baixo | estável | sobe | Ruído diário — sistema em adaptação real | Manter carga; não sobre-reagir |
+| Baixo | desce | desce | Fadiga sistémica confirmada | Recuperação; protocolo de correção |
+| Médio | sobe | sobe | Recuperação em curso — trajetória positiva | Carga moderada |
+
+**A armadilha central:** o momento de maior risco **não** é sentir-se mal (aí
+descansas) — é quando o **β está suprimido por fatores invisíveis e te sentes
+"normal"**. É aí que a perceção subjetiva engana. O β existe para captar isso.
+
+---
+
+**Como o β se encaixa com os outros modelos do Della Mattia no dashboard:**
+- **β** → frescura diária e prescrição rápida (precisão relativa, resistente ao ruído).
+- **FMT κ** (aba PMC) → funde HRV com carga/W'/sono/WEED num tensor; o β é o
+  "termómetro" diário, o FMT é a "ressonância" multidimensional completa.
+- **PLT / NLSS** → carga e performance latente.
+
+Convergência dos modelos = confiança alta. Divergência (ex.: β diz HIIT mas κ do FMT
+sobe) = cautela — investigar antes de carregar.
+""")
+            st.markdown("**Estado de hoje — os 3 sinais:**")
             for nome, sinal, desc, cor_s in sinais_detalhe:
                 hs_r, hs_g, hs_b = int(cor_s[1:3], 16), int(cor_s[3:5], 16), int(cor_s[5:7], 16)
                 icone = "✅" if sinal == +1 else ("⚠️" if sinal == -1 else "⬜")
