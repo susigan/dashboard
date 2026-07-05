@@ -33,7 +33,10 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
         "a tendência de 3 e 7 dias é."
     )
 
-    def _calcular_modelo_beta(wc_src):
+    def _calcular_modelo_beta(wc_src, da_src=None, modo='hrv'):
+        # modo='hrv'  → β só do LnRMSSD (implementação original)
+        # modo='multi'→ β funde HRV + sono(qualidade) + RHR(inv) + carga(inv)
+        #               fiel ao β multi-variável de Della Mattia (2025)
         import scipy.stats as _sst
         src = wc_src.copy() if wc_src is not None and len(wc_src) > 0 else dw.copy()
         src['Data'] = pd.to_datetime(src['Data'])
@@ -43,15 +46,104 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
         if 'hrv' not in src.columns:
             return None
         src['LnrMSSD'] = np.where(src['hrv'].notna() & (src['hrv'] > 0), np.log(src['hrv']), np.nan)
-        src['bm28'] = src['LnrMSSD'].rolling(28, min_periods=7).mean()
-        src['bs28'] = src['LnrMSSD'].rolling(28, min_periods=7).std()
-        src['z28'] = (src['LnrMSSD'] - src['bm28']) / src['bs28'].replace(0, np.nan)
+
+        def _zc(s):
+            # z-score rolling 28d (centrado na distribuição pessoal)
+            m = s.rolling(28, min_periods=7).mean()
+            sd = s.rolling(28, min_periods=7).std().replace(0, np.nan)
+            return (s - m) / sd
+
+        # Canal HRV (sempre)
+        z_hrv = _zc(src['LnrMSSD'])
+
+        if modo == 'multi':
+            # ── Canal SONO: qualidade 1-5 → reescala 1-10, z-score (direto) ──
+            if 'sleep_quality' in src.columns and src['sleep_quality'].notna().sum() >= 7:
+                _sq10 = pd.to_numeric(src['sleep_quality'], errors='coerce') * 2.0  # 1-5 → 2-10
+                z_sono = _zc(_sq10)
+            else:
+                z_sono = pd.Series(np.nan, index=src.index)
+
+            # ── Canal FC: RHR z-score, INVERTIDO (RHR alto = pior) ──
+            if 'rhr' in src.columns and src['rhr'].notna().sum() >= 7:
+                z_fc = -_zc(pd.to_numeric(src['rhr'], errors='coerce'))
+            else:
+                z_fc = pd.Series(np.nan, index=src.index)
+
+            # ── Canal CARGA: kJ + km + TSS (7d acumulado), z-score, INVERTIDO ──
+            z_carga = pd.Series(np.nan, index=src.index)
+            if da_src is not None and len(da_src) > 0:
+                _da = da_src.copy()
+                _da['Data'] = pd.to_datetime(_da['Data']).dt.normalize()
+                # kJ: mesma fonte da tab_volume (z1_kj+z2_kj+z3_kj); fallback
+                # icu_joules/1000 (convenção tab_ctl_kj). km = distance/1000
+                # (convenção tab_corporal/tab_volume). NOTA: como cada canal entra
+                # por z-score, a escala é irrelevante; usa-se a mesma fonte das
+                # outras abas só por coerência.
+                _kjz = [c for c in ['z1_kj', 'z2_kj', 'z3_kj'] if c in _da.columns]
+                if _kjz:
+                    _da['_kj'] = sum(pd.to_numeric(_da[c], errors='coerce').fillna(0)
+                                     for c in _kjz)
+                elif 'icu_joules' in _da.columns:
+                    _da['_kj'] = pd.to_numeric(_da['icu_joules'], errors='coerce') / 1000.0
+                else:
+                    _da['_kj'] = np.nan
+                _da['_km'] = (pd.to_numeric(_da.get('distance'), errors='coerce') / 1000.0
+                              if 'distance' in _da.columns else np.nan)
+                _da['_tss'] = (pd.to_numeric(_da.get('icu_training_load'), errors='coerce')
+                               if 'icu_training_load' in _da.columns else np.nan)
+                # somar por dia (todas as modalidades juntas)
+                _daily = _da.groupby('Data').agg(_kj=('_kj','sum'), _km=('_km','sum'),
+                                                 _tss=('_tss','sum'))
+                _daily = _daily.reindex(date_range).fillna(0.0)
+                # acumulado 7 dias de cada, z-score separado, média
+                _z_kj  = _zc(_daily['_kj'].rolling(7, min_periods=3).sum())
+                _z_km  = _zc(_daily['_km'].rolling(7, min_periods=3).sum())
+                _z_tss = _zc(_daily['_tss'].rolling(7, min_periods=3).sum())
+                z_carga = -pd.concat([_z_kj, _z_km, _z_tss], axis=1).mean(axis=1)  # invertido
+
+            # ── FUSÃO: média ponderada dos canais disponíveis ──
+            # Pesos: HRV 40%, sono 20%, FC 20%, carga 20% (renormalizados se faltar canal)
+            _pesos = {'hrv': 0.40, 'sono': 0.20, 'fc': 0.20, 'carga': 0.20}
+            _canais = {'hrv': z_hrv, 'sono': z_sono, 'fc': z_fc, 'carga': z_carga}
+            _zt = pd.Series(0.0, index=src.index)
+            _wsum = pd.Series(0.0, index=src.index)
+            for _nome, _zc_canal in _canais.items():
+                _w = _pesos[_nome]
+                _mask = _zc_canal.notna()
+                _zt = _zt.add((_zc_canal * _w).where(_mask, 0.0), fill_value=0.0)
+                _wsum = _wsum.add(pd.Series(_w, index=src.index).where(_mask, 0.0), fill_value=0.0)
+            z28 = (_zt / _wsum.replace(0, np.nan))  # renormaliza pelos pesos presentes
+            # guardar canais para debug/gráfico
+            src['z_hrv'] = z_hrv; src['z_sono'] = z_sono
+            src['z_fc'] = z_fc; src['z_carga'] = z_carga
+        else:
+            z28 = z_hrv
+
+        src['z28'] = z28
         src['beta'] = src['z28'].apply(lambda z: round(float(_sst.norm.cdf(z) * 100), 1) if pd.notna(z) else np.nan)
-        m3 = src['LnrMSSD'].rolling(3, min_periods=2).mean()
-        m7 = src['LnrMSSD'].rolling(7, min_periods=4).mean()
-        src['beta_agudo'] = np.where(m7.notna() & m3.notna() & (m7 != 0), ((m3 - m7) / m7.abs()) * 100, np.nan)
-        src['beta_cronico'] = np.where(src['bm28'].notna() & m7.notna() & (src['bm28'] != 0), ((m7 - src['bm28']) / src['bm28'].abs()) * 100, np.nan)
-        return src[['LnrMSSD', 'bm28', 'bs28', 'beta', 'beta_agudo', 'beta_cronico']].tail(90)
+        # Agudo (3d) e Crónico (7d) sobre o MESMO score β subjacente (z28)
+        _beta_series = src['z28']
+        bm28 = _beta_series.rolling(28, min_periods=7).mean()
+        m3 = _beta_series.rolling(3, min_periods=2).mean()
+        m7 = _beta_series.rolling(7, min_periods=4).mean()
+        # Para modo HRV mantém-se o cálculo original (sobre LnRMSSD) por retrocompat.
+        if modo == 'hrv':
+            src['bm28'] = src['LnrMSSD'].rolling(28, min_periods=7).mean()
+            src['bs28'] = src['LnrMSSD'].rolling(28, min_periods=7).std()
+            _m3 = src['LnrMSSD'].rolling(3, min_periods=2).mean()
+            _m7 = src['LnrMSSD'].rolling(7, min_periods=4).mean()
+            src['beta_agudo'] = np.where(_m7.notna() & _m3.notna() & (_m7 != 0), ((_m3 - _m7) / _m7.abs()) * 100, np.nan)
+            src['beta_cronico'] = np.where(src['bm28'].notna() & _m7.notna() & (src['bm28'] != 0), ((_m7 - src['bm28']) / src['bm28'].abs()) * 100, np.nan)
+        else:
+            # multi: agudo/crónico sobre o z28 fundido (tendência do score integrado)
+            src['bm28'] = bm28; src['bs28'] = _beta_series.rolling(28, min_periods=7).std()
+            src['beta_agudo'] = np.where(m7.notna() & m3.notna() & (m7.abs() > 1e-6), ((m3 - m7) / m7.abs()) * 100, np.nan)
+            src['beta_cronico'] = np.where(bm28.notna() & m7.notna() & (bm28.abs() > 1e-6), ((m7 - bm28) / bm28.abs()) * 100, np.nan)
+        _cols = ['LnrMSSD', 'bm28', 'bs28', 'beta', 'beta_agudo', 'beta_cronico']
+        if modo == 'multi':
+            _cols += ['z_hrv', 'z_sono', 'z_fc', 'z_carga']
+        return src[_cols].tail(90)
 
     def _regra_convergencia(beta, b_agudo, b_cronico, hrv_hoje_notna):
         sinais = []
@@ -78,7 +170,18 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
         elif n_pos == 1 and n_inc >= 2: return "🟡 Sessão moderada Z1/Z2 — sinais insuficientes para HIIT", "#f39c12", n_pos, n_neg, n_inc, sinais
         else: return "🟡 Zona neutra — manter intensidade planeada", "#f39c12", n_pos, n_neg, n_inc, sinais
 
-    beta_df = _calcular_modelo_beta(wc_full)
+    _modo_beta = st.radio(
+        "Modo do Modelo β",
+        options=['hrv', 'multi'],
+        format_func=lambda x: {'hrv': '🔹 Só HRV (LnRMSSD)',
+                               'multi': '🔷 Multi-variável (HRV + sono + FC + carga)'}[x],
+        horizontal=True, key="beta_modo",
+        help="Só-HRV: fiel ao core do β (o próprio Della Mattia diz que correlaciona "
+             "bem só com HRV matinal). Multi-variável: funde sono (qualidade), FC "
+             "(RHR invertido) e carga (kJ+km+TSS 7d, invertido) — capta fadiga que o "
+             "HRV sozinho esconde.")
+
+    beta_df = _calcular_modelo_beta(wc_full, da_src=da_full, modo=_modo_beta)
     if beta_df is None or beta_df.empty or beta_df['beta'].isna().all():
         st.info("Dados insuficientes para calcular Modelo β (mínimo 14 dias de HRV).")
     else:
