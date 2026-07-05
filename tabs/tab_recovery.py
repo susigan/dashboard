@@ -122,24 +122,18 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
 
         src['z28'] = z28
         src['beta'] = src['z28'].apply(lambda z: round(float(_sst.norm.cdf(z) * 100), 1) if pd.notna(z) else np.nan)
-        # Agudo (3d) e Crónico (7d) sobre o MESMO score β subjacente (z28)
-        _beta_series = src['z28']
-        bm28 = _beta_series.rolling(28, min_periods=7).mean()
-        m3 = _beta_series.rolling(3, min_periods=2).mean()
-        m7 = _beta_series.rolling(7, min_periods=4).mean()
-        # Para modo HRV mantém-se o cálculo original (sobre LnRMSSD) por retrocompat.
-        if modo == 'hrv':
-            src['bm28'] = src['LnrMSSD'].rolling(28, min_periods=7).mean()
-            src['bs28'] = src['LnrMSSD'].rolling(28, min_periods=7).std()
-            _m3 = src['LnrMSSD'].rolling(3, min_periods=2).mean()
-            _m7 = src['LnrMSSD'].rolling(7, min_periods=4).mean()
-            src['beta_agudo'] = np.where(_m7.notna() & _m3.notna() & (_m7 != 0), ((_m3 - _m7) / _m7.abs()) * 100, np.nan)
-            src['beta_cronico'] = np.where(src['bm28'].notna() & _m7.notna() & (src['bm28'] != 0), ((_m7 - src['bm28']) / src['bm28'].abs()) * 100, np.nan)
-        else:
-            # multi: agudo/crónico sobre o z28 fundido (tendência do score integrado)
-            src['bm28'] = bm28; src['bs28'] = _beta_series.rolling(28, min_periods=7).std()
-            src['beta_agudo'] = np.where(m7.notna() & m3.notna() & (m7.abs() > 1e-6), ((m3 - m7) / m7.abs()) * 100, np.nan)
-            src['beta_cronico'] = np.where(bm28.notna() & m7.notna() & (bm28.abs() > 1e-6), ((m7 - bm28) / bm28.abs()) * 100, np.nan)
+        # ── Agudo/Crónico em PONTOS do β (0-100) — mesma escala, sem explosão ──
+        # βAgudo   = média₃d(β) − média₇d(β)  → tendência recente, em pontos
+        # βCrónico = média₇d(β) − média₂₈d(β) → adaptação de fundo, em pontos
+        # Aplicado igual nos dois modos (hrv e multi) para consistência total.
+        _bser = src['beta']
+        _bm3  = _bser.rolling(3, min_periods=2).mean()
+        _bm7  = _bser.rolling(7, min_periods=4).mean()
+        _bm28 = _bser.rolling(28, min_periods=7).mean()
+        src['bm28'] = src['LnrMSSD'].rolling(28, min_periods=7).mean()  # p/ retrocompat (última med.)
+        src['bs28'] = src['LnrMSSD'].rolling(28, min_periods=7).std()
+        src['beta_agudo']   = _bm3 - _bm7    # pontos de β
+        src['beta_cronico'] = _bm7 - _bm28   # pontos de β
         _cols = ['LnrMSSD', 'bm28', 'bs28', 'beta', 'beta_agudo', 'beta_cronico']
         if modo == 'multi':
             _cols += ['z_hrv', 'z_sono', 'z_fc', 'z_carga']
@@ -152,13 +146,13 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
         elif beta <= 40: sinais.append(('β actual', -1, f'{beta:.0f} ≤ 40 ⚠️', '#e74c3c'))
         else: sinais.append(('β actual', 0, f'{beta:.0f} zona neutra (40-60)', '#f39c12'))
         if pd.isna(b_agudo): sinais.append(('βAgudo 3d', 0, 'NaN — dados insuficientes', '#888'))
-        elif b_agudo >= 1.0: sinais.append(('βAgudo 3d', +1, f'{b_agudo:+.1f}% ≥ +1% ✅', '#27ae60'))
-        elif b_agudo <= -1.0: sinais.append(('βAgudo 3d', -1, f'{b_agudo:+.1f}% ≤ -1% ⚠️', '#e74c3c'))
-        else: sinais.append(('βAgudo 3d', 0, f'{b_agudo:+.1f}% zona neutra', '#f39c12'))
+        elif b_agudo >= 2.0: sinais.append(('βAgudo 3d', +1, f'{b_agudo:+.1f} pts ≥ +2 ✅', '#27ae60'))
+        elif b_agudo <= -2.0: sinais.append(('βAgudo 3d', -1, f'{b_agudo:+.1f} pts ≤ -2 ⚠️', '#e74c3c'))
+        else: sinais.append(('βAgudo 3d', 0, f'{b_agudo:+.1f} pts zona neutra', '#f39c12'))
         if pd.isna(b_cronico): sinais.append(('βCrónico 7d', 0, 'NaN — dados insuficientes', '#888'))
-        elif b_cronico >= 1.0: sinais.append(('βCrónico 7d', +1, f'{b_cronico:+.1f}% ≥ +1% ✅', '#27ae60'))
-        elif b_cronico <= -1.0: sinais.append(('βCrónico 7d', -1, f'{b_cronico:+.1f}% ≤ -1% ⚠️', '#e74c3c'))
-        else: sinais.append(('βCrónico 7d', 0, f'{b_cronico:+.1f}% zona neutra', '#f39c12'))
+        elif b_cronico >= 2.0: sinais.append(('βCrónico 7d', +1, f'{b_cronico:+.1f} pts ≥ +2 ✅', '#27ae60'))
+        elif b_cronico <= -2.0: sinais.append(('βCrónico 7d', -1, f'{b_cronico:+.1f} pts ≤ -2 ⚠️', '#e74c3c'))
+        else: sinais.append(('βCrónico 7d', 0, f'{b_cronico:+.1f} pts zona neutra', '#f39c12'))
         n_pos = sum(1 for _, s, _, _ in sinais if s == +1)
         n_neg = sum(1 for _, s, _, _ in sinais if s == -1)
         n_inc = sum(1 for _, s, _, _ in sinais if s == 0)
@@ -199,11 +193,11 @@ def tab_recovery(dw, da=None, wc_full=None, da_full=None):
         beta_label = f"{beta_hoje:.0f}/100" if pd.notna(beta_hoje) else "— (sem dados)"
         beta_delta = ("Alta frescura ✅" if pd.notna(beta_hoje) and beta_hoje >= 65 else ("Zona funcional" if pd.notna(beta_hoje) and beta_hoje >= 50 else ("Possível fadiga ⚠️" if pd.notna(beta_hoje) else "Sem medição hoje")))
         cb1.metric("β Frescura actual", beta_label, delta=beta_delta, delta_color="normal" if pd.notna(beta_hoje) and beta_hoje >= 50 else "inverse")
-        ba_label = f"{b_agudo_hoje:+.1f}%" if pd.notna(b_agudo_hoje) else "— (NaN)"
-        ba_delta = ("Tendência +3d ↗" if pd.notna(b_agudo_hoje) and b_agudo_hoje >= 1 else ("Estável" if pd.notna(b_agudo_hoje) and b_agudo_hoje >= -1 else ("Queda aguda ↘ ⚠️" if pd.notna(b_agudo_hoje) else "Incerto")))
+        ba_label = f"{b_agudo_hoje:+.1f} pts" if pd.notna(b_agudo_hoje) else "— (NaN)"
+        ba_delta = ("Tendência +3d ↗" if pd.notna(b_agudo_hoje) and b_agudo_hoje >= 2 else ("Estável" if pd.notna(b_agudo_hoje) and b_agudo_hoje >= -2 else ("Queda aguda ↘ ⚠️" if pd.notna(b_agudo_hoje) else "Incerto")))
         cb2.metric("βAgudo (3d)", ba_label, delta=ba_delta, delta_color="normal" if pd.notna(b_agudo_hoje) and b_agudo_hoje >= 0 else "inverse")
-        bc_label = f"{b_cron_hoje:+.1f}%" if pd.notna(b_cron_hoje) else "— (NaN)"
-        bc_delta = ("Adaptação positiva ↗" if pd.notna(b_cron_hoje) and b_cron_hoje >= 1 else ("Estável" if pd.notna(b_cron_hoje) and b_cron_hoje >= -1 else ("Declínio crónico ↘ ⚠️" if pd.notna(b_cron_hoje) else "Incerto")))
+        bc_label = f"{b_cron_hoje:+.1f} pts" if pd.notna(b_cron_hoje) else "— (NaN)"
+        bc_delta = ("Adaptação positiva ↗" if pd.notna(b_cron_hoje) and b_cron_hoje >= 2 else ("Estável" if pd.notna(b_cron_hoje) and b_cron_hoje >= -2 else ("Declínio crónico ↘ ⚠️" if pd.notna(b_cron_hoje) else "Incerto")))
         cb3.metric("βCrónico (7d)", bc_label, delta=bc_delta, delta_color="normal" if pd.notna(b_cron_hoje) and b_cron_hoje >= 0 else "inverse")
         cb4.metric("Sinais convergentes", f"{max(n_pos, n_neg)}/3", delta=f"+{n_pos} pos | -{n_neg} neg | ~{n_inc} inc", delta_color="normal" if n_pos >= 2 else ("inverse" if n_neg >= 2 else "off"))
         h_r, h_g, h_b = int(cor_pres[1:3], 16), int(cor_pres[3:5], 16), int(cor_pres[5:7], 16)
@@ -292,10 +286,11 @@ sobe) = cautela — investigar antes de carregar.
         fig_b.add_hrect(y0=40, y1=65, fillcolor="rgba(243,156,18,0.05)", line_width=0, annotation_text="Zona funcional", annotation_position="left", annotation_font_size=10, annotation_font_color="#f39c12")
         fig_b.add_hrect(y0=0, y1=40, fillcolor="rgba(231,76,60,0.07)", line_width=0, annotation_text="Fadiga possível (<40)", annotation_position="left", annotation_font_size=10, annotation_font_color="#e74c3c")
         fig_b.add_trace(go.Scatter(x=beta_plot['Data'], y=beta_plot['beta'], mode='lines+markers', name='β (frescura)', line=dict(color='#2471A3', width=2.5), marker=dict(size=6), hovertemplate='%{x|%d/%m/%Y}<br>β: <b>%{y:.0f}</b><extra></extra>'))
-        fig_b.add_trace(go.Scatter(x=beta_plot['Data'], y=beta_plot['beta_agudo'], mode='lines', name='βAgudo 3d (%)', line=dict(color='#E74C3C', width=1.5, dash='dot'), yaxis='y2', hovertemplate='%{x|%d/%m/%Y}<br>βAgudo: <b>%{y:+.1f}%</b><extra></extra>'))
-        fig_b.add_trace(go.Scatter(x=beta_plot['Data'], y=beta_plot['beta_cronico'], mode='lines', name='βCrónico 7d (%)', line=dict(color='#9B59B6', width=1.5, dash='dash'), yaxis='y2', hovertemplate='%{x|%d/%m/%Y}<br>βCrónico: <b>%{y:+.1f}%</b><extra></extra>'))
+        fig_b.add_trace(go.Scatter(x=beta_plot['Data'], y=beta_plot['beta_agudo'], mode='lines', name='βAgudo 3d (pts)', line=dict(color='#E74C3C', width=1.5, dash='dot'), yaxis='y2', hovertemplate='%{x|%d/%m/%Y}<br>βAgudo: <b>%{y:+.1f} pts</b><extra></extra>'))
+        fig_b.add_trace(go.Scatter(x=beta_plot['Data'], y=beta_plot['beta_cronico'], mode='lines', name='βCrónico 7d (pts)', line=dict(color='#9B59B6', width=1.5, dash='dash'), yaxis='y2', hovertemplate='%{x|%d/%m/%Y}<br>βCrónico: <b>%{y:+.1f} pts</b><extra></extra>'))
         fig_b.add_hline(y=0, line_dash='solid', line_color='rgba(150,150,150,0.4)', line_width=1, yref='y2')
-        fig_b.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(size=12), height=420, hovermode='x unified', margin=dict(t=40, b=70, l=60, r=80), legend=dict(orientation='h', y=-0.18, font=dict(size=10), bgcolor='rgba(0,0,0,0)'), yaxis=dict(title='β (0–100)', range=[0, 100], showgrid=True, gridcolor='rgba(128,128,128,0.2)', tickfont=dict(color='#2471A3'), title_font=dict(color='#2471A3')), yaxis2=dict(title='βAgudo / βCrónico (%)', overlaying='y', side='right', showgrid=False, zeroline=True, zerolinecolor='rgba(150,150,150,0.4)', tickfont=dict(color='#888'), title_font=dict(color='#888')), xaxis=dict(showgrid=True, gridcolor='rgba(128,128,128,0.2)', tickfont=dict()))
+        # Eixo secundário FIXO e simétrico (pontos de β, tipicamente ±15) — sem explosão
+        fig_b.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(size=12), height=420, hovermode='x unified', margin=dict(t=40, b=70, l=60, r=80), legend=dict(orientation='h', y=-0.18, font=dict(size=10), bgcolor='rgba(0,0,0,0)'), yaxis=dict(title='β (0–100)', range=[0, 100], showgrid=True, gridcolor='rgba(128,128,128,0.2)', tickfont=dict(color='#2471A3'), title_font=dict(color='#2471A3')), yaxis2=dict(title='βAgudo / βCrónico (pontos)', overlaying='y', side='right', range=[-35, 35], showgrid=False, zeroline=True, zerolinecolor='rgba(150,150,150,0.4)', tickfont=dict(color='#888'), title_font=dict(color='#888')), xaxis=dict(showgrid=True, gridcolor='rgba(128,128,128,0.2)', tickfont=dict()))
         st.plotly_chart(fig_b, use_container_width=True, config={'displayModeBar': False, 'responsive': True, 'scrollZoom': False}, key="rec_beta_chart")
 
     st.markdown("---")
