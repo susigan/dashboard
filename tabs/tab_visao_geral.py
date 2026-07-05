@@ -477,38 +477,33 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
     # ── HRV-Guided + Recovery Score + Peso/BF ────────────────────────────
     vg_r1, vg_r2, vg_r3, vg_r4, vg_r5 = st.columns(5)
 
-    # ── HRV-Guided Training (LnrMSSD, baseline 14d, ±0.5 SD) ────────────
+    # ── HRV-Guided Training — via módulo central utils/hrv_guided.py ─────
+    # Fonte ÚNICA de verdade: mesma máquina de estados Javaloyes da tab_recovery.
+    # Substitui a antiga classificação estática HIIT/Recuperação por HIGH/LOW/REST.
     hrv_hoje    = None
-    hrv_class   = "Sem dados"
+    hrv_class   = "Sem dados"      # agora: 'HIGH'|'LOW'|'REST' (Javaloyes)
     hrv_emoji   = "⚪"
+    hrv_kiv     = None            # Kiviniemi de hoje (se houver HF power)
     rec_score   = None
     rec_trend   = ""
 
     if wc_full is not None and len(wc_full) > 0 and 'hrv' in wc_full.columns:
+        try:
+            from utils.hrv_guided import prescricao_hoje, LABEL_MAP, COR_MAP
+            _hg = prescricao_hoje(wc_full, da_src=da_full if 'da_full' in dir() else None)
+            if _hg.get('javaloyes'):
+                hrv_class = _hg['javaloyes']           # HIGH / LOW / REST
+                hrv_emoji = {'HIGH': '🟢', 'LOW': '🔵', 'REST': '🔴'}.get(hrv_class, '⚪')
+            hrv_kiv  = _hg.get('kiviniemi')
+            hrv_hoje = _hg.get('hrv_hoje')
+        except Exception as _e_hg:
+            hrv_class = "Sem dados"
+
         _wc = wc_full.copy()
         _wc['Data'] = pd.to_datetime(_wc['Data'])
         _wc = _wc.sort_values('Data')
         _wc['LnrMSSD'] = np.where(_wc['hrv'] > 0, np.log(_wc['hrv']), np.nan)
         _wc = _wc.dropna(subset=['LnrMSSD'])
-        if len(_wc) >= 7:
-            _wc['bm']  = _wc['LnrMSSD'].rolling(14, min_periods=7).mean()
-            _wc['bs']  = _wc['LnrMSSD'].rolling(14, min_periods=7).std()
-            _wc['linf']= _wc['bm'] - 0.5 * _wc['bs']
-            _wc['lsup']= _wc['bm'] + 0.5 * _wc['bs']
-            # Use last row for hrv_hoje; use last row WITH bm for classification
-            # This ensures today's HRV is classified even if bm not yet propagated
-            last_hrv = _wc.iloc[-1]   # actual last HRV entry (today if measured)
-            last_bm  = _wc.dropna(subset=['bm']).iloc[-1]  # last with rolling bm
-            hrv_hoje = float(last_hrv['hrv']) if pd.notna(last_hrv.get('hrv')) else None
-            # Classify using today's LnrMSSD vs the most recent baseline
-            _lnr_today = float(last_hrv['LnrMSSD']) if pd.notna(last_hrv.get('LnrMSSD')) else None
-            _linf_ref  = float(last_bm['linf']) if pd.notna(last_bm.get('linf')) else None
-            _lsup_ref  = float(last_bm['lsup']) if pd.notna(last_bm.get('lsup')) else None
-            if _lnr_today is not None and _linf_ref is not None:
-                if _linf_ref <= _lnr_today <= _lsup_ref:
-                    hrv_class = "HIIT"; hrv_emoji = "🟢"
-                else:
-                    hrv_class = "Recuperação"; hrv_emoji = "🔴"
 
         # Recovery Score trend (7d)
         _rec = calcular_recovery(_wc.rename(columns={'Data':'Data'}))
@@ -526,9 +521,10 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                     rec_trend = "→"
 
     with vg_r1:
-        st.metric("🧠 HRV-Guided",
+        _kiv_txt = f" · Kiv: {hrv_kiv}" if hrv_kiv else ""
+        st.metric("🧠 HRV-Guided (Javaloyes)",
                   f"{hrv_emoji} {hrv_class}",
-                  f"HRV {hrv_hoje:.0f} ms" if hrv_hoje else None)
+                  (f"HRV {hrv_hoje:.0f} ms{_kiv_txt}" if hrv_hoje else (_kiv_txt.strip(' ·') or None)))
     with vg_r2:
         st.metric("🔋 Recovery Score",
                   f"{rec_score:.0f}/100" if rec_score else "—",
@@ -1456,20 +1452,24 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             _ap_mod = _alpha_p.get(mod, {})
             _zone_prescription = None
             if _ap_mod.get('ok'):
-                # HRV-Guided define o tecto de intensidade
+                # HRV-Guided (Javaloyes) define o tecto de intensidade
                 _hrv_class_local = hrv_class if 'hrv_class' in dir() else 'Sem dados'
-                # Recuperação → Z1, Z2 curto, ou Descanso (nao Z3)
-                # HIIT        → Z2 (threshold/sweetspot) ou Z3 (VO2max/anaer)
-                if _hrv_class_local == 'Recuperação':
+                # REST → só Z1/descanso; LOW → Z1-Z2 (base); HIGH → Z2-Z3 (intenso)
+                if _hrv_class_local == 'REST':
+                    _zona_permitidas = ['Z1']
+                    _zona_max        = 'Z1'
+                    _zona_primaria   = 'Z1'
+                    _hrv_note        = "🔴 REST — Z1/descanso (HRV suprimido)"
+                elif _hrv_class_local == 'LOW':
                     _zona_permitidas = ['Z1', 'Z2']
                     _zona_max        = 'Z2'
                     _zona_primaria   = 'Z1'
-                    _hrv_note        = "HRV↓ Recuperação — Z1 prioritário, Z2 curto ou Descanso"
-                elif _hrv_class_local == 'HIIT':
+                    _hrv_note        = "🔵 LOW — Z1 prioritário, Z2 curto (base/volume)"
+                elif _hrv_class_local == 'HIGH':
                     _zona_permitidas = ['Z2', 'Z3']
                     _zona_max        = 'Z3'
                     _zona_primaria   = 'Z2' if ni < 60 else 'Z3'
-                    _hrv_note        = "HRV✓ HIIT — Z2 (threshold/sweetspot) ou Z3 (VO2max)"
+                    _hrv_note        = "🟢 HIGH — Z2 (threshold/sweetspot) ou Z3 (VO2max)"
                 else:
                     _zona_permitidas = ['Z1', 'Z2', 'Z3']
                     _zona_max        = 'Z3' if ni >= 70 else 'Z2'
@@ -2176,7 +2176,7 @@ Estado = Modalidade_Zona (ex: Bike_Moderado, Row_Forte) ou Descanso.
 A cadeia aprende a probabilidade de cada transição e o HRV médio t+1 e t+2.
 
 **Sugestão integrada:**
-1. HRV-Guided: Recuperação → Z1/Z2/Descanso | HIIT → Z2/Z3
+1. HRV-Guided (Javaloyes): 🔴REST → Z1/Descanso | 🔵LOW → Z1/Z2 | 🟢HIGH → Z2/Z3
 2. Monotonia (IM): se IM>1.5 forçar variação de zona/modalidade
 3. Markov: selecciona a transição com melhor HRV histórico dentro das opcoes permitidas
 
@@ -2304,17 +2304,20 @@ Recalcula sem cache a cada carregamento.
             # Sugestao integrada
             st.markdown("#### Sugestao — HRV x Monotonia x Markov")
 
-            # HRV-Guided — reutilizar hrv_class já calculado no topo da função
-            # (mesmo valor que aparece no card HRV-Guided, consistência garantida)
-            if hrv_class == 'Recuperação':
+            # HRV-Guided (Javaloyes) — reutilizar hrv_class do topo da função
+            # (mesmo valor do card, via módulo utils/hrv_guided — consistência total)
+            if hrv_class == 'REST':
+                _zona_perm_mk = ['Leve']
+                _hrv_guid_mk  = "🔴 REST — Z1/Descanso (HRV suprimido)"
+            elif hrv_class == 'LOW':
                 _zona_perm_mk = ['Leve', 'Moderado']
-                _hrv_guid_mk  = "Recuperação — Z1/Descanso, Z2 curto se necessário"
-            elif hrv_class == 'HIIT':
+                _hrv_guid_mk  = "🔵 LOW — Z1/Z2 base, volume"
+            elif hrv_class == 'HIGH':
                 _zona_perm_mk = ['Moderado', 'Forte']
-                _hrv_guid_mk  = "HIIT — Z2 (threshold/sweetspot) ou Z3 (VO2max)"
+                _hrv_guid_mk  = "🟢 HIGH — Z2 (threshold) ou Z3 (VO2max)"
             else:
                 _zona_perm_mk = ['Leve', 'Moderado', 'Forte']
-                _hrv_guid_mk  = "HRV sem dados — todas as zonas permitidas" 
+                _hrv_guid_mk  = "HRV sem dados — todas as zonas permitidas"
 
             # IM actual
             _im_mk = None
@@ -2419,7 +2422,7 @@ Recalcula sem cache a cada carregamento.
 **Markov Chain — {_n_total_mk} transicoes | {_n_est_mk} estados**
 
 - Estado = Modalidade x Zona RPE (Leve<=4 / Moderado 4-7 / Forte >7) + Descanso
-- HRV: Recuperacao → Z1/Descanso/Z2curto | HIIT → Z2/Z3
+- HRV (Javaloyes): REST → Z1/Descanso | LOW → Z1/Z2 | HIGH → Z2/Z3
 - IM Fry: se >1.5 forcar variacao de zona/modalidade
 - Recalcula sem cache
                 """)
