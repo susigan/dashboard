@@ -18,6 +18,7 @@
 
 import numpy as np
 import pandas as pd
+from scipy import stats as scipy_stats
 from scipy.stats import pearsonr, spearmanr, linregress
 try:
     from sklearn.cluster import KMeans
@@ -34,6 +35,90 @@ except Exception:
     def filtrar_principais(df):
         """Fallback: se utils.data não disponível, devolve o df tal como está."""
         return df
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# _STATES — definição dos estados fisiológicos (usado por _classify_states)
+# ══════════════════════════════════════════════════════════════════════════════
+_STATES = {
+    'autonomic_suppression': {
+        'label': '🔴 Autonomic Suppression',
+        'color': '#c0392b',
+        'desc': 'HRV colapsado + RHR elevada + strain alto + slope negativo.',
+        'rules': lambda r: (
+            r.get('ln_hrv_z', 0) < -1.0 and
+            r.get('rhr_z', 0) > 0.8 and
+            r.get('strain_7d', 0) > 0 and
+            r.get('hrv_slope_7d', 0) < -0.3
+        ),
+    },
+    'accumulated_fatigue': {
+        'label': '🟠 Accumulated Fatigue',
+        'color': '#e67e22',
+        'desc': 'HRV abaixo baseline + ATL elevada + coupling deteriorando.',
+        'rules': lambda r: (
+            r.get('ln_hrv_z', 0) < -0.5 and
+            r.get('rhr_z', 0) > 0.3 and
+            r.get('atl', 0) > r.get('ctl', 1) * 1.1
+        ),
+    },
+    'functional_overreach': {
+        'label': '🟡 Functional Overreach',
+        'color': '#f39c12',
+        'desc': 'HRV variável + monotonia alta + strain elevado. Precisa de unload.',
+        'rules': lambda r: (
+            r.get('mono_7d', 0) > 2.0 and
+            r.get('strain_7d', 0) > 0 and
+            abs(r.get('ln_hrv_z', 0)) < 1.0
+        ),
+    },
+    'taper_response': {
+        'label': '🟢 Taper Response',
+        'color': '#27ae60',
+        'desc': 'HRV a subir + RHR a cair + carga reduzida. Forma a emergir.',
+        'rules': lambda r: (
+            r.get('hrv_slope_7d', 0) > 0.3 and
+            r.get('ln_hrv_z', 0) > 0.0 and
+            r.get('load_7d', 1) < r.get('load_28d', 1) / 4 * 0.85
+        ),
+    },
+    'parasympathetic_rebound': {
+        'label': '💚 Parasympathetic Rebound',
+        'color': '#1abc9c',
+        'desc': 'HRV bem acima baseline + slope positivo + RHR baixa. Óptimo.',
+        'rules': lambda r: (
+            r.get('ln_hrv_z', 0) > 1.0 and
+            r.get('hrv_slope_7d', 0) > 0.2 and
+            r.get('rhr_z', 0) < 0.0
+        ),
+    },
+    'resilient_state': {
+        'label': '🔵 Resilient State',
+        'color': '#2980b9',
+        'desc': 'HRV estável e acima baseline com carga normal. Adaptado.',
+        'rules': lambda r: (
+            r.get('ln_hrv_z', 0) > 0.3 and
+            abs(r.get('hrv_slope_7d', 0)) < 0.3 and
+            r.get('rhr_z', 0) < 0.3
+        ),
+    },
+    'maladaptation': {
+        'label': '⚫ Maladaptation Risk',
+        'color': '#2c3e50',
+        'desc': 'HRV cronicamente baixo + RHR alta + strain persistente.',
+        'rules': lambda r: (
+            r.get('ln_hrv_z', 0) < -0.8 and
+            r.get('rhr_z', 0) > 0.5 and
+            r.get('mono_7d', 0) > 1.5
+        ),
+    },
+    'baseline': {
+        'label': '⚪ Baseline',
+        'color': '#95a5a6',
+        'desc': 'Estado neutro — sem padrão fisiológico dominante.',
+        'rules': lambda r: True,   # fallback
+    },
+}
 
 
 
