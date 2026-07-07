@@ -338,7 +338,7 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
             _ref_days = st.number_input("Dias de referência (anterior)", value=21,
                                         min_value=7, max_value=90, step=7, key="hrv_refdays")
 
-        if st.button("▶ Analisar período", type="primary", key="hrv_run_manual"):
+        if True:  # auto-run (era botão)
             _ts = pd.Timestamp(_p_start)
             _te = pd.Timestamp(_p_end)
 
@@ -562,9 +562,9 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
             )
             _max_lag = _lc2.slider("Lag máximo (dias)", 3, 21, 14, 1, key="hrv_lag_max")
 
-            if st.button("▶ Calcular lag correlations", type="primary", key="hrv_run_lag"):
+            if True:  # auto-run (era botão)
                 with st.spinner("A calcular correlações com lag..."):
-                    lag_df = _lag_correlations(sig_hrv, sig_train,
+                    lag_df = _cx_lag_correlations(sig_hrv, sig_train,
                                                hrv_var=_hrv_target,
                                                max_lag=_max_lag)
 
@@ -653,9 +653,9 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
             _fp_pre  = _fp2.slider("Dias antes a analisar", 3, 14, 7, 1,
                                     key="hrv_fp_pre")
 
-            if st.button("▶ Calcular fingerprint", type="primary", key="hrv_run_fp"):
+            if True:  # auto-run (era botão)
                 with st.spinner("A calcular fingerprints..."):
-                    fp = _hrv_fingerprint(sig_hrv, sig_train,
+                    fp = _cx_fingerprint(sig_hrv, sig_train,
                                           pct=_fp_pct/100, pre_days=_fp_pre)
 
                 if not fp:
@@ -925,6 +925,56 @@ _transition_matrix = _hra._transition_matrix
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# WRAPPERS CACHEADOS — auto-run sem recalcular a cada interação
+# As análises correm automaticamente (sem botões); o cache garante que só
+# recalculam quando os dados de entrada mudam. Nas visitas seguintes = instantâneo.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@st.cache_data(show_spinner=False)
+def _cx_lag_correlations(sig_hrv, sig_train, hrv_var='hrv', max_lag=14):
+    return _hra._lag_correlations(sig_hrv, sig_train, hrv_var=hrv_var, max_lag=max_lag)
+
+@st.cache_data(show_spinner=False)
+def _cx_fingerprint(sig_hrv, sig_train, pct=0.10, pre_days=10):
+    return _hra._hrv_fingerprint(sig_hrv, sig_train, pct=pct, pre_days=pre_days)
+
+@st.cache_data(show_spinner=False)
+def _cx_compute_ari(sig_hrv):
+    return _hra._compute_ari(sig_hrv)
+
+@st.cache_data(show_spinner=False)
+def _cx_classify_states(sig_hrv, sig_train):
+    return _hra._classify_states(sig_hrv, sig_train)
+
+@st.cache_data(show_spinner=False)
+def _cx_recovery_elasticity(sig_hrv, sig_train, z_suppress=-1.0, z_recover=-0.3):
+    return _hra._recovery_elasticity(sig_hrv, sig_train, z_suppress=z_suppress, z_recover=z_recover)
+
+@st.cache_data(show_spinner=False)
+def _cx_lag_advanced(sig_hrv, sig_train, hrv_var='hrv', max_lag=28, train_vars=None):
+    return _hra._lag_correlations_advanced(sig_hrv, sig_train, hrv_var=hrv_var,
+                                           max_lag=max_lag, train_vars=train_vars)
+
+@st.cache_data(show_spinner=False)
+def _cx_dose_response(sig_hrv, sig_train, x_var, y_var='hrv', lag=0):
+    return _hra._dose_response(sig_hrv, sig_train, x_var, y_var=y_var, lag=lag)
+
+# _directional recebe uma lista de padrões (dicts) — chamamos direto (sem cache)
+# para evitar problemas de hash; a função é rápida.
+def _cx_directional(sig_hrv, sig_train, patterns, outcome_lag=5):
+    return _hra._directional_analysis(sig_hrv, sig_train, patterns, outcome_lag=outcome_lag)
+
+@st.cache_data(show_spinner=False)
+def _cx_cluster_weeks(sig_hrv, sig_train, n_clusters=4):
+    return _hra._cluster_weeks(sig_hrv, sig_train, n_clusters=n_clusters)
+
+@st.cache_data(show_spinner=False)
+def _cx_autorunner(sig_hrv, sig_train, da_full=None, hoje_ar=None):
+    # nota: o auto-runner é o mais pesado — cache aqui poupa 30-90s por visita
+    return _hra.run_autorunner(sig_hrv, sig_train, da_full=da_full, hoje_ar=hoje_ar)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # TAB AVANÇADA — adicionar à função tab_hrv_analyzer existente
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -957,7 +1007,7 @@ def tab_hrv_advanced(sig_hrv: pd.DataFrame,
             "Score composto 0-100 que integra 5 sinais autonómicos. "
             "Média histórica = 50. ARI>60 = boa readiness. ARI<40 = atenção."
         )
-        _ari_df = _compute_ari(sig_hrv)
+        _ari_df = _cx_compute_ari(sig_hrv)
 
         # Cards actuais
         _ari_now   = _ari_df['ARI'].dropna().iloc[-1] if _ari_df['ARI'].notna().any() else np.nan
@@ -1037,7 +1087,7 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
             "Interpretáveis e accionáveis sem modelo probabilístico."
         )
 
-        _state_df = _classify_states(sig_hrv, sig_train)
+        _state_df = _cx_classify_states(sig_hrv, sig_train)
 
         # Timeline de estados
         _fig_st = go.Figure()
@@ -1120,7 +1170,7 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
         _z_rec  = _ez2.slider("z recuperação (target)", -0.5, 0.5, -0.3, 0.1,
                                key="elast_z_rec")
 
-        elast = _recovery_elasticity(sig_hrv, sig_train,
+        elast = _cx_recovery_elasticity(sig_hrv, sig_train,
                                       z_suppress=_z_supp, z_recover=_z_rec)
 
         if elast['n_events'] == 0:
@@ -1223,9 +1273,9 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
             key="adv_lag_tgt")
         _lv_max  = _lv2.slider("Lag máximo (d)", 3, 21, 10, 1, key="adv_lag_max")
 
-        if st.button("▶ Calcular (pode demorar 10-20s)", type="primary", key="adv_lag_run"):
+        if True:  # auto-run (era botão)
             with st.spinner("Pearson + Spearman + MI..."):
-                adv_lag = _lag_correlations_advanced(
+                adv_lag = _cx_lag_advanced(
                     sig_hrv, sig_train, hrv_var=_lv_tgt, max_lag=_lv_max)
 
             if adv_lag.empty:
@@ -1300,8 +1350,8 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
 
         _dp_lag = st.slider("Janela de outcome (dias)", 3, 10, 5, 1, key="dir_lag")
 
-        if st.button("▶ Analisar padrões", type="primary", key="dir_run"):
-            _dir_res = _directional_analysis(
+        if True:  # auto-run (era botão)
+            _dir_res = _cx_directional(
                 sig_hrv, sig_train, _DEFAULT_PATTERNS, outcome_lag=_dp_lag)
 
             _dir_df = pd.DataFrame([{
@@ -1346,8 +1396,8 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
             [v for v in ['hrv','ln_hrv','hrv_norm'] if v in sig_hrv.columns],
             key="dr_yvar")
 
-        if st.button("▶ Calcular dose-response", type="primary", key="dr_run"):
-            dr = _dose_response(sig_hrv, sig_train, _dr_xvar, _dr_yvar, _dr_lag)
+        if True:  # auto-run (era botão)
+            dr = _cx_dose_response(sig_hrv, sig_train, _dr_xvar, _dr_yvar, _dr_lag)
 
             if dr.empty:
                 st.warning("Dados insuficientes.")
@@ -1414,9 +1464,9 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
 
         if not _has_sklearn:
             st.warning("sklearn não disponível. Instala scikit-learn para usar esta análise.")
-        elif st.button("▶ Clusturizar semanas", type="primary", key="km_run"):
+        elif _has_sklearn:  # auto-run (era botão)
             with st.spinner("K-means..."):
-                wk_df = _cluster_weeks(sig_hrv, sig_train, n_clusters=_n_clust)
+                wk_df = _cx_cluster_weeks(sig_hrv, sig_train, n_clusters=_n_clust)
 
             if wk_df.empty:
                 st.warning("Dados insuficientes (mínimo 12 semanas completas).")
@@ -1481,7 +1531,7 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
             "Alternativa ao Sankey — mostra probabilidades reais entre estados."
         )
 
-        _state_df2 = _classify_states(sig_hrv, sig_train)
+        _state_df2 = _cx_classify_states(sig_hrv, sig_train)
         _state_labels = _state_df2['state_label'].dropna()
 
         if len(_state_labels) < 10:
@@ -1558,35 +1608,16 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
             "Corre uma vez e exporta tudo — não precisas de explorar manualmente."
         )
 
-        if st.button("▶ Rodar análise completa (todos os períodos)", type="primary",
-                     key="autorunner_go"):
-            with st.spinner("A optimizar parâmetros para todos os períodos..."):
-                # Barra de progresso global (o módulo reporta pct via callback)
-                _prog_bar = st.progress(0)
-                _prog_lbl = st.empty()
+        # Auto-runner corre automaticamente com cache (só recalcula se dados mudarem).
+        # Na 1ª visita demora 30-90s; nas seguintes é instantâneo (cache).
+        _hoje_ar = pd.Timestamp.now().normalize()
+        with st.spinner("A optimizar parâmetros para todos os períodos (1ª vez pode demorar)..."):
+            _res_ar = _cx_autorunner(sig_hrv, sig_train, da_full=da_full, hoje_ar=_hoje_ar)
+        _runner_results = _res_ar.get('runner_results', [])
+        _summary_rows   = _res_ar.get('summary_rows', [])
 
-                def _on_progress(pct, label=""):
-                    try:
-                        _prog_bar.progress(min(int(pct), 100))
-                        if label:
-                            _prog_lbl.caption(f"▶ Período: {label}")
-                    except Exception:
-                        pass
-
-                # Toda a varredura (9 análises × períodos × grids) vive em
-                # utils/hrv_analyzer.run_autorunner — fonte única, sem duplicação.
-                _hoje_ar = pd.Timestamp.now().normalize()
-                _res_ar = _hra.run_autorunner(
-                    sig_hrv, sig_train,
-                    da_full=da_full,
-                    hoje_ar=_hoje_ar,
-                    on_progress=_on_progress,
-                )
-                _runner_results = _res_ar.get('runner_results', [])
-                _summary_rows   = _res_ar.get('summary_rows', [])
-                _prog_bar.progress(100)
-                _prog_lbl.empty()
-
+        if True:  # bloco de display (indentação preservada)
+            if True:
                 # ── Display resumo ────────────────────────────────────────────────
                 st.markdown("---")
                 st.markdown("### 📊 Resumo — parâmetros óptimos por período")
