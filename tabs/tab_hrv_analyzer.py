@@ -188,23 +188,29 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
     _gate = st.session_state.get('_hrv_gate')
     _ja_correu = (_gate is not None and _gate.get('key') == _dkey_gate)
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # GATE — controla APENAS o auto-runner (pesado, ~100s) e as Análises Avançadas.
+    # As análises leves (Detecção, Lag, Fingerprint) correm sempre — não travam.
+    # O "▶ Rodar" calcula o auto-runner (óptimos + avançadas) e guarda em session.
+    # ══════════════════════════════════════════════════════════════════════════
     st.markdown("---")
     _gc1, _gc2 = st.columns([1, 3])
     with _gc1:
-        _rodar = st.button("▶ Rodar análises", type="primary", key="hrv_gate_run",
-                           use_container_width=True)
+        _rodar = st.button("▶ Rodar Auto-Runner + Avançadas", type="primary",
+                           key="hrv_gate_run", use_container_width=True)
     with _gc2:
         if _ja_correu:
-            st.caption("✅ Análises calculadas. Muda de secção/aba livremente — "
-                       "usa dados guardados (não recalcula). Clica novamente para actualizar.")
+            st.caption("✅ Auto-Runner calculado. Os sliders abaixo usam os óptimos "
+                       "encontrados; as Análises Avançadas estão disponíveis. "
+                       "Clica novamente para actualizar.")
         else:
-            st.caption("⏸️ Clica em **▶ Rodar análises** para calcular tudo "
-                       "(detecção, lag, fingerprint, ARI, estados, auto-runner, etc.). "
-                       "Só corre quando clicares — não trava as outras tabs.")
+            st.caption("⏸️ **Detecção, Lag e Fingerprint já correm automaticamente** abaixo. "
+                       "Clica em **▶ Rodar** para calcular o Auto-Runner (óptimos por "
+                       "período + Análises Avançadas: ARI, Estados, Elasticidade, etc.). "
+                       "Só o Auto-Runner é pesado — por isso fica atrás do botão.")
 
     if _rodar:
-        # Correr o auto-runner UMA vez e guardar tudo em session_state
-        with st.spinner("A calcular todas as análises (auto-runner + óptimos)..."):
+        with st.spinner("A calcular Auto-Runner (varredura de todos os períodos)..."):
             _hoje_g = pd.Timestamp.now().normalize()
             _res_g = _hra.run_autorunner(sig_hrv, sig_train,
                                          da_full=_da if _da is not None else None,
@@ -219,14 +225,9 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
         _ja_correu = True
         _gate = st.session_state['_hrv_gate']
 
-    # Se ainda não correu, para aqui (não mostra as análises pesadas)
-    if not _ja_correu:
-        st.info("👆 As análises aparecem depois de clicares em **▶ Rodar análises**.")
-        return
-
-    # A partir daqui, temos resultados guardados disponíveis para todas as secções
-    _AR_RESULT = _gate.get('autorunner', {})
-    _AR_OTIMOS = _gate.get('otimos', {})
+    # Óptimos disponíveis (vazios até clicar "▶ Rodar" → sliders usam defaults)
+    _AR_RESULT = _gate.get('autorunner', {}) if _ja_correu and _gate else {}
+    _AR_OTIMOS = _gate.get('otimos', {}) if _ja_correu and _gate else {}
 
     # ── Selector de análise (radio horizontal — evita bug de secções empilhadas) ──
     st.markdown("---")
@@ -394,7 +395,12 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
             _ref_days = st.number_input("Dias de referência (anterior)", value=21,
                                         min_value=7, max_value=90, step=7, key="hrv_refdays")
 
-        if True:  # corre automaticamente ao ver a secção
+        # Período Manual só corre ao clicar (tu escolhes as datas primeiro)
+        _run_manual = st.button("▶ Comparar período", type="primary", key="hrv_run_manual_btn")
+        if _run_manual:
+            st.session_state['_hrv_manual_done'] = True
+
+        if st.session_state.get('_hrv_manual_done'):
             _ts = pd.Timestamp(_p_start)
             _te = pd.Timestamp(_p_end)
 
@@ -516,6 +522,8 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
                         f"hrv_comparacao_{_p_start}_{_p_end}.csv",
                         "text/csv", key="hrv_dl_manual"
                     )
+        else:
+            st.info("👆 Escolhe o período e clica em **▶ Comparar período** para ver a análise.")
 
     # ══════════════════════════════════════════════════════════════════════════
     # 3. MODO: DETECÇÃO AUTOMÁTICA
@@ -620,30 +628,29 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
             except Exception:
                 pass
 
-            _lc1, _lc2 = st.columns(2)
-            _hrv_target = _lc1.selectbox(
-                "Variável HRV alvo",
-                [v for v in ['hrv','ln_hrv','hrv_norm','hrv_z28'] if v in sig_hrv.columns],
-                key="hrv_lag_tgt"
-            )
-            _max_lag = _lc2.slider("Lag máximo (dias)", 3, 21, _lag_opt, 1, key="hrv_lag_max")
+            _max_lag = st.slider("Lag máximo (dias)", 3, 21, _lag_opt, 1, key="hrv_lag_max")
 
-            # ── Tabela comparativa rMSSD vs HF power (principais achados) ──────
+            # ── Tabela principal: rMSSD vs HF power (sem dropdown de escolha) ──
             try:
                 _dual = _hra.lag_correlations_dual(sig_hrv, sig_train, max_lag=_max_lag)
+                st.markdown("#### 📊 rMSSD vs HF power — principais achados")
                 if _dual.get('tem_hf'):
-                    st.markdown("#### 📊 rMSSD vs HF power — principais achados")
                     st.caption(
                         "Melhor lag e correlação de cada variável de treino, para o "
-                        "rMSSD e para o HF power (mesmo sinal da tab Recovery). "
-                        "Se ambos apontam o mesmo lag/sinal → efeito robusto.")
-                    st.dataframe(_dual['tabela'], hide_index=True, use_container_width=True)
+                        "rMSSD (rHRV) e para o HF power (mesmo sinal da tab Recovery). "
+                        "Se ambos apontam o mesmo lag/sinal → efeito robusto; "
+                        "se divergem → o sinal depende da métrica.")
                 else:
-                    st.caption("ℹ️ HF power não disponível na sheet — só rMSSD abaixo. "
-                               "(Adiciona a coluna 'hf_power' ao wellness para a comparação.)")
+                    st.caption(
+                        "Melhor lag e correlação de cada variável de treino para o rMSSD. "
+                        "ℹ️ HF power não disponível na sheet — adiciona a coluna 'hf_power' "
+                        "ao wellness para a comparação lado a lado.")
+                st.dataframe(_dual['tabela'], hide_index=True, use_container_width=True)
             except Exception as _e_dual:
                 st.caption(f"Comparação rMSSD/HF indisponível: {_e_dual}")
 
+            # Detalhe completo (todos os lags) para o rMSSD
+            _hrv_target = 'hrv'
             if True:  # corre automaticamente ao ver a secção
                 with st.spinner("A calcular correlações com lag..."):
                     lag_df = _cx_lag_correlations(sig_hrv, sig_train,
@@ -836,13 +843,19 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
                         key="hrv_dl_fp"
                     )
 
-    # ── Análises avançadas ────────────────────────────────────────────────────
-    if len(sig_train) > 0:
-        tab_hrv_advanced(sig_hrv, sig_train, da_full=_da,
-                         ar_result=_AR_RESULT, ar_otimos=_AR_OTIMOS)
-    else:
+    # ── Análises avançadas (só depois de clicar "▶ Rodar" — precisam do auto-runner) ──
+    if len(sig_train) == 0:
+        st.markdown("---")
         st.info("Conecta os dados de actividade para aceder às análises avançadas "
                 "(ARI, Estados, Elasticidade, Lag Avançado, etc.).")
+    elif not _ja_correu:
+        st.markdown("---")
+        st.info("🔬 As **Análises Avançadas** (ARI, Estados, Elasticidade, Lag Avançado, "
+                "Directional, Dose-Response, Semanas, Transições) aparecem depois de "
+                "clicares em **▶ Rodar Auto-Runner + Avançadas** no topo.")
+    else:
+        tab_hrv_advanced(sig_hrv, sig_train, da_full=_da,
+                         ar_result=_AR_RESULT, ar_otimos=_AR_OTIMOS)
 
     # ── Nota metodológica ─────────────────────────────────────────────────────
     with st.expander("ℹ️ Metodologia — Recovery Pattern Analyzer"):
