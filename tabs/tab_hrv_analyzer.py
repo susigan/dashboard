@@ -169,17 +169,14 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
         sig_hrv   = _build_hrv_signal(_dw)
         sig_train = _build_training_signal(_da) if _da is not None else pd.DataFrame()
 
-    # ── Selector de análise (botões principais) ───────────────────────────────
+    # ── Selector de análise (radio horizontal — evita bug de secções empilhadas) ──
     st.markdown("---")
-    _btns = st.columns(4)
     _analyses = ["📅 Período Manual", "🔍 Detecção Automática",
                  "🔗 Lag Correlation", "🧬 Fingerprint HRV"]
-    _mode = None
-    for i, (col, lbl) in enumerate(zip(_btns, _analyses)):
-        if col.button(lbl, use_container_width=True, key=f"hrv_mode_{i}"):
-            st.session_state['hrv_mode'] = i
-
-    _mode = st.session_state.get('hrv_mode', 0)
+    _mode_lbl = st.radio(
+        "Análise", _analyses, horizontal=True,
+        label_visibility="collapsed", key="hrv_mode_radio")
+    _mode = _analyses.index(_mode_lbl)
 
     st.markdown("---")
 
@@ -554,13 +551,28 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
         if len(sig_train) == 0:
             st.warning("Sem dados de treino.")
         else:
+            # Óptimo do lag (do auto-runner, cacheado)
+            _lag_opt = 14
+            try:
+                _res_lag = _cx_autorunner(sig_hrv, sig_train,
+                                          da_full=_da if '_da' in dir() else None,
+                                          hoje_ar=pd.Timestamp.now().normalize())
+                _ot_lag = _hra.extrair_otimos(_res_lag.get('runner_results', []),
+                                              periodo_pref='1 ano')
+                if _ot_lag.get('lag_correlation'):
+                    _lag_opt = min(max(int(_ot_lag['lag_correlation']), 3), 21)
+                    st.caption(f"🔧 Lag óptimo do Auto-Runner: **{_lag_opt}d** "
+                               "(pré-preenchido; podes ajustar).")
+            except Exception:
+                pass
+
             _lc1, _lc2 = st.columns(2)
             _hrv_target = _lc1.selectbox(
                 "Variável HRV alvo",
                 [v for v in ['hrv','ln_hrv','hrv_norm','hrv_z28'] if v in sig_hrv.columns],
                 key="hrv_lag_tgt"
             )
-            _max_lag = _lc2.slider("Lag máximo (dias)", 3, 21, 14, 1, key="hrv_lag_max")
+            _max_lag = _lc2.slider("Lag máximo (dias)", 3, 21, _lag_opt, 1, key="hrv_lag_max")
 
             if True:  # auto-run (era botão)
                 with st.spinner("A calcular correlações com lag..."):
@@ -647,10 +659,25 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
         if len(sig_train) == 0:
             st.warning("Sem dados de treino.")
         else:
+            # Óptimo do fingerprint (do auto-runner, cacheado)
+            _fp_opt_dias = 7
+            try:
+                _res_fp = _cx_autorunner(sig_hrv, sig_train,
+                                         da_full=_da if '_da' in dir() else None,
+                                         hoje_ar=pd.Timestamp.now().normalize())
+                _ot_fp = _hra.extrair_otimos(_res_fp.get('runner_results', []),
+                                             periodo_pref='1 ano')
+                if _ot_fp.get('fingerprint_dias'):
+                    _fp_opt_dias = min(max(int(_ot_fp['fingerprint_dias']), 3), 14)
+                    st.caption(f"🔧 Óptimo do Auto-Runner: **{_fp_opt_dias}d** antes "
+                               "(pré-preenchido; podes ajustar).")
+            except Exception:
+                pass
+
             _fp1, _fp2 = st.columns(2)
             _fp_pct  = _fp1.slider("Percentil top/bottom (%)", 5, 25, 10, 5,
                                     key="hrv_fp_pct")
-            _fp_pre  = _fp2.slider("Dias antes a analisar", 3, 14, 7, 1,
+            _fp_pre  = _fp2.slider("Dias antes a analisar", 3, 14, _fp_opt_dias, 1,
                                     key="hrv_fp_pre")
 
             if True:  # auto-run (era botão)
@@ -989,6 +1016,32 @@ def tab_hrv_advanced(sig_hrv: pd.DataFrame,
     st.markdown("---")
     st.subheader("🧠 Análises Avançadas")
 
+    # ── Óptimos do Auto-Runner (pré-preenchem os sliders abaixo) ──────────────
+    # Corre o auto-runner (cacheado) e extrai os parâmetros óptimos por análise.
+    # Os sliders usam estes valores como default — o utilizador pode na mesma mexer.
+    _otimos = {}
+    try:
+        _hoje_adv = pd.Timestamp.now().normalize()
+        _res_adv = _cx_autorunner(sig_hrv, sig_train, da_full=da_full, hoje_ar=_hoje_adv)
+        _otimos = _hra.extrair_otimos(_res_adv.get('runner_results', []),
+                                      periodo_pref='1 ano')
+        if _otimos.get('lag_max'):
+            st.caption(
+                "🔧 Sliders pré-preenchidos com os óptimos do Auto-Runner (período 1 ano). "
+                "Podes ajustar à mão. "
+                f"Lag máx: **{_otimos.get('lag_max','—')}d** · "
+                f"Fingerprint: **{_otimos.get('fingerprint_dias','—')}d** · "
+                f"Dose-resp lag: **{_otimos.get('dose_response_lag','—')}d** · "
+                f"Directional: **{_otimos.get('directional_janela','—')}d** · "
+                f"Clusters: **{_otimos.get('clustering_n','—')}**")
+    except Exception:
+        _otimos = {}
+
+    def _opt(chave, fallback):
+        """Devolve o óptimo do auto-runner para a chave, ou o fallback."""
+        v = _otimos.get(chave)
+        return v if v is not None else fallback
+
     _adv_tabs = st.tabs([
         "🎯 ARI",
         "🏷️ Estados",
@@ -1165,8 +1218,9 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
         )
 
         _ez1, _ez2 = st.columns(2)
-        _z_supp = _ez1.slider("z supressão (trigger)", -2.0, -0.5, -1.0, 0.1,
-                               key="elast_z_supp")
+        _z_supp = _ez1.slider("z supressão (trigger)", -2.0, -0.5,
+                              -abs(_opt("elasticidade_z", 1.0)) if _opt("elasticidade_z", None) else -1.0,
+                              0.1, key="elast_z_supp")
         _z_rec  = _ez2.slider("z recuperação (target)", -0.5, 0.5, -0.3, 0.1,
                                key="elast_z_rec")
 
@@ -1271,7 +1325,7 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
         _lv_tgt  = _lv1.selectbox(
             "HRV alvo", [v for v in ['hrv','ln_hrv','hrv_norm'] if v in sig_hrv.columns],
             key="adv_lag_tgt")
-        _lv_max  = _lv2.slider("Lag máximo (d)", 3, 21, 10, 1, key="adv_lag_max")
+        _lv_max  = _lv2.slider("Lag máximo (d)", 3, 35, min(max(_opt("lag_max",10),3),35), 1, key="adv_lag_max")
 
         if True:  # auto-run (era botão)
             with st.spinner("Pearson + Spearman + MI..."):
@@ -1348,7 +1402,7 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
              'conditions': [{'var': 'atl', 'op': '>', 'val': 0}]},  # proxy
         ]
 
-        _dp_lag = st.slider("Janela de outcome (dias)", 3, 10, 5, 1, key="dir_lag")
+        _dp_lag = st.slider("Janela de outcome (dias)", 3, 14, min(max(_opt("directional_janela",5),3),14), 1, key="dir_lag")
 
         if True:  # auto-run (era botão)
             _dir_res = _cx_directional(
@@ -1390,7 +1444,7 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
             [v for v in ['mono_7d','strain_7d','load_7d','pct_z3','freq_7d','atl','tsb']
              if v in sig_train.columns],
             key="dr_xvar")
-        _dr_lag  = _dr2.slider("Lag (dias)", 0, 10, 3, 1, key="dr_lag")
+        _dr_lag  = _dr2.slider("Lag (dias)", 0, 28, min(max(_opt("dose_response_lag",3),0),28), 1, key="dr_lag")
         _dr_yvar = _dr3.selectbox(
             "HRV alvo (Y)",
             [v for v in ['hrv','ln_hrv','hrv_norm'] if v in sig_hrv.columns],
@@ -1454,7 +1508,7 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
         )
 
         _kk1, _kk2 = st.columns(2)
-        _n_clust = _kk1.slider("Nº clusters", 2, 6, 4, 1, key="km_n")
+        _n_clust = _kk1.slider("Nº clusters", 2, 7, min(max(_opt("clustering_n",4),2),7), 1, key="km_n")
 
         try:
             import sklearn
