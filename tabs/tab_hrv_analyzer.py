@@ -83,6 +83,95 @@ _hrv_fingerprint = _hra._hrv_fingerprint
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# EXPLICAÇÕES — o que cada análise faz e a intenção (dropdowns "ℹ️ O que é isto?")
+# ══════════════════════════════════════════════════════════════════════════════
+
+_EXPLICACOES = {
+    'periodo_manual': (
+        "**O que faz:** compara um período que escolhes (ex.: as últimas 3 semanas) "
+        "com o período imediatamente anterior, mostrando o que mudou no HRV e no treino.\n\n"
+        "**Intenção:** responder a *'este bloco de treino melhorou ou piorou a minha "
+        "recuperação face ao anterior?'*. Útil depois de uma fase específica (carga, taper, "
+        "estágio) para ver o efeito autonómico."),
+    'deteccao': (
+        "**O que faz:** encontra automaticamente os períodos em que o teu HRV esteve "
+        "significativamente acima (HRV↑) ou abaixo (HRV↓) do normal, usando o z-score de 28 dias.\n\n"
+        "**Intenção:** identificar sozinho as fases de boa e má forma autonómica, sem teres "
+        "de as procurar à mão. Cada período detectado é um candidato a investigar (o que "
+        "aconteceu no treino nessa altura?)."),
+    'lag': (
+        "**O que faz:** testa vários desfasamentos (lags) entre cada variável de treino e o "
+        "HRV, e encontra em quantos dias o treino melhor 'prevê' a mudança de HRV. Mostra o "
+        "rMSSD e o HF power lado a lado.\n\n"
+        "**Intenção:** responder a *'quantos dias depois de um treino duro é que o meu HRV "
+        "reage?'*. Se o rMSSD e o HF power apontam o mesmo lag → o efeito é robusto. O lag "
+        "óptimo vem do Auto-Runner."),
+    'fingerprint': (
+        "**O que faz:** pega nos teus melhores e piores dias de HRV e olha para trás — o que "
+        "fizeste nos X dias antes de cada um? Revela o padrão de treino que antecede a boa "
+        "vs a má forma.\n\n"
+        "**Intenção:** descobrir a tua 'impressão digital' de recuperação: que combinação de "
+        "carga/intensidade costuma preceder os teus melhores dias autonómicos."),
+    'ari': (
+        "**O que faz:** o Autonomic Readiness Index — um score 0-100 que funde 5 sinais "
+        "autonómicos (HRV, RHR, tendência, etc.) numa só métrica de prontidão.\n\n"
+        "**Intenção:** um 'resumo executivo' do teu estado: >60 = pronto para carga, "
+        "<40 = precisa de atenção. Simplifica a decisão diária."),
+    'estados': (
+        "**O que faz:** classifica cada dia num de vários estados fisiológicos (fadiga "
+        "acumulada, rebote parassimpático, resposta ao taper, estado resiliente, baseline...).\n\n"
+        "**Intenção:** dar um 'rótulo' interpretável a cada dia, para perceberes em que "
+        "regime autonómico estás e como evoluis ao longo do tempo."),
+    'elasticidade': (
+        "**O que faz:** mede quanto tempo o teu HRV demora a recuperar depois de uma queda "
+        "(supressão). O τ (tau) é o tempo mediano de retorno ao normal.\n\n"
+        "**Intenção:** quantificar a tua capacidade de recuperação. Um τ baixo = recuperas "
+        "rápido; τ alto = a fadiga persiste. O τ alimenta a janela do Directional."),
+    'lag_avancado': (
+        "**O que faz:** como o Lag Correlation, mas com 3 métodos (Pearson, Spearman, "
+        "informação mútua) para captar também relações não-lineares.\n\n"
+        "**Intenção:** confirmar de forma mais robusta as relações treino→HRV. Se os 3 "
+        "métodos concordam, a relação é sólida."),
+    'directional': (
+        "**O que faz:** testa padrões específicos (ex.: 'carga muito elevada', 'TSB positivo') "
+        "e mede em que % das vezes o HRV melhorou nos dias seguintes.\n\n"
+        "**Intenção:** validar regras accionáveis do tipo *'quando faço X, recupero bem?'*. "
+        "A janela usa o τ da elasticidade. ⚠️ Consistência alta só com histórico longo pode "
+        "ser artefacto do N grande — compara sempre com 1 ano."),
+    'dose_response': (
+        "**O que faz:** traça a relação dose-efeito entre uma variável de treino e o HRV — "
+        "mais carga leva a mais ou menos HRV?\n\n"
+        "**Intenção:** encontrar o teu 'ponto óptimo' de carga: até onde podes empurrar antes "
+        "de a recuperação começar a sofrer."),
+    'semanas': (
+        "**O que faz:** agrupa as tuas semanas por perfil de treino (load, monotonia, "
+        "frequência, %Z3, strain) via K-means, e colore cada grupo pelo HRV médio da semana "
+        "seguinte.\n\n"
+        "**Intenção:** descobrir 'tipos' de semana que tens e qual o seu efeito na recuperação "
+        "— que tipo de semana costuma ser seguido de bom HRV, e qual de fadiga."),
+    'transicoes': (
+        "**O que faz:** calcula a probabilidade de passar de cada estado para outro, e "
+        "destaca o próximo estado mais provável a partir do teu estado de hoje.\n\n"
+        "**Intenção:** antecipar a tua trajectória autonómica: *'estou em fadiga — qual a "
+        "probabilidade de amanhã estar recuperado vs continuar em fadiga?'*."),
+    'autorunner': (
+        "**O que faz:** corre todas as análises acima para 7 períodos (60d a todo histórico) "
+        "testando muitas combinações de parâmetros, e encontra os valores óptimos de cada.\n\n"
+        "**Intenção:** em vez de mexeres nos sliders à mão, o Auto-Runner descobre "
+        "automaticamente o melhor lag, janela, nº de clusters, etc. — que depois pré-preenchem "
+        "as análises individuais."),
+}
+
+
+def _dropdown_explica(chave):
+    """Mostra um expander 'ℹ️ O que é isto?' com a explicação da análise."""
+    txt = _EXPLICACOES.get(chave)
+    if txt:
+        with st.expander("ℹ️ O que é isto? (o que faz e para que serve)"):
+            st.markdown(txt)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # TAB PRINCIPAL
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -378,6 +467,7 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
     # ══════════════════════════════════════════════════════════════════════════
     if _mode == 0:
         st.markdown("### 📅 Análise por período manual")
+        _dropdown_explica('periodo_manual')
         st.caption("Selecciona o período alvo e compara com o período anterior.")
 
         _hrv_dates = sig_hrv['Data'].dropna()
@@ -530,6 +620,7 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
     # ══════════════════════════════════════════════════════════════════════════
     elif _mode == 1:
         st.markdown("### 🔍 Detecção automática de períodos HRV")
+        _dropdown_explica('deteccao')
         st.caption("Detecta automaticamente períodos de HRV↑ e HRV↓ com base no z-score 28d.")
 
         _cz1, _cz2, _cz3 = st.columns(3)
@@ -610,6 +701,7 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
     # ══════════════════════════════════════════════════════════════════════════
     elif _mode == 2:
         st.markdown("### 🔗 Lag Correlation")
+        _dropdown_explica('lag')
         st.caption(
             "Qual variável de treino antecede as mudanças de HRV e com quantos dias? "
             "Lag positivo = variável de treino precede HRV."
@@ -728,6 +820,7 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
     # ══════════════════════════════════════════════════════════════════════════
     elif _mode == 3:
         st.markdown("### 🧬 Fingerprint — top vs bottom HRV days")
+        _dropdown_explica('fingerprint')
         st.caption(
             "O que aconteceu nos X dias antes dos melhores e piores dias de HRV? "
             "Identifica o padrão de treino que antecede a boa forma autonómica."
@@ -1131,6 +1224,7 @@ def tab_hrv_advanced(sig_hrv: pd.DataFrame,
     # ── ARI ──────────────────────────────────────────────────────────────────
     with _adv_tabs[0]:
         st.markdown("#### 🎯 Autonomic Readiness Index (ARI)")
+        _dropdown_explica('ari')
         st.caption(
             "Score composto 0-100 que integra 5 sinais autonómicos. "
             "Média histórica = 50. ARI>60 = boa readiness. ARI<40 = atenção."
@@ -1210,6 +1304,7 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
     # ── ESTADOS ──────────────────────────────────────────────────────────────
     with _adv_tabs[1]:
         st.markdown("#### 🏷️ Estados Fisiológicos Heurísticos")
+        _dropdown_explica('estados')
         st.caption(
             "7 estados detectados por regras fisiológicas. "
             "Interpretáveis e accionáveis sem modelo probabilístico."
@@ -1287,6 +1382,7 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
     # ── ELASTICIDADE ─────────────────────────────────────────────────────────
     with _adv_tabs[2]:
         st.markdown("#### ⚡ Recovery Elasticity")
+        _dropdown_explica('elasticidade')
         st.caption(
             "τ_recovery = dias até HRV voltar ao baseline após supressão. "
             "Assinatura individual: τ baixo = recuperas rápido."
@@ -1390,6 +1486,7 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
     # ── LAG AVANÇADO ─────────────────────────────────────────────────────────
     with _adv_tabs[3]:
         st.markdown("#### 🔗 Lag Correlation Avançada (Pearson + Spearman + MI)")
+        _dropdown_explica('lag_avancado')
         st.caption(
             "Pearson: magnitude linear. "
             "Spearman: robusto a outliers. "
@@ -1453,6 +1550,7 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
     # ── DIRECTIONAL ───────────────────────────────────────────────────────────
     with _adv_tabs[4]:
         st.markdown("#### ➡️ Directional Analysis")
+        _dropdown_explica('directional')
         st.caption(
             "Padrões de treino → probabilidade de HRV melhorar nos X dias seguintes. "
             "⚠️ Ferramenta de geração de hipóteses, não inferência causal. "
@@ -1525,6 +1623,7 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
     # ── DOSE-RESPONSE ─────────────────────────────────────────────────────────
     with _adv_tabs[5]:
         st.markdown("#### 📈 Dose-Response Curves (LOWESS)")
+        _dropdown_explica('dose_response')
         st.caption(
             "Relação não-linear entre variável de treino e HRV. "
             "LOWESS detecta U-shapes (ex: carga baixa/alta → HRV ruim, carga moderada → HRV óptimo)."
@@ -1593,6 +1692,7 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
     # ── K-MEANS ───────────────────────────────────────────────────────────────
     with _adv_tabs[6]:
         st.markdown("#### 🗂️ Clustering de Semanas")
+        _dropdown_explica('semanas')
         st.caption(
             "K-means sobre variáveis de TREINO (sem HRV). "
             "Clusters coloridos pelo HRV médio da semana seguinte. "
@@ -1672,6 +1772,7 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
     # ── TRANSIÇÕES ───────────────────────────────────────────────────────────
     with _adv_tabs[7]:
         st.markdown("#### 🔄 Probabilistic Transition Matrix")
+        _dropdown_explica('transicoes')
         st.caption(
             "P(estado_amanhã | estado_hoje). "
             "Alternativa ao Sankey — mostra probabilidades reais entre estados."
@@ -1763,13 +1864,14 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
 
     with _adv_tabs_full[0]:
         st.markdown("#### 🔬 Auto-Runner — Optimização automática de parâmetros")
+        _dropdown_explica('autorunner')
         st.caption(
             "Roda todas as análises para **7 períodos** (60d / 90d / 180d / 1ano / "
             "2anos / 3anos / todo histórico) testando automaticamente múltiplas "
             "combinações de parâmetros. Detecta os valores óptimos por variável e período. "
             "Output: CSV consolidado com todos os resultados + comparação entre períodos."
         )
-        st.caption("✅ Já calculado ao clicar em **▶ Rodar análises** — resultados abaixo.")
+        st.caption("✅ Já calculado ao clicar em **▶ Rodar Auto-Runner + Avançadas** — resultados abaixo.")
 
         # Lê o resultado guardado pelo gate (não recalcula)
         _res_ar = ar_result if ar_result else {}
@@ -1781,11 +1883,31 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                 # ── Display resumo ────────────────────────────────────────────────
                 st.markdown("---")
                 st.markdown("### 📊 Resumo — parâmetros óptimos por período")
-                st.info(
-                    "📌 **'Todo histórico'** reproduz as condições do CSV antigo (83-96%). "
-                    "Compara N eventos directional: se alto com todo histórico mas ~52% com 1 ano "
-                    "→ confirma efeito de N grande, não sinal causal real."
-                )
+                with st.expander("ℹ️ O que é esta tabela e o que significa cada coluna"):
+                    st.markdown(
+                        "Cada **linha** é um período de análise (60d, 90d, ..., todo o "
+                        "histórico). Cada **coluna** é o valor óptimo encontrado nesse período:\n\n"
+                        "- **N dias HRV** — dias com dados nesse período\n"
+                        "- **Lag máx óptimo** — desfasamento (dias) em que o treino melhor "
+                        "prevê o HRV\n"
+                        "- **N clusters óptimo** — nº de 'tipos de semana' distintos\n"
+                        "- **Janela directional (d)** — janela onde os padrões têm mais efeito\n"
+                        "- **Consist. directional** — % de vezes que os padrões acertaram\n"
+                        "- **N eventos directional** — quantos eventos entraram nessa % (o N)\n"
+                        "- **Target Z / Tau elast.** — gatilho de supressão e tempo de recuperação\n"
+                        "- **Melhor preditor ↘ HRV** — variável de treino que mais baixa o HRV "
+                        "(com r e lag)\n"
+                        "- **FP: var mais discriminante** — variável que mais separa bons de maus dias\n"
+                        "- **N lags sig p<0.05** — nº de correlações estatisticamente significativas\n\n"
+                        "**⚠️ Cuidado com o N grande (o aviso mais importante):**\n"
+                        "A coluna *Consist. directional* depende muito do nº de eventos. Com "
+                        "**'todo histórico'** (milhares de dias) a consistência sai alta (83-96%) "
+                        "— mas isso pode ser só por teres muitos dados. Se a mesma análise cai "
+                        "para **~52% com '1 ano'** (basicamente moeda ao ar), então **não é um "
+                        "sinal causal real** — é artefacto do N grande. Um efeito verdadeiro "
+                        "mantém-se forte em ambos os períodos. **Regra:** desconfia de padrões "
+                        "que só são fortes com todo o histórico; compara sempre com 1 ano."
+                    )
 
                 if _summary_rows:
                     _df_sum = pd.DataFrame(_summary_rows)
@@ -1796,6 +1918,13 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                                if r['analise']=='fingerprint' and r.get('r_abs')]
                     if _fp_all:
                         st.markdown("### 👆 Fingerprint — variáveis mais discriminantes (1 ano)")
+                        with st.expander("ℹ️ O que mostra esta tabela"):
+                            st.markdown(
+                                "As variáveis de treino que **mais distinguem** os teus melhores "
+                                "dias de HRV dos piores, nos dias que os antecedem. Um valor alto "
+                                "(%) significa que essa variável estava muito diferente antes dos "
+                                "bons dias vs antes dos maus dias — logo, é um bom 'marcador' "
+                                "antecipatório da tua recuperação.")
                         _df_fp = pd.DataFrame(_fp_all)
                         _fp_1a = (_df_fp[_df_fp['periodo']=='1 ano']
                                   .nlargest(10,'r_abs')
@@ -1809,6 +1938,12 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                     _dr_all = [r for r in _runner_results if r['analise']=='dose_response']
                     if _dr_all:
                         st.markdown("### 📈 Dose-Response — quartil óptimo de carga (1 ano)")
+                        with st.expander("ℹ️ O que mostra esta tabela"):
+                            st.markdown(
+                                "Divide a carga em quartis (Q1=baixa … Q4=alta) e mostra o HRV "
+                                "médio associado a cada nível. Revela o teu **'ponto óptimo'**: "
+                                "o quartil de carga que coincide com melhor HRV. Ajuda a perceber "
+                                "até onde podes empurrar a carga antes de a recuperação sofrer.")
                         _df_dr = pd.DataFrame(_dr_all)
                         _df_dr_1a = _df_dr[_df_dr['periodo']=='1 ano']
                         if len(_df_dr_1a) > 0:
@@ -1821,6 +1956,13 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
 
                     # ── Análise de divergências automática ────────────────────────
                     st.markdown("### 🔍 Divergências entre períodos")
+                    with st.expander("ℹ️ O que mostra esta tabela"):
+                        st.markdown(
+                            "Compara os resultados entre períodos curtos e longos e assinala "
+                            "onde **divergem muito**. É a ferramenta-chave contra o efeito do N "
+                            "grande: se um achado é forte no histórico todo mas fraco em 1 ano, "
+                            "aparece aqui como divergência — sinal de que pode não ser um efeito "
+                            "real. Achados que se mantêm em todos os períodos são os mais fiáveis.")
                     _div_rows = []
 
                     # Lag máximo
