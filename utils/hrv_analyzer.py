@@ -134,9 +134,20 @@ def _build_hrv_signal(dw: pd.DataFrame) -> pd.DataFrame:
 
     # Colunas numéricas
     for col in ['hrv', 'rhr', 'sleep_hours', 'sleep_quality',
-                'stress', 'fatiga', 'soreness', 'humor']:
+                'stress', 'fatiga', 'soreness', 'humor', 'hf_power']:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    # HF power (potência de alta frequência — mesmo sinal da tab recovery).
+    # Constrói ln(HF) e z-score 28d, em paralelo ao rMSSD, para poder ser usado
+    # como variável HRV alternativa no lag correlation.
+    if 'hf_power' in df.columns and df['hf_power'].notna().sum() >= 5:
+        _hf = df['hf_power'].replace(0, np.nan)
+        df['ln_hf'] = np.log(_hf.clip(lower=1e-6))
+        df['hf_mean_28d'] = _hf.rolling(28, min_periods=3).mean()
+        df['hf_std_28d']  = _hf.rolling(28, min_periods=3).std()
+        df['hf_z28'] = ((_hf - df['hf_mean_28d']) /
+                        df['hf_std_28d'].replace(0, np.nan))
 
     # ln(rMSSD) — sinal padrão na literatura
     if 'hrv' in df.columns:
@@ -1908,3 +1919,96 @@ def extrair_otimos(runner_results, periodo_pref=None):
             # elasticidade é float (z-score); os outros são int (dias/clusters)
             out[chave] = float(val) if chave == 'elasticidade_z' else int(round(float(val)))
     return out
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LAG CORRELATION COMPARATIVO — rMSSD vs HF power
+# ══════════════════════════════════════════════════════════════════════════════
+
+def lag_correlations_dual(sig_hrv, sig_train, max_lag=21, train_vars=None):
+    """
+    Corre o lag correlation para DUAS variáveis HRV em paralelo:
+      • rMSSD (hrv)  — o sinal padrão
+      • HF power (hf_power via 'ln_hf') — se disponível na sheet
+    Devolve um DataFrame com os principais achados de cada (melhor lag e |r| por
+    variável de treino), lado a lado, para comparação directa.
+
+    Colunas: variavel_treino, [rMSSD] lag/r/p, [HF] lag/r/p
+    """
+    out_rows = []
+    # rMSSD sempre
+    _lag_hrv = _lag_correlations(sig_hrv, sig_train, hrv_var='hrv',
+                                 train_vars=train_vars, max_lag=max_lag)
+    tem_hf = 'ln_hf' in sig_hrv.columns and sig_hrv['ln_hf'].notna().sum() >= 10
+    _lag_hf = None
+    if tem_hf:
+        _lag_hf = _lag_correlations(sig_hrv, sig_train, hrv_var='ln_hf',
+                                    train_vars=train_vars, max_lag=max_lag)
+
+    def _best_por_var(lag_df):
+        """Melhor lag (maior |r|) por variável de treino."""
+        best = {}
+        if lag_df is None or len(lag_df) == 0:
+            return best
+        _c_var = 'train_var' if 'train_var' in lag_df.columns else lag_df.columns[0]
+        _c_r = 'r' if 'r' in lag_df.columns else ('r_pearson' if 'r_pearson' in lag_df.columns else None)
+        _c_lag = 'lag' if 'lag' in lag_df.columns else None
+        _c_p = 'p' if 'p' in lag_df.columns else ('p_pearson' if 'p_pearson' in lag_df.columns else None)
+        if _c_r is None:
+            return best
+        for var in lag_df[_c_var].unique():
+            sub = lag_df[lag_df[_c_var] == var].copy()
+            sub['_abs'] = sub[_c_r].abs()
+            row = sub.sort_values('_abs', ascending=False).iloc[0]
+            best[var] = {'lag': row.get(_c_lag), 'r': row.get(_c_r), 'p': row.get(_c_p)}
+        return best
+
+    best_hrv = _best_por_var(_lag_hrv)
+    best_hf  = _best_por_var(_lag_hf) if _lag_hf is not None else {}
+
+    todas_vars = sorted(set(list(best_hrv.keys()) + list(best_hf.keys())))
+    for var in todas_vars:
+        h = best_hrv.get(var, {})
+        f = best_hf.get(var, {})
+        row = {
+            'Variável treino': var,
+            'rMSSD lag (d)':   int(h['lag']) if h.get('lag') is not None and pd.notna(h.get('lag')) else '—',
+            'rMSSD r':         round(float(h['r']), 3) if h.get('r') is not None and pd.notna(h.get('r')) else '—',
+            'rMSSD p':         round(float(h['p']), 3) if h.get('p') is not None and pd.notna(h.get('p')) else '—',
+        }
+        if tem_hf:
+            row.update({
+                'HF lag (d)': int(f['lag']) if f.get('lag') is not None and pd.notna(f.get('lag')) else '—',
+                'HF r':       round(float(f['r']), 3) if f.get('r') is not None and pd.notna(f.get('r')) else '—',
+                'HF p':       round(float(f['p']), 3) if f.get('p') is not None and pd.notna(f.get('p')) else '—',
+            })
+        out_rows.append(row)
+
+    return {'tabela': pd.DataFrame(out_rows), 'tem_hf': tem_hf,
+            'lag_hrv': _lag_hrv, 'lag_hf': _lag_hf}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TRANSIÇÃO A PARTIR DE HOJE — próximo estado mais provável
+# ══════════════════════════════════════════════════════════════════════════════
+
+def transicao_de_hoje(state_series, top_n=3):
+    """
+    A partir do estado MAIS RECENTE (hoje), devolve os próximos estados mais
+    prováveis, ordenados por probabilidade. Usa a matriz de transição.
+
+    Devolve dict:
+      {'estado_hoje': str, 'proximos': [{'estado':..., 'prob':...}], 'matriz': DataFrame}
+    """
+    mat = _transition_matrix(state_series)
+    estados = state_series.dropna()
+    if len(estados) == 0 or mat.empty:
+        return {'estado_hoje': None, 'proximos': [], 'matriz': mat}
+    estado_hoje = estados.iloc[-1]
+    proximos = []
+    if estado_hoje in mat.index:
+        linha = mat.loc[estado_hoje].sort_values(ascending=False)
+        for est, prob in linha.items():
+            if prob > 0:
+                proximos.append({'estado': est, 'prob': float(prob)})
+    return {'estado_hoje': estado_hoje, 'proximos': proximos[:top_n], 'matriz': mat}
