@@ -138,15 +138,18 @@ def _build_hrv_signal(dw: pd.DataFrame) -> pd.DataFrame:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
 
-    # HF power (potência de alta frequência — mesmo sinal da tab recovery).
-    # Constrói ln(HF) e z-score 28d, em paralelo ao rMSSD, para poder ser usado
-    # como variável HRV alternativa no lag correlation.
+    # HF power (potência de alta frequência — mesmo sinal e mesmo tratamento
+    # da tab Recovery). O log só se aplica se a mediana > 10 (valores em ms²);
+    # se já vier em escala pequena (ex: 0.05), usa direto. Constrói z-score 28d
+    # para poder ser usado como variável HRV alternativa no lag correlation.
     if 'hf_power' in df.columns and df['hf_power'].notna().sum() >= 5:
-        _hf = df['hf_power'].replace(0, np.nan)
-        df['ln_hf'] = np.log(_hf.clip(lower=1e-6))
-        df['hf_mean_28d'] = _hf.rolling(28, min_periods=3).mean()
-        df['hf_std_28d']  = _hf.rolling(28, min_periods=3).std()
-        df['hf_z28'] = ((_hf - df['hf_mean_28d']) /
+        _hf = pd.to_numeric(df['hf_power'], errors='coerce').replace(0, np.nan)
+        _med_hf = _hf.median()
+        # ln_hf = métrica HF (log só para valores grandes, como na tab recovery)
+        df['ln_hf'] = np.log(_hf.where(_hf > 0)) if (_med_hf and _med_hf > 10) else _hf
+        df['hf_mean_28d'] = df['ln_hf'].rolling(28, min_periods=3).mean()
+        df['hf_std_28d']  = df['ln_hf'].rolling(28, min_periods=3).std()
+        df['hf_z28'] = ((df['ln_hf'] - df['hf_mean_28d']) /
                         df['hf_std_28d'].replace(0, np.nan))
 
     # ln(rMSSD) — sinal padrão na literatura
