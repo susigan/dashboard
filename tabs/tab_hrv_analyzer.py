@@ -394,7 +394,7 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
             _ref_days = st.number_input("Dias de referência (anterior)", value=21,
                                         min_value=7, max_value=90, step=7, key="hrv_refdays")
 
-        if True:  # auto-run (era botão)
+        if True:  # corre automaticamente ao ver a secção
             _ts = pd.Timestamp(_p_start)
             _te = pd.Timestamp(_p_end)
 
@@ -628,7 +628,7 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
             )
             _max_lag = _lc2.slider("Lag máximo (dias)", 3, 21, _lag_opt, 1, key="hrv_lag_max")
 
-            if True:  # auto-run (era botão)
+            if True:  # corre automaticamente ao ver a secção
                 with st.spinner("A calcular correlações com lag..."):
                     lag_df = _cx_lag_correlations(sig_hrv, sig_train,
                                                hrv_var=_hrv_target,
@@ -729,7 +729,7 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
             _fp_pre  = _fp2.slider("Dias antes a analisar", 3, 14, _fp_opt_dias, 1,
                                     key="hrv_fp_pre")
 
-            if True:  # auto-run (era botão)
+            if True:  # corre automaticamente ao ver a secção
                 with st.spinner("A calcular fingerprints..."):
                     fp = _cx_fingerprint(sig_hrv, sig_train,
                                           pct=_fp_pct/100, pre_days=_fp_pre)
@@ -1373,7 +1373,7 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
             key="adv_lag_tgt")
         _lv_max  = _lv2.slider("Lag máximo (d)", 3, 35, min(max(_opt("lag_max",10),3),35), 1, key="adv_lag_max")
 
-        if True:  # auto-run (era botão)
+        if True:  # corre automaticamente ao ver a secção
             with st.spinner("Pearson + Spearman + MI..."):
                 adv_lag = _cx_lag_advanced(
                     sig_hrv, sig_train, hrv_var=_lv_tgt, max_lag=_lv_max)
@@ -1450,7 +1450,7 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
 
         _dp_lag = st.slider("Janela de outcome (dias)", 3, 14, min(max(_opt("directional_janela",5),3),14), 1, key="dir_lag")
 
-        if True:  # auto-run (era botão)
+        if True:  # corre automaticamente ao ver a secção
             _dir_res = _cx_directional(
                 sig_hrv, sig_train, _DEFAULT_PATTERNS, outcome_lag=_dp_lag)
 
@@ -1496,7 +1496,7 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
             [v for v in ['hrv','ln_hrv','hrv_norm'] if v in sig_hrv.columns],
             key="dr_yvar")
 
-        if True:  # auto-run (era botão)
+        if True:  # corre automaticamente ao ver a secção
             dr = _cx_dose_response(sig_hrv, sig_train, _dr_xvar, _dr_yvar, _dr_lag)
 
             if dr.empty:
