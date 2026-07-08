@@ -628,6 +628,22 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
             )
             _max_lag = _lc2.slider("Lag máximo (dias)", 3, 21, _lag_opt, 1, key="hrv_lag_max")
 
+            # ── Tabela comparativa rMSSD vs HF power (principais achados) ──────
+            try:
+                _dual = _hra.lag_correlations_dual(sig_hrv, sig_train, max_lag=_max_lag)
+                if _dual.get('tem_hf'):
+                    st.markdown("#### 📊 rMSSD vs HF power — principais achados")
+                    st.caption(
+                        "Melhor lag e correlação de cada variável de treino, para o "
+                        "rMSSD e para o HF power (mesmo sinal da tab Recovery). "
+                        "Se ambos apontam o mesmo lag/sinal → efeito robusto.")
+                    st.dataframe(_dual['tabela'], hide_index=True, use_container_width=True)
+                else:
+                    st.caption("ℹ️ HF power não disponível na sheet — só rMSSD abaixo. "
+                               "(Adiciona a coluna 'hf_power' ao wellness para a comparação.)")
+            except Exception as _e_dual:
+                st.caption(f"Comparação rMSSD/HF indisponível: {_e_dual}")
+
             if True:  # corre automaticamente ao ver a secção
                 with st.spinner("A calcular correlações com lag..."):
                     lag_df = _cx_lag_correlations(sig_hrv, sig_train,
@@ -1448,7 +1464,24 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
              'conditions': [{'var': 'atl', 'op': '>', 'val': 0}]},  # proxy
         ]
 
-        _dp_lag = st.slider("Janela de outcome (dias)", 3, 14, min(max(_opt("directional_janela",5),3),14), 1, key="dir_lag")
+        # ── Janela default = tau da elasticidade (tempo típico de recuperação) ──
+        # Fisiologicamente, a janela de outcome deve ser o tempo que o HRV demora
+        # a recuperar. Usamos o tau mediano da elasticidade como default.
+        _tau_default = _opt("directional_janela", 5)
+        try:
+            _elast_dir = _cx_recovery_elasticity(sig_hrv, sig_train)
+            _tau_med = _elast_dir.get('tau_median')
+            if _tau_med and not (isinstance(_tau_med, float) and np.isnan(_tau_med)):
+                _tau_default = int(min(max(round(_tau_med), 3), 14))
+                st.caption(f"🔧 Janela pré-preenchida com o **τ da elasticidade** "
+                           f"(tempo mediano de recuperação = **{_tau_default}d**). "
+                           "Fisiologicamente, é o tempo que o HRV demora a recuperar. "
+                           "Podes ajustar.")
+        except Exception:
+            pass
+
+        _dp_lag = st.slider("Janela de outcome (dias)", 3, 14,
+                            min(max(_tau_default, 3), 14), 1, key="dir_lag")
 
         if True:  # corre automaticamente ao ver a secção
             _dir_res = _cx_directional(
@@ -1638,6 +1671,26 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
             st.warning("Dados insuficientes para transition matrix.")
         else:
             _tm = _transition_matrix(_state_df2['state_label'])
+
+            # ── Transição a partir do estado de HOJE (o mais prático) ─────────
+            try:
+                _th = _hra.transicao_de_hoje(_state_df2['state_label'], top_n=3)
+                if _th.get('estado_hoje'):
+                    st.markdown("##### 🎯 A partir do teu estado de HOJE")
+                    st.markdown(f"Estado actual: **{_th['estado_hoje']}**")
+                    if _th['proximos']:
+                        _prox_df = pd.DataFrame([
+                            {'Próximo estado mais provável': p['estado'],
+                             'Probabilidade': f"{p['prob']*100:.0f}%"}
+                            for p in _th['proximos']
+                        ])
+                        st.dataframe(_prox_df, hide_index=True, use_container_width=True)
+                        _top = _th['proximos'][0]
+                        st.caption(f"➡️ Amanhã, o estado mais provável é "
+                                   f"**{_top['estado']}** ({_top['prob']*100:.0f}%).")
+                    st.markdown("---")
+            except Exception:
+                pass
 
             if not _tm.empty:
                 # Heatmap da transition matrix
