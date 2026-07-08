@@ -169,6 +169,65 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
         sig_hrv   = _build_hrv_signal(_dw)
         sig_train = _build_training_signal(_da) if _da is not None else pd.DataFrame()
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # GATE — nada de pesado corre até o utilizador clicar "▶ Rodar análises".
+    # Isto evita que o auto-runner (pesado) corra a cada interação da app inteira
+    # (o Streamlit corre todas as tabs sempre; sem este gate, mexer num dropdown
+    #  noutra tab dispararia o auto-runner e empilharia a renderização).
+    # O resultado fica guardado em session_state — as análises leem de lá.
+    # ══════════════════════════════════════════════════════════════════════════
+    # Chave de identidade dos dados (deteta se mudaram desde a última corrida)
+    try:
+        _dkey_gate = str((
+            len(sig_hrv), str(sig_hrv['Data'].iloc[0]) if len(sig_hrv) else '',
+            str(sig_hrv['Data'].iloc[-1]) if len(sig_hrv) else '',
+            len(sig_train), str(sig_train['Data'].iloc[-1]) if len(sig_train) else ''))
+    except Exception:
+        _dkey_gate = str((len(sig_hrv), len(sig_train)))
+
+    _gate = st.session_state.get('_hrv_gate')
+    _ja_correu = (_gate is not None and _gate.get('key') == _dkey_gate)
+
+    st.markdown("---")
+    _gc1, _gc2 = st.columns([1, 3])
+    with _gc1:
+        _rodar = st.button("▶ Rodar análises", type="primary", key="hrv_gate_run",
+                           use_container_width=True)
+    with _gc2:
+        if _ja_correu:
+            st.caption("✅ Análises calculadas. Muda de secção/aba livremente — "
+                       "usa dados guardados (não recalcula). Clica novamente para actualizar.")
+        else:
+            st.caption("⏸️ Clica em **▶ Rodar análises** para calcular tudo "
+                       "(detecção, lag, fingerprint, ARI, estados, auto-runner, etc.). "
+                       "Só corre quando clicares — não trava as outras tabs.")
+
+    if _rodar:
+        # Correr o auto-runner UMA vez e guardar tudo em session_state
+        with st.spinner("A calcular todas as análises (auto-runner + óptimos)..."):
+            _hoje_g = pd.Timestamp.now().normalize()
+            _res_g = _hra.run_autorunner(sig_hrv, sig_train,
+                                         da_full=_da if _da is not None else None,
+                                         hoje_ar=_hoje_g)
+            _otimos_g = _hra.extrair_otimos(_res_g.get('runner_results', []),
+                                            periodo_pref='1 ano')
+            st.session_state['_hrv_gate'] = {
+                'key': _dkey_gate,
+                'autorunner': _res_g,
+                'otimos': _otimos_g,
+            }
+        _ja_correu = True
+        _gate = st.session_state['_hrv_gate']
+
+    # Se ainda não correu, para aqui (não mostra as análises pesadas)
+    if not _ja_correu:
+        st.info("👆 As análises aparecem depois de clicares em **▶ Rodar análises**.")
+        return
+
+    # A partir daqui, temos resultados guardados disponíveis para todas as secções
+    _AR_RESULT = _gate.get('autorunner', {})
+    _AR_OTIMOS = _gate.get('otimos', {})
+
     # ── Selector de análise (radio horizontal — evita bug de secções empilhadas) ──
     st.markdown("---")
     _analyses = ["📅 Período Manual", "🔍 Detecção Automática",
@@ -551,16 +610,11 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
         if len(sig_train) == 0:
             st.warning("Sem dados de treino.")
         else:
-            # Óptimo do lag (do auto-runner, cacheado)
+            # Óptimo do lag — lido do gate (já calculado ao clicar "Rodar")
             _lag_opt = 14
             try:
-                _res_lag = _cx_autorunner(sig_hrv, sig_train,
-                                          da_full=_da if '_da' in dir() else None,
-                                          hoje_ar=pd.Timestamp.now().normalize())
-                _ot_lag = _hra.extrair_otimos(_res_lag.get('runner_results', []),
-                                              periodo_pref='1 ano')
-                if _ot_lag.get('lag_correlation'):
-                    _lag_opt = min(max(int(_ot_lag['lag_correlation']), 3), 21)
+                if _AR_OTIMOS.get('lag_correlation'):
+                    _lag_opt = min(max(int(_AR_OTIMOS['lag_correlation']), 3), 21)
                     st.caption(f"🔧 Lag óptimo do Auto-Runner: **{_lag_opt}d** "
                                "(pré-preenchido; podes ajustar).")
             except Exception:
@@ -659,16 +713,11 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
         if len(sig_train) == 0:
             st.warning("Sem dados de treino.")
         else:
-            # Óptimo do fingerprint (do auto-runner, cacheado)
+            # Óptimo do fingerprint — lido do gate (já calculado ao clicar "Rodar")
             _fp_opt_dias = 7
             try:
-                _res_fp = _cx_autorunner(sig_hrv, sig_train,
-                                         da_full=_da if '_da' in dir() else None,
-                                         hoje_ar=pd.Timestamp.now().normalize())
-                _ot_fp = _hra.extrair_otimos(_res_fp.get('runner_results', []),
-                                             periodo_pref='1 ano')
-                if _ot_fp.get('fingerprint_dias'):
-                    _fp_opt_dias = min(max(int(_ot_fp['fingerprint_dias']), 3), 14)
+                if _AR_OTIMOS.get('fingerprint_dias'):
+                    _fp_opt_dias = min(max(int(_AR_OTIMOS['fingerprint_dias']), 3), 14)
                     st.caption(f"🔧 Óptimo do Auto-Runner: **{_fp_opt_dias}d** antes "
                                "(pré-preenchido; podes ajustar).")
             except Exception:
@@ -773,7 +822,8 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
 
     # ── Análises avançadas ────────────────────────────────────────────────────
     if len(sig_train) > 0:
-        tab_hrv_advanced(sig_hrv, sig_train, da_full=_da)
+        tab_hrv_advanced(sig_hrv, sig_train, da_full=_da,
+                         ar_result=_AR_RESULT, ar_otimos=_AR_OTIMOS)
     else:
         st.info("Conecta os dados de actividade para aceder às análises avançadas "
                 "(ARI, Estados, Elasticidade, Lag Avançado, etc.).")
@@ -989,26 +1039,14 @@ def _cx_cluster_weeks(sig_hrv, sig_train, n_clusters=4):
 
 def _cx_autorunner(sig_hrv, sig_train, da_full=None, hoje_ar=None):
     """
-    Corre o auto-runner UMA vez por sessão e guarda o resultado em session_state.
-    Sem @st.cache_data (evita problemas de hash com os DataFrames). O resultado
-    fica guardado até os dados mudarem — uma chave baseada no tamanho/datas dos
-    sinais deteta mudanças reais.
+    Lê o resultado do auto-runner guardado pelo gate em session_state.
+    NÃO recalcula — o cálculo só acontece quando o utilizador clica "▶ Rodar".
+    Se ainda não houver resultado guardado, devolve estrutura vazia.
     """
-    # Chave de identidade dos dados (deteta se mudaram desde a última corrida)
-    try:
-        _k_hrv = (len(sig_hrv), str(sig_hrv['Data'].iloc[0]), str(sig_hrv['Data'].iloc[-1])) if len(sig_hrv) else (0,)
-        _k_trn = (len(sig_train), str(sig_train['Data'].iloc[0]), str(sig_train['Data'].iloc[-1])) if len(sig_train) else (0,)
-        _dkey = str((_k_hrv, _k_trn))
-    except Exception:
-        _dkey = str((len(sig_hrv), len(sig_train)))
-
-    _cache = st.session_state.get('_autorunner_cache')
-    if _cache is not None and _cache.get('key') == _dkey:
-        return _cache['result']
-
-    _res = _hra.run_autorunner(sig_hrv, sig_train, da_full=da_full, hoje_ar=hoje_ar)
-    st.session_state['_autorunner_cache'] = {'key': _dkey, 'result': _res}
-    return _res
+    _gate = st.session_state.get('_hrv_gate')
+    if _gate is not None and _gate.get('autorunner') is not None:
+        return _gate['autorunner']
+    return {'runner_results': [], 'summary_rows': []}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1017,24 +1055,22 @@ def _cx_autorunner(sig_hrv, sig_train, da_full=None, hoje_ar=None):
 
 def tab_hrv_advanced(sig_hrv: pd.DataFrame,
                       sig_train: pd.DataFrame,
-                      da_full: pd.DataFrame = None):
+                      da_full: pd.DataFrame = None,
+                      ar_result: dict = None,
+                      ar_otimos: dict = None):
     """
     Secção avançada da tab HRV — chamada dentro de tab_hrv_analyzer.
     Contém: ARI, Estados, Elasticidade, Lag Avançado, Directional,
             Dose-Response, K-means, Transition Matrix.
+    ar_result/ar_otimos vêm do gate (já calculados ao clicar "▶ Rodar").
     """
     st.markdown("---")
     st.subheader("🧠 Análises Avançadas")
 
-    # ── Óptimos do Auto-Runner (pré-preenchem os sliders abaixo) ──────────────
-    # Corre o auto-runner (cacheado) e extrai os parâmetros óptimos por análise.
+    # ── Óptimos do Auto-Runner — lidos do gate (não recalcula) ────────────────
     # Os sliders usam estes valores como default — o utilizador pode na mesma mexer.
-    _otimos = {}
+    _otimos = ar_otimos if ar_otimos else {}
     try:
-        _hoje_adv = pd.Timestamp.now().normalize()
-        _res_adv = _cx_autorunner(sig_hrv, sig_train, da_full=da_full, hoje_ar=_hoje_adv)
-        _otimos = _hra.extrair_otimos(_res_adv.get('runner_results', []),
-                                      periodo_pref='1 ano')
         if _otimos.get('lag_max'):
             st.caption(
                 "🔧 Sliders pré-preenchidos com os óptimos do Auto-Runner (período 1 ano). "
@@ -1662,21 +1698,15 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
     with _adv_tabs_full[0]:
         st.markdown("#### 🔬 Auto-Runner — Optimização automática de parâmetros")
         st.caption(
-            "Roda todas as análises para **4 períodos** (180d / 1ano / 2anos / 3anos) "
-            "testando automaticamente múltiplas combinações de parâmetros. "
-            "Detecta os valores óptimos por variável e período. "
+            "Roda todas as análises para **7 períodos** (60d / 90d / 180d / 1ano / "
+            "2anos / 3anos / todo histórico) testando automaticamente múltiplas "
+            "combinações de parâmetros. Detecta os valores óptimos por variável e período. "
             "Output: CSV consolidado com todos os resultados + comparação entre períodos."
         )
-        st.info(
-            "⏱️ Tempo estimado: **30–90 segundos** dependendo do histórico disponível. "
-            "Corre uma vez e exporta tudo — não precisas de explorar manualmente."
-        )
+        st.caption("✅ Já calculado ao clicar em **▶ Rodar análises** — resultados abaixo.")
 
-        # Auto-runner corre automaticamente com cache (só recalcula se dados mudarem).
-        # Na 1ª visita demora 30-90s; nas seguintes é instantâneo (cache).
-        _hoje_ar = pd.Timestamp.now().normalize()
-        with st.spinner("A optimizar parâmetros para todos os períodos (1ª vez pode demorar)..."):
-            _res_ar = _cx_autorunner(sig_hrv, sig_train, da_full=da_full, hoje_ar=_hoje_ar)
+        # Lê o resultado guardado pelo gate (não recalcula)
+        _res_ar = ar_result if ar_result else {}
         _runner_results = _res_ar.get('runner_results', [])
         _summary_rows   = _res_ar.get('summary_rows', [])
 
