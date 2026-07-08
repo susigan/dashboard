@@ -957,32 +957,25 @@ _transition_matrix = _hra._transition_matrix
 # recalculam quando os dados de entrada mudam. Nas visitas seguintes = instantâneo.
 # ══════════════════════════════════════════════════════════════════════════════
 
-@st.cache_data(show_spinner=False)
 def _cx_lag_correlations(sig_hrv, sig_train, hrv_var='hrv', max_lag=14):
     return _hra._lag_correlations(sig_hrv, sig_train, hrv_var=hrv_var, max_lag=max_lag)
 
-@st.cache_data(show_spinner=False)
 def _cx_fingerprint(sig_hrv, sig_train, pct=0.10, pre_days=10):
     return _hra._hrv_fingerprint(sig_hrv, sig_train, pct=pct, pre_days=pre_days)
 
-@st.cache_data(show_spinner=False)
 def _cx_compute_ari(sig_hrv):
     return _hra._compute_ari(sig_hrv)
 
-@st.cache_data(show_spinner=False)
 def _cx_classify_states(sig_hrv, sig_train):
     return _hra._classify_states(sig_hrv, sig_train)
 
-@st.cache_data(show_spinner=False)
 def _cx_recovery_elasticity(sig_hrv, sig_train, z_suppress=-1.0, z_recover=-0.3):
     return _hra._recovery_elasticity(sig_hrv, sig_train, z_suppress=z_suppress, z_recover=z_recover)
 
-@st.cache_data(show_spinner=False)
 def _cx_lag_advanced(sig_hrv, sig_train, hrv_var='hrv', max_lag=28, train_vars=None):
     return _hra._lag_correlations_advanced(sig_hrv, sig_train, hrv_var=hrv_var,
                                            max_lag=max_lag, train_vars=train_vars)
 
-@st.cache_data(show_spinner=False)
 def _cx_dose_response(sig_hrv, sig_train, x_var, y_var='hrv', lag=0):
     return _hra._dose_response(sig_hrv, sig_train, x_var, y_var=y_var, lag=lag)
 
@@ -991,14 +984,31 @@ def _cx_dose_response(sig_hrv, sig_train, x_var, y_var='hrv', lag=0):
 def _cx_directional(sig_hrv, sig_train, patterns, outcome_lag=5):
     return _hra._directional_analysis(sig_hrv, sig_train, patterns, outcome_lag=outcome_lag)
 
-@st.cache_data(show_spinner=False)
 def _cx_cluster_weeks(sig_hrv, sig_train, n_clusters=4):
     return _hra._cluster_weeks(sig_hrv, sig_train, n_clusters=n_clusters)
 
-@st.cache_data(show_spinner=False)
 def _cx_autorunner(sig_hrv, sig_train, da_full=None, hoje_ar=None):
-    # nota: o auto-runner é o mais pesado — cache aqui poupa 30-90s por visita
-    return _hra.run_autorunner(sig_hrv, sig_train, da_full=da_full, hoje_ar=hoje_ar)
+    """
+    Corre o auto-runner UMA vez por sessão e guarda o resultado em session_state.
+    Sem @st.cache_data (evita problemas de hash com os DataFrames). O resultado
+    fica guardado até os dados mudarem — uma chave baseada no tamanho/datas dos
+    sinais deteta mudanças reais.
+    """
+    # Chave de identidade dos dados (deteta se mudaram desde a última corrida)
+    try:
+        _k_hrv = (len(sig_hrv), str(sig_hrv['Data'].iloc[0]), str(sig_hrv['Data'].iloc[-1])) if len(sig_hrv) else (0,)
+        _k_trn = (len(sig_train), str(sig_train['Data'].iloc[0]), str(sig_train['Data'].iloc[-1])) if len(sig_train) else (0,)
+        _dkey = str((_k_hrv, _k_trn))
+    except Exception:
+        _dkey = str((len(sig_hrv), len(sig_train)))
+
+    _cache = st.session_state.get('_autorunner_cache')
+    if _cache is not None and _cache.get('key') == _dkey:
+        return _cache['result']
+
+    _res = _hra.run_autorunner(sig_hrv, sig_train, da_full=da_full, hoje_ar=hoje_ar)
+    st.session_state['_autorunner_cache'] = {'key': _dkey, 'result': _res}
+    return _res
 
 
 # ══════════════════════════════════════════════════════════════════════════════
