@@ -1107,6 +1107,8 @@ def run_autorunner(sig_hrv, sig_train, da_full=None, hoje_ar=None, on_progress=N
     _summary_rows   = []
 
     _periodos_run = [
+        (60,    "60 dias"),
+        (90,    "90 dias"),
         (180,   "180 dias"),
         (365,   "1 ano"),
         (730,   "2 anos"),
@@ -1836,3 +1838,73 @@ def run_autorunner(sig_hrv, sig_train, da_full=None, hoje_ar=None, on_progress=N
             """)
 
     return {'runner_results': _runner_results, 'summary_rows': _summary_rows}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# EXTRAÇÃO DE ÓPTIMOS — resume os valores óptimos do auto-runner por análise
+# Usado para pré-preencher os sliders das análises avançadas.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def extrair_otimos(runner_results, periodo_pref=None):
+    """
+    A partir dos runner_results do auto-runner, devolve os parâmetros óptimos
+    por tipo de análise (o de maior |r| dentro do período preferido).
+
+    periodo_pref: rótulo do período a preferir (ex: '1 ano'). Se None ou ausente,
+                  usa o período com mais observações.
+
+    Devolve dict:
+      {
+        'lag_max':        int|None,   # lag máximo óptimo (lag_max_optimo)
+        'lag_correlation':int|None,   # melhor lag simples
+        'directional_janela': int|None,
+        'fingerprint_dias':   int|None,
+        'dose_response_lag':  int|None,
+        'clustering_n':       int|None,
+        'elasticidade_z':     float|None,
+        'por_analise':    {analise: {'param_val':..., 'r_abs':..., 'periodo':...}},
+      }
+    """
+    out = {'lag_max': None, 'lag_correlation': None, 'directional_janela': None,
+           'fingerprint_dias': None, 'dose_response_lag': None, 'clustering_n': None,
+           'elasticidade_z': None, 'por_analise': {}}
+    if not runner_results:
+        return out
+    df = pd.DataFrame(runner_results)
+    if 'analise' not in df.columns or 'param_val' not in df.columns:
+        return out
+
+    def _melhor(analise):
+        sub = df[df['analise'] == analise].copy()
+        if len(sub) == 0:
+            return None
+        # filtrar período preferido se existir
+        if periodo_pref and periodo_pref in sub['periodo'].values:
+            sub = sub[sub['periodo'] == periodo_pref]
+        # ordenar por |r| (r_abs) se existir, senão pelo n
+        if 'r_abs' in sub.columns and sub['r_abs'].notna().any():
+            sub = sub.sort_values('r_abs', ascending=False)
+        elif 'n' in sub.columns:
+            sub = sub.sort_values('n', ascending=False)
+        row = sub.iloc[0]
+        return {'param_val': row.get('param_val'),
+                'r_abs': row.get('r_abs'),
+                'periodo': row.get('periodo')}
+
+    _map = {
+        'lag_max':            'lag_max_optimo',
+        'lag_correlation':    'lag_correlation',
+        'directional_janela': 'directional_janela',
+        'fingerprint_dias':   'fingerprint',
+        'dose_response_lag':  'dose_response',
+        'clustering_n':       'clustering_semanas',
+        'elasticidade_z':     'elasticidade_target_z',
+    }
+    for chave, analise in _map.items():
+        best = _melhor(analise)
+        out['por_analise'][analise] = best
+        if best and best['param_val'] is not None:
+            val = best['param_val']
+            # elasticidade é float (z-score); os outros são int (dias/clusters)
+            out[chave] = float(val) if chave == 'elasticidade_z' else int(round(float(val)))
+    return out
