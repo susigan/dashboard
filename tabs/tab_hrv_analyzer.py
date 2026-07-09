@@ -165,6 +165,13 @@ _EXPLICACOES = {
         "consistência de 85% é um marcador robusto; perto de 50% é ruído. Ex: *'os meus "
         "melhores dias de HRV vêm quase sempre depois de TSB positivo + baixa monotonia + "
         "mais volume de Run'*. Contrasta com o que precede os piores dias."),
+    'modelos_carga': (
+        "**O que faz:** compara vários modelos de carga (ATL, CTL, TSB, FTLM fraccionário "
+        "com diferentes memórias, e somas de load) para ver **qual melhor prevê o teu HRV** "
+        "e em que **horizonte temporal** (curto/médio/longo prazo).\n\n"
+        "**Intenção:** descobrir qual métrica de carga é o teu melhor 'termómetro' de HRV. "
+        "Um modelo pode prever bem a curto prazo (fadiga aguda) e outro a longo prazo "
+        "(adaptação). Saber isto diz-te qual métrica vigiar para antecipar o teu HRV."),
     'autorunner': (
         "**O que faz:** corre todas as análises acima para 7 períodos (60d a todo histórico) "
         "testando muitas combinações de parâmetros, e encontra os valores óptimos de cada.\n\n"
@@ -1276,6 +1283,7 @@ def tab_hrv_advanced(sig_hrv: pd.DataFrame,
         "📈 Dose-Response",
         "🗂️ Semanas",
         "🔄 Transições",
+        "⚖️ Modelos de Carga",
     ])
 
     # ── ARI ──────────────────────────────────────────────────────────────────
@@ -1913,6 +1921,63 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                     "atheltica_hrv_transition_matrix.csv", "text/csv",
                     key="adv_tm_dl"
                 )
+
+    # ── Modelos de Carga — qual prevê melhor o HRV ────────────────────────────
+    with _adv_tabs[8]:
+        st.markdown("#### ⚖️ Modelos de Carga — qual prevê melhor o teu HRV")
+        _dropdown_explica('modelos_carga')
+        st.caption("Compara ATL, CTL, TSB, FTLM fraccionário (memórias curta/média/longa) "
+                   "e somas de load como preditores do HRV, e em que horizonte cada um funciona.")
+
+        try:
+            _cmp = _hra.comparar_modelos_carga(sig_hrv, sig_train, max_lag=21)
+            if _cmp['tabela'].empty:
+                st.warning("Sem dados suficientes para comparar modelos de carga.")
+            else:
+                _disp = _cmp['tabela'][['Modelo', 'Melhor lag (d)', 'r', 'p',
+                                        'Horizonte', 'Direção']].copy()
+                # Marcar significância
+                _disp['Sig.'] = _cmp['tabela']['_sig'].map({True: '✅ p<0.05', False: '—'})
+                st.dataframe(_disp, hide_index=True, use_container_width=True)
+                st.caption("Ordenado por força da correlação (|r|). **Lag** = dias entre o "
+                           "modelo e a resposta do HRV. **Horizonte**: curto ≤5d (fadiga "
+                           "aguda), médio 6-13d, longo ≥14d (adaptação).")
+
+                if _cmp['melhor']:
+                    _mb = _cmp['melhor']
+                    st.info(f"🏆 **Melhor preditor do teu HRV:** {_mb['modelo']} "
+                            f"(r={_mb['r']:+.2f}, lag {_mb['lag']}d — {_mb['horizonte']}). "
+                            f"{_mb['direcao'].capitalize()}.")
+
+                    # Gráfico de barras dos |r| por modelo
+                    _fig_cmp = go.Figure()
+                    _tb = _cmp['tabela']
+                    _cores_cmp = [_C['hrv_up'] if r > 0 else _C['hrv_dn'] for r in _tb['r']]
+                    _fig_cmp.add_trace(go.Bar(
+                        y=_tb['Modelo'], x=_tb['r'], orientation='h',
+                        marker_color=_cores_cmp,
+                        text=[f"{r:+.2f} @{l}d" for r, l in zip(_tb['r'], _tb['Melhor lag (d)'])],
+                        textposition='outside',
+                        hovertemplate='%{y}<br>r=%{x:+.3f}<extra></extra>',
+                    ))
+                    _fig_cmp.add_vline(x=0, line_color='#aaa', line_width=1)
+                    _fig_cmp.update_layout(
+                        paper_bgcolor='white', plot_bgcolor='white',
+                        font=dict(color='#111', size=11),
+                        height=max(300, len(_tb) * 34 + 60),
+                        margin=dict(t=20, b=40, l=110, r=70),
+                        xaxis_title="Correlação com HRV (r)", yaxis_title=None,
+                    )
+                    st.plotly_chart(_fig_cmp, use_container_width=True,
+                                    config=MC, key='hrv_modelos_carga_bar')
+
+                st.download_button(
+                    "📥 Descarregar comparação (CSV)",
+                    _disp.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
+                    "atheltica_hrv_modelos_carga.csv", "text/csv", key="modelos_carga_dl"
+                )
+        except Exception as _e_cmp:
+            st.warning(f"Comparação de modelos indisponível: {_e_cmp}")
 
     # ════════════════════════════════════════════════════════════════════════
     # AUTO-RUNNER — optimização automática de todos os parâmetros
