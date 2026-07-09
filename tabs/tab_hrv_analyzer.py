@@ -108,10 +108,13 @@ _EXPLICACOES = {
         "óptimo vem do Auto-Runner."),
     'fingerprint': (
         "**O que faz:** pega nos teus melhores e piores dias de HRV e olha para trás — o que "
-        "fizeste nos X dias antes de cada um? Revela o padrão de treino que antecede a boa "
-        "vs a má forma.\n\n"
-        "**Intenção:** descobrir a tua 'impressão digital' de recuperação: que combinação de "
-        "carga/intensidade costuma preceder os teus melhores dias autonómicos."),
+        "fizeste nos X dias antes de cada um? Mostra três coisas: a **média** de cada variável "
+        "de treino, a **consistência** (em quantos % dos casos estava alta/baixa) e a "
+        "**composição por modalidade** (Bike/Row/Ski/Run).\n\n"
+        "**Intenção:** descobrir a tua 'impressão digital' de recuperação e a **'receita' fiável** "
+        "para o HRV alto. A média diz *quanto*; a consistência diz *quão fiável* — uma variável "
+        "alta em 85% dos casos é um marcador robusto, perto de 50% é ruído. Ex: *'os meus "
+        "melhores dias vêm quase sempre depois de TSB positivo + baixa monotonia + mais Run'*."),
     'ari': (
         "**O que faz:** o Autonomic Readiness Index — um score 0-100 que funde 5 sinais "
         "autonómicos (HRV, RHR, tendência, etc.) numa só métrica de prontidão.\n\n"
@@ -944,6 +947,52 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
                         key="hrv_dl_fp"
                     )
 
+                    # ── Consistência + modalidades (fusão da antiga "Assinatura") ──
+                    # Além da média (acima), mostra em QUE % dos casos cada variável
+                    # estava alta/baixa — distingue marcadores fiáveis de ruído.
+                    try:
+                        _assin = _hra.assinatura_hrv(
+                            sig_hrv, sig_train, pct=_fp_pct/100,
+                            pre_days=_fp_pre, da_full=_da if _da is not None else None)
+                        if _assin['vars']:
+                            st.markdown("---")
+                            st.markdown("#### 🎯 Consistência — a variável é fiável ou ruído?")
+                            st.caption(
+                                "A média (acima) diz *quanto*; a consistência diz *quão fiável*. "
+                                "Uma variável alta em 85% dos casos antes do HRV alto é um "
+                                "marcador robusto; perto de 50% é aleatório. Ordenado por poder "
+                                "discriminante (quanto melhor separa bons de maus dias).")
+                            _cons_rows = []
+                            for v in _assin['vars']:
+                                _cons_rows.append({
+                                    'Variável': _var_labels.get(v['variavel'], v['variavel']),
+                                    'Consist. no HRV↑': f"{v['consist_alto']:.0f}%",
+                                    'Consist. no HRV↓': f"{v['consist_baixo']:.0f}%",
+                                    'Poder discrim.': f"{v['discrimina']:.0f}",
+                                    'Direção no HRV↑': v['direcao_no_alto'],
+                                })
+                            st.dataframe(pd.DataFrame(_cons_rows), hide_index=True,
+                                         use_container_width=True)
+
+                            # A "receita" — top 3 mais discriminantes
+                            _top3 = _assin['vars'][:3]
+                            if _top3:
+                                _receita = " · ".join(
+                                    f"**{_var_labels.get(v['variavel'], v['variavel'])}** "
+                                    f"{v['direcao_no_alto']}" for v in _top3)
+                                st.info(f"🧭 **A tua receita para HRV alto:** os melhores dias "
+                                        f"costumam vir depois de: {_receita}")
+
+                            # Composição por modalidade
+                            if _assin['modalidades'] is not None:
+                                st.markdown("#### 🚴 Que modalidade precede o HRV alto?")
+                                st.caption("Volume médio (sessões/dia) de cada modalidade na "
+                                           "janela antes dos dias de HRV alto vs baixo.")
+                                st.dataframe(_assin['modalidades'], hide_index=True,
+                                             use_container_width=True)
+                    except Exception as _e_cons:
+                        st.caption(f"Consistência indisponível: {_e_cons}")
+
     # ── Análises avançadas (só depois de clicar "▶ Rodar" — precisam do auto-runner) ──
     if len(sig_train) == 0:
         st.markdown("---")
@@ -1227,7 +1276,6 @@ def tab_hrv_advanced(sig_hrv: pd.DataFrame,
         "📈 Dose-Response",
         "🗂️ Semanas",
         "🔄 Transições",
-        "🔬 Assinatura HRV",
     ])
 
     # ── ARI ──────────────────────────────────────────────────────────────────
@@ -1865,75 +1913,6 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                     "atheltica_hrv_transition_matrix.csv", "text/csv",
                     key="adv_tm_dl"
                 )
-
-    # ── Assinatura HRV alto vs baixo ──────────────────────────────────────────
-    with _adv_tabs[8]:
-        st.markdown("#### 🔬 Assinatura do HRV alto vs baixo")
-        _dropdown_explica('assinatura')
-        st.caption("O que precede os teus melhores dias de HRV, e quão consistente é esse "
-                   "padrão — contrastado com o que precede os piores dias.")
-
-        _as1, _as2 = st.columns(2)
-        _as_pct = _as1.slider("Percentil top/bottom (%)", 10, 30, 15, 5, key="assin_pct")
-        # janela default = tau da elasticidade (se disponível) ou fingerprint óptimo
-        _as_pre_def = 10
-        if _AR_OTIMOS and _AR_OTIMOS.get('fingerprint_dias'):
-            _as_pre_def = min(max(int(_AR_OTIMOS['fingerprint_dias']), 5), 21)
-        _as_pre = _as2.slider("Dias antes a analisar", 5, 21, _as_pre_def, 1, key="assin_pre")
-
-        try:
-            _assin = _hra.assinatura_hrv(sig_hrv, sig_train, pct=_as_pct/100,
-                                         pre_days=_as_pre, da_full=da_full)
-            if not _assin['vars']:
-                st.warning("Sem dados suficientes para a assinatura.")
-            else:
-                st.markdown(f"**{_assin['n_alto']}** dias de HRV alto vs "
-                            f"**{_assin['n_baixo']}** dias de HRV baixo · "
-                            f"janela de {_assin['pre_days']} dias antes.")
-
-                # Tabela principal: assinatura por variável
-                _rows = []
-                for v in _assin['vars']:
-                    _rows.append({
-                        'Variável': v['variavel'],
-                        'Média antes HRV↑': v['media_alto'],
-                        'Média antes HRV↓': v['media_baixo'],
-                        'Consist. no HRV↑': f"{v['consist_alto']:.0f}%",
-                        'Poder discrim.': f"{v['discrimina']:.0f}",
-                        'Direção no HRV↑': v['direcao_no_alto'],
-                    })
-                st.markdown("##### 📊 Assinatura por variável (ordenada por poder discriminante)")
-                st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True)
-                st.caption("**Poder discriminante** = quão diferente é a consistência entre "
-                           "HRV alto e baixo. Quanto maior, mais essa variável distingue os "
-                           "teus bons dos maus dias. **Consistência alta** (>70%) = marcador "
-                           "fiável; perto de 50% = ruído.")
-
-                # A "receita" — as 3 variáveis mais discriminantes
-                _top3 = _assin['vars'][:3]
-                if _top3:
-                    st.markdown("##### 🧭 A tua 'receita' para HRV alto")
-                    _receita = " · ".join(
-                        f"**{v['variavel']}** {v['direcao_no_alto']}" for v in _top3)
-                    st.info(f"Os teus melhores dias de HRV costumam vir depois de: {_receita}")
-
-                # Composição por modalidade
-                if _assin['modalidades'] is not None:
-                    st.markdown("##### 🚴 Composição por modalidade")
-                    st.caption("Volume médio (sessões/dia) de cada modalidade na janela antes "
-                               "dos dias de HRV alto vs baixo. Revela que desporto precede os "
-                               "teus melhores dias.")
-                    st.dataframe(_assin['modalidades'], hide_index=True,
-                                 use_container_width=True)
-
-                # Export
-                st.download_button(
-                    "📥 Descarregar assinatura (CSV)",
-                    pd.DataFrame(_rows).to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
-                    "atheltica_hrv_assinatura.csv", "text/csv", key="assin_dl"
-                )
-        except Exception as _e_assin:
-            st.warning(f"Assinatura indisponível: {_e_assin}")
 
     # ════════════════════════════════════════════════════════════════════════
     # AUTO-RUNNER — optimização automática de todos os parâmetros
