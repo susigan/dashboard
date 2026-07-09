@@ -2015,3 +2015,128 @@ def transicao_de_hoje(state_series, top_n=3):
             if prob > 0:
                 proximos.append({'estado': est, 'prob': float(prob)})
     return {'estado_hoje': estado_hoje, 'proximos': proximos[:top_n], 'matriz': mat}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ASSINATURA DO HRV ALTO vs BAIXO — consistência dos padrões de treino
+# ══════════════════════════════════════════════════════════════════════════════
+
+def assinatura_hrv(sig_hrv, sig_train, pct=0.15, pre_days=10, da_full=None):
+    """
+    Compara o que precede os dias de HRV ALTO (top pct%) vs HRV BAIXO (bottom pct%),
+    medindo não só a MÉDIA de cada variável de treino, mas a CONSISTÊNCIA — em que
+    % dos casos a variável estava acima/abaixo da mediana global.
+
+    A ideia: descobrir a 'receita' fiável que leva ao HRV alto. Uma variável com
+    consistência alta (ex: 85%) é um marcador robusto; uma perto de 50% é ruído.
+
+    Se da_full for dado, adiciona a composição por MODALIDADE (Bike/Row/Ski/Run)
+    nos dias que precedem cada extremo.
+
+    Devolve dict:
+      {
+        'vars': [{variavel, media_alto, media_baixo, consist_alto, consist_baixo,
+                  direcao, discrimina}],   # ordenado por poder discriminante
+        'modalidades': DataFrame|None,     # volume por modalidade antes de alto/baixo
+        'n_alto': int, 'n_baixo': int, 'pre_days': int,
+      }
+    """
+    merged = pd.merge(sig_hrv[['Data', 'hrv']], sig_train, on='Data', how='inner').sort_values('Data')
+    merged['Data'] = pd.to_datetime(merged['Data'])
+    hrv_vals = merged['hrv'].dropna()
+    if len(hrv_vals) < 20:
+        return {'vars': [], 'modalidades': None, 'n_alto': 0, 'n_baixo': 0, 'pre_days': pre_days}
+
+    q_top = hrv_vals.quantile(1 - pct)
+    q_bot = hrv_vals.quantile(pct)
+    top_days = merged[merged['hrv'] >= q_top]['Data'].tolist()
+    bot_days = merged[merged['hrv'] <= q_bot]['Data'].tolist()
+
+    train_vars = ['load', 'kj', 'dur_min', 'pct_z3', 'freq_7d', 'mono_7d',
+                  'strain_7d', 'tsb', 'atl', 'ctl', 'n_sess']
+    train_vars = [v for v in train_vars if v in merged.columns]
+
+    # Mediana global de cada variável (referência para "acima/abaixo")
+    medianas = {v: merged[v].median() for v in train_vars}
+
+    def _janela_valores(days, var):
+        """Média da variável na janela pre_days antes de cada dia."""
+        vals = []
+        for d in days:
+            d = pd.Timestamp(d)
+            sub = merged[(merged['Data'] >= d - pd.Timedelta(days=pre_days)) &
+                         (merged['Data'] < d)][var].dropna()
+            if len(sub) >= 3:
+                vals.append(float(sub.mean()))
+        return vals
+
+    resultados = []
+    for var in train_vars:
+        v_alto = _janela_valores(top_days, var)
+        v_baixo = _janela_valores(bot_days, var)
+        if not v_alto or not v_baixo:
+            continue
+        med = medianas[var]
+        # Consistência = % de casos acima da mediana global
+        consist_alto = float(np.mean([1 if x > med else 0 for x in v_alto]) * 100)
+        consist_baixo = float(np.mean([1 if x > med else 0 for x in v_baixo]) * 100)
+        media_alto = float(np.mean(v_alto))
+        media_baixo = float(np.mean(v_baixo))
+        # Poder discriminante = quão diferente é a consistência entre alto e baixo
+        discrimina = abs(consist_alto - consist_baixo)
+        # Direção: nos dias de HRV alto, esta variável tende a estar alta ou baixa?
+        if consist_alto >= 60:
+            direcao = f"↑ alta ({consist_alto:.0f}% dos casos)"
+        elif consist_alto <= 40:
+            direcao = f"↓ baixa ({100-consist_alto:.0f}% dos casos)"
+        else:
+            direcao = "→ neutra"
+        resultados.append({
+            'variavel': var,
+            'media_alto': round(media_alto, 1),
+            'media_baixo': round(media_baixo, 1),
+            'consist_alto': round(consist_alto, 0),
+            'consist_baixo': round(consist_baixo, 0),
+            'direcao_no_alto': direcao,
+            'discrimina': round(discrimina, 0),
+        })
+    resultados.sort(key=lambda r: r['discrimina'], reverse=True)
+
+    # ── Composição por modalidade (se da_full disponível) ─────────────────────
+    modalidades = None
+    if da_full is not None and len(da_full) > 0:
+        _col_mod = next((c for c in ['type', 'modality'] if c in da_full.columns), None)
+        _col_date = next((c for c in ['date', 'Data'] if c in da_full.columns), None)
+        _col_load = next((c for c in ['icu_training_load', 'load'] if c in da_full.columns), None)
+        if _col_mod and _col_date:
+            _da = da_full.copy()
+            _da[_col_date] = pd.to_datetime(_da[_col_date])
+
+            def _mod_composicao(days):
+                """Volume (nº sessões) por modalidade na janela antes dos dias."""
+                counts = {}
+                for d in days:
+                    d = pd.Timestamp(d)
+                    sub = _da[(_da[_col_date] >= d - pd.Timedelta(days=pre_days)) &
+                              (_da[_col_date] < d)]
+                    for m in sub[_col_mod].dropna():
+                        counts[m] = counts.get(m, 0) + 1
+                return counts
+
+            c_alto = _mod_composicao(top_days)
+            c_baixo = _mod_composicao(bot_days)
+            todas_mod = sorted(set(list(c_alto.keys()) + list(c_baixo.keys())))
+            if todas_mod:
+                n_a = max(len(top_days), 1)
+                n_b = max(len(bot_days), 1)
+                rows = []
+                for m in todas_mod:
+                    rows.append({
+                        'Modalidade': m,
+                        'Sessões/dia antes HRV↑': round(c_alto.get(m, 0) / n_a, 2),
+                        'Sessões/dia antes HRV↓': round(c_baixo.get(m, 0) / n_b, 2),
+                    })
+                modalidades = pd.DataFrame(rows)
+
+    return {'vars': resultados, 'modalidades': modalidades,
+            'n_alto': len(top_days), 'n_baixo': len(bot_days), 'pre_days': pre_days}
