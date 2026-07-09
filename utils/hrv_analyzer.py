@@ -2140,3 +2140,126 @@ def assinatura_hrv(sig_hrv, sig_train, pct=0.15, pre_days=10, da_full=None):
 
     return {'vars': resultados, 'modalidades': modalidades,
             'n_alto': len(top_days), 'n_baixo': len(bot_days), 'pre_days': pre_days}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# COMPARAÇÃO DE MODELOS DE CARGA COMO PREDITORES DE HRV
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _ftlm_fractional(load_arr, gamma_val, max_lag=None):
+    """FTLM fraccionário Della Mattia (Riemann-Liouville). Réplica de data.py."""
+    from scipy.special import gamma as _gfn
+    load = np.array(load_arr, dtype=np.float64)
+    n = len(load)
+    ml = n if max_lag is None else min(n, max_lag)
+    k = np.arange(1, ml + 1, dtype=np.float64)
+    w = np.power(k, gamma_val - 1.0) / _gfn(gamma_val)
+    ctl = np.zeros(n)
+    for t in range(1, n):
+        lag = min(t, ml)
+        seg = load[max(0, t - ml):t][::-1]
+        ctl[t] = np.dot(seg, w[:lag])
+    return ctl
+
+
+def comparar_modelos_carga(sig_hrv, sig_train, max_lag=21):
+    """
+    Compara vários modelos de carga como PREDITORES do HRV, testando em que
+    horizonte (lag em dias) cada um melhor correlaciona com o HRV.
+
+    Modelos testados (todos derivados do 'load' diário):
+      • ATL (7d)        — fadiga aguda (EWM span=7)
+      • CTL (42d)       — fitness crónico (EWM span=42)
+      • TSB (CTL-ATL)   — balanço/frescura
+      • FTLM γ=0.25     — memória fraccionária "longa"
+      • FTLM γ=0.33     — memória fraccionária "média"
+      • FTLM γ=0.50     — memória fraccionária "curta"
+      • Load 7d         — soma simples 7 dias
+      • Load 28d        — soma simples 28 dias
+
+    Para cada modelo, encontra o lag (0..max_lag) com maior |correlação| com o
+    HRV, e classifica se é preditor de curto (lag≤5), médio (6-13) ou longo (≥14)
+    prazo, e a direção (HRV sobe ou desce com o modelo).
+
+    Devolve dict:
+      {'tabela': DataFrame ordenada por |r|, 'melhor': {...}, 'n': int}
+    """
+    # Preparar série diária alinhada
+    m = pd.merge(sig_hrv[['Data', 'hrv']], sig_train, on='Data', how='inner').sort_values('Data')
+    m['Data'] = pd.to_datetime(m['Data'])
+    m = m.set_index('Data').asfreq('D')
+    if 'load' not in m.columns or m['hrv'].notna().sum() < 30:
+        return {'tabela': pd.DataFrame(), 'melhor': None, 'n': 0}
+
+    load = m['load'].fillna(0).values
+    n = len(load)
+
+    # Calcular cada modelo
+    modelos = {}
+    modelos['ATL (7d)'] = m['load'].fillna(0).ewm(span=7, adjust=False).mean().values
+    modelos['CTL (42d)'] = m['load'].fillna(0).ewm(span=42, adjust=False).mean().values
+    modelos['TSB'] = modelos['CTL (42d)'] - modelos['ATL (7d)']
+    for g, lbl in [(0.25, 'FTLM γ=0.25'), (0.33, 'FTLM γ=0.33'), (0.50, 'FTLM γ=0.50')]:
+        try:
+            modelos[lbl] = _ftlm_fractional(load, g, max_lag=120)
+        except Exception:
+            pass
+    modelos['Load 7d'] = m['load'].fillna(0).rolling(7, min_periods=1).sum().values
+    modelos['Load 28d'] = m['load'].fillna(0).rolling(28, min_periods=1).sum().values
+
+    hrv = m['hrv'].values
+
+    def _best_lag(serie):
+        """Lag (0..max_lag) com maior |r| significativo entre serie(t-lag) e hrv(t)."""
+        best = {'lag': None, 'r': 0.0, 'p': 1.0}
+        for lag in range(0, max_lag + 1):
+            if lag == 0:
+                x, y = serie, hrv
+            else:
+                x, y = serie[:-lag], hrv[lag:]
+            mask = ~(np.isnan(x) | np.isnan(y))
+            if mask.sum() < 20:
+                continue
+            xv, yv = x[mask], y[mask]
+            if np.std(xv) < 1e-9 or np.std(yv) < 1e-9:
+                continue
+            try:
+                r, p = pearsonr(xv, yv)
+            except Exception:
+                continue
+            if abs(r) > abs(best['r']):
+                best = {'lag': lag, 'r': float(r), 'p': float(p)}
+        return best
+
+    rows = []
+    for nome, serie in modelos.items():
+        b = _best_lag(np.asarray(serie, dtype=float))
+        if b['lag'] is None:
+            continue
+        lag = b['lag']
+        horizonte = ('curto (≤5d)' if lag <= 5 else
+                     'médio (6-13d)' if lag <= 13 else 'longo (≥14d)')
+        direcao = ('HRV sobe' if b['r'] > 0 else 'HRV desce') + ' quando o modelo sobe'
+        rows.append({
+            'Modelo': nome,
+            'Melhor lag (d)': lag,
+            'r': round(b['r'], 3),
+            'p': round(b['p'], 4),
+            'Horizonte': horizonte,
+            'Direção': direcao,
+            '_abs': abs(b['r']),
+            '_sig': b['p'] < 0.05,
+        })
+
+    if not rows:
+        return {'tabela': pd.DataFrame(), 'melhor': None, 'n': n}
+
+    df = pd.DataFrame(rows).sort_values('_abs', ascending=False).reset_index(drop=True)
+    melhor = None
+    _sig = df[df['_sig']]
+    if len(_sig) > 0:
+        r0 = _sig.iloc[0]
+        melhor = {'modelo': r0['Modelo'], 'lag': int(r0['Melhor lag (d)']),
+                  'r': float(r0['r']), 'horizonte': r0['Horizonte'],
+                  'direcao': r0['Direção']}
+    return {'tabela': df, 'melhor': melhor, 'n': n}
