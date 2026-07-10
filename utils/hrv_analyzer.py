@@ -2469,3 +2469,169 @@ def directional_com_baseline(sig_hrv, sig_train, outcome_lag=5, hrv_improve_z=0.
         df = df.sort_values('_lift', ascending=False).reset_index(drop=True)
     return {'taxa_base': taxa_base, 'tabela': df, 'n_dias': len(merged),
             'outcome_lag': outcome_lag}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# EVOLUÇÃO TEMPORAL — como os padrões mudam ao longo do tempo (por semestre)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _fisher_r_diff(r1, n1, r2, n2):
+    """
+    Teste de Fisher r-to-z: a diferença entre duas correlações é significativa?
+    Devolve (z, p). p<0.05 = as correlações são estatisticamente diferentes.
+    """
+    if None in (r1, r2, n1, n2) or n1 < 4 or n2 < 4:
+        return None, None
+    r1 = max(min(r1, 0.999), -0.999)
+    r2 = max(min(r2, 0.999), -0.999)
+    z1 = np.arctanh(r1)
+    z2 = np.arctanh(r2)
+    se = np.sqrt(1.0 / (n1 - 3) + 1.0 / (n2 - 3))
+    if se == 0:
+        return None, None
+    z = (z1 - z2) / se
+    from scipy.stats import norm
+    p = 2 * (1 - norm.cdf(abs(z)))
+    return float(z), float(p)
+
+
+def evolucao_temporal(sig_hrv, sig_train, freq='6M'):
+    """
+    Divide a história em blocos (default: semestres) e recalcula as métricas-chave
+    em cada, comparando blocos consecutivos com teste estatístico para dizer se o
+    padrão MUDOU de forma significativa (real) ou é ruído.
+
+    Métricas por bloco:
+      • Corr. ATL→HRV (lag 14)  — força do preditor dominante
+      • Lag óptimo do ATL       — em que horizonte a fadiga afeta o HRV
+      • Tau recuperação (mediano) — velocidade de recuperação
+      • TSB médio nos dias HRV alto — o padrão de super-compensação
+      • Melhor modelo de carga    — qual modelo lidera (FTLM continua a ganhar?)
+
+    Devolve dict:
+      {'blocos': DataFrame (uma linha por semestre),
+       'comparacoes': DataFrame (bloco N vs N-1, com significância),
+       'freq': str}
+    """
+    merged = pd.merge(sig_hrv[['Data', 'hrv', 'hrv_z28']], sig_train,
+                      on='Data', how='inner').sort_values('Data')
+    merged['Data'] = pd.to_datetime(merged['Data'])
+    if len(merged) < 60:
+        return {'blocos': pd.DataFrame(), 'comparacoes': pd.DataFrame(), 'freq': freq}
+
+    merged['bloco'] = merged['Data'].dt.to_period('Q' if freq == '3M' else
+                                                   'Y' if freq == '12M' else 'M')
+    # Agrupar em semestres/anos manualmente por data
+    def _rotulo_bloco(d):
+        if freq == '12M':
+            return str(d.year)
+        elif freq == '3M':
+            q = (d.month - 1) // 3 + 1
+            return f"{d.year}-T{q}"
+        else:  # semestre
+            s = 1 if d.month <= 6 else 2
+            return f"{d.year}-S{s}"
+
+    merged['rotulo'] = merged['Data'].apply(_rotulo_bloco)
+
+    blocos_rows = []
+    _cache_por_bloco = {}
+    for rot in merged['rotulo'].unique():
+        sub = merged[merged['rotulo'] == rot]
+        if len(sub) < 20:
+            continue
+        sh = sub[['Data', 'hrv', 'hrv_z28']].copy()
+        stt = sub.drop(columns=['hrv', 'hrv_z28', 'bloco', 'rotulo']).copy()
+
+        # 1. Correlação ATL→HRV no lag 14
+        r_atl, n_atl, lag_best = None, 0, None
+        if 'atl' in sub.columns:
+            best_abs = 0
+            for lag in range(0, 22):
+                if lag == 0:
+                    x, y = sub['atl'].values, sub['hrv'].values
+                else:
+                    x, y = sub['atl'].values[:-lag], sub['hrv'].values[lag:]
+                mask = ~(np.isnan(x) | np.isnan(y))
+                if mask.sum() < 15 or np.std(x[mask]) < 1e-9 or np.std(y[mask]) < 1e-9:
+                    continue
+                rr, _ = pearsonr(x[mask], y[mask])
+                if lag == 14:
+                    r_atl, n_atl = float(rr), int(mask.sum())
+                if abs(rr) > best_abs:
+                    best_abs = abs(rr); lag_best = lag
+
+        # 2. Tau de recuperação
+        tau_med = None
+        try:
+            el = _recovery_elasticity(sh, stt)
+            if el and el.get('events'):
+                taus = [e['days_to_recovery'] for e in el['events']
+                        if e.get('days_to_recovery') is not None]
+                if taus:
+                    tau_med = float(np.median(taus))
+        except Exception:
+            pass
+
+        # 3. TSB médio nos dias de HRV alto (top 25%)
+        tsb_alto = None
+        if 'tsb' in sub.columns and sub['hrv'].notna().sum() > 10:
+            q75 = sub['hrv'].quantile(0.75)
+            tsb_alto = float(sub[sub['hrv'] >= q75]['tsb'].mean())
+
+        # 4. Melhor modelo de carga
+        melhor_mod = None
+        try:
+            cmp = comparar_modelos_carga(sh, stt, max_lag=21)
+            if cmp.get('melhor'):
+                melhor_mod = cmp['melhor']['modelo']
+        except Exception:
+            pass
+
+        blocos_rows.append({
+            'Bloco': rot,
+            'N dias': len(sub),
+            'Corr ATL→HRV (14d)': round(r_atl, 3) if r_atl is not None else None,
+            '_r_atl': r_atl, '_n_atl': n_atl,
+            'Lag óptimo ATL': lag_best,
+            'Tau recup. (d)': round(tau_med, 1) if tau_med is not None else None,
+            'TSB nos dias HRV↑': round(tsb_alto, 1) if tsb_alto is not None else None,
+            'Melhor modelo': melhor_mod or '—',
+        })
+
+    blocos = pd.DataFrame(blocos_rows)
+    if len(blocos) < 2:
+        return {'blocos': blocos, 'comparacoes': pd.DataFrame(), 'freq': freq}
+
+    # Comparações bloco-a-bloco (N vs N-1)
+    comp_rows = []
+    for i in range(1, len(blocos)):
+        b0 = blocos.iloc[i - 1]
+        b1 = blocos.iloc[i]
+        # Teste de Fisher na correlação ATL→HRV
+        z, p = _fisher_r_diff(b0['_r_atl'], b0['_n_atl'], b1['_r_atl'], b1['_n_atl'])
+        mudanca_corr = '—'
+        if p is not None:
+            if p < 0.05:
+                mudanca_corr = f"⚠️ mudou (p={p:.3f})"
+            else:
+                mudanca_corr = f"estável (p={p:.2f})"
+        # Delta do tau
+        dtau = '—'
+        if b0['Tau recup. (d)'] is not None and b1['Tau recup. (d)'] is not None:
+            d = b1['Tau recup. (d)'] - b0['Tau recup. (d)']
+            dtau = f"{d:+.1f}d" + (' (mais rápido)' if d < 0 else ' (mais lento)' if d > 0 else '')
+        comp_rows.append({
+            'Transição': f"{b0['Bloco']} → {b1['Bloco']}",
+            'Corr ATL: antes → depois':
+                f"{b0['Corr ATL→HRV (14d)']} → {b1['Corr ATL→HRV (14d)']}",
+            'Mudança na correlação': mudanca_corr,
+            'Δ Tau recuperação': dtau,
+            'Modelo: antes → depois':
+                f"{b0['Melhor modelo']} → {b1['Melhor modelo']}",
+        })
+
+    comparacoes = pd.DataFrame(comp_rows)
+    # Limpar colunas auxiliares dos blocos
+    blocos_show = blocos.drop(columns=['_r_atl', '_n_atl'])
+    return {'blocos': blocos_show, 'comparacoes': comparacoes, 'freq': freq}
