@@ -2369,3 +2369,103 @@ def analise_rpe_zonas(sig_hrv, da_full, pre_lag=1):
         })
 
     return {'tabela': pd.DataFrame(rows), 'n_total': len(da)}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DIRECTIONAL CORRIGIDO — com taxa-base e lift (evita o artefacto do N grande)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def directional_com_baseline(sig_hrv, sig_train, outcome_lag=5, hrv_improve_z=0.3):
+    """
+    Versão corrigida da análise directional que evita o artefacto de todos os
+    padrões darem ~83%. Os padrões são definidos por QUARTIS reais (não limiares
+    fixos frouxos), e o resultado inclui a TAXA-BASE (% geral de dias que o HRV
+    melhora) e o LIFT (consistência do padrão − taxa-base).
+
+    Só o LIFT indica efeito real: lift ≈ 0 significa que o padrão não faz
+    diferença face ao acaso; lift positivo grande = padrão genuinamente bom.
+
+    Também corrige o critério de "melhorou": usa a MÉDIA do HRV na janela futura
+    (não o máximo, que inflacionava os resultados).
+
+    Devolve dict:
+      {'taxa_base': float, 'tabela': DataFrame, 'n_dias': int, 'outcome_lag': int}
+    """
+    merged = pd.merge(sig_hrv[['Data', 'hrv_z28']], sig_train, on='Data', how='inner') \
+        .sort_values('Data').reset_index(drop=True)
+    if len(merged) < 40 or 'hrv_z28' not in merged.columns:
+        return {'taxa_base': None, 'tabela': pd.DataFrame(), 'n_dias': 0,
+                'outcome_lag': outcome_lag}
+
+    z = merged['hrv_z28'].values
+
+    def _melhorou(i):
+        """HRV melhora se a MÉDIA da janela futura > limiar (não o máximo)."""
+        fut = z[i + 1:i + 1 + outcome_lag]
+        fut = fut[~np.isnan(fut)]
+        if len(fut) == 0:
+            return None
+        return np.nanmean(fut) > hrv_improve_z
+
+    # Taxa-base: em quantos % de TODOS os dias o HRV melhora
+    base_hits, base_tot = 0, 0
+    for i in range(len(merged) - outcome_lag):
+        r = _melhorou(i)
+        if r is not None:
+            base_tot += 1
+            base_hits += int(r)
+    taxa_base = (base_hits / base_tot * 100) if base_tot else None
+
+    # Padrões definidos por QUARTIS reais das variáveis
+    def _q(var, quantil):
+        if var in merged.columns:
+            return merged[var].quantile(quantil)
+        return None
+
+    padroes = []
+    if 'atl' in merged.columns:
+        padroes.append(('ATL muito alto (top 25%)', 'atl', '>', _q('atl', 0.75)))
+        padroes.append(('ATL muito baixo (bottom 25%)', 'atl', '<', _q('atl', 0.25)))
+    if 'tsb' in merged.columns:
+        padroes.append(('TSB positivo (top 25%)', 'tsb', '>', _q('tsb', 0.75)))
+        padroes.append(('TSB muito negativo (bottom 25%)', 'tsb', '<', _q('tsb', 0.25)))
+    if 'mono_7d' in merged.columns:
+        padroes.append(('Monotonia baixa (bottom 25%)', 'mono_7d', '<', _q('mono_7d', 0.25)))
+    if 'pct_z3' in merged.columns:
+        padroes.append(('Baixa intensidade %Z3 (bottom 25%)', 'pct_z3', '<', _q('pct_z3', 0.25)))
+    if 'strain_7d' in merged.columns:
+        padroes.append(('Strain alto (top 25%)', 'strain_7d', '>', _q('strain_7d', 0.75)))
+
+    rows = []
+    for nome, var, op, thr in padroes:
+        if thr is None or (isinstance(thr, float) and np.isnan(thr)):
+            continue
+        n_occur, n_improve = 0, 0
+        for i in range(len(merged) - outcome_lag):
+            val = merged.iloc[i].get(var, np.nan)
+            if np.isnan(val):
+                continue
+            cond = (val > thr) if op == '>' else (val < thr)
+            if cond:
+                r = _melhorou(i)
+                if r is not None:
+                    n_occur += 1
+                    n_improve += int(r)
+        if n_occur < 10:
+            continue
+        consist = n_improve / n_occur * 100
+        lift = consist - (taxa_base or 0)
+        rows.append({
+            'Padrão': nome,
+            'N': n_occur,
+            'HRV melhora': f"{consist:.0f}%",
+            'Taxa-base': f"{taxa_base:.0f}%" if taxa_base else '—',
+            'Lift': f"{lift:+.0f} pp",
+            '_lift': lift,
+        })
+
+    df = pd.DataFrame(rows)
+    if len(df) > 0:
+        df = df.sort_values('_lift', ascending=False).reset_index(drop=True)
+    return {'taxa_base': taxa_base, 'tabela': df, 'n_dias': len(merged),
+            'outcome_lag': outcome_lag}
