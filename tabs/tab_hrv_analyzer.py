@@ -1905,6 +1905,37 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                     "📥 Descarregar evolução (CSV)",
                     _ev['blocos'].to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
                     "atheltica_hrv_evolucao.csv", "text/csv", key="evolucao_dl")
+
+                # ── Insights automáticos da evolução ─────────────────────────
+                st.markdown("---")
+                st.markdown("##### 💡 Insights da evolução")
+                try:
+                    _ins = _hra.insights_evolucao(_ev)
+                    for _i in _ins:
+                        st.markdown(f"- {_i}")
+                except Exception:
+                    pass
+
+                # ── Fingerprint por bloco — a receita mudou? ─────────────────
+                st.markdown("---")
+                st.markdown("##### 🧬 A 'receita para HRV alto' mudou ao longo do tempo?")
+                st.caption("Mostra as variáveis mais discriminantes (diferença % antes do HRV "
+                           "alto vs baixo) em cada período. Se as variáveis-chave mudam, a tua "
+                           "receita evoluiu.")
+                try:
+                    _fpe = _hra.fingerprint_evolucao(sig_hrv, sig_train, freq=_ev_freq)
+                    if not _fpe['tabela'].empty:
+                        st.dataframe(_fpe['tabela'], hide_index=True, use_container_width=True)
+                        # Resumo das top vars por bloco
+                        _linhas_top = []
+                        for _bl, _tops in _fpe['top_por_bloco'].items():
+                            _linhas_top.append(f"**{_bl}**: {', '.join(_tops[:3])}")
+                        if _linhas_top:
+                            st.caption("Top-3 variáveis por período — " + " · ".join(_linhas_top))
+                    else:
+                        st.caption("Sem dados suficientes para o fingerprint por período.")
+                except Exception as _e_fpe:
+                    st.caption(f"Fingerprint por período indisponível: {_e_fpe}")
         except Exception as _e_ev:
             st.warning(f"Análise de evolução indisponível: {_e_ev}")
 
@@ -2103,6 +2134,16 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
 - **Clusters óptimos**: {_rec.get('N clusters óptimo','—')} tipos de semana nos últimos 180d
 - **N variáveis sig. (p<0.05)**: {_rec.get('N lags sig p<0.05','—')}
                         """)
+
+                    # ── Insights da evolução temporal (semestres) ──────────────
+                    st.markdown("### 📅 Insights da evolução (por semestre)")
+                    try:
+                        _ev_ins = _hra.evolucao_temporal(sig_hrv, sig_train, freq='6M')
+                        _lista_ins = _hra.insights_evolucao(_ev_ins)
+                        for _ii in _lista_ins:
+                            st.markdown(f"- {_ii}")
+                    except Exception:
+                        st.caption("Evolução temporal indisponível para insights.")
 
                 # ── Download CSV completo ─────────────────────────────────────────
                 if _runner_results:
