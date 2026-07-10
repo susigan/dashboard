@@ -2176,6 +2176,8 @@ def comparar_modelos_carga(sig_hrv, sig_train, max_lag=21):
       • FTLM γ=0.50     — memória fraccionária "curta"
       • Load 7d         — soma simples 7 dias
       • Load 28d        — soma simples 28 dias
+      • Kalman CTLγ/ATLγ — versão robusta (trata dias sem treino como ausência
+                           de observação, não como zero)
 
     Para cada modelo, encontra o lag (0..max_lag) com maior |correlação| com o
     HRV, e classifica se é preditor de curto (lag≤5), médio (6-13) ou longo (≥14)
@@ -2206,6 +2208,30 @@ def comparar_modelos_carga(sig_hrv, sig_train, max_lag=21):
             pass
     modelos['Load 7d'] = m['load'].fillna(0).rolling(7, min_periods=1).sum().values
     modelos['Load 28d'] = m['load'].fillna(0).rolling(28, min_periods=1).sum().values
+
+    # Kalman CTLγ (Tensor Load) — versão robusta do CTL que trata dias sem treino
+    # como ausência de observação (não enviesa com zeros). Réplica leve de data.py.
+    try:
+        _kj = m['load'].fillna(0).values.astype(float)
+        for _tau, _lbl in [(42.0, 'Kalman CTLγ (42)'), (7.0, 'Kalman ATLγ (7)')]:
+            decay = np.exp(-1.0 / max(_tau, 1.0))
+            _std = float(np.nanstd(_kj[_kj > 0])) if (_kj > 0).any() else 1.0
+            Q = (0.02 * _std) ** 2
+            _fo = _kj[_kj > 0]
+            x = float(_fo[0]) if len(_fo) > 0 else 0.0
+            P = float(_std ** 2)
+            out = np.zeros(len(_kj))
+            for t in range(len(_kj)):
+                x = decay * x
+                P = decay * P * decay + Q
+                if _kj[t] > 0:
+                    K = P / (P + 0.5)
+                    x = x + K * (_kj[t] - x)
+                    P = (1 - K) * P
+                out[t] = x
+            modelos[_lbl] = out
+    except Exception:
+        pass
 
     hrv = m['hrv'].values
 
@@ -2263,3 +2289,83 @@ def comparar_modelos_carga(sig_hrv, sig_train, max_lag=21):
                   'r': float(r0['r']), 'horizonte': r0['Horizonte'],
                   'direcao': r0['Direção']}
     return {'tabela': df, 'melhor': melhor, 'n': n}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ANÁLISE POR ZONAS DE RPE — impacto de cada nível de esforço no HRV
+# ══════════════════════════════════════════════════════════════════════════════
+
+def analise_rpe_zonas(sig_hrv, da_full, pre_lag=1):
+    """
+    Classifica cada sessão de treino por RPE em 3 zonas e mede o impacto no HRV
+    do(s) dia(s) seguinte(s):
+      • LOW      : RPE 1 – 4
+      • MODERADO : RPE 4.5 – 6
+      • PESADO   : RPE 7+
+
+    Para cada zona, calcula a variação média do HRV no dia seguinte (pre_lag dias
+    depois da sessão) vs o HRV do próprio dia — mostrando que nível de esforço
+    mais afeta a recuperação autonómica.
+
+    Devolve dict:
+      {'tabela': DataFrame (zona, n_sessoes, hrv_medio_seguinte, delta_hrv_pct, delta_abs),
+       'n_total': int}
+    """
+    if da_full is None or len(da_full) == 0:
+        return {'tabela': pd.DataFrame(), 'n_total': 0}
+
+    _col_rpe = next((c for c in ['rpe', 'RPE', 'icu_rpe'] if c in da_full.columns), None)
+    _col_date = next((c for c in ['date', 'Data', 'start_date_local'] if c in da_full.columns), None)
+    if _col_rpe is None or _col_date is None:
+        return {'tabela': pd.DataFrame(), 'n_total': 0}
+
+    da = da_full[[_col_date, _col_rpe]].copy()
+    da[_col_date] = pd.to_datetime(da[_col_date]).dt.normalize()
+    da[_col_rpe] = pd.to_numeric(da[_col_rpe], errors='coerce')
+    da = da.dropna(subset=[_col_rpe])
+    if len(da) < 10:
+        return {'tabela': pd.DataFrame(), 'n_total': 0}
+
+    # HRV indexado por data
+    hrv = sig_hrv[['Data', 'hrv']].copy()
+    hrv['Data'] = pd.to_datetime(hrv['Data']).dt.normalize()
+    hrv = hrv.dropna(subset=['hrv']).set_index('Data')['hrv']
+
+    def _zona(rpe):
+        if rpe <= 4:
+            return 'LOW (1-4)'
+        elif rpe <= 6:
+            return 'MODERADO (4.5-6)'
+        return 'PESADO (7+)'
+
+    da['zona'] = da[_col_rpe].apply(_zona)
+
+    rows = []
+    for zona in ['LOW (1-4)', 'MODERADO (4.5-6)', 'PESADO (7+)']:
+        sub = da[da['zona'] == zona]
+        if len(sub) == 0:
+            continue
+        deltas = []
+        hrv_seg = []
+        hrv_dia = []
+        for d in sub[_col_date]:
+            d0 = pd.Timestamp(d)
+            d1 = d0 + pd.Timedelta(days=pre_lag)
+            if d0 in hrv.index and d1 in hrv.index:
+                h0, h1 = hrv.loc[d0], hrv.loc[d1]
+                if pd.notna(h0) and pd.notna(h1) and h0 > 0:
+                    deltas.append((h1 - h0) / h0 * 100)
+                    hrv_seg.append(h1)
+                    hrv_dia.append(h0)
+        if not deltas:
+            continue
+        rows.append({
+            'Zona RPE': zona,
+            'Nº sessões': len(sub),
+            'N com HRV': len(deltas),
+            'HRV dia treino': round(float(np.mean(hrv_dia)), 1),
+            'HRV dia seguinte': round(float(np.mean(hrv_seg)), 1),
+            'Δ HRV %': round(float(np.mean(deltas)), 1),
+        })
+
+    return {'tabela': pd.DataFrame(rows), 'n_total': len(da)}
