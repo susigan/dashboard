@@ -1147,38 +1147,29 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
             if len(sig_train) > 0:
                 st.markdown("---")
                 st.markdown("#### ➡️ Padrões accionáveis — quando faço X, o HRV melhora?")
-                st.caption("Testa padrões de treino específicos e mede em que % das vezes o "
-                           "HRV melhorou depois. A janela usa o τ da elasticidade.")
-                _DEFAULT_PATTERNS = [
-                    {'name': 'Monotonia baixa (>15%)',
-                     'conditions': [{'var': 'mono_7d', 'op': '<', 'val': 1.5}]},
-                    {'name': 'TSB positivo (>+5)',
-                     'conditions': [{'var': 'tsb', 'op': '>', 'val': 5}]},
-                    {'name': 'Carga elevada (ATL alto)',
-                     'conditions': [{'var': 'atl', 'op': '>', 'val': 0}]},
-                    {'name': 'Baixa intensidade (%Z3<30)',
-                     'conditions': [{'var': 'pct_z3', 'op': '<', 'val': 30}]},
-                ]
+                st.caption("Testa padrões de treino (definidos por quartis reais) e mede em "
+                           "que % das vezes o HRV melhora depois — comparado com a taxa-base "
+                           "(o quão o HRV melhora no geral). A janela usa o τ da elasticidade.")
                 _dir_janela = min(max(int(_AR_OTIMOS.get('directional_janela', 5) or 5), 3), 14)
                 try:
-                    _dir_res = _cx_directional(sig_hrv, sig_train, _DEFAULT_PATTERNS,
-                                               outcome_lag=_dir_janela)
-                    if _dir_res:
-                        _dir_rows = []
-                        for r in _dir_res:
-                            _dir_rows.append({
-                                'Padrão': r.get('pattern', r.get('name', '—')),
-                                'Ocorrências': r.get('n_occur', r.get('n', '—')),
-                                'HRV melhorou': f"{r.get('consistency', 0):.0f}%",
-                                'Fiabilidade': r.get('confidence', '—'),
-                            })
-                        st.dataframe(pd.DataFrame(_dir_rows), hide_index=True,
-                                     use_container_width=True)
-                        st.caption(f"Janela de outcome: {_dir_janela}d (do τ da elasticidade). "
-                                   "⚠️ Consistências ~50% são ruído; procura padrões bem "
-                                   "acima de 60% com muitas ocorrências.")
+                    _dir_res = _hra.directional_com_baseline(
+                        sig_hrv, sig_train, outcome_lag=_dir_janela)
+                    _tb = _dir_res.get('taxa_base')
+                    if _tb is not None:
+                        st.markdown(f"**Taxa-base:** no geral, o teu HRV melhora em "
+                                    f"**{_tb:.0f}%** dos períodos de {_dir_janela} dias. "
+                                    "Um padrão só é útil se superar isto (Lift positivo).")
+                    if _dir_res['tabela'] is not None and len(_dir_res['tabela']) > 0:
+                        _dt = _dir_res['tabela'][['Padrão', 'N', 'HRV melhora',
+                                                  'Taxa-base', 'Lift']]
+                        st.dataframe(_dt, hide_index=True, use_container_width=True)
+                        st.caption(f"Janela: {_dir_janela}d (do τ da elasticidade). "
+                                   "**Lift** = quanto o padrão supera a taxa-base (em pontos "
+                                   "percentuais). Lift perto de 0 = o padrão não faz diferença "
+                                   "face ao acaso. Só liftes claramente positivos indicam um "
+                                   "padrão genuinamente bom.")
                     else:
-                        st.caption("Sem padrões com ocorrências suficientes.")
+                        st.caption("Sem padrões com ocorrências suficientes (N≥10).")
                 except Exception as _e_dir:
                     st.caption(f"Análise directional indisponível: {_e_dir}")
 
