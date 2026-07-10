@@ -2588,6 +2588,12 @@ def evolucao_temporal(sig_hrv, sig_train, freq='6M'):
         except Exception:
             pass
 
+        # 5. Perfil de treino do bloco (o "porquê" das mudanças)
+        _load_med = float(sub['load'].mean()) if 'load' in sub.columns else None
+        _z3_med = float(sub['pct_z3'].mean()) if 'pct_z3' in sub.columns else None
+        _freq_med = float(sub['freq_7d'].mean()) if 'freq_7d' in sub.columns else None
+        _mono_med = float(sub['mono_7d'].mean()) if 'mono_7d' in sub.columns else None
+
         blocos_rows.append({
             'Bloco': rot,
             'N dias': len(sub),
@@ -2597,6 +2603,10 @@ def evolucao_temporal(sig_hrv, sig_train, freq='6M'):
             'Tau recup. (d)': round(tau_med, 1) if tau_med is not None else None,
             'TSB nos dias HRV↑': round(tsb_alto, 1) if tsb_alto is not None else None,
             'Melhor modelo': melhor_mod or '—',
+            'Load médio': round(_load_med, 0) if _load_med is not None else None,
+            '% Z3 médio': round(_z3_med, 1) if _z3_med is not None else None,
+            'Freq média': round(_freq_med, 1) if _freq_med is not None else None,
+            'Monotonia média': round(_mono_med, 2) if _mono_med is not None else None,
         })
 
     blocos = pd.DataFrame(blocos_rows)
@@ -2635,3 +2645,134 @@ def evolucao_temporal(sig_hrv, sig_train, freq='6M'):
     # Limpar colunas auxiliares dos blocos
     blocos_show = blocos.drop(columns=['_r_atl', '_n_atl'])
     return {'blocos': blocos_show, 'comparacoes': comparacoes, 'freq': freq}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# INSIGHTS DA EVOLUÇÃO — resumo textual automático dos padrões temporais
+# ══════════════════════════════════════════════════════════════════════════════
+
+def insights_evolucao(ev_result):
+    """
+    Gera insights textuais a partir do resultado de evolucao_temporal:
+    identifica o bloco mais 'duro', as mudanças significativas, e o que é estável.
+
+    Devolve lista de strings (cada uma um insight pronto a mostrar).
+    """
+    insights = []
+    blocos = ev_result.get('blocos')
+    comps = ev_result.get('comparacoes')
+    if blocos is None or len(blocos) < 2:
+        return ["Histórico insuficiente para insights de evolução."]
+
+    # 1. Bloco mais 'duro' = correlação ATL→HRV mais forte (mais negativa)
+    if 'Corr ATL→HRV (14d)' in blocos.columns:
+        _b = blocos.dropna(subset=['Corr ATL→HRV (14d)'])
+        if len(_b) > 0:
+            _dur = _b.loc[_b['Corr ATL→HRV (14d)'].idxmin()]
+            _tsb_txt = ''
+            if 'TSB nos dias HRV↑' in _dur and pd.notna(_dur['TSB nos dias HRV↑']):
+                _tsb_txt = f", com TSB médio de {_dur['TSB nos dias HRV↑']:.1f} nos dias de HRV alto"
+            insights.append(
+                f"🔴 **Período mais exigente: {_dur['Bloco']}** — foi quando a carga mais "
+                f"impactou o teu HRV (correlação ATL→HRV = {_dur['Corr ATL→HRV (14d)']:.2f}){_tsb_txt}. "
+                "Provável bloco de sobrecarga.")
+
+    # 2. Mudanças significativas
+    if comps is not None and len(comps) > 0 and 'Mudança na correlação' in comps.columns:
+        _mud = comps[comps['Mudança na correlação'].str.contains('mudou', na=False)]
+        if len(_mud) > 0:
+            _transicoes = ', '.join(_mud['Transição'].tolist())
+            insights.append(
+                f"⚠️ **{len(_mud)} mudança(s) significativa(s)** na relação carga↔HRV: "
+                f"{_transicoes}. A tua sensibilidade à carga alterou-se nestas transições — "
+                "vale a pena ver o que mudou no treino nesses períodos.")
+        else:
+            insights.append(
+                "✅ **Relação carga↔HRV estável** ao longo de todos os períodos — a tua "
+                "resposta fisiológica à carga é consistente.")
+
+    # 3. Estabilidade do tau (recuperação)
+    if 'Tau recup. (d)' in blocos.columns:
+        _taus = blocos['Tau recup. (d)'].dropna()
+        if len(_taus) >= 2:
+            _amp = _taus.max() - _taus.min()
+            if _amp <= 1.5:
+                insights.append(
+                    f"💚 **Recuperação consistentemente rápida** (τ entre {_taus.min():.0f} e "
+                    f"{_taus.max():.0f} dias em todos os períodos). A tua resiliência autonómica "
+                    "não se degradou ao longo do tempo — excelente sinal.")
+
+    # 4. Estabilidade do modelo dominante
+    if 'Melhor modelo' in blocos.columns:
+        _mods = blocos['Melhor modelo'].value_counts()
+        if len(_mods) > 0:
+            if _mods.iloc[0] >= len(blocos) * 0.6:
+                insights.append(
+                    f"📊 O modelo **{_mods.index[0]}** domina na maioria dos períodos "
+                    f"({_mods.iloc[0]}/{len(blocos)}) — é o teu preditor mais robusto ao longo do tempo.")
+            else:
+                insights.append(
+                    "📊 O melhor modelo de carga **varia entre períodos** — nenhum modelo único "
+                    "é sempre o melhor. Em blocos de sobrecarga tendem a ganhar os de memória "
+                    "longa (CTL, Load 28d); em fases normais, o TSB/ATL.")
+
+    return insights
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FINGERPRINT POR BLOCO — a "receita para HRV alto" mudou ao longo do tempo?
+# ══════════════════════════════════════════════════════════════════════════════
+
+def fingerprint_evolucao(sig_hrv, sig_train, freq='6M', top_vars=4):
+    """
+    Calcula o fingerprint (o que precede o HRV alto) em cada bloco temporal,
+    para ver se a "receita" mudou ao longo do tempo. Para cada bloco, identifica
+    as variáveis mais discriminantes (diferença média antes de HRV alto vs baixo).
+
+    Devolve dict:
+      {'tabela': DataFrame (bloco × variáveis com diferença %),
+       'top_por_bloco': {bloco: [top vars]}, 'freq': str}
+    """
+    merged = pd.merge(sig_hrv[['Data', 'hrv']], sig_train, on='Data', how='inner').sort_values('Data')
+    merged['Data'] = pd.to_datetime(merged['Data'])
+    if len(merged) < 60:
+        return {'tabela': pd.DataFrame(), 'top_por_bloco': {}, 'freq': freq}
+
+    def _rotulo(d):
+        if freq == '12M':
+            return str(d.year)
+        elif freq == '3M':
+            return f"{d.year}-T{(d.month-1)//3+1}"
+        return f"{d.year}-S{1 if d.month <= 6 else 2}"
+
+    merged['rotulo'] = merged['Data'].apply(_rotulo)
+    train_vars = [v for v in ['tsb', 'atl', 'ctl', 'load', 'kj', 'pct_z3',
+                              'mono_7d', 'strain_7d', 'freq_7d']
+                  if v in merged.columns]
+
+    rows = []
+    top_por_bloco = {}
+    for rot in merged['rotulo'].unique():
+        sub = merged[merged['rotulo'] == rot]
+        if len(sub) < 20 or sub['hrv'].notna().sum() < 15:
+            continue
+        q_top = sub['hrv'].quantile(0.75)
+        q_bot = sub['hrv'].quantile(0.25)
+        alto = sub[sub['hrv'] >= q_top]
+        baixo = sub[sub['hrv'] <= q_bot]
+        if len(alto) < 3 or len(baixo) < 3:
+            continue
+        row = {'Bloco': rot}
+        diffs = {}
+        for v in train_vars:
+            ma, mb = alto[v].mean(), baixo[v].mean()
+            if pd.notna(ma) and pd.notna(mb) and abs(mb) > 1e-6:
+                d = (ma - mb) / abs(mb) * 100
+                row[v] = round(d, 1)
+                diffs[v] = abs(d)
+        rows.append(row)
+        # top vars deste bloco
+        top = sorted(diffs.items(), key=lambda x: x[1], reverse=True)[:top_vars]
+        top_por_bloco[rot] = [t[0] for t in top]
+
+    return {'tabela': pd.DataFrame(rows), 'top_por_bloco': top_por_bloco, 'freq': freq}
