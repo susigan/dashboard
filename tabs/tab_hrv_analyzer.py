@@ -172,6 +172,14 @@ _EXPLICACOES = {
         "**Intenção:** descobrir qual métrica de carga é o teu melhor 'termómetro' de HRV. "
         "Um modelo pode prever bem a curto prazo (fadiga aguda) e outro a longo prazo "
         "(adaptação). Saber isto diz-te qual métrica vigiar para antecipar o teu HRV."),
+    'evolucao': (
+        "**O que faz:** divide a tua história em semestres e recalcula as métricas-chave em "
+        "cada (correlação ATL→HRV, lag, tau de recuperação, TSB nos dias de HRV alto, melhor "
+        "modelo de carga), comparando semestres consecutivos com **teste estatístico** "
+        "(Fisher r-to-z) para dizer se o padrão **mudou de verdade** ou é acaso.\n\n"
+        "**Intenção:** ver como **evoluis ao longo do tempo** — a tua recuperação ficou mais "
+        "rápida? A relação carga↔HRV mudou? O FTLM continua a ser o teu melhor modelo? "
+        "Responde a 'o meu padrão de 2024 é diferente do de 2025?' com rigor estatístico."),
     'autorunner': (
         "**O que faz:** corre todas as análises acima para 7 períodos (60d a todo histórico) "
         "testando muitas combinações de parâmetros, e encontra os valores óptimos de cada.\n\n"
@@ -1453,6 +1461,7 @@ def tab_hrv_advanced(sig_hrv: pd.DataFrame,
         "🗂️ Semanas",
         "🔄 Transições",
         "⚖️ Modelos de Carga",
+        "📅 Evolução",
     ])
 
     # ── ARI ──────────────────────────────────────────────────────────────────
@@ -1837,6 +1846,67 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                 )
         except Exception as _e_cmp:
             st.warning(f"Comparação de modelos indisponível: {_e_cmp}")
+
+    # ── Evolução Temporal — como os padrões mudam ao longo do tempo ───────────
+    with _adv_tabs[5]:
+        st.markdown("#### 📅 Evolução Temporal — o teu padrão mudou ao longo do tempo?")
+        _dropdown_explica('evolucao')
+        st.caption("Divide a história em blocos e compara com teste estatístico se as "
+                   "métricas-chave mudaram de verdade entre períodos.")
+
+        _ev_freq_lbl = st.radio("Dividir por:", ["Semestre", "Ano", "Trimestre"],
+                                horizontal=True, key="ev_freq")
+        _ev_freq = {'Semestre': '6M', 'Ano': '12M', 'Trimestre': '3M'}[_ev_freq_lbl]
+        try:
+            _ev = _hra.evolucao_temporal(sig_hrv, sig_train, freq=_ev_freq)
+            if _ev['blocos'].empty or len(_ev['blocos']) < 2:
+                st.warning("Histórico insuficiente para comparar blocos (precisa de ≥2 "
+                           "períodos com dados).")
+            else:
+                st.markdown("##### 📊 Métricas por período")
+                st.dataframe(_ev['blocos'], hide_index=True, use_container_width=True)
+                st.caption("Cada linha é um período. Vê como a correlação ATL→HRV, o tau de "
+                           "recuperação, o TSB nos dias de HRV alto e o melhor modelo evoluem.")
+
+                # Gráfico de evolução da correlação ATL→HRV
+                _bl = _ev['blocos']
+                if 'Corr ATL→HRV (14d)' in _bl.columns and _bl['Corr ATL→HRV (14d)'].notna().any():
+                    _fig_ev = go.Figure()
+                    _fig_ev.add_trace(go.Scatter(
+                        x=_bl['Bloco'], y=_bl['Corr ATL→HRV (14d)'],
+                        mode='lines+markers', line=dict(color=_C['primary'], width=2.5),
+                        marker=dict(size=9)))
+                    _fig_ev.add_hline(y=0, line_color='#aaa', line_width=1, line_dash='dash')
+                    _fig_ev.update_layout(
+                        paper_bgcolor='white', plot_bgcolor='white',
+                        font=dict(color='#111', size=11), height=300,
+                        margin=dict(t=20, b=40, l=50, r=20),
+                        xaxis_title=None, yaxis_title="Corr ATL→HRV (14d)")
+                    st.plotly_chart(_fig_ev, use_container_width=True, config=MC,
+                                    key='evolucao_corr_chart')
+
+                st.markdown("##### 🔬 Comparação entre períodos consecutivos")
+                st.caption("O teste de Fisher (r-to-z) diz se a mudança na correlação é "
+                           "estatisticamente real ou acaso.")
+                st.dataframe(_ev['comparacoes'], hide_index=True, use_container_width=True)
+
+                # Destaque de mudanças significativas
+                _mudou = _ev['comparacoes'][
+                    _ev['comparacoes']['Mudança na correlação'].str.contains('mudou', na=False)]
+                if len(_mudou) > 0:
+                    st.warning(f"⚠️ Detectadas **{len(_mudou)}** mudança(s) significativa(s) "
+                               "na relação ATL→HRV entre períodos — o teu padrão de resposta à "
+                               "carga alterou-se. Vê a tabela acima.")
+                else:
+                    st.info("✅ A relação ATL→HRV manteve-se estável entre todos os períodos — "
+                            "o teu padrão de resposta à carga é consistente ao longo do tempo.")
+
+                st.download_button(
+                    "📥 Descarregar evolução (CSV)",
+                    _ev['blocos'].to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
+                    "atheltica_hrv_evolucao.csv", "text/csv", key="evolucao_dl")
+        except Exception as _e_ev:
+            st.warning(f"Análise de evolução indisponível: {_e_ev}")
 
     # ════════════════════════════════════════════════════════════════════════
     # AUTO-RUNNER — optimização automática de todos os parâmetros
