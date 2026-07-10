@@ -336,10 +336,10 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
     _AR_RESULT = _gate.get('autorunner', {}) if _ja_correu and _gate else {}
     _AR_OTIMOS = _gate.get('otimos', {}) if _ja_correu and _gate else {}
 
-    # ── Selector de análise (radio horizontal — evita bug de secções empilhadas) ──
+    # ── Selector de análise (radio consolidado — análises agrupadas por tema) ──
     st.markdown("---")
-    _analyses = ["📅 Período Manual", "🔍 Detecção Automática",
-                 "🔗 Lag Correlation", "🧬 Fingerprint HRV"]
+    _analyses = ["📅 Período Manual", "🎯 Treino → HRV",
+                 "🧬 Padrões que precedem o HRV", "🔄 Episódios & Recuperação"]
     _mode_lbl = st.radio(
         "Análise", _analyses, horizontal=True,
         label_visibility="collapsed", key="hrv_mode_radio")
@@ -636,10 +636,10 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
     # ══════════════════════════════════════════════════════════════════════════
     # 3. MODO: DETECÇÃO AUTOMÁTICA
     # ══════════════════════════════════════════════════════════════════════════
-    elif _mode == 1:
-        st.markdown("### 🔍 Detecção automática de períodos HRV")
+    elif _mode == 3:  # DETECÇÃO+ELASTICIDADE (Episódios & Recuperação)
+        st.markdown("### 🔄 Episódios & Recuperação")
         _dropdown_explica('deteccao')
-        st.caption("Detecta automaticamente períodos de HRV↑ e HRV↓ com base no z-score 28d.")
+        st.caption("Deteta os períodos de HRV↑/↓ e mede quão rápido recuperas de cada queda.")
 
         _cz1, _cz2, _cz3 = st.columns(3)
         _z_thresh = _cz1.slider("Threshold z-score", 0.3, 1.5, 0.5, 0.1, key="hrv_zthresh")
@@ -714,10 +714,56 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
                     else:
                         st.info("Sem mudanças estatisticamente significativas neste período.")
 
+            # ── Elasticidade — quão rápido recuperas (fundido aqui) ──────────
+            st.markdown("---")
+            st.markdown("#### ⚡ Recovery Elasticity — velocidade de recuperação")
+            st.caption("Para cada queda de HRV (supressão), mede quantos dias demora a "
+                       "voltar ao normal (a tua média móvel de 28 dias).")
+            _ez1, _ez2 = st.columns(2)
+            _elast_z_opt = _AR_OTIMOS.get('elasticidade_z') if _AR_OTIMOS else None
+            _z_supp = _ez1.slider("z supressão (trigger)", -2.0, -0.5,
+                                  -abs(_elast_z_opt) if _elast_z_opt else -1.0,
+                                  0.1, key="elast_z_supp_fused")
+            _z_rec  = _ez2.slider("z recuperação (target)", -0.5, 0.5, -0.3, 0.1,
+                                  key="elast_z_rec_fused")
+            try:
+                _elast = _cx_recovery_elasticity(sig_hrv, sig_train,
+                                                 z_suppress=_z_supp, z_recover=_z_rec)
+                if _elast and _elast.get('events'):
+                    _n_ev = len(_elast['events'])
+                    _tau_med = _elast.get('tau_median', float('nan'))
+                    _n_rec = sum(1 for e in _elast['events'] if e.get('recovered'))
+                    _em1, _em2, _em3 = st.columns(3)
+                    _em1.metric("Eventos de supressão", _n_ev)
+                    _em2.metric("Tempo mediano recup.", f"{_tau_med:.0f}d" if _tau_med==_tau_med else "—")
+                    _em3.metric("Recuperados", f"{_n_rec}/{_n_ev}")
+                    # Histograma dos tempos de recuperação
+                    _taus = [e['days_to_recovery'] for e in _elast['events']
+                             if e.get('days_to_recovery') is not None]
+                    if _taus:
+                        _fig_el = go.Figure()
+                        _fig_el.add_trace(go.Histogram(
+                            x=_taus, marker_color=_C['hrv_up'],
+                            xbins=dict(start=0, end=max(_taus)+1, size=1)))
+                        _fig_el.update_layout(
+                            paper_bgcolor='white', plot_bgcolor='white',
+                            font=dict(color='#111', size=11), height=280,
+                            margin=dict(t=20, b=40, l=50, r=20),
+                            xaxis_title="Dias até recuperar (τ)", yaxis_title="Nº de eventos",
+                        )
+                        st.plotly_chart(_fig_el, use_container_width=True, config=MC,
+                                        key='elast_fused_chart')
+                    st.caption("τ baixo = recuperas rápido (boa resiliência autonómica). "
+                               "Todos os eventos recuperados = não ficas preso em supressão.")
+                else:
+                    st.caption("Sem eventos de supressão detectados com estes limiares.")
+            except Exception as _e_el:
+                st.caption(f"Elasticidade indisponível: {_e_el}")
+
     # ══════════════════════════════════════════════════════════════════════════
     # 4. MODO: LAG CORRELATION
     # ══════════════════════════════════════════════════════════════════════════
-    elif _mode == 2:
+    elif _mode == 1:  # LAG (Treino → HRV)
         st.markdown("### 🔗 Lag Correlation")
         _dropdown_explica('lag')
         st.caption(
@@ -833,10 +879,107 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
                         key="hrv_dl_lag"
                     )
 
+            # ── Lag Avançado (Pearson + Spearman + MI) — fundido aqui ─────────
+            st.markdown("---")
+            st.markdown("#### 🔬 Confirmação com 3 métodos (Pearson · Spearman · MI)")
+            st.caption("Confirma as relações acima com métodos que captam também padrões "
+                       "não-lineares. Se os 3 concordam, a relação é robusta.")
+            try:
+                _adv_lag = _cx_lag_advanced(sig_hrv, sig_train, max_lag=_max_lag)
+                if _adv_lag is not None and len(_adv_lag) > 0:
+                    st.dataframe(_adv_lag, hide_index=True, use_container_width=True)
+                else:
+                    st.caption("Sem dados suficientes para a confirmação avançada.")
+            except Exception as _e_adv:
+                st.caption(f"Confirmação avançada indisponível: {_e_adv}")
+
+            # ── Dose-Response por quartis — fundido aqui ─────────────────────
+            st.markdown("---")
+            st.markdown("#### 📈 Dose-Resposta — HRV por nível de carga")
+            st.caption("Divide cada variável em quartis (Q1 baixa → Q4 alta) e mostra o HRV "
+                       "associado. Revela o teu 'ponto óptimo' de carga.")
+            _drc1, _drc2 = st.columns(2)
+            _dr_xvar = _drc1.selectbox(
+                "Variável de carga",
+                [v for v in ['load','atl','tsb','pct_z3','mono_7d','strain_7d','load_28d']
+                 if v in sig_train.columns], key="dr_xvar_fused")
+            _dr_lag_opt = _AR_OTIMOS.get('dose_response_lag', 7) if _AR_OTIMOS else 7
+            _dr_lag = _drc2.slider("Lag (dias)", 0, 21,
+                                   min(max(int(_dr_lag_opt or 7), 0), 21), 1,
+                                   key="dr_lag_fused")
+            try:
+                _dr = _cx_dose_response(sig_hrv, sig_train, _dr_xvar, 'hrv', _dr_lag)
+                if _dr is not None and len(_dr) > 0:
+                    _fig_dr = go.Figure()
+                    # Pontos brutos
+                    _fig_dr.add_trace(go.Scatter(
+                        x=_dr['x_raw'], y=_dr['y_raw'], mode='markers',
+                        marker=dict(size=4, color='rgba(41,128,185,0.25)'),
+                        name='Observações', hoverinfo='skip'))
+                    # Curva LOWESS
+                    _fig_dr.add_trace(go.Scatter(
+                        x=_dr['x'], y=_dr['y_smooth'], mode='lines',
+                        line=dict(color=_C['hrv_dn'], width=3),
+                        name='Tendência (LOWESS)'))
+                    _fig_dr.update_layout(
+                        paper_bgcolor='white', plot_bgcolor='white',
+                        font=dict(color='#111', size=11), height=320,
+                        margin=dict(t=20, b=45, l=50, r=20),
+                        xaxis_title=f"{_dr_xvar} (lag {_dr_lag}d)", yaxis_title="HRV",
+                        legend=dict(orientation='h', y=-0.2),
+                    )
+                    st.plotly_chart(_fig_dr, use_container_width=True, config=MC,
+                                    key='dr_fused_chart')
+                    # Interpretação simples: onde está o pico da curva
+                    _idx_max = _dr['y_smooth'].idxmax()
+                    _x_otimo = _dr.loc[_idx_max, 'x']
+                    st.caption(f"O HRV é máximo quando **{_dr_xvar} ≈ {_x_otimo:.1f}** "
+                               f"(lag {_dr_lag}d). A curva mostra a relação não-linear — "
+                               "procura o pico para o teu 'ponto óptimo' de carga.")
+                else:
+                    st.caption("Sem dados suficientes para a dose-resposta.")
+            except Exception as _e_dr:
+                st.caption(f"Dose-resposta indisponível: {_e_dr}")
+
+            # ── Zonas de RPE — impacto de cada nível de esforço no HRV ───────
+            st.markdown("---")
+            st.markdown("#### 💪 Zonas de RPE — que esforço afeta mais o HRV")
+            st.caption("Classifica cada sessão pelo esforço (RPE): LOW (1-4), MODERADO "
+                       "(4.5-6), PESADO (7+), e mede o impacto no HRV do dia seguinte.")
+            try:
+                _rpe_res = _hra.analise_rpe_zonas(sig_hrv,
+                                                  da_full=_da if _da is not None else None,
+                                                  pre_lag=1)
+                if not _rpe_res['tabela'].empty:
+                    st.dataframe(_rpe_res['tabela'], hide_index=True, use_container_width=True)
+                    # Gráfico de barras do Δ HRV por zona
+                    _tr = _rpe_res['tabela']
+                    _fig_rpe = go.Figure()
+                    _cores_rpe = [_C['hrv_up'] if d >= 0 else _C['hrv_dn'] for d in _tr['Δ HRV %']]
+                    _fig_rpe.add_trace(go.Bar(
+                        x=_tr['Zona RPE'], y=_tr['Δ HRV %'], marker_color=_cores_rpe,
+                        text=[f"{d:+.1f}%" for d in _tr['Δ HRV %']], textposition='outside'))
+                    _fig_rpe.add_hline(y=0, line_color='#aaa', line_width=1)
+                    _fig_rpe.update_layout(
+                        paper_bgcolor='white', plot_bgcolor='white',
+                        font=dict(color='#111', size=11), height=300,
+                        margin=dict(t=20, b=40, l=50, r=20),
+                        yaxis_title="Δ HRV % (dia seguinte vs dia treino)", xaxis_title=None)
+                    st.plotly_chart(_fig_rpe, use_container_width=True, config=MC,
+                                    key='rpe_zonas_chart')
+                    st.caption("Δ negativo = HRV baixa no dia seguinte (esforço suprimiu a "
+                               "recuperação). Compara as zonas para ver que nível de esforço "
+                               "mais te afeta.")
+                else:
+                    st.caption("Sem dados de RPE nas sessões para esta análise. "
+                               "(Precisa da coluna 'rpe' nas actividades.)")
+            except Exception as _e_rpe:
+                st.caption(f"Análise por RPE indisponível: {_e_rpe}")
+
     # ══════════════════════════════════════════════════════════════════════════
     # 5. MODO: FINGERPRINT HRV
     # ══════════════════════════════════════════════════════════════════════════
-    elif _mode == 3:
+    elif _mode == 2:  # FINGERPRINT (Padrões que precedem HRV)
         st.markdown("### 🧬 Fingerprint — top vs bottom HRV days")
         _dropdown_explica('fingerprint')
         st.caption(
@@ -999,6 +1142,45 @@ def tab_hrv_analyzer(dw: pd.DataFrame, da: pd.DataFrame,
                                              use_container_width=True)
                     except Exception as _e_cons:
                         st.caption(f"Consistência indisponível: {_e_cons}")
+
+            # ── Directional — padrões accionáveis testados (fundido aqui) ─────
+            if len(sig_train) > 0:
+                st.markdown("---")
+                st.markdown("#### ➡️ Padrões accionáveis — quando faço X, o HRV melhora?")
+                st.caption("Testa padrões de treino específicos e mede em que % das vezes o "
+                           "HRV melhorou depois. A janela usa o τ da elasticidade.")
+                _DEFAULT_PATTERNS = [
+                    {'name': 'Monotonia baixa (>15%)',
+                     'conditions': [{'var': 'mono_7d', 'op': '<', 'val': 1.5}]},
+                    {'name': 'TSB positivo (>+5)',
+                     'conditions': [{'var': 'tsb', 'op': '>', 'val': 5}]},
+                    {'name': 'Carga elevada (ATL alto)',
+                     'conditions': [{'var': 'atl', 'op': '>', 'val': 0}]},
+                    {'name': 'Baixa intensidade (%Z3<30)',
+                     'conditions': [{'var': 'pct_z3', 'op': '<', 'val': 30}]},
+                ]
+                _dir_janela = min(max(int(_AR_OTIMOS.get('directional_janela', 5) or 5), 3), 14)
+                try:
+                    _dir_res = _cx_directional(sig_hrv, sig_train, _DEFAULT_PATTERNS,
+                                               outcome_lag=_dir_janela)
+                    if _dir_res:
+                        _dir_rows = []
+                        for r in _dir_res:
+                            _dir_rows.append({
+                                'Padrão': r.get('pattern', r.get('name', '—')),
+                                'Ocorrências': r.get('n_occur', r.get('n', '—')),
+                                'HRV melhorou': f"{r.get('consistency', 0):.0f}%",
+                                'Fiabilidade': r.get('confidence', '—'),
+                            })
+                        st.dataframe(pd.DataFrame(_dir_rows), hide_index=True,
+                                     use_container_width=True)
+                        st.caption(f"Janela de outcome: {_dir_janela}d (do τ da elasticidade). "
+                                   "⚠️ Consistências ~50% são ruído; procura padrões bem "
+                                   "acima de 60% com muitas ocorrências.")
+                    else:
+                        st.caption("Sem padrões com ocorrências suficientes.")
+                except Exception as _e_dir:
+                    st.caption(f"Análise directional indisponível: {_e_dir}")
 
     # ── Análises avançadas (só depois de clicar "▶ Rodar" — precisam do auto-runner) ──
     if len(sig_train) == 0:
@@ -1277,10 +1459,6 @@ def tab_hrv_advanced(sig_hrv: pd.DataFrame,
     _adv_tabs = st.tabs([
         "🎯 ARI",
         "🏷️ Estados",
-        "⚡ Elasticidade",
-        "🔗 Lag Avançado",
-        "➡️ Directional",
-        "📈 Dose-Response",
         "🗂️ Semanas",
         "🔄 Transições",
         "⚖️ Modelos de Carga",
@@ -1446,316 +1624,6 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
 
     # ── ELASTICIDADE ─────────────────────────────────────────────────────────
     with _adv_tabs[2]:
-        st.markdown("#### ⚡ Recovery Elasticity")
-        _dropdown_explica('elasticidade')
-        st.caption(
-            "τ_recovery = dias até HRV voltar ao baseline após supressão. "
-            "Assinatura individual: τ baixo = recuperas rápido."
-        )
-
-        _ez1, _ez2 = st.columns(2)
-        _z_supp = _ez1.slider("z supressão (trigger)", -2.0, -0.5,
-                              -abs(_opt("elasticidade_z", 1.0)) if _opt("elasticidade_z", None) else -1.0,
-                              0.1, key="elast_z_supp")
-        _z_rec  = _ez2.slider("z recuperação (target)", -0.5, 0.5, -0.3, 0.1,
-                               key="elast_z_rec")
-
-        elast = _cx_recovery_elasticity(sig_hrv, sig_train,
-                                      z_suppress=_z_supp, z_recover=_z_rec)
-
-        if elast['n_events'] == 0:
-            st.info("Sem eventos de supressão detectados com estes critérios.")
-        else:
-            _ec1, _ec2, _ec3, _ec4 = st.columns(4)
-            _ec1.metric("τ mediana",
-                        f"{elast['tau_median']}d" if elast['tau_median'] else "—",
-                        help="Mediana de dias para recuperar após supressão.")
-            _ec2.metric("τ média",
-                        f"{elast['tau_mean']}d" if elast['tau_mean'] else "—")
-            _ec3.metric("Eventos",
-                        f"{elast['n_events']}",
-                        delta=f"{elast['n_recovered']} recuperados",
-                        delta_color="normal")
-            _ec4.metric("Taxa recuperação",
-                        f"{elast['n_recovered']/elast['n_events']*100:.0f}%"
-                        if elast['n_events'] > 0 else "—")
-
-            # Tabela de eventos
-            if elast['events']:
-                _ev_df = pd.DataFrame(elast['events'])
-                _ev_df['date'] = _ev_df['date'].astype(str)
-                _ev_df['recovered'] = _ev_df['recovered'].map({True: '✅', False: '❌'})
-                st.dataframe(
-                    _ev_df.rename(columns={
-                        'date': 'Data',
-                        'days_to_recovery': 'Dias até recuperar',
-                        'suppression_depth': 'Profundidade z',
-                        'recovered': 'Recuperou',
-                    }),
-                    hide_index=True, use_container_width=True)
-
-            # Histogram de τ
-            _rec_days = [e['days_to_recovery'] for e in elast['events'] if e['recovered']]
-            if _rec_days:
-                _fig_hist = go.Figure(go.Histogram(
-                    x=_rec_days, nbinsx=min(10, len(_rec_days)),
-                    marker_color=_C['primary'],
-                    marker_line_color='white', marker_line_width=1,
-                    hovertemplate='%{x}d: <b>%{y}</b> eventos<extra></extra>'
-                ))
-                if elast['tau_median']:
-                    _fig_hist.add_vline(x=elast['tau_median'],
-                                        line_dash='dash', line_color='#e74c3c',
-                                        line_width=2,
-                                        annotation_text=f"τ={elast['tau_median']}d",
-                                        annotation_font=dict(color='#e74c3c'))
-                _fig_hist.update_layout(
-                    paper_bgcolor='white', plot_bgcolor='white',
-                    font=dict(color='#111', size=11), height=260,
-                    margin=dict(t=20, b=50, l=50, r=20),
-                    xaxis=dict(title='Dias até recuperar',
-                               tickfont=dict(color='#111'), showgrid=True, gridcolor='#eee'),
-                    yaxis=dict(title='Nº eventos', tickfont=dict(color='#111'),
-                               showgrid=True, gridcolor='#eee'),
-                )
-                st.plotly_chart(_fig_hist, use_container_width=True,
-                                config=MC, key='elast_hist')
-                st.caption(
-                    f"τ mediana = {elast['tau_median']}d. "
-                    "Este é o teu tempo típico de recuperação HRV. "
-                    "Usa-o para planear o intervalo entre blocos de carga intensos."
-                )
-                # Download elasticidade
-                _el_dl = pd.DataFrame(elast['events'])
-                if not _el_dl.empty:
-                    _el_dl['date'] = _el_dl['date'].astype(str)
-                    _el_meta = pd.DataFrame([{
-                        'metrica': 'tau_mediana_dias', 'valor': elast['tau_median']},
-                        {'metrica': 'tau_media_dias',   'valor': elast['tau_mean']},
-                        {'metrica': 'n_eventos',         'valor': elast['n_events']},
-                        {'metrica': 'n_recuperados',     'valor': elast['n_recovered']},
-                        {'metrica': 'taxa_recuperacao_pct',
-                         'valor': round(elast['n_recovered']/elast['n_events']*100,1)
-                                  if elast['n_events'] > 0 else 0},
-                    ])
-                    st.download_button(
-                        "📥 Download Recovery Elasticity",
-                        (_el_dl.to_csv(index=False, sep=';', decimal=',') +
-                         '\n--- Métricas ---\n' +
-                         _el_meta.to_csv(index=False, sep=';', decimal=',')
-                        ).encode('utf-8'),
-                        "atheltica_hrv_elasticidade.csv", "text/csv",
-                        key="adv_elast_dl"
-                    )
-
-    # ── LAG AVANÇADO ─────────────────────────────────────────────────────────
-    with _adv_tabs[3]:
-        st.markdown("#### 🔗 Lag Correlation Avançada (Pearson + Spearman + MI)")
-        _dropdown_explica('lag_avancado')
-        st.caption(
-            "Pearson: magnitude linear. "
-            "Spearman: robusto a outliers. "
-            "MI normalizada: detecta relações não-lineares (U-shape dose-resposta)."
-        )
-
-        _lv1, _lv2 = st.columns(2)
-        _lv_tgt  = _lv1.selectbox(
-            "HRV alvo", [v for v in ['hrv','ln_hrv','hrv_norm'] if v in sig_hrv.columns],
-            key="adv_lag_tgt")
-        _lv_max  = _lv2.slider("Lag máximo (d)", 3, 35, min(max(_opt("lag_max",10),3),35), 1, key="adv_lag_max")
-
-        if True:  # corre automaticamente ao ver a secção
-            with st.spinner("Pearson + Spearman + MI..."):
-                adv_lag = _cx_lag_advanced(
-                    sig_hrv, sig_train, hrv_var=_lv_tgt, max_lag=_lv_max)
-
-            if adv_lag.empty:
-                st.warning("Sem dados suficientes.")
-            else:
-                # Top por cada método
-                st.markdown("**Melhor lag por variável — comparação dos 3 métodos:**")
-
-                def _best_per_var(df, r_col, sig_col):
-                    sub = df[df[sig_col]].copy() if sig_col in df.columns else df.copy()
-                    if sub.empty: return pd.DataFrame()
-                    idx = sub.groupby('var')[r_col].apply(lambda x: x.abs().idxmax())
-                    return sub.loc[idx].reset_index(drop=True)
-
-                _bp = _best_per_var(adv_lag, 'r_pearson',  'sig_pearson')
-                _bs = _best_per_var(adv_lag, 'r_spearman', 'sig_spearman')
-
-                _comp_rows = []
-                for var in adv_lag['var'].unique():
-                    _rp  = _bp[_bp['var']==var]['r_pearson'].values
-                    _lp  = _bp[_bp['var']==var]['lag'].values
-                    _rs  = _bs[_bs['var']==var]['r_spearman'].values
-                    _ls  = _bs[_bs['var']==var]['lag'].values
-                    _mi  = adv_lag[adv_lag['var']==var]['mi_norm'].max()
-                    _comp_rows.append({
-                        'Variável': var,
-                        'r Pearson': f"{_rp[0]:+.3f} @{_lp[0]}d" if len(_rp) else '—',
-                        'r Spearman': f"{_rs[0]:+.3f} @{_ls[0]}d" if len(_rs) else '—',
-                        'MI norm max': f"{_mi:.3f}" if not np.isnan(_mi) else '—',
-                        'MI>Pearson?': ('✅' if not np.isnan(_mi) and
-                                         _mi > (abs(_rp[0]) if len(_rp) else 0) else ''),
-                    })
-
-                st.dataframe(pd.DataFrame(_comp_rows), hide_index=True,
-                             use_container_width=True)
-                st.caption(
-                    "MI>Pearson? = a MI detectou relação mais forte que Pearson "
-                    "(possível não-linearidade / dose-resposta em U)."
-                )
-
-                st.download_button(
-                    "📥 Download lag correlation avançada",
-                    adv_lag.to_csv(index=False, sep=';', decimal=',').encode(),
-                    "hrv_lag_advanced.csv", "text/csv", key="adv_lag_dl")
-
-    # ── DIRECTIONAL ───────────────────────────────────────────────────────────
-    with _adv_tabs[4]:
-        st.markdown("#### ➡️ Directional Analysis")
-        _dropdown_explica('directional')
-        st.caption(
-            "Padrões de treino → probabilidade de HRV melhorar nos X dias seguintes. "
-            "⚠️ Ferramenta de geração de hipóteses, não inferência causal. "
-            "N pequeno → confidence baixa."
-        )
-
-        # Padrões pré-definidos fisiologicamente
-        _DEFAULT_PATTERNS = [
-            {'name': 'Monotonia↓ >15%',
-             'conditions': [{'var': 'mono_7d_delta', 'op': '<', 'val': -0.15}]},
-            {'name': 'Carga↓ + Freq.↓',
-             'conditions': [{'var': 'load_7d_delta', 'op': '<', 'val': -0.20},
-                             {'var': 'freq_7d', 'op': '<', 'val': 4}]},
-            {'name': 'Alta Monotonia (>2.0)',
-             'conditions': [{'var': 'mono_7d', 'op': '>', 'val': 2.0}]},
-            {'name': 'Strain↓ + Z2↑ (pct_z3<30%)',
-             'conditions': [{'var': 'strain_7d_delta', 'op': '<', 'val': -0.15},
-                             {'var': 'pct_z3', 'op': '<', 'val': 30}]},
-            {'name': 'TSB positivo (>+5)',
-             'conditions': [{'var': 'tsb', 'op': '>', 'val': 5}]},
-            {'name': 'Carga muito elevada (ATL>CTL×1.2)',
-             'conditions': [{'var': 'atl', 'op': '>', 'val': 0}]},  # proxy
-        ]
-
-        # ── Janela default = tau da elasticidade (tempo típico de recuperação) ──
-        # Fisiologicamente, a janela de outcome deve ser o tempo que o HRV demora
-        # a recuperar. Usamos o tau mediano da elasticidade como default.
-        _tau_default = _opt("directional_janela", 5)
-        try:
-            _elast_dir = _cx_recovery_elasticity(sig_hrv, sig_train)
-            _tau_med = _elast_dir.get('tau_median')
-            if _tau_med and not (isinstance(_tau_med, float) and np.isnan(_tau_med)):
-                _tau_default = int(min(max(round(_tau_med), 3), 14))
-                st.caption(f"🔧 Janela pré-preenchida com o **τ da elasticidade** "
-                           f"(tempo mediano de recuperação = **{_tau_default}d**). "
-                           "Fisiologicamente, é o tempo que o HRV demora a recuperar. "
-                           "Podes ajustar.")
-        except Exception:
-            pass
-
-        _dp_lag = st.slider("Janela de outcome (dias)", 3, 14,
-                            min(max(_tau_default, 3), 14), 1, key="dir_lag")
-
-        if True:  # corre automaticamente ao ver a secção
-            _dir_res = _cx_directional(
-                sig_hrv, sig_train, _DEFAULT_PATTERNS, outcome_lag=_dp_lag)
-
-            _dir_df = pd.DataFrame([{
-                'Padrão':       r['pattern'],
-                'Ocorrências':  r['n_occur'],
-                'HRV melhorou': r['n_improve'],
-                'Consistência': f"{r['consistency']}%",
-                'Confidence':   r['confidence'],
-            } for r in _dir_res])
-
-            if not _dir_df.empty:
-                st.dataframe(_dir_df, hide_index=True, use_container_width=True)
-                st.caption(
-                    "Consistência = % das ocorrências seguidas de HRV melhorado "
-                    f"nos {_dp_lag} dias seguintes. "
-                    "Confidence indica o tamanho amostral — N<10 é exploratório."
-                )
-                st.download_button(
-                    "📥 Download Directional Analysis",
-                    _dir_df.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
-                    f"atheltica_hrv_directional_lag{_dp_lag}d.csv", "text/csv",
-                    key="adv_dir_dl"
-                )
-
-    # ── DOSE-RESPONSE ─────────────────────────────────────────────────────────
-    with _adv_tabs[5]:
-        st.markdown("#### 📈 Dose-Response Curves (LOWESS)")
-        _dropdown_explica('dose_response')
-        st.caption(
-            "Relação não-linear entre variável de treino e HRV. "
-            "LOWESS detecta U-shapes (ex: carga baixa/alta → HRV ruim, carga moderada → HRV óptimo)."
-        )
-
-        _dr1, _dr2, _dr3 = st.columns(3)
-        _dr_xvar = _dr1.selectbox(
-            "Variável de treino (X)",
-            [v for v in ['mono_7d','strain_7d','load_7d','pct_z3','freq_7d','atl','tsb']
-             if v in sig_train.columns],
-            key="dr_xvar")
-        _dr_lag  = _dr2.slider("Lag (dias)", 0, 28, min(max(_opt("dose_response_lag",3),0),28), 1, key="dr_lag")
-        _dr_yvar = _dr3.selectbox(
-            "HRV alvo (Y)",
-            [v for v in ['hrv','ln_hrv','hrv_norm'] if v in sig_hrv.columns],
-            key="dr_yvar")
-
-        if True:  # corre automaticamente ao ver a secção
-            dr = _cx_dose_response(sig_hrv, sig_train, _dr_xvar, _dr_yvar, _dr_lag)
-
-            if dr.empty:
-                st.warning("Dados insuficientes.")
-            else:
-                _fig_dr = go.Figure()
-                # Scatter pontos reais
-                _fig_dr.add_trace(go.Scatter(
-                    x=dr['x_raw'], y=dr['y_raw'],
-                    mode='markers', name='Dados',
-                    marker=dict(size=5, color='rgba(41,128,185,0.3)',
-                                line=dict(width=0)),
-                    hovertemplate=f'{_dr_xvar}: %{{x:.2f}}<br>{_dr_yvar}: %{{y:.1f}}<extra></extra>'
-                ))
-                # Curva LOWESS
-                _fig_dr.add_trace(go.Scatter(
-                    x=dr['x'], y=dr['y_smooth'],
-                    mode='lines', name='LOWESS',
-                    line=dict(color='#e74c3c', width=3),
-                    hovertemplate=f'{_dr_xvar}: %{{x:.2f}}<br>HRV smooth: %{{y:.1f}}<extra></extra>'
-                ))
-                _fig_dr.update_layout(
-                    paper_bgcolor='white', plot_bgcolor='white',
-                    font=dict(color='#111', size=11), height=360,
-                    margin=dict(t=20, b=60, l=60, r=20),
-                    xaxis=dict(title=_dr_xvar, tickfont=dict(color='#111'),
-                               showgrid=True, gridcolor='#eee'),
-                    yaxis=dict(title=f'{_dr_yvar} (lag={_dr_lag}d)',
-                               tickfont=dict(color='#111'),
-                               showgrid=True, gridcolor='#eee'),
-                    legend=dict(orientation='h', y=-0.18,
-                                font=dict(color='#111', size=10)),
-                )
-                st.plotly_chart(_fig_dr, use_container_width=True,
-                                config=MC, key='dr_plot')
-                st.caption(
-                    f"X = {_dr_xvar} no dia t. "
-                    f"Y = {_dr_yvar} no dia t+{_dr_lag}. "
-                    "Curva LOWESS capta relações não-lineares — pico = zona óptima."
-                )
-                st.download_button(
-                    "📥 Download Dose-Response (dados + curva LOWESS)",
-                    dr.round(3).to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
-                    f"atheltica_hrv_dose_response_{_dr_xvar}_lag{_dr_lag}d.csv",
-                    "text/csv", key="adv_dr_dl"
-                )
-
-    # ── K-MEANS ───────────────────────────────────────────────────────────────
-    with _adv_tabs[6]:
         st.markdown("#### 🗂️ Clustering de Semanas")
         _dropdown_explica('semanas')
         st.caption(
@@ -1835,7 +1703,7 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                 )
 
     # ── TRANSIÇÕES ───────────────────────────────────────────────────────────
-    with _adv_tabs[7]:
+    with _adv_tabs[3]:
         st.markdown("#### 🔄 Probabilistic Transition Matrix")
         _dropdown_explica('transicoes')
         st.caption(
@@ -1923,7 +1791,7 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                 )
 
     # ── Modelos de Carga — qual prevê melhor o HRV ────────────────────────────
-    with _adv_tabs[8]:
+    with _adv_tabs[4]:
         st.markdown("#### ⚖️ Modelos de Carga — qual prevê melhor o teu HRV")
         _dropdown_explica('modelos_carga')
         st.caption("Compara ATL, CTL, TSB, FTLM fraccionário (memórias curta/média/longa) "
