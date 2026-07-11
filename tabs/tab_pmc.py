@@ -349,11 +349,11 @@ def tab_pmc(da, wc=None):
 
     _u_ctl = float(u['CTL']); _u_atl = float(u['ATL']); _u_tsb = float(u['TSB'])
     _fig_pmc.add_annotation(
-        x=_dates[-1], y=_u_ctl, xref='x', yref='y',
+        x=0.5, y=1.0, xref='x domain', yref='y domain',
         text=f"CTL {_u_ctl:.1f} | ATL {_u_atl:.1f} | TSB {_u_tsb:+.1f}",
         showarrow=False, bgcolor='rgba(255,235,200,0.9)',
         bordercolor='#aaa', borderwidth=1,
-        font=dict(size=10, color='#111'), xanchor='right', yanchor='top')
+        font=dict(size=10, color='#111'), xanchor='center', yanchor='bottom')
 
     trimp_d = df.groupby(['Data', 'type'])['trimp_val'].sum().reset_index()
     trimp_d['Data'] = pd.to_datetime(trimp_d['Data'])
