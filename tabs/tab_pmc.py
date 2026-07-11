@@ -294,7 +294,8 @@ def tab_pmc(da, wc=None):
 
     # ── GRÁFICO 1: PMC + Load (TRIMP) ──
     _fig_pmc = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                             row_heights=[0.70, 0.30], vertical_spacing=0.04)
+                             row_heights=[0.70, 0.30], vertical_spacing=0.04,
+                             specs=[[{"secondary_y": True}], [{"secondary_y": False}]])
     _dates = ld_plot['Data'].tolist()
 
     _fig_pmc.add_trace(go.Scatter(x=_dates, y=ld_plot['CTL'].tolist(),
@@ -312,31 +313,30 @@ def tab_pmc(da, wc=None):
     _fig_pmc.add_hline(y=0, line_dash='dash', line_color='#999', line_width=1, row=1, col=1)
 
     if show_ftlm:
-        _ctl_max  = max(ld_plot['CTL'].max(), ld_plot['ATL'].max(), 1)
+        # As linhas γ (FTLM/CTLγ) vão para o EIXO SECUNDÁRIO (direita) com os
+        # VALORES REAIS — antes eram re-escaladas à força para caber na escala do
+        # CTL, o que as achatava e distorcia o hover. Agora têm o seu próprio eixo.
         # FTLM fraccionário — γ activo (melhor R²)
         if 'FTLM' in ld_plot.columns and ld_plot['FTLM'].notna().any():
-            _ftlm_max = max(ld_plot['FTLM'].max(), 1)
-            _ftlm_n   = ld_plot['FTLM'] / _ftlm_max * _ctl_max * 0.85
-            _fig_pmc.add_trace(go.Scatter(x=_dates, y=_ftlm_n.tolist(),
+            _fig_pmc.add_trace(go.Scatter(x=_dates, y=ld_plot['FTLM'].tolist(),
                 name=f'CTLγ ({_gsrc}, γ={best_g:.3f})',
-                line=dict(color=CORES['laranja'], width=2.5, dash='dash'), opacity=0.85,
-                hovertemplate='CTLγ: %{y:.1f}<extra></extra>'), row=1, col=1)
-        # CTLg_perf (γ_performance, normalised)
+                line=dict(color=CORES['laranja'], width=2.5, dash='dash'), opacity=0.9,
+                hovertemplate='CTLγ: %{y:.2f}<extra></extra>'),
+                row=1, col=1, secondary_y=True)
+        # CTLg_perf (γ_performance) — valores reais
         if 'CTLg_perf' in ld_plot.columns and ld_plot['CTLg_perf'].notna().any():
-            _gp_max = max(ld_plot['CTLg_perf'].max(), 1)
-            _gp_n   = ld_plot['CTLg_perf'] / _gp_max * _ctl_max * 0.75
-            _fig_pmc.add_trace(go.Scatter(x=_dates, y=_gp_n.tolist(),
+            _fig_pmc.add_trace(go.Scatter(x=_dates, y=ld_plot['CTLg_perf'].tolist(),
                 name=f'CTLγ perf (γ={_gp:.3f}, R²={_r2p:.2f})',
-                line=dict(color='#2980b9', width=1.5, dash='dot'), opacity=0.7,
-                hovertemplate='CTLγ_perf: %{y:.1f}<extra></extra>'), row=1, col=1)
-        # CTLg_rec (γ_recovery, normalised)
+                line=dict(color='#2980b9', width=1.5, dash='dot'), opacity=0.75,
+                hovertemplate='CTLγ_perf: %{y:.2f}<extra></extra>'),
+                row=1, col=1, secondary_y=True)
+        # CTLg_rec (γ_recovery) — valores reais
         if 'CTLg_rec' in ld_plot.columns and ld_plot['CTLg_rec'].notna().any():
-            _gr_max = max(ld_plot['CTLg_rec'].max(), 1)
-            _gr_n   = ld_plot['CTLg_rec'] / _gr_max * _ctl_max * 0.75
-            _fig_pmc.add_trace(go.Scatter(x=_dates, y=_gr_n.tolist(),
+            _fig_pmc.add_trace(go.Scatter(x=_dates, y=ld_plot['CTLg_rec'].tolist(),
                 name=f'CTLγ rec (γ={_gr:.3f}, R²={_r2r:.2f})',
-                line=dict(color='#8e44ad', width=1.5, dash='dot'), opacity=0.7,
-                hovertemplate='CTLγ_rec: %{y:.1f}<extra></extra>'), row=1, col=1)
+                line=dict(color='#8e44ad', width=1.5, dash='dot'), opacity=0.75,
+                hovertemplate='CTLγ_rec: %{y:.2f}<extra></extra>'),
+                row=1, col=1, secondary_y=True)
 
     _u_ctl = float(u['CTL']); _u_atl = float(u['ATL']); _u_tsb = float(u['TSB'])
     _fig_pmc.add_annotation(
@@ -371,7 +371,9 @@ def tab_pmc(da, wc=None):
                    font=dict(size=14, color='#111')))
     _fig_pmc.update_xaxes(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111'))
     _fig_pmc.update_yaxes(showgrid=True, gridcolor='#eee', tickfont=dict(color='#111'))
-    _fig_pmc.update_yaxes(title_text='CTL/ATL/TSB', row=1, col=1)
+    _fig_pmc.update_yaxes(title_text='CTL/ATL/TSB', row=1, col=1, secondary_y=False)
+    _fig_pmc.update_yaxes(title_text='CTLγ (FTLM)', row=1, col=1, secondary_y=True,
+                          showgrid=False)
     _fig_pmc.update_yaxes(title_text='Load (TRIMP)', row=2, col=1)
     # ── Phase background on PMC (added after phase detection, placeholder for now)
     # Actual shapes added via _add_phase_bg() called after phase results available
@@ -1472,287 +1474,6 @@ ou a acumular sobrecarga não compensada (allostatic overload), comparando
     else:
         st.info("CTLγ por modalidade não disponível — sem dados suficientes.")
 
-    # ════════════════════════════════════════════════════════════════════════
-    # GRÁFICO 2b — PLT (Pure-Load Tensor) por modalidade
-    # Della Mattia / enydog — github.com/enydog/PLT (Part I do framework)
-    # Pipeline: vector de carga por sessão → impulso u_plt → IR fitness-fatigue
-    # ════════════════════════════════════════════════════════════════════════
-    st.markdown("---")
-    st.subheader("🧬 PLT — Pure-Load Tensor (Impulse-Response) por Modalidade")
-    st.caption(
-        "Modelo **PLT** (Della Mattia/enydog) — distinto do FMT e do NLSS. "
-        "Impulso diário `u_plt = softplus(Σβᵢ·z(xᵢ))` com xᵢ = [TSS, Ekg, "
-        "decoupling (Hq4−Hq1), HRV drop], alimentando um IR fitness-fatigue "
-        "(F τ≈42d, G τ≈7d → P̂ = P0 + k_f·F − k_g·G). "
-        "Peso vem do **wellness** · kJ de `icu_joules` · HRV **morning**. "
-        "Parâmetros IR **fixos do paper** (τf=42, τg=7, k_f=1, k_g=2). "
-        "P̂ em **unidades relativas** (dinâmica fitness−fatigue, não watts): "
-        "o eFTP não representa o CP/FTP real e o MMP real é escasso para fit fiável."
-    )
-
-    try:
-        from utils.plt_model import compute_plt_ir as _compute_plt_ir
-        from utils.plt_model import latest_real_mmp as _latest_real_mmp
-
-        _plt_mods = [m for m in ['Bike', 'Row', 'Ski', 'Run']
-                     if (da_full is not None and 'type' in da_full.columns
-                         and m in da_full['type'].apply(norm_tipo).unique())]
-
-        # Calcular PLT-IR para cada modalidade disponível (IR fixo do paper)
-        _plt_results = {}
-        for _pm in _plt_mods:
-            _res = _compute_plt_ir(da_full, wc, modality=_pm)
-            if _res['ok']:
-                # MMP real mais recente — só informativo (não entra no IR)
-                _res['mmp_ref'] = _latest_real_mmp(da_full, _pm)
-                _plt_results[_pm] = _res
-
-        if _plt_results:
-            _n_pmods = len(_plt_results)
-            _mods_ok = list(_plt_results.keys())
-
-            # ── Slider de range de dias (zoom temporal) ──────────────────────
-            # Maior período disponível entre as modalidades
-            _max_dias = max(
-                int((_plt_results[_pm]['daily']['Data'].max()
-                     - _plt_results[_pm]['daily']['Data'].min()).days) + 1
-                for _pm in _mods_ok)
-            _max_dias = max(_max_dias, 60)
-            _opcoes_range = [("30 dias", 30), ("90 dias", 90), ("180 dias", 180),
-                             ("1 ano", 365), ("2 anos", 730),
-                             (f"Tudo ({_max_dias}d)", _max_dias)]
-            _opcoes_validas = [(_lbl, _v) for _lbl, _v in _opcoes_range
-                               if _v <= _max_dias] or [(f"Tudo ({_max_dias}d)", _max_dias)]
-            if _opcoes_validas[-1][1] != _max_dias:
-                _opcoes_validas.append((f"Tudo ({_max_dias}d)", _max_dias))
-            _labels_range = [_l for _l, _ in _opcoes_validas]
-            # default: 180 dias (ou o maior disponível abaixo disso)
-            _def_idx = next((i for i, (_l, _v) in enumerate(_opcoes_validas)
-                             if _v == 180), len(_opcoes_validas) - 1)
-            _sel_range = st.select_slider(
-                "📅 Janela temporal do PLT", options=_labels_range,
-                value=_labels_range[_def_idx], key="pmc_plt_range")
-            _dias_show = dict(_opcoes_validas)[_sel_range]
-
-            from plotly.subplots import make_subplots as _msp_plt
-            fig_plt = _msp_plt(
-                rows=1, cols=_n_pmods,
-                subplot_titles=_mods_ok,
-                shared_yaxes=False,
-                specs=[[{'secondary_y': True}] * _n_pmods],
-                horizontal_spacing=0.06 if _n_pmods <= 3 else 0.045,
-            )
-
-            _hoje = pd.Timestamp.now().normalize()
-
-            for _ci, _pm in enumerate(_mods_ok, 1):
-                _res  = _plt_results[_pm]
-                _d    = _res['daily'].copy()
-                _par  = _res['params']
-                _cor  = _CORES_MOD_PMC.get(_pm, '#888')
-
-                # Filtrar pela janela escolhida (últimos _dias_show dias)
-                _d['Data'] = pd.to_datetime(_d['Data'])
-                _corte = _d['Data'].max() - pd.Timedelta(days=_dias_show)
-                _d = _d[_d['Data'] >= _corte].reset_index(drop=True)
-                _xd = _d['Data'].tolist()
-
-                # P̂ suavizado (média móvel 7d) — tendência fitness−fatigue
-                _phat_s = (_d['P_hat_plt'].rolling(7, min_periods=1, center=True)
-                           .mean())
-                # u_plt em barras (carga diária; dias sem treino ficam vazios)
-                _uplt = _d['u_plt'].copy()
-                _uplt_show = _uplt.where(_uplt > 1e-6)  # esconder zeros
-
-                _hx_b = _cor.lstrip('#')
-                _rb, _gb, _bb = (int(_hx_b[0:2], 16), int(_hx_b[2:4], 16),
-                                 int(_hx_b[4:6], 16))
-                _rgba = f'rgba({_rb},{_gb},{_bb},0.35)'
-
-                # Y2 (dir): impulso u_plt como BARRAS suaves (fundo de contexto)
-                fig_plt.add_trace(go.Bar(
-                    x=_xd, y=_uplt_show.tolist(),
-                    name=f'{_pm} u_plt (carga)',
-                    marker=dict(color=_rgba, line=dict(width=0)),
-                    legendgroup=f'uplt_{_pm}', showlegend=True,
-                    hovertemplate=f'<b>{_pm} u_plt</b>: %{{y:.2f}}<extra></extra>',
-                ), row=1, col=_ci, secondary_y=True)
-
-                # Y1 (esq): P̂ suavizado 7d (linha principal)
-                fig_plt.add_trace(go.Scatter(
-                    x=_xd, y=_phat_s.tolist(), mode='lines',
-                    name=(f'{_pm} P̂ (7d) τf={_par["tau_f"]:.0f} '
-                          f'τg={_par["tau_g"]:.0f} [paper]'),
-                    line=dict(color=_cor, width=2.8),
-                    legendgroup=f'phat_{_pm}', showlegend=True,
-                    hovertemplate=f'<b>{_pm} P̂</b> (7d): %{{y:.2f}}<extra></extra>',
-                ), row=1, col=_ci, secondary_y=False)
-
-                # P̂ cru (cinza ténue, por baixo) — detalhe diário opcional
-                fig_plt.add_trace(go.Scatter(
-                    x=_xd, y=_d['P_hat_plt'].tolist(), mode='lines',
-                    name=f'{_pm} P̂ (cru)',
-                    line=dict(color='rgba(150,150,150,0.30)', width=0.8),
-                    legendgroup=f'phatcru_{_pm}', showlegend=False,
-                    hoverinfo='skip',
-                ), row=1, col=_ci, secondary_y=False)
-
-                # Banda dos últimos 30 dias (foco no estado actual)
-                if len(_d) > 0:
-                    try:
-                        _b0 = max(_d['Data'].max() - pd.Timedelta(days=30),
-                                  _d['Data'].min())
-                        fig_plt.add_vrect(
-                            x0=_b0, x1=_d['Data'].max(),
-                            fillcolor='rgba(120,120,120,0.07)', line_width=0,
-                            row=1, col=_ci)
-                        # Marca "hoje" (se dentro do range)
-                        if _d['Data'].min() <= _hoje <= _d['Data'].max():
-                            fig_plt.add_vline(
-                                x=_hoje, line=dict(color='#666', width=1,
-                                                   dash='dot'),
-                                row=1, col=_ci)
-                    except Exception:
-                        pass  # marcações são decorativas; não quebrar o gráfico
-
-                fig_plt.update_yaxes(
-                    title_text='P̂ (rel, 7d)', title_font=dict(size=8, color=_cor),
-                    showgrid=True, gridcolor='#eee',
-                    tickfont=dict(color='#111', size=8),
-                    row=1, col=_ci, secondary_y=False)
-                fig_plt.update_yaxes(
-                    title_text='carga', title_font=dict(size=8, color='#aaa'),
-                    showgrid=False, tickfont=dict(color='#aaa', size=8),
-                    row=1, col=_ci, secondary_y=True)
-
-            fig_plt.update_layout(
-                paper_bgcolor='white', plot_bgcolor='white',
-                font=dict(color='#111', size=10),
-                height=420, margin=dict(t=70, b=95, l=50, r=50),
-                hovermode='x unified', bargap=0.0,
-                legend=dict(orientation='h', y=-0.30,
-                            font=dict(color='#111', size=9),
-                            bgcolor='rgba(255,255,255,0.9)'),
-                title=dict(
-                    text=(f'P̂ (média 7d, sólido) | carga u_plt (barras) · '
-                          f'janela: {_sel_range}'),
-                    font=dict(size=12, color='#111')),
-            )
-            fig_plt.update_xaxes(showgrid=True, gridcolor='#eee',
-                                 tickangle=-45, tickfont=dict(color='#111', size=9))
-            st.plotly_chart(fig_plt, use_container_width=True,
-                            config={'displayModeBar': False, 'responsive': True},
-                            key="pmc_plt_mod")
-
-            # ── Cards de parâmetros IR por modalidade ────────────────────────
-            st.markdown("**🔍 Parâmetros IR do PLT por Modalidade**")
-            _cols_plt = st.columns(len(_mods_ok))
-            for _ci3, _pm in enumerate(_mods_ok):
-                _par = _plt_results[_pm]['params']
-                _mmp_ref = _plt_results[_pm].get('mmp_ref')
-                with _cols_plt[_ci3]:
-                    st.markdown(f"**{_pm}**")
-                    st.caption("⚙️ Parâmetros fixos do paper")
-                    st.caption(
-                        f"τf={_par['tau_f']:.0f}d · τg={_par['tau_g']:.0f}d  \n"
-                        f"k_f={_par['k_f']:.2f} · k_g={_par['k_g']:.2f}")
-                    if _mmp_ref is not None:
-                        _md = 'MMP5' if _pm in ('Row', 'Ski') else 'MMP20'
-                        st.caption(f"📌 {_md} real recente: **{_mmp_ref:.0f}W** "
-                                   f"(referência, não entra no IR)")
-
-            st.caption(
-                "ℹ️ O PLT é **complementar** ao FMT (curvatura κ) e ao NLSS "
-                "(K₁K₂T₁T₂). O impulso `u_plt` integra carga + decoupling + HRV "
-                "num só sinal; o IR (parâmetros fixos do paper) projecta a "
-                "trajectória **P̂ em unidades relativas** — mostra a *dinâmica* "
-                "fitness−fatigue, não watts absolutos. O eFTP não é usado (não "
-                "representa o CP/FTP real); o MMP real recente é só referência. "
-                "Dias sem treino → impulso 0 (decaimento natural de F e G)."
-            )
-
-            # ── Download PLT por modalidade ──────────────────────────────────
-            _plt_dl_frames = []
-            for _pm in _mods_ok:
-                _dd = _plt_results[_pm]['daily'].copy()
-                _dd.insert(1, 'Modalidade', _pm)
-                _plt_dl_frames.append(_dd)
-            if _plt_dl_frames:
-                _plt_dl = pd.concat(_plt_dl_frames, ignore_index=True)
-                _plt_dl['Data'] = _plt_dl['Data'].astype(str)
-                _plt_dl = _plt_dl.round(4)
-                st.download_button(
-                    label="📥 Download PLT por modalidade (.csv)",
-                    data=_plt_dl.to_csv(index=False, sep=';', decimal=',').encode('utf-8'),
-                    file_name="atheltica_plt_modalidade.csv",
-                    mime="text/csv", key="pmc_dl_plt")
-        else:
-            st.info("PLT não disponível — sem dados de carga/HR suficientes por modalidade.")
-    except Exception as _e_plt:
-        st.warning(f"PLT não pôde ser calculado: {_e_plt}")
-
-    # ════════════════════════════════════════════════════════════════════════
-    # [TEMPORÁRIO] Comparador de métodos de parametrização do IR do PLT
-    # Gera CSV com 4 métodos (paper / NLSS-kfix / NLSS-kfit / gridfit) para
-    # análise offline. Decidir qual implementar no PMC depois de ver os dados.
-    # Remover este expander quando a decisão estiver tomada.
-    # ════════════════════════════════════════════════════════════════════════
-    with st.expander("🔬 [Experimental] Comparar métodos de parametrização do PLT-IR",
-                     expanded=False):
-        st.caption(
-            "Gera o P̂ por 4 métodos para comparares offline e decidires qual usar:\n"
-            "**paper** (τf=42,τg=7,kf=1,kg=2 fixos) · **nlss_kfix** (τf←T1,τg←T2 do "
-            "NLSS + k fixo) · **nlss_kfit** (τ herdado + k ajustado ao MMP) · "
-            "**gridfit** (varre τf,τg,kf,kg vs MMP). Âncoras MMP = melhor 'Yes - Xw' "
-            "por período. Não usa eFTP."
-        )
-        _periodo_cmp = st.radio(
-            "Período dos pontos-âncora MMP",
-            options=['year', 'semester', 'quarter'],
-            format_func=lambda x: {'year': 'Anual (1 pico/ano)',
-                                   'semester': 'Semestral',
-                                   'quarter': 'Trimestral'}[x],
-            horizontal=True, key="pmc_plt_cmp_period")
-
-        if st.button("⚙️ Gerar comparação (.csv)", key="pmc_plt_cmp_btn"):
-            try:
-                from utils.plt_compare import compare_all_to_csv
-                try:
-                    from utils.data import calcular_nlss as _nlss_fn
-                except Exception:
-                    _nlss_fn = None
-                with st.spinner("A calcular os 4 métodos por modalidade..."):
-                    _df_long, _df_params = compare_all_to_csv(
-                        da_full, wc, nlss_fn=_nlss_fn,
-                        period=_periodo_cmp, start_date='2021-01-01')
-                if len(_df_long) > 0:
-                    st.success(f"✅ Gerado: {len(_df_long)} linhas, "
-                               f"{_df_long['Modalidade'].nunique()} modalidades.")
-                    st.markdown("**Parâmetros escolhidos por método:**")
-                    st.dataframe(_df_params, use_container_width=True)
-
-                    _ser_csv = (_df_long.assign(
-                        Data=pd.to_datetime(_df_long['Data']).astype(str))
-                        .round(4).to_csv(index=False, sep=';', decimal=',')
-                        .encode('utf-8'))
-                    _par_csv = (_df_params.round(4)
-                        .to_csv(index=False, sep=';', decimal=',').encode('utf-8'))
-                    _c1, _c2 = st.columns(2)
-                    with _c1:
-                        st.download_button(
-                            "📥 Séries dos 4 métodos (.csv)", _ser_csv,
-                            f"plt_comparacao_series_{_periodo_cmp}.csv",
-                            "text/csv", key="pmc_dl_cmp_series")
-                    with _c2:
-                        st.download_button(
-                            "📥 Parâmetros + MSE (.csv)", _par_csv,
-                            f"plt_comparacao_params_{_periodo_cmp}.csv",
-                            "text/csv", key="pmc_dl_cmp_params")
-                else:
-                    st.warning("Sem dados suficientes para a comparação.")
-            except Exception as _e_cmp:
-                st.error(f"Erro ao gerar comparação: {_e_cmp}")
-
     # ── FMT Tensor — explicação + resultados actuais ──────────────────────────
     with st.expander("🧮 FMT Tensor κ — Curvatura do Estado Fisiológico", expanded=False):
         try:
@@ -1774,8 +1495,7 @@ ou a acumular sobrecarga não compensada (allostatic overload), comparando
                 "O TSS colapsa uma sessão complexa num único número — perde informação sobre como cada "
                 "dimensão fisiológica mudou. O FMT constrói uma **matriz de covariância** das variações "
                 "diárias de múltiplos sinais: `F(t) = cov(Δx)` sobre janela 28 dias, onde "
-                "`x(t) = [Load, HRV, W', Sleep, WEED]` (5 dims do paper), com "
-                "**Load = CTLγ + HR quartiles (Hq4−Hq1)**. "
+                "`x(t) = [CTLγ, HRV, WEED, Sleep, W', HR_drift]`. "
                 "**κ = trace(F)** — curvatura escalar do estado fisiológico."
             )
             st.markdown(
@@ -1888,6 +1608,7 @@ ou a acumular sobrecarga não compensada (allostatic overload), comparando
             'WEED_z', 'sleep_z', 'w_stress', 'hq_drift_z',
             'wp_prime',
             'FMT_kappa', 'FMT_lambda1_frac', 'FMT_kappa_4d',
+            'FMT_kappa_Bike', 'FMT_kappa_Row', 'FMT_kappa_Ski', 'FMT_kappa_Run',
         ]
         _avail_cols = [c for c in _dl_cols_ftlm if c in _ld_frac.columns]
         _dl_df = _ld_frac[_avail_cols].copy()
