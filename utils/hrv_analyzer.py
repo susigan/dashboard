@@ -2766,9 +2766,13 @@ def fingerprint_evolucao(sig_hrv, sig_train, freq='6M', top_vars=4):
         diffs = {}
         for v in train_vars:
             ma, mb = alto[v].mean(), baixo[v].mean()
-            if pd.notna(ma) and pd.notna(mb) and abs(mb) > 1e-6:
-                d = (ma - mb) / abs(mb) * 100
-                row[v] = round(d, 1)
+            # Diferença padronizada (Cohen's d simplificado): robusta a baseline≈0.
+            # Usa o desvio-padrão do bloco como escala, em vez de dividir pela média
+            # (que explode quando a média está perto de zero, ex: TSB).
+            sd = sub[v].std()
+            if pd.notna(ma) and pd.notna(mb) and sd is not None and sd > 1e-6:
+                d = (ma - mb) / sd  # em unidades de desvio-padrão
+                row[v] = round(d, 2)
                 diffs[v] = abs(d)
         rows.append(row)
         # top vars deste bloco
