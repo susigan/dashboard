@@ -941,16 +941,12 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
                      .reindex(_date_idx, fill_value=np.nan))
         ld['wp_prime'] = _wp_daily.rolling(7, min_periods=3).mean().values
 
-    # ── HR quartil decoupling (hq_4 − hq_1) ─────────────────────────────────
+    # ── HR quartil drift (hq_4 / hq_1) ──────────────────────────────────────
     # Paper FMT 2019: HR quartiles são dimensão Load do vector de estado x(t)
-    # PLT (Della Mattia / enydog, implementation.py): o sinal de HR quartil que
-    #   entra no impulso de carga é decoupling = HR_Q4 − HR_Q1 (DIFERENÇA em bpm),
-    #   não o rácio. Difference é o decoupling cardíaco clássico (drift em bpm):
-    #     Sessão aeróbica leve / curta: hq_4 ≈ hq_1  (decoupling ≈ 0-3 bpm)
-    #     Sessão intensa / com drift:   hq_4 >> hq_1  (decoupling ≈ 8-15+ bpm)
-    # Mantém-se o nome de coluna hq_drift_z para não quebrar exports/downstream
-    #   (tab_pmc / tab_fmt_tensor download CSV e dimensão do tensor global).
-    # Rolling 14d z-score: captura padrão crónico de decoupling intra-sessão.
+    # hq_4/hq_1 = HR drift ratio = quão concentrada foi a FC no final da sessão
+    # Sessão aeróbica leve: hq_4 ≈ hq_1 (ratio ≈ 1.1)
+    # Sessão intensa/drift: hq_4 >> hq_1 (ratio ≈ 1.3+)
+    # Rolling 14d z-score: captura padrão crónico de intensidade intra-sessão
     # hq_1..hq_4: HR quartile means per session (Hq1..Hq4 in sheet)
     # Values of 0 are invalid (no HR data for that quartile) → treat as NaN
     if 'hq_1' in df.columns:
@@ -963,14 +959,13 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
         _df_hq = df.copy()
         _hq1   = pd.to_numeric(_df_hq['hq_1'], errors='coerce')
         _hq4   = pd.to_numeric(_df_hq['hq_4'], errors='coerce')
-        # Decoupling hq_4 − hq_1 (bpm) só onde ambos os quartis são fisiológicos
-        # (hq_1 e hq_4 > 40 bpm) — evita artefactos de sessões sem FC válida
-        _hq_decoup = np.where((_hq1 > 40) & (_hq4 > 40), _hq4 - _hq1, np.nan)
-        _df_hq['_hq_decoup'] = _hq_decoup
-        _hq_daily = (_df_hq.groupby('Data')['_hq_decoup']
+        # Ratio hq_4/hq_1 só onde hq_1 > 40 bpm (evita artefactos)
+        _hq_ratio = np.where(_hq1 > 40, _hq4 / _hq1, np.nan)
+        _df_hq['_hq_ratio'] = _hq_ratio
+        _hq_daily = (_df_hq.groupby('Data')['_hq_ratio']
                      .mean()
                      .reindex(_date_idx, fill_value=np.nan))
-        # Z-score rolante 14d: desvio do padrão pessoal de decoupling
+        # Z-score rolante 14d: desvio do padrão pessoal de HR drift
         _hq_mu  = _hq_daily.rolling(14, min_periods=5).mean()
         _hq_sd  = _hq_daily.rolling(14, min_periods=5).std()
         ld['hq_drift_z'] = ((_hq_daily - _hq_mu) / _hq_sd.replace(0, np.nan)).values
@@ -1005,47 +1000,26 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
         # Só preencher NaN (não substituir valores reais)
         return np.where(s.isna(), fill, s).astype(float)
 
-    # ── FMT 5×5 fiel ao paper (Della Mattia 2019, Definition 1 / Fig.1) ──────
-    # Vector de estado x = [Load, HRV, W', Sleep, WEED] (5 dimensões).
-    # Paper: "Load: TSS, E_kg, HR quartiles" → HR quartiles vivem DENTRO de Load,
-    #         não como dimensão separada. Aqui Load = combinação z-scored de
-    #         CTLγ_perf (TSS fraccionário) + hq_drift_z (HR-decoupling Hq4−Hq1).
-    # As dims HRV / WEED / Sleep / W' são sinais do atleta (estado global).
-    #
-    # _zc(): z-score local (mediana/std) para combinar sinais de escalas diferentes
-    #        ANTES de entrarem no tensor — senão CTLγ (~5-10) esmagaria hq_drift (~±2).
-    def _zc(arr):
-        a = np.array(arr, dtype=float)
-        mu, sd = np.nanmean(a), np.nanstd(a)
-        return (a - mu) / sd if sd > 1e-9 else (a - mu)
+    # Overall — começa sempre com CTLγ; adiciona dimensões se disponíveis
+    # Cada dimensão é imputada por rolling mean 7d antes de entrar no tensor
+    _dims_overall = [_impute_rolling(ld['CTLg_perf'].values)]
+    _dim_names    = ['CTLγ']
 
-    # Dimensão 1 — LOAD (composta): CTLγ + HR-decoupling (paper: Load = TSS+HRq)
-    _load_parts = [_zc(_impute_rolling(ld['CTLg_perf'].values))]
-    _load_has_hr = False
-    if 'hq_drift_z' in ld.columns and ld['hq_drift_z'].notna().sum() >= 20:
-        _load_parts.append(_zc(_impute_rolling(ld['hq_drift_z'].values)))
-        _load_has_hr = True
-    _load_dim = np.nanmean(np.column_stack(_load_parts), axis=1)
-
-    _dims_overall = [_load_dim]
-    _dim_names    = ['Load(CTLγ+HRq)' if _load_has_hr else 'Load(CTLγ)']
-
-    # Dimensão 2 — HRV (estado autonómico do atleta)
     if 'HRV_trend' in ld.columns and ld['HRV_trend'].notna().sum() >= 20:
         _dims_overall.append(_impute_rolling(ld['HRV_trend'].values))
         _dim_names.append('HRV')
-    # Dimensão 3 — W' (reserva anaeróbica consumida)
-    if 'w_stress' in ld.columns and ld['w_stress'].notna().sum() >= 20:
-        _dims_overall.append(_impute_rolling(ld['w_stress'].values))
-        _dim_names.append("W'")
-    # Dimensão 4 — Sleep
-    if 'sleep_z' in ld.columns and ld['sleep_z'].notna().sum() >= 20:
-        _dims_overall.append(_impute_rolling(ld['sleep_z'].values))
-        _dim_names.append('Sleep')
-    # Dimensão 5 — WEED (water/energy/electrolytes/digestive → readiness subjectivo)
     if 'WEED_z' in ld.columns and ld['WEED_z'].notna().sum() >= 20:
         _dims_overall.append(_impute_rolling(ld['WEED_z'].values))
         _dim_names.append('WEED')
+    if 'sleep_z' in ld.columns and ld['sleep_z'].notna().sum() >= 20:
+        _dims_overall.append(_impute_rolling(ld['sleep_z'].values))
+        _dim_names.append('Sleep')
+    if 'w_stress' in ld.columns and ld['w_stress'].notna().sum() >= 20:
+        _dims_overall.append(_impute_rolling(ld['w_stress'].values))
+        _dim_names.append("W'")
+    if 'hq_drift_z' in ld.columns and ld['hq_drift_z'].notna().sum() >= 20:
+        _dims_overall.append(_impute_rolling(ld['hq_drift_z'].values))
+        _dim_names.append('HR_drift')
 
     _tensor_dim = len(_dims_overall)
 
@@ -1054,7 +1028,7 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
             _dims_overall, _fmt_w, return_eigenvalues=True)
         ld['FMT_kappa']        = _kappa_arr
         ld['FMT_lambda1_frac'] = _lambda1_arr
-        ld['FMT_tensor_dim']   = _tensor_dim   # dimensão actual do tensor (alvo: 5)
+        ld['FMT_tensor_dim']   = _tensor_dim   # dimensão actual do tensor
     else:
         ld['FMT_kappa']        = np.nan
         ld['FMT_lambda1_frac'] = np.nan
@@ -1071,18 +1045,18 @@ def calcular_series_carga(df_act, df_wellness=None, ate_hoje=True):
         if len(_dims_4d) >= 2:
             ld['FMT_kappa_4d'] = _compute_kappa_kalman(_dims_4d, _fmt_w)
 
-    # ── FMT_kappa por modalidade: REMOVIDO (fiel ao paper Della Mattia 2019) ──
-    # O FMT é definido como o tensor do ESTADO DO ATLETA, não de uma modalidade
-    # (paper §02, Definition 1, e cohort §09 = um FMT por atleta, multi-desporto).
-    # As dimensões HRV / WEED / Sleep / W' são sinais do organismo inteiro — não
-    # existe "HRV de Run" vs "HRV de Ski". A versão modal anterior construía
-    # [CTLγ_mod, HRV_trend, WEED_z] em que 2 de 3 dimensões eram GLOBAIS e
-    # idênticas entre modalidades, dominando o trace → κ_Run ≈ κ_Ski ≈ κ_Bike
-    # (correlação medida = 1.000), tornando os κ modais informativamente falsos.
-    # Mantém-se apenas o κ GLOBAL (acima), que é o que o paper define.
-    # NB: tab_pmc e tab_fmt_tensor referenciam FMT_kappa_{mod} apenas nas listas
-    #     de download CSV, já auto-filtradas por [c for c in ... if c in cols],
-    #     pelo que a ausência destas colunas não quebra nada.
+    # Per-modality 3×3: [CTLγ_mod, HRV_trend, WEED_z] — com imputação rolling
+    for _mod in ['Bike', 'Row', 'Ski', 'Run']:
+        _ctlg_col = f'CTLg_{_mod}'
+        if _ctlg_col not in ld.columns or ld[_ctlg_col].notna().sum() < 20:
+            continue
+        _dims_mod = [_impute_rolling(ld[_ctlg_col].values)]
+        if 'HRV_trend' in ld.columns and ld['HRV_trend'].notna().sum() >= 20:
+            _dims_mod.append(_impute_rolling(ld['HRV_trend'].values))
+        if 'WEED_z' in ld.columns and ld['WEED_z'].notna().sum() >= 20:
+            _dims_mod.append(_impute_rolling(ld['WEED_z'].values))
+        if len(_dims_mod) >= 2:
+            ld[f'FMT_kappa_{_mod}'] = _compute_kappa_kalman(_dims_mod, _fmt_w)
 
     if hrv_trend_arr is not None:
         ld['HRV_trend'] = hrv_trend_arr
@@ -1757,8 +1731,20 @@ def preproc_ativ(df):
     # [3] Filtrar tipos válidos
     if 'type' in df.columns: df = df[df['type'].isin(VALID_TYPES)]
     # [4] Z-score picos icu_eftp e AllWorkFTP (threshold=3.5, igual ao original)
-    if 'icu_eftp'    in df.columns: df['icu_eftp']    = remove_zscore(df['icu_eftp'],    3.5)
-    if 'AllWorkFTP'  in df.columns: df['AllWorkFTP']  = remove_zscore(df['AllWorkFTP'],  3.5)
+    #     CORRIGIDO: o z-score é calculado POR MODALIDADE, não misturando todas.
+    #     Antes, o eFTP de Run (~200W) era misturado com Bike (~270W), distorcendo
+    #     a distribuição e removendo valores válidos de modalidades minoritárias
+    #     (ex: Run, que só tem power desde meados de 2025).
+    if 'type' in df.columns and 'icu_eftp' in df.columns:
+        df['icu_eftp'] = df.groupby('type')['icu_eftp'].transform(
+            lambda s: remove_zscore(s, 3.5))
+    elif 'icu_eftp' in df.columns:
+        df['icu_eftp'] = remove_zscore(df['icu_eftp'], 3.5)
+    if 'type' in df.columns and 'AllWorkFTP' in df.columns:
+        df['AllWorkFTP'] = df.groupby('type')['AllWorkFTP'].transform(
+            lambda s: remove_zscore(s, 3.5))
+    elif 'AllWorkFTP' in df.columns:
+        df['AllWorkFTP'] = remove_zscore(df['AllWorkFTP'], 3.5)
     # [5] Zeros → NaN (rpe=0 também é inválido — sem esforço não é sessão)
     df = remove_zeros(df, ['moving_time', 'icu_eftp', 'AllWorkFTP', 'rpe'])
     # [6] Remover duração ≤ 60s
