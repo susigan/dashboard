@@ -15,8 +15,17 @@ sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))
 
 warnings.filterwarnings('ignore')
 
+
+@st.cache_data(show_spinner="A estimar parametros K1K2T1T2 (Bayesian NLSS)...", ttl=7200)
+def _cached_nlss(_key_da, _key_wc, _mod, da_arg, wc_arg):
+    """Wrapper cacheado do calcular_nlss (definido ao nivel do modulo para evitar
+    problemas de tokenizacao do inspect.getsource em docstrings com Unicode)."""
+    from utils.data import calcular_nlss
+    return calcular_nlss(da_arg, df_wellness=wc_arg)
+
+
 def _interp_gamma(gv, rv, mod):
-    """Interpreta γ e R² para uma modalidade específica."""
+    """Interpreta gamma e R2 para uma modalidade específica."""
     # Memory depth label
     if gv < 0.20:
         mem_lbl  = "Muito longa (meses)"
@@ -183,7 +192,7 @@ def tab_pmc(da, wc=None):
     # Usa calcular_series_carga para fitting de γ_perf (icu_pm_cp) e γ_rec (HRV)
     # O bloco CTL/ATL/TSB acima é mantido para compatibilidade e velocidade.
     # O FTLM fraccionário é computado separadamente e adicionado a ld.
-    @st.cache_data(show_spinner="A calcular FTLM fraccionário (γ dual)...", ttl=3600)
+    @st.cache_data(show_spinner="A calcular FTLM fraccionario (gamma dual)...", ttl=3600)
     def _cached_csc(_da_hash, _wc_hash, da, wc_arg):
         # _da_hash and _wc_hash are used only as cache keys (not computed again)
         return calcular_series_carga(da, df_wellness=wc_arg, ate_hoje=True)
@@ -584,11 +593,6 @@ O **Índice Alostático** mede se o atleta está a adaptar-se (homeostasia posit
 ou a acumular sobrecarga não compensada (allostatic overload), comparando
 6 dimensões fisiológicas entre dois períodos configuráveis.
         """)
-
-    @st.cache_data(show_spinner="A estimar K₁K₂T₁T₂ (Bayesian NLSS)...", ttl=7200)
-    def _cached_nlss(_key_da, _key_wc, _mod, da_arg, wc_arg):
-        from utils.data import calcular_nlss
-        return calcular_nlss(da_arg, df_wellness=wc_arg)
 
     _nlss_key_da = (str(da_full['Data'].max()) if 'Data' in da_full.columns else '', len(da_full))
     _nlss_key_wc = (str(wc['Data'].max()) if wc is not None and 'Data' in wc.columns else '',
