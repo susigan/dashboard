@@ -2780,3 +2780,240 @@ def fingerprint_evolucao(sig_hrv, sig_train, freq='6M', top_vars=4):
         top_por_bloco[rot] = [t[0] for t in top]
 
     return {'tabela': pd.DataFrame(rows), 'top_por_bloco': top_por_bloco, 'freq': freq}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# (a) CHANGEPOINT — deteta automaticamente as datas onde o HRV mudou de regime
+# ══════════════════════════════════════════════════════════════════════════════
+
+def detectar_changepoints(sig_hrv, min_seg=30, max_cps=6, penalty=1.0):
+    """
+    Deteta pontos de mudança (changepoints) na série de HRV usando binary
+    segmentation com estatística CUSUM sobre a média. Encontra automaticamente
+    as datas onde o nível médio do HRV mudou de regime — sem blocos fixos.
+
+    min_seg : tamanho mínimo de um segmento (dias)
+    max_cps : máximo de changepoints a detectar
+    penalty : quanto maior, menos changepoints (mais conservador)
+
+    Devolve dict:
+      {'changepoints': [{data, hrv_antes, hrv_depois, delta, direcao}],
+       'n_segmentos': int, 'serie': DataFrame(Data, hrv, segmento)}
+    """
+    df = sig_hrv[['Data', 'hrv']].dropna(subset=['hrv']).copy()
+    df['Data'] = pd.to_datetime(df['Data'])
+    df = df.sort_values('Data').reset_index(drop=True)
+    n = len(df)
+    if n < 2 * min_seg:
+        return {'changepoints': [], 'n_segmentos': 1, 'serie': df}
+
+    x = df['hrv'].values.astype(float)
+
+    def _cusum_split(lo, hi):
+        """Encontra o melhor ponto de corte no segmento [lo,hi) via CUSUM."""
+        seg = x[lo:hi]
+        m = len(seg)
+        if m < 2 * min_seg:
+            return None, 0.0
+        mean_all = seg.mean()
+        # soma cumulativa dos desvios
+        cs = np.cumsum(seg - mean_all)
+        # o ponto de maior |cusum| é o candidato a changepoint
+        idx = np.argmax(np.abs(cs))
+        if idx < min_seg or idx > m - min_seg:
+            return None, 0.0
+        # ganho = redução na soma de quadrados ao dividir
+        left, right = seg[:idx], seg[idx:]
+        sse_before = np.sum((seg - mean_all) ** 2)
+        sse_after = np.sum((left - left.mean()) ** 2) + np.sum((right - right.mean()) ** 2)
+        gain = sse_before - sse_after
+        return lo + idx, gain
+
+    # Binary segmentation
+    cps = []
+    segments = [(0, n)]
+    while len(cps) < max_cps:
+        best_gain, best_cp, best_seg = 0, None, None
+        for (lo, hi) in segments:
+            cp, gain = _cusum_split(lo, hi)
+            if cp is not None and gain > best_gain:
+                best_gain, best_cp, best_seg = gain, cp, (lo, hi)
+        if best_cp is None:
+            break
+        # critério de paragem: ganho tem de superar penalty × variância × min_seg
+        thr = penalty * np.var(x) * min_seg
+        if best_gain < thr:
+            break
+        cps.append(best_cp)
+        lo, hi = best_seg
+        segments.remove((lo, hi))
+        segments.extend([(lo, best_cp), (best_cp, hi)])
+        segments.sort()
+
+    cps = sorted(cps)
+    # Construir resultado
+    df['segmento'] = 0
+    for i, cp in enumerate(cps):
+        df.loc[cp:, 'segmento'] = i + 1
+
+    changepoints = []
+    bounds = [0] + cps + [n]
+    for i, cp in enumerate(cps):
+        antes = x[bounds[i]:cp]
+        depois = x[cp:bounds[i + 2]]
+        if len(antes) > 0 and len(depois) > 0:
+            ma, md = antes.mean(), depois.mean()
+            changepoints.append({
+                'data': df.loc[cp, 'Data'],
+                'hrv_antes': round(float(ma), 1),
+                'hrv_depois': round(float(md), 1),
+                'delta': round(float(md - ma), 1),
+                'direcao': '📈 subiu' if md > ma else '📉 desceu',
+            })
+
+    return {'changepoints': changepoints, 'n_segmentos': len(cps) + 1, 'serie': df}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# (b) AUTOCORRELAÇÃO & ESTACIONARIDADE — o HRV tem memória? volta à média?
+# ══════════════════════════════════════════════════════════════════════════════
+
+def analise_autocorrelacao(sig_hrv, max_lag=14):
+    """
+    Analisa a estrutura temporal do HRV:
+      • Autocorrelação (ACF): quanto o HRV de hoje depende dos dias anteriores.
+      • Persistência: lag até a autocorrelação cair abaixo de 0.2 (memória curta/longa).
+      • Estacionaridade (teste ADF, se statsmodels disponível): a série volta à
+        média ou tem tendência/deriva?
+
+    Devolve dict:
+      {'acf': DataFrame(lag, r), 'persistencia': int, 'adf': {...}|None,
+       'interpretacao': str}
+    """
+    s = sig_hrv[['Data', 'hrv']].dropna(subset=['hrv']).copy()
+    s['Data'] = pd.to_datetime(s['Data'])
+    s = s.sort_values('Data').set_index('Data')['hrv'].asfreq('D')
+    s = s.interpolate(limit=3).dropna()
+    if len(s) < 30:
+        return {'acf': pd.DataFrame(), 'persistencia': None, 'adf': None,
+                'interpretacao': 'Série demasiado curta.'}
+
+    # ACF manual
+    x = s.values
+    x = x - x.mean()
+    var = np.sum(x ** 2)
+    acf_rows = []
+    persistencia = None
+    for lag in range(0, max_lag + 1):
+        if lag == 0:
+            r = 1.0
+        else:
+            r = np.sum(x[:-lag] * x[lag:]) / var if var > 0 else 0.0
+        acf_rows.append({'lag': lag, 'r': round(float(r), 3)})
+        if persistencia is None and lag > 0 and abs(r) < 0.2:
+            persistencia = lag
+
+    # Teste ADF de estacionaridade
+    adf = None
+    try:
+        from statsmodels.tsa.stattools import adfuller
+        res = adfuller(s.values, autolag='AIC')
+        adf = {'estatistica': round(float(res[0]), 3), 'p': round(float(res[1]), 4),
+               'estacionaria': res[1] < 0.05}
+    except Exception:
+        adf = None
+
+    # Interpretação
+    if persistencia is None:
+        persistencia = max_lag
+    if persistencia <= 2:
+        mem = "memória curta — o teu HRV volta rápido à média, cada dia é quase independente"
+    elif persistencia <= 5:
+        mem = "memória média — o HRV de hoje influencia os próximos ~dias"
+    else:
+        mem = "memória longa — tens tendências de HRV que persistem por mais de uma semana"
+    interp = f"Persistência de {persistencia} dias: {mem}."
+    if adf:
+        if adf['estacionaria']:
+            interp += " A série é estacionária (volta à média, sem deriva de longo prazo)."
+        else:
+            interp += " A série NÃO é estacionária (tem tendência/deriva ao longo do tempo)."
+
+    return {'acf': pd.DataFrame(acf_rows), 'persistencia': persistencia,
+            'adf': adf, 'interpretacao': interp}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# (c) CORRELAÇÃO PARCIAL — o efeito ÚNICO de cada variável, controlando as outras
+# ══════════════════════════════════════════════════════════════════════════════
+
+def correlacao_parcial(sig_hrv, sig_train, lag=14, variaveis=None):
+    """
+    Correlação parcial de cada variável de treino com o HRV, controlando pelas
+    OUTRAS variáveis. Responde: 'qual o efeito ÚNICO do TSB, separado do ATL?'.
+
+    Compara a correlação simples (bivariada) com a parcial — se a parcial for
+    muito menor, o efeito daquela variável era na verdade partilhado com outras.
+
+    lag : desfasamento aplicado às variáveis de treino (default 14, o teu lag do ATL)
+
+    Devolve dict:
+      {'tabela': DataFrame(variavel, r_simples, r_parcial, interpretacao), 'n': int}
+    """
+    if variaveis is None:
+        variaveis = ['atl', 'ctl', 'tsb', 'load', 'mono_7d', 'strain_7d', 'pct_z3']
+    variaveis = [v for v in variaveis if v in sig_train.columns]
+    if len(variaveis) < 2:
+        return {'tabela': pd.DataFrame(), 'n': 0}
+
+    m = pd.merge(sig_hrv[['Data', 'hrv']], sig_train, on='Data', how='inner').sort_values('Data')
+    m['Data'] = pd.to_datetime(m['Data'])
+    # Aplicar lag às variáveis de treino
+    for v in variaveis:
+        m[v] = m[v].shift(lag)
+    m = m.dropna(subset=['hrv'] + variaveis)
+    if len(m) < 30:
+        return {'tabela': pd.DataFrame(), 'n': len(m)}
+
+    Y = m['hrv'].values
+    X = m[variaveis].values
+
+    # Correlação simples de cada var com HRV
+    def _corr(a, b):
+        if np.std(a) < 1e-9 or np.std(b) < 1e-9:
+            return 0.0
+        return float(np.corrcoef(a, b)[0, 1])
+
+    r_simples = {v: _corr(m[v].values, Y) for v in variaveis}
+
+    # Correlação parcial via regressão: resíduos de v ~ outras, e HRV ~ outras
+    from numpy.linalg import lstsq
+    rows = []
+    for i, v in enumerate(variaveis):
+        outras = [j for j in range(len(variaveis)) if j != i]
+        Xo = np.column_stack([np.ones(len(m))] + [X[:, j] for j in outras])
+        # resíduos de v controlando outras
+        bv, *_ = lstsq(Xo, X[:, i], rcond=None)
+        res_v = X[:, i] - Xo @ bv
+        # resíduos de HRV controlando outras
+        by, *_ = lstsq(Xo, Y, rcond=None)
+        res_y = Y - Xo @ by
+        r_parc = _corr(res_v, res_y)
+        rs = r_simples[v]
+        # Interpretação
+        if abs(r_parc) < 0.05:
+            interp = "efeito desaparece — era partilhado com outras variáveis"
+        elif abs(r_parc) < abs(rs) * 0.6:
+            interp = "efeito reduz muito — grande parte era de outras variáveis"
+        else:
+            interp = "efeito mantém-se — tem contribuição própria"
+        rows.append({
+            'Variável': v,
+            'r simples': round(rs, 3),
+            'r parcial': round(r_parc, 3),
+            'Interpretação': interp,
+            '_abs': abs(r_parc),
+        })
+
+    df = pd.DataFrame(rows).sort_values('_abs', ascending=False).drop(columns=['_abs'])
+    return {'tabela': df.reset_index(drop=True), 'n': len(m), 'lag': lag}
