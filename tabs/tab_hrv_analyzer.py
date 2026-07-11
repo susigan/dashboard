@@ -1919,9 +1919,11 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                 # ── Fingerprint por bloco — a receita mudou? ─────────────────
                 st.markdown("---")
                 st.markdown("##### 🧬 A 'receita para HRV alto' mudou ao longo do tempo?")
-                st.caption("Mostra as variáveis mais discriminantes (diferença % antes do HRV "
-                           "alto vs baixo) em cada período. Se as variáveis-chave mudam, a tua "
-                           "receita evoluiu.")
+                st.caption("Mostra as variáveis mais discriminantes em cada período — a "
+                           "diferença entre o valor antes do HRV alto vs baixo, medida em "
+                           "**desvios-padrão** (robusta a variáveis que oscilam à volta de "
+                           "zero, como o TSB). Valores maiores = mais discriminante. Se as "
+                           "variáveis-chave mudam entre períodos, a tua receita evoluiu.")
                 try:
                     _fpe = _hra.fingerprint_evolucao(sig_hrv, sig_train, freq=_ev_freq)
                     if not _fpe['tabela'].empty:
