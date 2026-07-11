@@ -180,6 +180,16 @@ _EXPLICACOES = {
         "**Intenção:** ver como **evoluis ao longo do tempo** — a tua recuperação ficou mais "
         "rápida? A relação carga↔HRV mudou? O FTLM continua a ser o teu melhor modelo? "
         "Responde a 'o meu padrão de 2024 é diferente do de 2025?' com rigor estatístico."),
+    'estatistica_avancada': (
+        "**O que faz:** três análises estatísticas complementares:\n\n"
+        "• **Changepoint** — deteta automaticamente as datas exactas onde o teu HRV mudou de "
+        "nível (sem blocos fixos como na Evolução).\n\n"
+        "• **Autocorrelação** — mede se o teu HRV tem memória (o de hoje depende dos dias "
+        "anteriores?) e se volta à média ou tem deriva (estacionaridade).\n\n"
+        "• **Correlação parcial** — o efeito ÚNICO de cada variável no HRV, controlando as "
+        "outras. Separa o que é mesmo o TSB do que é só ATL disfarçado.\n\n"
+        "**Intenção:** rigor estatístico extra — perceber a estrutura temporal do teu HRV e "
+        "quais variáveis têm efeito próprio vs partilhado."),
     'autorunner': (
         "**O que faz:** corre todas as análises acima para 7 períodos (60d a todo histórico) "
         "testando muitas combinações de parâmetros, e encontra os valores óptimos de cada.\n\n"
@@ -1348,11 +1358,6 @@ _normalized_mi = _hra._normalized_mi
 _lag_correlations_advanced = _hra._lag_correlations_advanced
 
 
-# ── L. Directional Analysis ───────────────────────────────────────────────────
-
-_directional_analysis = _hra._directional_analysis
-
-
 # ── M. Dose-Response Curves (LOWESS) ─────────────────────────────────────────
 
 _dose_response = _hra._dose_response
@@ -1395,11 +1400,6 @@ def _cx_lag_advanced(sig_hrv, sig_train, hrv_var='hrv', max_lag=28, train_vars=N
 
 def _cx_dose_response(sig_hrv, sig_train, x_var, y_var='hrv', lag=0):
     return _hra._dose_response(sig_hrv, sig_train, x_var, y_var=y_var, lag=lag)
-
-# _directional recebe uma lista de padrões (dicts) — chamamos direto (sem cache)
-# para evitar problemas de hash; a função é rápida.
-def _cx_directional(sig_hrv, sig_train, patterns, outcome_lag=5):
-    return _hra._directional_analysis(sig_hrv, sig_train, patterns, outcome_lag=outcome_lag)
 
 def _cx_cluster_weeks(sig_hrv, sig_train, n_clusters=4):
     return _hra._cluster_weeks(sig_hrv, sig_train, n_clusters=n_clusters)
@@ -1462,6 +1462,7 @@ def tab_hrv_advanced(sig_hrv: pd.DataFrame,
         "🔄 Transições",
         "⚖️ Modelos de Carga",
         "📅 Evolução",
+        "🔬 Estatística Avançada",
     ])
 
     # ── ARI ──────────────────────────────────────────────────────────────────
@@ -1940,6 +1941,99 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                     st.caption(f"Fingerprint por período indisponível: {_e_fpe}")
         except Exception as _e_ev:
             st.warning(f"Análise de evolução indisponível: {_e_ev}")
+
+    # ── Estatística Avançada — changepoint, autocorrelação, correlação parcial ─
+    with _adv_tabs[6]:
+        st.markdown("#### 🔬 Estatística Avançada")
+        _dropdown_explica('estatistica_avancada')
+
+        # (a) Changepoint
+        st.markdown("##### 📍 Changepoints — quando o teu HRV mudou de nível")
+        st.caption("Deteta automaticamente as datas onde a média do HRV mudou de regime.")
+        try:
+            _cp = _hra.detectar_changepoints(sig_hrv)
+            if _cp['changepoints']:
+                _cp_rows = [{
+                    'Data': c['data'].strftime('%Y-%m-%d'),
+                    'HRV antes': c['hrv_antes'],
+                    'HRV depois': c['hrv_depois'],
+                    'Δ': c['delta'],
+                    'Direção': c['direcao'],
+                } for c in _cp['changepoints']]
+                st.dataframe(pd.DataFrame(_cp_rows), hide_index=True, use_container_width=True)
+                # Gráfico da série com os changepoints marcados
+                _serie = _cp['serie']
+                _fig_cp = go.Figure()
+                _fig_cp.add_trace(go.Scatter(
+                    x=_serie['Data'], y=_serie['hrv'], mode='lines',
+                    line=dict(color='#cccccc', width=1), name='HRV'))
+                # média por segmento
+                for _seg in _serie['segmento'].unique():
+                    _sub = _serie[_serie['segmento'] == _seg]
+                    _fig_cp.add_trace(go.Scatter(
+                        x=_sub['Data'], y=[_sub['hrv'].mean()] * len(_sub),
+                        mode='lines', line=dict(color=_C['primary'], width=2.5),
+                        showlegend=False))
+                for c in _cp['changepoints']:
+                    _fig_cp.add_vline(x=c['data'], line_color=_C['hrv_dn'],
+                                      line_width=1.5, line_dash='dash')
+                _fig_cp.update_layout(
+                    paper_bgcolor='white', plot_bgcolor='white',
+                    font=dict(color='#111', size=11), height=300,
+                    margin=dict(t=20, b=40, l=50, r=20),
+                    xaxis_title=None, yaxis_title="HRV (rMSSD)")
+                st.plotly_chart(_fig_cp, use_container_width=True, config=MC,
+                                key='changepoint_chart')
+                st.caption(f"{_cp['n_segmentos']} regimes distintos detectados. As linhas "
+                           "tracejadas marcam onde o teu HRV mudou de nível médio.")
+            else:
+                st.info("Nenhuma mudança de nível significativa detectada — o teu HRV manteve "
+                        "um nível médio estável ao longo do período.")
+        except Exception as _e_cp:
+            st.caption(f"Changepoint indisponível: {_e_cp}")
+
+        # (b) Autocorrelação
+        st.markdown("---")
+        st.markdown("##### 🔁 Autocorrelação & Estacionaridade")
+        st.caption("O teu HRV de hoje depende dos dias anteriores? Volta à média ou tem deriva?")
+        try:
+            _ac = _hra.analise_autocorrelacao(sig_hrv)
+            if not _ac['acf'].empty:
+                _fig_ac = go.Figure()
+                _fig_ac.add_trace(go.Bar(
+                    x=_ac['acf']['lag'], y=_ac['acf']['r'], marker_color=_C['primary']))
+                _fig_ac.add_hline(y=0.2, line_color=_C['hrv_dn'], line_width=1, line_dash='dash')
+                _fig_ac.add_hline(y=-0.2, line_color=_C['hrv_dn'], line_width=1, line_dash='dash')
+                _fig_ac.update_layout(
+                    paper_bgcolor='white', plot_bgcolor='white',
+                    font=dict(color='#111', size=11), height=280,
+                    margin=dict(t=20, b=40, l=50, r=20),
+                    xaxis_title="Lag (dias)", yaxis_title="Autocorrelação")
+                st.plotly_chart(_fig_ac, use_container_width=True, config=MC,
+                                key='acf_chart')
+                st.info(_ac['interpretacao'])
+            else:
+                st.caption("Sem dados suficientes.")
+        except Exception as _e_ac:
+            st.caption(f"Autocorrelação indisponível: {_e_ac}")
+
+        # (c) Correlação parcial
+        st.markdown("---")
+        st.markdown("##### 🎯 Correlação parcial — o efeito único de cada variável")
+        st.caption("Separa o efeito próprio de cada variável do que é partilhado com as outras.")
+        _pc_lag = st.slider("Lag (dias)", 0, 21, 14, 1, key="parcial_lag")
+        try:
+            _pc = _hra.correlacao_parcial(sig_hrv, sig_train, lag=_pc_lag)
+            if not _pc['tabela'].empty:
+                st.dataframe(_pc['tabela'], hide_index=True, use_container_width=True)
+                st.caption("**r simples** = correlação bruta (uma variável de cada vez). "
+                           "**r parcial** = efeito único, controlando as outras. Se a parcial "
+                           "for muito menor que a simples, o efeito era partilhado — não era "
+                           "próprio daquela variável.")
+            else:
+                st.caption("Sem dados suficientes para a correlação parcial.")
+        except Exception as _e_pc:
+            st.caption(f"Correlação parcial indisponível: {_e_pc}")
 
     # ════════════════════════════════════════════════════════════════════════
     # AUTO-RUNNER — optimização automática de todos os parâmetros
