@@ -553,6 +553,41 @@ def tab_eftp(da_filt: pd.DataFrame, mods_sel: list, ac_full: pd.DataFrame,
         )
         return
 
+    # ── Diagnóstico: eFTP vs atividades (deteta dados recentes em falta) ──────
+    # Compara, por modalidade, a última atividade vs a última com eFTP válido.
+    # Se houver um desfasamento grande, avisa (ex: Run com atividades até 2026
+    # mas eFTP só até Set/2025).
+    try:
+        _avisos_eftp = []
+        _ac_diag = ac_full.copy()
+        _ac_diag[col_date] = pd.to_datetime(_ac_diag[col_date], errors="coerce")
+        for _md in ["Bike", "Row", "Ski", "Run"]:
+            _sub_all = _ac_diag[_ac_diag[col_mod] == _md]
+            if _sub_all.empty:
+                continue
+            _ult_ativ = _sub_all[col_date].max()
+            _sub_eftp = _sub_all[_sub_all[col_eftp].notna()]
+            if _sub_eftp.empty:
+                continue
+            _ult_eftp = _sub_eftp[col_date].max()
+            _gap_dias = (_ult_ativ - _ult_eftp).days
+            # Avisar se há >30 dias entre a última atividade e o último eFTP
+            if _gap_dias > 30:
+                _avisos_eftp.append(
+                    f"**{_md}**: última atividade em {_ult_ativ.strftime('%d/%m/%Y')}, "
+                    f"mas último eFTP válido em {_ult_eftp.strftime('%d/%m/%Y')} "
+                    f"({_gap_dias} dias sem eFTP)")
+        if _avisos_eftp:
+            st.warning(
+                "⚠️ **eFTP em falta em atividades recentes** — algumas modalidades têm "
+                "atividades sem eFTP registado (o gráfico/tabela param no último eFTP válido):\n\n"
+                + "\n\n".join(f"- {a}" for a in _avisos_eftp)
+                + "\n\nIsto costuma acontecer quando o Intervals.icu não estimou eFTP para "
+                  "essas sessões (ex: corridas sem dados de potência, ou power introduzido "
+                  "só recentemente). Não é um erro do dashboard — é a ausência do dado na fonte.")
+    except Exception:
+        pass
+
     # ══════════════════════════════════════════════════════════════════════════
     # PROJECÇÃO CP 28 DIAS
     # β adimensional: OLS(Δln(eFTP) ~ CTLγ_norm) — escala correcta, sem absurdos
