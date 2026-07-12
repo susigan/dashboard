@@ -17,8 +17,8 @@ warnings.filterwarnings('ignore')
 def tab_ctl_kj(da_full):
     st.header("⚗️ CTL vs KJ — Coeficiente de Carga")
     st.caption(
-        "Modelo comportamental: TRIMP ~ KJ × tipo. "
-        "kJ total (icu_joules), sem desconto de warm-up. IF removido (colinear com tipo). "
+        "Modelo comportamental: TRIMP ~ KJ_work × tipo. "
+        "Bike: corrige warm-up (30min). IF removido (colinear com tipo). "
         "Densidade = IF×RPE. Eficiência = TRIMP/KJ rolling.")
 
     if da_full is None or len(da_full) == 0:
@@ -61,12 +61,10 @@ def tab_ctl_kj(da_full):
         df['IF'] = np.nan
     has_if = df['IF'].notna().sum() > len(df) * 0.2
 
-    # ── kJ TOTAL (sem desconto de warm-up — decisão de projecto) ──────────────
-    # work_fraction mantido = 1.0 para todas as modalidades (compat. downstream).
-    # KJ_work passa a ser idêntico ao KJ total, alinhado com tab_corporal /
-    # tab_correlacoes / PLT que usam sempre o kJ total (icu_joules/1000).
-    df['work_fraction'] = 1.0
-    df['KJ_work'] = df['KJ']
+    # ── Bike: correcção warm-up ───────────────────────────────────────────────
+    df['work_fraction'] = ((df['moving_time'] - 1800) / df['moving_time']).clip(0.1, 1.0)
+    df.loc[df['type'] != 'Bike', 'work_fraction'] = 1.0
+    df['KJ_work'] = df['KJ'] * df['work_fraction']
 
     # ── Densidade = IF × RPE (proxy: tempo em alta intensidade) ──────────────
     if has_if:
@@ -140,25 +138,20 @@ def tab_ctl_kj(da_full):
             dm = df[df['type'] == mod].copy()
             kj_col = 'KJ_work' if mod == 'Bike' else 'KJ'
 
-            # RUN: modelo separado dur×RPE
-            if mod == 'Run':
-                dm_run = dm.dropna(subset=['rpe_n','dur_min'])
-                if len(dm_run) >= 5:
-                    x = dm_run['dur_min'].values
-                    y = (dm_run['dur_min'] * dm_run['rpe_n']).values
-                    sl,ic,r,p,se = _scipy_stats.linregress(x, y)
+            # RUN: desde 2025 tem power (kJ real), por isso usa o mesmo modelo kJ
+            # das outras modalidades. As corridas antigas sem power têm KJ=NaN e
+            # são filtradas pelo dropna(subset=[kj_col]) abaixo — auto-filtrante.
+            dm = dm.dropna(subset=[kj_col,'TRIMP_corr','tipo','densidade'])
+            if len(dm) < 8:
+                if mod == 'Run':
+                    # Run sem dados kJ suficientes (power só recente): informar
                     rows_coef.append({
-                        'Modalidade':'Run','Tipo':'dur×RPE','Modelo':'dur→TRIMP',
-                        'N':len(dm_run),'dTRIMP/dKJ':'—','coef_dens':'—',
-                        'R²':round(r**2,3),'RMSE':round(np.sqrt(np.mean(((ic+sl*x)-y)**2)),1),
-                        'Bias':round(np.mean((ic+sl*x)-y),2),
-                        'KJ médio':'—','TRIMP médio':round(y.mean(),1),
-                        'eff médio':'—',
+                        'Modalidade':'Run','Tipo':'kJ (power 2025+)','Modelo':'kJ→TRIMP',
+                        'N':len(dm),'dTRIMP/dKJ':'poucos dados','coef_dens':'—',
+                        'R²':'—','RMSE':'—','Bias':'—',
+                        'KJ médio':'—','TRIMP médio':'—','eff médio':'—',
                     })
                 continue
-
-            dm = dm.dropna(subset=[kj_col,'TRIMP_corr','tipo','densidade'])
-            if len(dm) < 8: continue
 
             for tipo_seg in ['todos'] + list(dm['tipo'].dropna().unique()):
                 ds = dm if tipo_seg == 'todos' else dm[dm['tipo']==tipo_seg]
@@ -334,8 +327,8 @@ def tab_ctl_kj(da_full):
             dm_full = df[df['type']==mod].copy()
             kj_col  = 'KJ_work' if mod == 'Bike' else 'KJ'
 
-            if mod == 'Run':
-                dm_full['TRIMP_pred_m'] = dm_full['dur_min'] * dm_full['rpe_n'].fillna(5)
+            if False:  # Run agora usa o mesmo modelo kJ das outras (power desde 2025)
+                pass
             else:
                 # Seleccionar janela de calibração
                 if _usar_rolling:
