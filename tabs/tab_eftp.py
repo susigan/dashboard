@@ -28,7 +28,58 @@ _SEM = {"Bike": 3.92, "Row": 5.75, "Ski": 4.23, "Run": 10.27}
 _MDC = {m: round(1.96 * np.sqrt(2) * s, 1) for m, s in _SEM.items()}
 
 # Run tem MDC=28.5W sobre média 140W (20.3%) → praticamente não interpretável
+# NOTA: estes valores hardcoded do Run são de dados PRÉ-2025 (sem power). Desde
+# meados de 2025 o Run tem power real — o SEM/MDC é recalculado dinamicamente
+# pela função _sem_mdc_dinamico() abaixo, que substitui estes valores quando há
+# dados suficientes com power.
 _MDC_PCT = {"Bike": 6.4, "Row": 8.2, "Ski": 7.4, "Run": 20.3}
+
+
+def _sem_mdc_dinamico(ac_full, mod, col_eftp=None, col_date=None, col_mod=None,
+                      min_n=15):
+    """
+    Recalcula o SEM (Standard Error of Measurement) e o MDC de uma modalidade a
+    partir dos dados REAIS de eFTP, usando o mesmo método das constantes: std das
+    variações entre medições consecutivas em janelas ≤14 dias (ruído do estimador).
+
+    Útil para o Run, cujo SEM hardcoded (10.27) vem de dados pré-2025 sem power.
+    Com power real desde 2025, o eFTP é mais estável e o MDC verdadeiro é menor.
+
+    Devolve (sem, mdc, mdc_pct, n_usado) ou None se não houver dados suficientes.
+    """
+    col_mod  = col_mod  or next((c for c in ["type","modality","sport"] if c in ac_full.columns), None)
+    col_eftp = col_eftp or next((c for c in ["icu_eftp","eFTP","eftp","ftp"] if c in ac_full.columns), None)
+    col_date = col_date or next((c for c in ["date","Data","data","Date"] if c in ac_full.columns), None)
+    if not (col_mod and col_eftp and col_date):
+        return None
+
+    sub = ac_full[ac_full[col_mod] == mod][[col_date, col_eftp]].copy()
+    sub[col_date] = pd.to_datetime(sub[col_date], errors="coerce")
+    sub[col_eftp] = pd.to_numeric(sub[col_eftp], errors="coerce")
+    sub = sub.dropna(subset=[col_date, col_eftp]).sort_values(col_date)
+    sub = sub[sub[col_eftp] > 0]
+    if len(sub) < min_n:
+        return None
+
+    # Variações entre medições consecutivas em janelas ≤14 dias
+    difs = []
+    _vals = sub[col_eftp].values
+    _dts  = sub[col_date].values
+    for i in range(1, len(sub)):
+        gap = (pd.Timestamp(_dts[i]) - pd.Timestamp(_dts[i-1])).days
+        if 0 < gap <= 14:
+            difs.append(_vals[i] - _vals[i-1])
+    if len(difs) < min_n:
+        return None
+
+    # SEM = std das diferenças / √2 (as diferenças combinam 2 medições)
+    sem = float(np.std(difs, ddof=1) / np.sqrt(2))
+    mdc = round(1.96 * np.sqrt(2) * sem, 1)
+    media = float(sub[col_eftp].median())
+    mdc_pct = round(mdc / media * 100, 1) if media > 0 else None
+    return sem, mdc, mdc_pct, len(difs)
+
+
 
 # Cores por modalidade (config.py)
 _CORES = {
@@ -186,9 +237,17 @@ def _diagnostico_texto(delta: float, ctl: float, kappa, z2_pct: float,
         causas.append("🔬 **Possível meseta homeostática** — estímulo familiar, sinalização mTOR/PGC-1α saturada")
         prescricoes.append("Mudar natureza do estímulo: novo tipo de sessão, nova intensidade-alvo, bloco neuromuscular")
 
-    # Run — aviso especial
+    # Run — aviso especial (MDC dinâmico, recalculado com power quando disponível)
     if mod == "Run":
-        causas.insert(0, f"⚠️ **Nota Run**: MDC={mdc:.0f}W sobre média ~140W (20%). eFTP Run tem baixa confiança — requer teste controlado")
+        _pct_run = _MDC_PCT.get("Run", 20)
+        if _pct_run >= 12:
+            causas.insert(0, f"⚠️ **Nota Run**: MDC={mdc:.0f}W ({_pct_run:.0f}% do eFTP). "
+                             "Variações abaixo deste limiar são ruído — para mudanças pequenas, "
+                             "confirma com teste controlado.")
+        else:
+            causas.insert(0, f"✅ **Nota Run**: MDC={mdc:.0f}W ({_pct_run:.0f}% do eFTP) — "
+                             "com power real, o eFTP de Run é agora suficientemente fiável para "
+                             "detectar mudanças reais.")
 
     diag_curto = causas[0].split("**")[1] if "**" in causas[0] else causas[0]
     diag_detalhe = "\n\n".join([f"**Causa:** {c}\n\n**Prescrição:** {p}"
@@ -412,14 +471,22 @@ def _painel_diagnostico(mod: str, blocos: pd.DataFrame, ld=None):
     </div>
     """, unsafe_allow_html=True)
 
-    # Aviso especial Run
+    # Aviso especial Run (dinâmico — MDC recalculado com power quando disponível)
     if mod == "Run":
-        st.warning(
-            f"⚠️ **Run — baixa confiabilidade do eFTP estimado.** "
-            f"MDC = {mdc:.0f}W sobre média histórica ~140W ({mdc_pct:.0f}%). "
-            f"Qualquer variação abaixo de {mdc:.0f}W é estatisticamente ruído. "
-            f"Recomendado: teste controlado (TT de 20-30 min) para medir eFTP real."
-        )
+        if mdc_pct >= 12:
+            st.warning(
+                f"⚠️ **Run — confiabilidade moderada do eFTP.** "
+                f"MDC = {mdc:.0f}W ({mdc_pct:.0f}% do eFTP). "
+                f"Variações abaixo de {mdc:.0f}W são estatisticamente ruído. "
+                f"Para mudanças pequenas, confirma com teste controlado (TT 20-30 min)."
+            )
+        else:
+            st.info(
+                f"ℹ️ **Run — eFTP com power (2025+).** "
+                f"MDC = {mdc:.0f}W ({mdc_pct:.0f}% do eFTP) — com dados de potência reais, "
+                f"o eFTP de Run é agora suficientemente estável para detectar mudanças acima "
+                f"de {mdc:.0f}W."
+            )
 
     if classif == "REAL" and delta > 0:
         st.success(
@@ -526,6 +593,30 @@ def tab_eftp(da_filt: pd.DataFrame, mods_sel: list, ac_full: pd.DataFrame,
     col_eftp = next((c for c in ["icu_eftp", "eFTP", "eftp", "ftp"] if c in ac_full.columns), None)
     col_date = next((c for c in ["date", "Data", "data", "Date"] if c in ac_full.columns), None)
 
+    # ── Recalcular SEM/MDC do Run a partir dos dados reais com power (2025+) ───
+    # O valor hardcoded (_SEM Run=10.27) vem de dados pré-2025 sem power. Agora
+    # que o Run tem power, recalculamos o ruído real do estimador. Guardamos a
+    # info para mostrar ao utilizador e atualizamos os dicionários globais.
+    _run_mdc_info = None
+    if col_mod and col_eftp and col_date:
+        try:
+            _din = _sem_mdc_dinamico(ac_full, "Run", col_eftp, col_date, col_mod)
+            if _din is not None:
+                _sem_r, _mdc_r, _mdc_pct_r, _n_r = _din
+                _run_mdc_info = {
+                    "sem_antigo": _SEM["Run"], "mdc_antigo": _MDC["Run"],
+                    "mdc_pct_antigo": _MDC_PCT["Run"],
+                    "sem_novo": round(_sem_r, 2), "mdc_novo": _mdc_r,
+                    "mdc_pct_novo": _mdc_pct_r, "n": _n_r,
+                }
+                # Atualizar dicionários globais (usados pelas funções auxiliares)
+                _SEM["Run"] = round(_sem_r, 2)
+                _MDC["Run"] = _mdc_r
+                if _mdc_pct_r is not None:
+                    _MDC_PCT["Run"] = _mdc_pct_r
+        except Exception:
+            pass
+
     if col_mod is None or col_eftp is None or col_date is None:
         st.warning(
             f"Colunas necessárias não encontradas em ac_full. "
@@ -587,6 +678,20 @@ def tab_eftp(da_filt: pd.DataFrame, mods_sel: list, ac_full: pd.DataFrame,
                   "só recentemente). Não é um erro do dashboard — é a ausência do dado na fonte.")
     except Exception:
         pass
+
+    # ── Info: MDC do Run recalculado dinamicamente (transparência) ────────────
+    if _run_mdc_info is not None:
+        _ri = _run_mdc_info
+        _melhorou = _ri["mdc_pct_novo"] is not None and _ri["mdc_pct_novo"] < _ri["mdc_pct_antigo"]
+        st.info(
+            f"ℹ️ **Run — MDC recalculado com dados de power (2025+).** "
+            f"O valor antigo ({_ri['mdc_antigo']:.0f}W / {_ri['mdc_pct_antigo']:.0f}%) vinha de "
+            f"estimativas pré-power. Com {_ri['n']} medições reais de power, o MDC actual é "
+            f"**{_ri['mdc_novo']:.0f}W ({_ri['mdc_pct_novo']:.0f}%)**"
+            + (" — mais fiável, o eFTP de Run com power é menos ruidoso do que se pensava."
+               if _melhorou else
+               " — o eFTP de Run continua a ter variabilidade considerável, interpreta com cautela.")
+        )
 
     # ══════════════════════════════════════════════════════════════════════════
     # PROJECÇÃO CP 28 DIAS
@@ -1531,9 +1636,10 @@ que representam ruído puro do estimador (sem mudança fisiológica real esperad
 - `|Δ| ≥ MDC/2` → **INCERTO** (sinal fraco, monitorizar)
 - `|Δ| < MDC/2` → **RUÍDO** (indistinguível de zero estatisticamente)
 
-**Nota Run:** MDC = {_MDC['Run']:.0f}W sobre média histórica ~140W ({_MDC_PCT['Run']:.0f}%).
-O eFTP estimado em Run tem muito maior variabilidade que as modalidades com potenciómetro.
-Para diagnóstico de Run, recomenda-se teste controlado (TT 20-30 min em condições fixas).
+**Nota Run:** MDC = {_MDC['Run']:.0f}W ({_MDC_PCT['Run']:.0f}% do eFTP), recalculado a partir
+dos dados de power (2025+). Desde a introdução do potenciómetro, o eFTP de Run tornou-se mais
+fiável; antes disso (estimativa sem power) a variabilidade era muito maior. Para mudanças
+pequenas, um teste controlado (TT 20-30 min) continua a ser o padrão-ouro.
 
 **Referências:**
 - Montero D & Lundby C (2017). Refuting the myth of non-response to exercise training. *J Physiol.*
