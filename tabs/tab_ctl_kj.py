@@ -222,7 +222,7 @@ def tab_ctl_kj(da_full):
             "↑ Subindo = fadiga acumulada (mesmo kJ custa mais). "
             "↓ Descendo = adaptação (mesmo kJ custa menos).")
 
-        mods_eff = [m for m in ['Bike','Row','Ski'] if m in df['type'].values]
+        mods_eff = [m for m in ['Bike','Row','Ski','Run'] if m in df['type'].values]
         if not mods_eff:
             st.info("Sem dados suficientes.")
         else:
