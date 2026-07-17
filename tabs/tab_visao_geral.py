@@ -148,20 +148,34 @@ def _painel_prontidao_autonomica(wc_full, dw):
                       "clara. Pode ser fadiga acumulada — vigia a evolução e confirma com a tua "
                       "sensação subjetiva antes de mudar o plano.")
     elif _pos_atual == 'acima':
-        if _rhr_dir == 'descendo':
+        if _rhr_dir == 'subindo':
+            # PERFIL 5 do texto: LnRMSSD e RHR AMBOS elevados = sinal complexo
+            _titulo = "❓ Sinal complexo — verificar antes de decidir (3+ dias)"
+            _cor = "#8e44ad"
+            _texto = ("Há 3+ dias o LnRMSSD está acima da banda SWC **e** o RHR também está acima "
+                      "da média de 30 dias. Quando ambos sobem em simultâneo, não é um padrão "
+                      "limpo de recuperação — pode refletir coativação autonómica, ou condições "
+                      "de medição perturbadas. **Antes de qualquer decisão de treino, verifica:** "
+                      "sono, artefactos na medição, temperatura ambiente, início de doença, ou "
+                      "mudança no protocolo de medição.")
+        elif _rhr_dir == 'descendo':
+            # PERFIL 3 do texto: LnRMSSD acima + RHR a descer = supercompensação
             _titulo = "🌿 Supercompensação / dominância parassimpática (3+ dias)"
             _cor = "#16a085"
             _texto = ("Há 3+ dias o LnRMSSD está acima da banda SWC **e** o RHR está abaixo da média "
                       "de 30 dias. Após uma fase de recuperação ou baixa intensidade, isto costuma "
                       "indicar boa absorção da carga (dominância parassimpática). Confirma que "
-                      "consegues produzir as intensidades planeadas. Nota: em atletas muito treinados, "
-                      "HRV muito alto nem sempre significa frescura óptima — cruza com o desempenho.")
+                      "consegues produzir as intensidades planeadas. **Nota (perfil de saturação):** "
+                      "em atletas muito treinados, LnRMSSD muito alto com RHR muito baixo nem sempre "
+                      "é frescura óptima — pode ser saturação parassimpática. HRV mais alto não é "
+                      "automaticamente melhor prontidão; cruza sempre com o desempenho.")
         else:
             _titulo = "🌿 LnRMSSD acima do habitual (3+ dias)"
             _cor = "#16a085"
-            _texto = ("O LnRMSSD está acima da banda SWC há 3+ dias. Costuma refletir boa absorção "
-                      "da carga, mas confirma com a tua sensação e capacidade de produzir intensidade "
-                      "— HRV alto isolado não é garantia automática de prontidão.")
+            _texto = ("O LnRMSSD está acima da banda SWC há 3+ dias, com o RHR estável. Costuma "
+                      "refletir boa absorção da carga, mas confirma com a tua sensação e capacidade "
+                      "de produzir intensidade — HRV alto isolado não é garantia automática de "
+                      "prontidão, e valores muito altos podem indicar saturação parassimpática.")
 
     # ── Mostrar o perfil ──────────────────────────────────────────────────────
     _rhr_txt = ""
