@@ -2495,3 +2495,139 @@ def calcular_nlss(df_act, df_wellness=None,
         'n_days':       n_days,
         'error':        None,
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MODELO β (HRV-Guided) — fonte única partilhada por tab_recovery e tab_visao_geral
+# Move a lógica da tab_recovery para o utils para as duas tabs nunca divergirem.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def calcular_modelo_beta(wc_src, da_src=None, modo='hrv'):
+    """
+    Modelo β (FPCA HRV Recovery / Della Mattia 2025). Versão partilhada,
+    idêntica à _calcular_modelo_beta da tab_recovery, mas standalone (não depende
+    de variáveis globais). Devolve DataFrame (últimos 90 dias) com:
+      LnrMSSD, bm28, bs28, beta, beta_agudo, beta_cronico [+ canais se modo=multi]
+
+    modo='hrv'   → β só do LnRMSSD
+    modo='multi' → β funde HRV + sono + RHR(inv) + carga(inv)
+    """
+    import scipy.stats as _sst
+    if wc_src is None or len(wc_src) == 0:
+        return None
+    src = wc_src.copy()
+    src['Data'] = pd.to_datetime(src['Data'])
+    src = src.sort_values('Data').set_index('Data')
+    date_range = pd.date_range(src.index.min(), src.index.max(), freq='D')
+    src = src.reindex(date_range)
+    if 'hrv' not in src.columns:
+        return None
+    src['LnrMSSD'] = np.where(src['hrv'].notna() & (src['hrv'] > 0), np.log(src['hrv']), np.nan)
+
+    def _zc(s):
+        m = s.rolling(28, min_periods=7).mean()
+        sd = s.rolling(28, min_periods=7).std().replace(0, np.nan)
+        return (s - m) / sd
+
+    z_hrv = _zc(src['LnrMSSD'])
+
+    if modo == 'multi':
+        if 'sleep_quality' in src.columns and src['sleep_quality'].notna().sum() >= 7:
+            _sq10 = pd.to_numeric(src['sleep_quality'], errors='coerce') * 2.0
+            z_sono = _zc(_sq10)
+        else:
+            z_sono = pd.Series(np.nan, index=src.index)
+        if 'rhr' in src.columns and src['rhr'].notna().sum() >= 7:
+            z_fc = -_zc(pd.to_numeric(src['rhr'], errors='coerce'))
+        else:
+            z_fc = pd.Series(np.nan, index=src.index)
+        z_carga = pd.Series(np.nan, index=src.index)
+        if da_src is not None and len(da_src) > 0:
+            _da = da_src.copy()
+            _da['Data'] = pd.to_datetime(_da['Data']).dt.normalize()
+            _kjz = [c for c in ['z1_kj', 'z2_kj', 'z3_kj'] if c in _da.columns]
+            if _kjz:
+                _da['_kj'] = sum(pd.to_numeric(_da[c], errors='coerce').fillna(0) for c in _kjz)
+            elif 'icu_joules' in _da.columns:
+                _da['_kj'] = pd.to_numeric(_da['icu_joules'], errors='coerce') / 1000.0
+            else:
+                _da['_kj'] = np.nan
+            _da['_km'] = (pd.to_numeric(_da.get('distance'), errors='coerce') / 1000.0
+                          if 'distance' in _da.columns else np.nan)
+            _da['_tss'] = (pd.to_numeric(_da.get('icu_training_load'), errors='coerce')
+                           if 'icu_training_load' in _da.columns else np.nan)
+            _daily = _da.groupby('Data').agg(_kj=('_kj','sum'), _km=('_km','sum'),
+                                             _tss=('_tss','sum'))
+            _daily = _daily.reindex(date_range).fillna(0.0)
+            _z_kj  = _zc(_daily['_kj'].rolling(7, min_periods=3).sum())
+            _z_km  = _zc(_daily['_km'].rolling(7, min_periods=3).sum())
+            _z_tss = _zc(_daily['_tss'].rolling(7, min_periods=3).sum())
+            z_carga = -pd.concat([_z_kj, _z_km, _z_tss], axis=1).mean(axis=1)
+        _pesos = {'hrv': 0.40, 'sono': 0.20, 'fc': 0.20, 'carga': 0.20}
+        _canais = {'hrv': z_hrv, 'sono': z_sono, 'fc': z_fc, 'carga': z_carga}
+        _zt = pd.Series(0.0, index=src.index)
+        _wsum = pd.Series(0.0, index=src.index)
+        for _nome, _zc_canal in _canais.items():
+            _w = _pesos[_nome]
+            _mask = _zc_canal.notna()
+            _zt = _zt.add((_zc_canal * _w).where(_mask, 0.0), fill_value=0.0)
+            _wsum = _wsum.add(pd.Series(_w, index=src.index).where(_mask, 0.0), fill_value=0.0)
+        z28 = (_zt / _wsum.replace(0, np.nan))
+        src['z_hrv'] = z_hrv; src['z_sono'] = z_sono
+        src['z_fc'] = z_fc; src['z_carga'] = z_carga
+    else:
+        z28 = z_hrv
+
+    src['z28'] = z28
+    src['beta'] = src['z28'].apply(
+        lambda z: round(float(_sst.norm.cdf(z) * 100), 1) if pd.notna(z) else np.nan)
+    _bser = src['beta']
+    _bm3  = _bser.rolling(3, min_periods=2).mean()
+    _bm7  = _bser.rolling(7, min_periods=4).mean()
+    _bm28 = _bser.rolling(28, min_periods=7).mean()
+    src['bm28'] = src['LnrMSSD'].rolling(28, min_periods=7).mean()
+    src['bs28'] = src['LnrMSSD'].rolling(28, min_periods=7).std()
+    src['beta_agudo']   = _bm3 - _bm7
+    src['beta_cronico'] = _bm7 - _bm28
+    _cols = ['LnrMSSD', 'bm28', 'bs28', 'beta', 'beta_agudo', 'beta_cronico']
+    if modo == 'multi':
+        _cols += ['z_hrv', 'z_sono', 'z_fc', 'z_carga']
+    return src[_cols].tail(90)
+
+
+def regra_convergencia_beta(beta, b_agudo, b_cronico, hrv_hoje_notna):
+    """
+    Regra de convergência do Modelo β (idêntica à tab_recovery). Conta sinais
+    positivos/negativos entre β actual, βAgudo e βCrónico e devolve a prescrição.
+
+    Devolve (prescricao, cor, n_pos, n_neg, n_inc). A prescrição começa com um
+    emoji e contém 'HIIT', 'Recuperação' ou 'moderada'/'neutra'.
+    """
+    sinais = []
+    if pd.isna(beta): sinais.append(0)
+    elif beta >= 60: sinais.append(+1)
+    elif beta <= 40: sinais.append(-1)
+    else: sinais.append(0)
+    if pd.isna(b_agudo): sinais.append(0)
+    elif b_agudo >= 2.0: sinais.append(+1)
+    elif b_agudo <= -2.0: sinais.append(-1)
+    else: sinais.append(0)
+    if pd.isna(b_cronico): sinais.append(0)
+    elif b_cronico >= 2.0: sinais.append(+1)
+    elif b_cronico <= -2.0: sinais.append(-1)
+    else: sinais.append(0)
+    n_pos = sum(1 for s in sinais if s == +1)
+    n_neg = sum(1 for s in sinais if s == -1)
+    n_inc = sum(1 for s in sinais if s == 0)
+    if not hrv_hoje_notna:
+        return "⚠️ SEM MEDIÇÃO HOJE — Não prescrever HIIT", "#e67e22", n_pos, n_neg, n_inc
+    if n_pos >= 2:
+        return "✅ HIIT / Alta intensidade — ≥2 sinais positivos", "#27ae60", n_pos, n_neg, n_inc
+    elif n_neg >= 2:
+        return "🔴 Recuperação activa — ≥2 sinais negativos", "#e74c3c", n_pos, n_neg, n_inc
+    elif n_neg >= 1 and n_inc >= 1:
+        return "🟠 Sessão moderada Z1/Z2 — 1 sinal negativo + incerteza", "#e67e22", n_pos, n_neg, n_inc
+    elif n_pos == 1 and n_inc >= 2:
+        return "🟡 Sessão moderada Z1/Z2 — sinais insuficientes para HIIT", "#f39c12", n_pos, n_neg, n_inc
+    else:
+        return "🟡 Zona neutra — manter intensidade planeada", "#f39c12", n_pos, n_neg, n_inc
