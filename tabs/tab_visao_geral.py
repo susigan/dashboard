@@ -676,7 +676,9 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
     # ── HRV-Guided + Recovery Score + Peso/BF ────────────────────────────
     vg_r1, vg_r2, vg_r3, vg_r4, vg_r5 = st.columns(5)
 
-    # ── HRV-Guided Training (LnrMSSD, baseline 14d, ±0.5 SD) ────────────
+    # ── HRV-Guided Training — usa o MESMO Modelo β que a tab Recovery ──────────
+    # (via calcular_modelo_beta + regra_convergencia_beta no utils/data.py, para
+    #  as duas tabs nunca divergirem)
     hrv_hoje    = None
     hrv_class   = "Sem dados"
     hrv_emoji   = "⚪"
@@ -687,27 +689,30 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
         _wc = wc_full.copy()
         _wc['Data'] = pd.to_datetime(_wc['Data'])
         _wc = _wc.sort_values('Data')
-        _wc['LnrMSSD'] = np.where(_wc['hrv'] > 0, np.log(_wc['hrv']), np.nan)
-        _wc = _wc.dropna(subset=['LnrMSSD'])
-        if len(_wc) >= 7:
-            _wc['bm']  = _wc['LnrMSSD'].rolling(14, min_periods=7).mean()
-            _wc['bs']  = _wc['LnrMSSD'].rolling(14, min_periods=7).std()
-            _wc['linf']= _wc['bm'] - 0.5 * _wc['bs']
-            _wc['lsup']= _wc['bm'] + 0.5 * _wc['bs']
-            # Use last row for hrv_hoje; use last row WITH bm for classification
-            # This ensures today's HRV is classified even if bm not yet propagated
-            last_hrv = _wc.iloc[-1]   # actual last HRV entry (today if measured)
-            last_bm  = _wc.dropna(subset=['bm']).iloc[-1]  # last with rolling bm
-            hrv_hoje = float(last_hrv['hrv']) if pd.notna(last_hrv.get('hrv')) else None
-            # Classify using today's LnrMSSD vs the most recent baseline
-            _lnr_today = float(last_hrv['LnrMSSD']) if pd.notna(last_hrv.get('LnrMSSD')) else None
-            _linf_ref  = float(last_bm['linf']) if pd.notna(last_bm.get('linf')) else None
-            _lsup_ref  = float(last_bm['lsup']) if pd.notna(last_bm.get('lsup')) else None
-            if _lnr_today is not None and _linf_ref is not None:
-                if _linf_ref <= _lnr_today <= _lsup_ref:
+        try:
+            _beta_df = calcular_modelo_beta(_wc, da_src=da_full, modo='hrv')
+            if _beta_df is not None and len(_beta_df) > 0:
+                _ult = _beta_df.iloc[-1]
+                _beta_hoje = _ult['beta']
+                _bag = _ult['beta_agudo']
+                _bcr = _ult['beta_cronico']
+                # HRV de hoje (última medição real)
+                _wc_hrv = _wc[_wc['hrv'] > 0].dropna(subset=['hrv'])
+                hrv_hoje = float(_wc_hrv.iloc[-1]['hrv']) if len(_wc_hrv) > 0 else None
+                _hrv_hoje_notna = pd.notna(_beta_hoje)
+                _presc, _cor_p, _np, _nn, _ni = regra_convergencia_beta(
+                    _beta_hoje, _bag, _bcr, _hrv_hoje_notna)
+                # Mapear a prescrição para o card compacto (HIIT / Moderada / Recuperação)
+                if "HIIT" in _presc:
                     hrv_class = "HIIT"; hrv_emoji = "🟢"
-                else:
+                elif "Recuperação" in _presc:
                     hrv_class = "Recuperação"; hrv_emoji = "🔴"
+                elif "SEM MEDIÇÃO" in _presc:
+                    hrv_class = "Sem medição"; hrv_emoji = "⚠️"
+                else:
+                    hrv_class = "Moderada"; hrv_emoji = "🟡"
+        except Exception:
+            pass
 
         # Recovery Score trend (7d)
         _rec = calcular_recovery(_wc.rename(columns={'Data':'Data'}))
