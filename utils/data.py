@@ -2631,3 +2631,111 @@ def regra_convergencia_beta(beta, b_agudo, b_cronico, hrv_hoje_notna):
         return "🟡 Sessão moderada Z1/Z2 — sinais insuficientes para HIIT", "#f39c12", n_pos, n_neg, n_inc
     else:
         return "🟡 Zona neutra — manter intensidade planeada", "#f39c12", n_pos, n_neg, n_inc
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MÁQUINA DE ESTADOS HRV-GUIDED — Javaloyes (LnRMSSD 7d) + Kiviniemi (HF power 10d)
+# Fonte única partilhada por tab_recovery e tab_visao_geral (HIGH/LOW/REST).
+# Réplica fiel da lógica da tab_recovery.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _state_machine_hrv(vals, sig_fn, max_high=2, max_train_days=None):
+    """Máquina de estados fiel à Fig.1 (Kiviniemi/Javaloyes). Devolve (prescricoes, sinais)."""
+    pres = []; sig = []; estado = 'START'; ch = 0; cr = 0; ct = 0
+    prev = np.nan; prev2 = np.nan
+    for i, v in enumerate(vals):
+        s = sig_fn(i, v, prev, prev2)
+        if pd.isna(v) or s == '·':
+            p = 'LOW'; estado = 'LOW'; ch = 0; cr = 0; ct = 0
+        elif estado == 'START':
+            p = 'LOW'; estado = 'LOW'; ch = 0; cr = 0; ct = 1
+        elif max_train_days is not None and ct >= max_train_days:
+            p = 'REST'; estado = 'REST'; cr = 1; ch = 0; ct = 0
+        elif estado == 'HIGH':
+            if s.endswith('+'):
+                if max_high is not None and ch >= max_high:
+                    p = 'LOW'; estado = 'LOW'; ch = 0; ct += 1
+                else:
+                    p = 'HIGH'; estado = 'HIGH'; ch += 1; ct += 1
+            else:
+                p = 'LOW'; estado = 'LOW'; ch = 0; ct += 1
+            cr = 0
+        elif estado == 'LOW':
+            if s.endswith('+'):
+                p = 'HIGH'; estado = 'HIGH'; ch = 1; cr = 0; ct += 1
+            else:
+                p = 'REST'; estado = 'REST'; cr = 1; ct = 0
+        elif estado == 'REST':
+            if cr >= 2: p = 'LOW'; estado = 'LOW'; cr = 0; ct = 1
+            elif s.endswith('+'): p = 'LOW'; estado = 'LOW'; cr = 0; ct = 1
+            else: p = 'REST'; estado = 'REST'; cr += 1; ct = 0
+            ch = 0
+        else:
+            p = 'LOW'; estado = 'LOW'; ct = 1
+        pres.append(p); sig.append(s)
+        if pd.notna(v): prev2 = prev; prev = v
+    return pres, sig
+
+
+def calcular_estados_hrv_guided(wc_src):
+    """
+    Calcula os estados HRV-Guided (Javaloyes + Kiviniemi) a partir do wellness.
+    Réplica fiel da lógica da tab_recovery, partilhada para a Visão Geral mostrar
+    o MESMO resultado.
+
+    Devolve dict:
+      {'javaloyes': 'HIGH'|'LOW'|'REST'|None,   # estado mais recente
+       'kiviniemi': 'HIGH'|'LOW'|'REST'|None,   # estado mais recente (ou None se sem HF)
+       'data': DataFrame com prescricao e prescricao_k por dia}
+    """
+    if wc_src is None or len(wc_src) == 0 or 'hrv' not in wc_src.columns:
+        return {'javaloyes': None, 'kiviniemi': None, 'data': pd.DataFrame()}
+
+    df_hg = wc_src.copy()
+    df_hg['Data'] = pd.to_datetime(df_hg['Data'])
+    df_hg = df_hg.sort_values('Data').reset_index(drop=True)
+    df_hg['LnrMSSD'] = np.where((df_hg['hrv'].notna()) & (df_hg['hrv'] > 0),
+                                np.log(df_hg['hrv']), np.nan)
+    df_hg['sem_medicao'] = df_hg['hrv'].isna() | (df_hg['hrv'] <= 0)
+
+    # Baseline SWC (Javaloyes): últimos 28 dias reais, mean ± 0.5·SD
+    _ln_real = df_hg[~df_hg['sem_medicao']]['LnrMSSD'].dropna()
+    if len(_ln_real) < 7:
+        return {'javaloyes': None, 'kiviniemi': None, 'data': pd.DataFrame()}
+    _lnb = _ln_real.tail(28) if len(_ln_real) >= 7 else _ln_real
+    _swc_m = float(_lnb.mean()); _swc_s = float(_lnb.std())
+    _swc_inf = _swc_m - 0.5 * _swc_s
+    df_hg['ln7'] = df_hg['LnrMSSD'].rolling(7, min_periods=4).mean()
+
+    # Javaloyes: sinal pela banda, teto de 2 HIGH consecutivos
+    def _sig_jav(i, v, p, p2):
+        if pd.isna(v): return '·'
+        return 'HRV+' if v >= _swc_inf else 'HRV-'
+    _pj, _sj = _state_machine_hrv(df_hg['ln7'].tolist(), _sig_jav,
+                                  max_high=2, max_train_days=None)
+    df_hg['prescricao'] = _pj
+
+    # Kiviniemi: HF power, referência 10d (mean − 1·SD) + tendência 2 dias
+    _kiv_estado = None
+    _tem_hf = ('hf_power' in df_hg.columns and df_hg['hf_power'].notna().sum() >= 5)
+    if _tem_hf:
+        _hf = pd.to_numeric(df_hg['hf_power'], errors='coerce').replace(0, np.nan)
+        _med = _hf.median()
+        df_hg['hf_metric'] = np.log(_hf.where(_hf > 0)) if _med > 10 else _hf
+        df_hg['hf_mean10'] = df_hg['hf_metric'].rolling(10, min_periods=5).mean()
+        df_hg['hf_sd10'] = df_hg['hf_metric'].rolling(10, min_periods=5).std()
+        df_hg['hf_ref'] = df_hg['hf_mean10'] - 1.0 * df_hg['hf_sd10']
+        _refs = df_hg['hf_ref'].tolist()
+        def _sig_kiv(i, v, p, p2):
+            ref = _refs[i]
+            if pd.isna(v) or pd.isna(ref): return '·'
+            below = v < ref
+            trend = (pd.notna(p) and pd.notna(p2) and (p2 - p) > 0.1 and (p - v) > 0.1)
+            return 'HF-' if (below or trend) else 'HF+'
+        _pk, _sk = _state_machine_hrv(df_hg['hf_metric'].tolist(), _sig_kiv,
+                                      max_high=None, max_train_days=9)
+        df_hg['prescricao_k'] = _pk
+        _kiv_estado = _pk[-1] if len(_pk) > 0 else None
+
+    _jav_estado = _pj[-1] if len(_pj) > 0 else None
+    return {'javaloyes': _jav_estado, 'kiviniemi': _kiv_estado, 'data': df_hg}
