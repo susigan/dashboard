@@ -676,11 +676,13 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
     # ── HRV-Guided + Recovery Score + Peso/BF ────────────────────────────
     vg_r1, vg_r2, vg_r3, vg_r4, vg_r5 = st.columns(5)
 
-    # ── HRV-Guided Training — usa o MESMO Modelo β que a tab Recovery ──────────
-    # (via calcular_modelo_beta + regra_convergencia_beta no utils/data.py, para
-    #  as duas tabs nunca divergirem)
+    # ── HRV-Guided — usa a MESMA máquina de estados que a tab Recovery ─────────
+    # (Javaloyes LnRMSSD 7d + Kiviniemi HF power 10d, via calcular_estados_hrv_guided
+    #  no utils/data.py, para as duas tabs mostrarem exatamente o mesmo estado)
     hrv_hoje    = None
-    hrv_class   = "Sem dados"
+    hrv_jav     = None   # estado Javaloyes (HIGH/LOW/REST)
+    hrv_kiv     = None   # estado Kiviniemi (HIGH/LOW/REST)
+    hrv_class   = "Sem dados"   # mantido p/ retrocompatibilidade downstream
     hrv_emoji   = "⚪"
     rec_score   = None
     rec_trend   = ""
@@ -690,27 +692,17 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
         _wc['Data'] = pd.to_datetime(_wc['Data'])
         _wc = _wc.sort_values('Data')
         try:
-            _beta_df = calcular_modelo_beta(_wc, da_src=da_full, modo='hrv')
-            if _beta_df is not None and len(_beta_df) > 0:
-                _ult = _beta_df.iloc[-1]
-                _beta_hoje = _ult['beta']
-                _bag = _ult['beta_agudo']
-                _bcr = _ult['beta_cronico']
-                # HRV de hoje (última medição real)
-                _wc_hrv = _wc[_wc['hrv'] > 0].dropna(subset=['hrv'])
-                hrv_hoje = float(_wc_hrv.iloc[-1]['hrv']) if len(_wc_hrv) > 0 else None
-                _hrv_hoje_notna = pd.notna(_beta_hoje)
-                _presc, _cor_p, _np, _nn, _ni = regra_convergencia_beta(
-                    _beta_hoje, _bag, _bcr, _hrv_hoje_notna)
-                # Mapear a prescrição para o card compacto (HIIT / Moderada / Recuperação)
-                if "HIIT" in _presc:
-                    hrv_class = "HIIT"; hrv_emoji = "🟢"
-                elif "Recuperação" in _presc:
-                    hrv_class = "Recuperação"; hrv_emoji = "🔴"
-                elif "SEM MEDIÇÃO" in _presc:
-                    hrv_class = "Sem medição"; hrv_emoji = "⚠️"
-                else:
-                    hrv_class = "Moderada"; hrv_emoji = "🟡"
+            _est = calcular_estados_hrv_guided(_wc)
+            hrv_jav = _est['javaloyes']
+            hrv_kiv = _est['kiviniemi']
+            _wc_hrv = _wc[_wc['hrv'] > 0].dropna(subset=['hrv'])
+            hrv_hoje = float(_wc_hrv.iloc[-1]['hrv']) if len(_wc_hrv) > 0 else None
+            # Mapear o estado Javaloyes para hrv_class (retrocompat com downstream)
+            _MAP_CLASS = {'HIGH': 'HIIT', 'LOW': 'Moderada', 'REST': 'Recuperação'}
+            _MAP_EMOJI = {'HIGH': '🟢', 'LOW': '🔵', 'REST': '🔴'}
+            if hrv_jav:
+                hrv_class = _MAP_CLASS.get(hrv_jav, 'Sem dados')
+                hrv_emoji = _MAP_EMOJI.get(hrv_jav, '⚪')
         except Exception:
             pass
 
@@ -730,9 +722,12 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                     rec_trend = "→"
 
     with vg_r1:
-        st.metric("🧠 HRV-Guided",
-                  f"{hrv_emoji} {hrv_class}",
-                  f"HRV {hrv_hoje:.0f} ms" if hrv_hoje else None)
+        _LBL_EST = {'HIGH': '🟢 HIGH', 'LOW': '🔵 LOW', 'REST': '🔴 REST'}
+        _jav_txt = _LBL_EST.get(hrv_jav, '⚪ —')
+        _kiv_txt = _LBL_EST.get(hrv_kiv, '—') if hrv_kiv else "sem HF"
+        st.metric("🧠 HRV-Guided (Javaloyes)",
+                  _jav_txt,
+                  f"Kiviniemi: {_kiv_txt}")
     with vg_r2:
         st.metric("🔋 Recovery Score",
                   f"{rec_score:.0f}/100" if rec_score else "—",
