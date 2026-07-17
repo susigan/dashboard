@@ -123,59 +123,67 @@ def _painel_prontidao_autonomica(wc_full, dw):
     _titulo, _cor, _texto = None, None, None
 
     if not _consistente:
-        _titulo = "🔄 Em transição"
+        _titulo = "🔄 Sem padrão estável nos últimos 3 dias"
         _cor = "#f39c12"
-        _texto = ("O teu LnRMSSD variou de posição nos últimos 3 dias, sem um padrão estável. "
-                  "Um único dia não define o estado — aguarda que estabilize antes de ajustar o treino.")
+        _texto = ("A posição do LnRMSSD (média 7 dias) variou nos últimos 3 dias, sem um padrão "
+                  "sustentado. Um único dia não justifica alterar o plano de treino — é a "
+                  "persistência do padrão ao longo de vários dias que aumenta a sua relevância. "
+                  "Aguarda que estabilize antes de tirar conclusões.")
     elif _pos_atual == 'dentro':
-        _titulo = "✅ Equilíbrio autonómico"
+        _titulo = "✅ LnRMSSD dentro da SWC + FC de repouso estável"
         _cor = "#27ae60"
-        _texto = ("O teu LnRMSSD mantém-se dentro da banda SWC há 3+ dias — o sistema nervoso "
-                  "autónomo está no teu intervalo habitual. A carga recente parece bem tolerada, "
-                  "desde que a tua sensação subjetiva e o desempenho acompanhem.")
+        _texto = ("O sistema nervoso autónomo mantém-se no seu intervalo de funcionamento "
+                  "habitual há 3+ dias. A carga de treino recente parece bem tolerada, desde que "
+                  "o feedback subjetivo e o desempenho nos treinos sejam também consistentes.")
     elif _pos_atual == 'abaixo':
         if _rhr_dir == 'subindo':
-            _titulo = "⚠️ Fadiga / dominância simpática (3+ dias)"
+            _titulo = "⚠️ LnRMSSD abaixo da SWC + FC de repouso a subir"
             _cor = "#e74c3c"
-            _texto = ("Há 3+ dias o LnRMSSD está abaixo da banda SWC **e** o RHR está acima da média "
-                      "de 30 dias. Este padrão sustentado sugere recuperação incompleta e maior "
-                      "tensão fisiológica (dominância simpática). Considera reduzir a carga ou "
-                      "inserir recuperação até normalizar.")
+            _texto = ("Perturbação aguda compatível com recuperação incompleta, sustentada há "
+                      "3+ dias. Este perfil é frequentemente observado no dia seguinte a uma "
+                      "competição ou a um bloco de treino específico exigente. A combinação de "
+                      "descida do LnRMSSD com subida da FC de repouso sugere uma redução temporária "
+                      "da modulação parassimpática e um aumento da tensão fisiológica. A persistência "
+                      "do padrão ao longo de vários dias aumenta a sua relevância.")
         else:
-            _titulo = "⚠️ LnRMSSD abaixo do habitual (3+ dias)"
+            _titulo = "⚠️ LnRMSSD abaixo da SWC (FC de repouso sem subida clara)"
             _cor = "#e67e22"
-            _texto = ("O LnRMSSD está abaixo da banda SWC há 3+ dias, mas o RHR não subiu de forma "
-                      "clara. Pode ser fadiga acumulada — vigia a evolução e confirma com a tua "
-                      "sensação subjetiva antes de mudar o plano.")
+            _texto = ("O LnRMSSD está abaixo do limite inferior da SWC há 3+ dias, mas a FC de "
+                      "repouso não subiu de forma clara. Pode indicar fadiga acumulada — a "
+                      "informação-chave é a rapidez com que a média de 7 dias regressa ao intervalo "
+                      "SWC. Confirma com o feedback subjetivo antes de alterar o plano.")
     elif _pos_atual == 'acima':
         if _rhr_dir == 'subindo':
-            # PERFIL 5 do texto: LnRMSSD e RHR AMBOS elevados = sinal complexo
-            _titulo = "❓ Sinal complexo — verificar antes de decidir (3+ dias)"
+            # Perfil do texto: LnRMSSD e FC de repouso simultaneamente elevados
+            _titulo = "❓ LnRMSSD e FC de repouso ambos elevados — verificar"
             _cor = "#8e44ad"
-            _texto = ("Há 3+ dias o LnRMSSD está acima da banda SWC **e** o RHR também está acima "
-                      "da média de 30 dias. Quando ambos sobem em simultâneo, não é um padrão "
-                      "limpo de recuperação — pode refletir coativação autonómica, ou condições "
-                      "de medição perturbadas. **Antes de qualquer decisão de treino, verifica:** "
-                      "sono, artefactos na medição, temperatura ambiente, início de doença, ou "
-                      "mudança no protocolo de medição.")
+            _texto = ("Padrão sustentado há 3+ dias em que o LnRMSSD e a FC de repouso estão ambos "
+                      "elevados em simultâneo. Pode refletir uma resposta complexa, coativação "
+                      "autonómica, ou condições de medição perturbadas. Antes de tomar qualquer "
+                      "decisão de treino, devem verificar-se: o sono, artefactos, a temperatura "
+                      "ambiente, as fases iniciais de uma doença, ou uma mudança no protocolo de "
+                      "medição.")
         elif _rhr_dir == 'descendo':
-            # PERFIL 3 do texto: LnRMSSD acima + RHR a descer = supercompensação
-            _titulo = "🌿 Supercompensação / dominância parassimpática (3+ dias)"
+            # Perfil do texto: LnRMSSD a subir + FC de repouso a descer
+            _titulo = "🌿 LnRMSSD a subir + FC de repouso a descer"
             _cor = "#16a085"
-            _texto = ("Há 3+ dias o LnRMSSD está acima da banda SWC **e** o RHR está abaixo da média "
-                      "de 30 dias. Após uma fase de recuperação ou baixa intensidade, isto costuma "
-                      "indicar boa absorção da carga (dominância parassimpática). Confirma que "
-                      "consegues produzir as intensidades planeadas. **Nota (perfil de saturação):** "
-                      "em atletas muito treinados, LnRMSSD muito alto com RHR muito baixo nem sempre "
-                      "é frescura óptima — pode ser saturação parassimpática. HRV mais alto não é "
-                      "automaticamente melhor prontidão; cruza sempre com o desempenho.")
+            _texto = ("Quando este padrão se desenvolve progressivamente após uma fase de "
+                      "recuperação ou um período de treino de baixa intensidade, pode refletir uma "
+                      "melhoria da modulação parassimpática e uma boa absorção da carga de treino. "
+                      "Esta interpretação deve, ainda assim, ser confirmada pelo feedback subjetivo "
+                      "e pela capacidade de produzir as intensidades planeadas. Nota: em atletas "
+                      "muito treinados, um LnRMSSD muito alto com FC de repouso muito baixa nem "
+                      "sempre é sinónimo de frescura óptima — pode refletir dominância parassimpática "
+                      "marcada ou uma resposta de saturação. HRV mais alto não significa "
+                      "automaticamente melhor prontidão.")
         else:
-            _titulo = "🌿 LnRMSSD acima do habitual (3+ dias)"
+            _titulo = "🌿 LnRMSSD acima da SWC (FC de repouso estável)"
             _cor = "#16a085"
-            _texto = ("O LnRMSSD está acima da banda SWC há 3+ dias, com o RHR estável. Costuma "
-                      "refletir boa absorção da carga, mas confirma com a tua sensação e capacidade "
-                      "de produzir intensidade — HRV alto isolado não é garantia automática de "
-                      "prontidão, e valores muito altos podem indicar saturação parassimpática.")
+            _texto = ("O LnRMSSD está acima do intervalo SWC há 3+ dias, com a FC de repouso "
+                      "estável. Costuma refletir boa absorção da carga, mas deve ser confirmado "
+                      "pelo feedback subjetivo e pela capacidade de produzir as intensidades "
+                      "planeadas — um valor muito elevado pode indicar saturação parassimpática, e "
+                      "HRV mais alto não é automaticamente melhor prontidão.")
 
     # ── Mostrar o perfil ──────────────────────────────────────────────────────
     _rhr_txt = ""
@@ -193,10 +201,12 @@ def _painel_prontidao_autonomica(wc_full, dw):
         f"LnRMSSD 7d = {_ln7:.3f} (banda SWC: {_swc_lo:.3f}–{_swc_hi:.3f}).{_rhr_txt}<br><br>"
         f"{_texto}</span></div>",
         unsafe_allow_html=True)
-    st.caption("Metodologia Della Mattia / Altini-Plews. Um único dia não define o estado — "
-               "este perfil só sinaliza quando o padrão se mantém 3+ dias. "
-               "O objetivo não é eliminar a fadiga (essencial à adaptação), mas confirmar que "
-               "cada perturbação é seguida de regresso ao equilíbrio.")
+    st.caption("Interpretação baseada na leitura combinada dos três indicadores: LnRMSSD "
+               "(média 7 dias), a sua posição na banda SWC, e a FC de repouso vs média de 30 "
+               "dias. Um único dia não define o estado — só se sinaliza quando o padrão se "
+               "mantém 3+ dias. O objetivo não é eliminar a fadiga (essencial à adaptação), mas "
+               "verificar que cada perturbação é seguida de um regresso ao equilíbrio antes de "
+               "prescrever nova carga específica importante.")
     st.markdown("---")
 
 
