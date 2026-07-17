@@ -14,6 +14,178 @@ sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))
 
 warnings.filterwarnings('ignore')
 
+
+def _painel_prontidao_autonomica(wc_full, dw):
+    """
+    Painel de Prontidão Autonómica (metodologia Della Mattia / Altini-Plews):
+    combina LnRMSSD (média 7d) + banda SWC + RHR vs média 30d, e classifica o
+    perfil da semana. REGRA DOS 3 DIAS: só sinaliza um estado (parassimpático,
+    simpático, problema) se o padrão se mantiver ≥3 dias — um dia isolado é ruído.
+    """
+    _src = wc_full if (wc_full is not None and len(wc_full) > 0) else dw
+    if _src is None or len(_src) == 0 or 'hrv' not in _src.columns:
+        return  # sem dados de HRV, não mostra o painel
+
+    w = _src[['Data', 'hrv']].copy()
+    w['Data'] = pd.to_datetime(w['Data'], errors='coerce')
+    if 'rhr' in _src.columns:
+        w['rhr'] = pd.to_numeric(_src['rhr'], errors='coerce')
+    else:
+        w['rhr'] = np.nan
+    w['hrv'] = pd.to_numeric(w['hrv'], errors='coerce')
+    w = w.dropna(subset=['Data', 'hrv']).sort_values('Data')
+    w = w[w['hrv'] > 0]
+    if len(w) < 14:
+        return  # histórico insuficiente
+
+    # LnRMSSD e média móvel 7 dias
+    w['ln'] = np.log(w['hrv'])
+    w['ln_7d'] = w['ln'].rolling(7, min_periods=3).mean()
+
+    # SWC = 0.5 × CV% × baseline (Hopkins). Baseline e CV sobre janela de referência
+    # estável (últimos 60 dias, excluindo os 7 mais recentes para não contaminar).
+    _ref = w.iloc[-67:-7] if len(w) > 67 else w.iloc[:-7] if len(w) > 14 else w
+    _base = _ref['ln'].mean()
+    _cv = (_ref['ln'].std() / _ref['ln'].mean() * 100) if _ref['ln'].mean() != 0 else None
+    _swc = calcular_swc(_base, _cv) if _cv is not None else None
+    if _swc is None or _base is None:
+        return
+    _swc_lo, _swc_hi = _base - _swc, _base + _swc
+
+    # RHR: hoje vs média 30 dias
+    _rhr_recent = w['rhr'].dropna()
+    _rhr_hoje = float(_rhr_recent.iloc[-1]) if len(_rhr_recent) > 0 else None
+    _rhr_30d = float(w[w['Data'] >= w['Data'].max() - pd.Timedelta(days=30)]['rhr'].mean()) \
+        if w['rhr'].notna().any() else None
+
+    # ── GRÁFICO (como na foto) ────────────────────────────────────────────────
+    _plot = w[w['Data'] >= w['Data'].max() - pd.Timedelta(days=90)].copy()
+    fig = go.Figure()
+    # Banda SWC (zona sombreada)
+    fig.add_hrect(y0=_swc_lo, y1=_swc_hi, fillcolor='rgba(39,174,96,0.12)',
+                  line_width=0, layer='below')
+    fig.add_hline(y=_base, line=dict(color='#27ae60', width=1, dash='dot'),
+                  annotation_text='baseline', annotation_position='right')
+    # LnRMSSD diário (pontos)
+    fig.add_trace(go.Scatter(
+        x=_plot['Data'], y=_plot['ln'], mode='markers', name='LnRMSSD diário',
+        marker=dict(size=5, color='rgba(41,128,185,0.45)')))
+    # Média 7d (linha principal)
+    fig.add_trace(go.Scatter(
+        x=_plot['Data'], y=_plot['ln_7d'], mode='lines', name='LnRMSSD (média 7d)',
+        line=dict(color='#2980b9', width=3)))
+    fig.update_layout(
+        paper_bgcolor='white', plot_bgcolor='white',
+        font=dict(color='#111', size=11), height=340,
+        margin=dict(t=30, b=40, l=50, r=60),
+        yaxis_title='LnRMSSD', xaxis_title=None,
+        legend=dict(orientation='h', y=1.12, x=0),
+        title=dict(text='Prontidão Autonómica — LnRMSSD, banda SWC e RHR', font=dict(size=13)))
+
+    # RHR no eixo secundário (se existir)
+    if _plot['rhr'].notna().any():
+        fig.add_trace(go.Scatter(
+            x=_plot['Data'], y=_plot['rhr'], mode='lines', name='RHR (bpm)',
+            line=dict(color='#e74c3c', width=1.5), yaxis='y2'))
+        fig.update_layout(yaxis2=dict(title='RHR (bpm)', overlaying='y', side='right',
+                                      showgrid=False))
+
+    st.plotly_chart(fig, use_container_width=True,
+                    config={'displayModeBar': False})
+
+    # ── REGRA DOS 3 DIAS: classificar o perfil ────────────────────────────────
+    # Avalia os últimos 3 dias com dados. Só sinaliza se o padrão for consistente.
+    _u = w.dropna(subset=['ln_7d']).tail(3)
+    if len(_u) < 3:
+        st.caption("A recolher dados — o perfil precisa de pelo menos 3 dias de medições.")
+        return
+
+    # Posição do LnRMSSD 7d vs SWC em cada um dos 3 dias
+    def _pos(ln):
+        if ln < _swc_lo: return 'abaixo'
+        if ln > _swc_hi: return 'acima'
+        return 'dentro'
+    _pos_3d = [_pos(v) for v in _u['ln_7d']]
+
+    # Direção do RHR (subindo/descendo vs média 30d) nos 3 dias
+    _rhr_dir = None
+    if _rhr_30d is not None and _u['rhr'].notna().sum() >= 2:
+        _rhr_acima = (_u['rhr'] > _rhr_30d).sum()
+        _rhr_abaixo = (_u['rhr'] < _rhr_30d).sum()
+        if _rhr_acima >= 2: _rhr_dir = 'subindo'
+        elif _rhr_abaixo >= 2: _rhr_dir = 'descendo'
+
+    # Consistência: os 3 dias têm a mesma posição?
+    _consistente = len(set(_pos_3d)) == 1
+    _pos_atual = _pos_3d[-1]
+
+    # ── Determinar o perfil (só se consistente ≥3 dias) ──────────────────────
+    _titulo, _cor, _texto = None, None, None
+
+    if not _consistente:
+        _titulo = "🔄 Em transição"
+        _cor = "#f39c12"
+        _texto = ("O teu LnRMSSD variou de posição nos últimos 3 dias, sem um padrão estável. "
+                  "Um único dia não define o estado — aguarda que estabilize antes de ajustar o treino.")
+    elif _pos_atual == 'dentro':
+        _titulo = "✅ Equilíbrio autonómico"
+        _cor = "#27ae60"
+        _texto = ("O teu LnRMSSD mantém-se dentro da banda SWC há 3+ dias — o sistema nervoso "
+                  "autónomo está no teu intervalo habitual. A carga recente parece bem tolerada, "
+                  "desde que a tua sensação subjetiva e o desempenho acompanhem.")
+    elif _pos_atual == 'abaixo':
+        if _rhr_dir == 'subindo':
+            _titulo = "⚠️ Fadiga / dominância simpática (3+ dias)"
+            _cor = "#e74c3c"
+            _texto = ("Há 3+ dias o LnRMSSD está abaixo da banda SWC **e** o RHR está acima da média "
+                      "de 30 dias. Este padrão sustentado sugere recuperação incompleta e maior "
+                      "tensão fisiológica (dominância simpática). Considera reduzir a carga ou "
+                      "inserir recuperação até normalizar.")
+        else:
+            _titulo = "⚠️ LnRMSSD abaixo do habitual (3+ dias)"
+            _cor = "#e67e22"
+            _texto = ("O LnRMSSD está abaixo da banda SWC há 3+ dias, mas o RHR não subiu de forma "
+                      "clara. Pode ser fadiga acumulada — vigia a evolução e confirma com a tua "
+                      "sensação subjetiva antes de mudar o plano.")
+    elif _pos_atual == 'acima':
+        if _rhr_dir == 'descendo':
+            _titulo = "🌿 Supercompensação / dominância parassimpática (3+ dias)"
+            _cor = "#16a085"
+            _texto = ("Há 3+ dias o LnRMSSD está acima da banda SWC **e** o RHR está abaixo da média "
+                      "de 30 dias. Após uma fase de recuperação ou baixa intensidade, isto costuma "
+                      "indicar boa absorção da carga (dominância parassimpática). Confirma que "
+                      "consegues produzir as intensidades planeadas. Nota: em atletas muito treinados, "
+                      "HRV muito alto nem sempre significa frescura óptima — cruza com o desempenho.")
+        else:
+            _titulo = "🌿 LnRMSSD acima do habitual (3+ dias)"
+            _cor = "#16a085"
+            _texto = ("O LnRMSSD está acima da banda SWC há 3+ dias. Costuma refletir boa absorção "
+                      "da carga, mas confirma com a tua sensação e capacidade de produzir intensidade "
+                      "— HRV alto isolado não é garantia automática de prontidão.")
+
+    # ── Mostrar o perfil ──────────────────────────────────────────────────────
+    _rhr_txt = ""
+    if _rhr_hoje is not None and _rhr_30d is not None:
+        _d = _rhr_hoje - _rhr_30d
+        _rhr_txt = (f"  \n**RHR:** {_rhr_hoje:.0f} bpm hoje vs {_rhr_30d:.0f} bpm (média 30d), "
+                    f"{_d:+.1f} bpm.")
+
+    _ln7 = _u['ln_7d'].iloc[-1]
+    st.markdown(
+        f"<div style='background:{_cor}18;border-left:4px solid {_cor};"
+        f"padding:12px 16px;border-radius:6px;margin-top:4px'>"
+        f"<b style='color:{_cor};font-size:15px'>{_titulo}</b><br>"
+        f"<span style='font-size:13px'>"
+        f"LnRMSSD 7d = {_ln7:.3f} (banda SWC: {_swc_lo:.3f}–{_swc_hi:.3f}).{_rhr_txt}<br><br>"
+        f"{_texto}</span></div>",
+        unsafe_allow_html=True)
+    st.caption("Metodologia Della Mattia / Altini-Plews. Um único dia não define o estado — "
+               "este perfil só sinaliza quando o padrão se mantém 3+ dias. "
+               "O objetivo não é eliminar a fadiga (essencial à adaptação), mas confirmar que "
+               "cada perturbação é seguida de regresso ao equilíbrio.")
+    st.markdown("---")
+
+
 def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
     st.header("📊 Visão Geral")
 
@@ -211,6 +383,9 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
     _ch2.metric("❤️ RHR (mês)", f"{_rhr_mc_v:.0f} bpm" if _rhr_mc_v else "—",
                 _delta_abs_bpm(_rhr_mc_v, _rhr_mp_v))
     st.markdown("---")
+
+    # ── Painel de Prontidão Autonómica (topo, antes do Resumo Semanal) ────────
+    _painel_prontidao_autonomica(wc_full, dw)
 
     # ── Semana ACTUAL (seg→hoje) ──────────────────────────────────────────
     if da_full is not None and len(da_full) > 0:
@@ -477,33 +652,38 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
     # ── HRV-Guided + Recovery Score + Peso/BF ────────────────────────────
     vg_r1, vg_r2, vg_r3, vg_r4, vg_r5 = st.columns(5)
 
-    # ── HRV-Guided Training — via módulo central utils/hrv_guided.py ─────
-    # Fonte ÚNICA de verdade: mesma máquina de estados Javaloyes da tab_recovery.
-    # Substitui a antiga classificação estática HIIT/Recuperação por HIGH/LOW/REST.
+    # ── HRV-Guided Training (LnrMSSD, baseline 14d, ±0.5 SD) ────────────
     hrv_hoje    = None
-    hrv_class   = "Sem dados"      # agora: 'HIGH'|'LOW'|'REST' (Javaloyes)
+    hrv_class   = "Sem dados"
     hrv_emoji   = "⚪"
-    hrv_kiv     = None            # Kiviniemi de hoje (se houver HF power)
     rec_score   = None
     rec_trend   = ""
 
     if wc_full is not None and len(wc_full) > 0 and 'hrv' in wc_full.columns:
-        try:
-            from utils.hrv_guided import prescricao_hoje, LABEL_MAP, COR_MAP
-            _hg = prescricao_hoje(wc_full, da_src=da_full if 'da_full' in dir() else None)
-            if _hg.get('javaloyes'):
-                hrv_class = _hg['javaloyes']           # HIGH / LOW / REST
-                hrv_emoji = {'HIGH': '🟢', 'LOW': '🔵', 'REST': '🔴'}.get(hrv_class, '⚪')
-            hrv_kiv  = _hg.get('kiviniemi')
-            hrv_hoje = _hg.get('hrv_hoje')
-        except Exception as _e_hg:
-            hrv_class = "Sem dados"
-
         _wc = wc_full.copy()
         _wc['Data'] = pd.to_datetime(_wc['Data'])
         _wc = _wc.sort_values('Data')
         _wc['LnrMSSD'] = np.where(_wc['hrv'] > 0, np.log(_wc['hrv']), np.nan)
         _wc = _wc.dropna(subset=['LnrMSSD'])
+        if len(_wc) >= 7:
+            _wc['bm']  = _wc['LnrMSSD'].rolling(14, min_periods=7).mean()
+            _wc['bs']  = _wc['LnrMSSD'].rolling(14, min_periods=7).std()
+            _wc['linf']= _wc['bm'] - 0.5 * _wc['bs']
+            _wc['lsup']= _wc['bm'] + 0.5 * _wc['bs']
+            # Use last row for hrv_hoje; use last row WITH bm for classification
+            # This ensures today's HRV is classified even if bm not yet propagated
+            last_hrv = _wc.iloc[-1]   # actual last HRV entry (today if measured)
+            last_bm  = _wc.dropna(subset=['bm']).iloc[-1]  # last with rolling bm
+            hrv_hoje = float(last_hrv['hrv']) if pd.notna(last_hrv.get('hrv')) else None
+            # Classify using today's LnrMSSD vs the most recent baseline
+            _lnr_today = float(last_hrv['LnrMSSD']) if pd.notna(last_hrv.get('LnrMSSD')) else None
+            _linf_ref  = float(last_bm['linf']) if pd.notna(last_bm.get('linf')) else None
+            _lsup_ref  = float(last_bm['lsup']) if pd.notna(last_bm.get('lsup')) else None
+            if _lnr_today is not None and _linf_ref is not None:
+                if _linf_ref <= _lnr_today <= _lsup_ref:
+                    hrv_class = "HIIT"; hrv_emoji = "🟢"
+                else:
+                    hrv_class = "Recuperação"; hrv_emoji = "🔴"
 
         # Recovery Score trend (7d)
         _rec = calcular_recovery(_wc.rename(columns={'Data':'Data'}))
@@ -521,10 +701,9 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                     rec_trend = "→"
 
     with vg_r1:
-        _kiv_txt = f" · Kiv: {hrv_kiv}" if hrv_kiv else ""
-        st.metric("🧠 HRV-Guided (Javaloyes)",
+        st.metric("🧠 HRV-Guided",
                   f"{hrv_emoji} {hrv_class}",
-                  (f"HRV {hrv_hoje:.0f} ms{_kiv_txt}" if hrv_hoje else (_kiv_txt.strip(' ·') or None)))
+                  f"HRV {hrv_hoje:.0f} ms" if hrv_hoje else None)
     with vg_r2:
         st.metric("🔋 Recovery Score",
                   f"{rec_score:.0f}/100" if rec_score else "—",
@@ -1452,24 +1631,20 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             _ap_mod = _alpha_p.get(mod, {})
             _zone_prescription = None
             if _ap_mod.get('ok'):
-                # HRV-Guided (Javaloyes) define o tecto de intensidade
+                # HRV-Guided define o tecto de intensidade
                 _hrv_class_local = hrv_class if 'hrv_class' in dir() else 'Sem dados'
-                # REST → só Z1/descanso; LOW → Z1-Z2 (base); HIGH → Z2-Z3 (intenso)
-                if _hrv_class_local == 'REST':
-                    _zona_permitidas = ['Z1']
-                    _zona_max        = 'Z1'
-                    _zona_primaria   = 'Z1'
-                    _hrv_note        = "🔴 REST — Z1/descanso (HRV suprimido)"
-                elif _hrv_class_local == 'LOW':
+                # Recuperação → Z1, Z2 curto, ou Descanso (nao Z3)
+                # HIIT        → Z2 (threshold/sweetspot) ou Z3 (VO2max/anaer)
+                if _hrv_class_local == 'Recuperação':
                     _zona_permitidas = ['Z1', 'Z2']
                     _zona_max        = 'Z2'
                     _zona_primaria   = 'Z1'
-                    _hrv_note        = "🔵 LOW — Z1 prioritário, Z2 curto (base/volume)"
-                elif _hrv_class_local == 'HIGH':
+                    _hrv_note        = "HRV↓ Recuperação — Z1 prioritário, Z2 curto ou Descanso"
+                elif _hrv_class_local == 'HIIT':
                     _zona_permitidas = ['Z2', 'Z3']
                     _zona_max        = 'Z3'
                     _zona_primaria   = 'Z2' if ni < 60 else 'Z3'
-                    _hrv_note        = "🟢 HIGH — Z2 (threshold/sweetspot) ou Z3 (VO2max)"
+                    _hrv_note        = "HRV✓ HIIT — Z2 (threshold/sweetspot) ou Z3 (VO2max)"
                 else:
                     _zona_permitidas = ['Z1', 'Z2', 'Z3']
                     _zona_max        = 'Z3' if ni >= 70 else 'Z2'
@@ -2176,7 +2351,7 @@ Estado = Modalidade_Zona (ex: Bike_Moderado, Row_Forte) ou Descanso.
 A cadeia aprende a probabilidade de cada transição e o HRV médio t+1 e t+2.
 
 **Sugestão integrada:**
-1. HRV-Guided (Javaloyes): 🔴REST → Z1/Descanso | 🔵LOW → Z1/Z2 | 🟢HIGH → Z2/Z3
+1. HRV-Guided: Recuperação → Z1/Z2/Descanso | HIIT → Z2/Z3
 2. Monotonia (IM): se IM>1.5 forçar variação de zona/modalidade
 3. Markov: selecciona a transição com melhor HRV histórico dentro das opcoes permitidas
 
@@ -2304,20 +2479,17 @@ Recalcula sem cache a cada carregamento.
             # Sugestao integrada
             st.markdown("#### Sugestao — HRV x Monotonia x Markov")
 
-            # HRV-Guided (Javaloyes) — reutilizar hrv_class do topo da função
-            # (mesmo valor do card, via módulo utils/hrv_guided — consistência total)
-            if hrv_class == 'REST':
-                _zona_perm_mk = ['Leve']
-                _hrv_guid_mk  = "🔴 REST — Z1/Descanso (HRV suprimido)"
-            elif hrv_class == 'LOW':
+            # HRV-Guided — reutilizar hrv_class já calculado no topo da função
+            # (mesmo valor que aparece no card HRV-Guided, consistência garantida)
+            if hrv_class == 'Recuperação':
                 _zona_perm_mk = ['Leve', 'Moderado']
-                _hrv_guid_mk  = "🔵 LOW — Z1/Z2 base, volume"
-            elif hrv_class == 'HIGH':
+                _hrv_guid_mk  = "Recuperação — Z1/Descanso, Z2 curto se necessário"
+            elif hrv_class == 'HIIT':
                 _zona_perm_mk = ['Moderado', 'Forte']
-                _hrv_guid_mk  = "🟢 HIGH — Z2 (threshold) ou Z3 (VO2max)"
+                _hrv_guid_mk  = "HIIT — Z2 (threshold/sweetspot) ou Z3 (VO2max)"
             else:
                 _zona_perm_mk = ['Leve', 'Moderado', 'Forte']
-                _hrv_guid_mk  = "HRV sem dados — todas as zonas permitidas"
+                _hrv_guid_mk  = "HRV sem dados — todas as zonas permitidas" 
 
             # IM actual
             _im_mk = None
@@ -2422,7 +2594,7 @@ Recalcula sem cache a cada carregamento.
 **Markov Chain — {_n_total_mk} transicoes | {_n_est_mk} estados**
 
 - Estado = Modalidade x Zona RPE (Leve<=4 / Moderado 4-7 / Forte >7) + Descanso
-- HRV (Javaloyes): REST → Z1/Descanso | LOW → Z1/Z2 | HIGH → Z2/Z3
+- HRV: Recuperacao → Z1/Descanso/Z2curto | HIIT → Z2/Z3
 - IM Fry: se >1.5 forcar variacao de zona/modalidade
 - Recalcula sem cache
                 """)
