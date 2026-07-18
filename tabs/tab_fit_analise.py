@@ -178,14 +178,16 @@ def _grafico_multi_eixo(df, colunas, lap_stats, y1, y2=None, y3=None,
     # Sombrear laps de trabalho (vermelho) e excluídos (cinzento)
     for l in lap_stats:
         fase = l.get('phase')
-        if fase not in ('work', 'excluded'):
+        if fase not in ('work', 'excluded', 'recovery'):
             continue
         d = df[df['lap_number'] == l['lap_number']]
         if len(d) == 0:
             continue
         x0 = (d['time_seconds'].iloc[0] - tmin) / 60.0
         x1 = (d['time_seconds'].iloc[-1] - tmin) / 60.0
-        cor = ('rgba(214,39,40,0.07)' if fase == 'work' else 'rgba(128,128,128,0.16)')
+        cor = {'work': 'rgba(214,39,40,0.09)',
+               'excluded': 'rgba(128,128,128,0.16)',
+               'recovery': 'rgba(52,152,219,0.07)'}[fase]
         fig.add_vrect(x0=x0, x1=x1, fillcolor=cor, line_width=0, layer='below')
 
     def _titulo(metricas):
@@ -250,15 +252,16 @@ def _grafico_series(df, colunas, lap_stats, metricas_sel):
     # Sombrear laps: trabalho (vermelho) e excluídos (cinzento)
     for l in lap_stats:
         fase = l.get('phase')
-        if fase not in ('work', 'excluded'):
+        if fase not in ('work', 'excluded', 'recovery'):
             continue
         d = df[df['lap_number'] == l['lap_number']]
         if len(d) == 0:
             continue
         x0 = (d['time_seconds'].iloc[0] - tmin) / 60.0
         x1 = (d['time_seconds'].iloc[-1] - tmin) / 60.0
-        cor = ('rgba(214,39,40,0.07)' if fase == 'work'
-               else 'rgba(128,128,128,0.16)')
+        cor = {'work': 'rgba(214,39,40,0.09)',
+               'excluded': 'rgba(128,128,128,0.16)',
+               'recovery': 'rgba(52,152,219,0.07)'}[fase]
         fig.add_vrect(x0=x0, x1=x1, fillcolor=cor, line_width=0, layer='below')
 
     fig.update_layout(
@@ -403,6 +406,14 @@ def tab_fit_analise():
             st.warning("⚠️ A usar o lap inteiro — as médias incluem a fase de transição, "
                        "o que tende a sobrestimar o SmO₂ e a deslocar os limiares.")
 
+        zerar_pot = st.checkbox(
+            "Zerar potência nos períodos de recuperação",
+            value=False, key=f'zerar_{ficheiro.name}',
+            help="Alguns ergómetros registam potência residual durante a pausa "
+                 "(inércia do volante, movimento leve), o que inflaciona as médias "
+                 "de recuperação e distorce o decoupling. Esta opção força a "
+                 "potência e a cadência a zero nos laps de recuperação.")
+
         st.markdown("---")
         st.markdown("**Como identificar os intervalos de trabalho**")
         modo = st.radio(
@@ -465,7 +476,7 @@ def tab_fit_analise():
             bytes_fit, laps_trabalho_manual=laps_manual, laps_excluidos=laps_excl,
             janela_final_s=janela, modo_segmentacao=_modo_seg,
             intervalos_trabalho=intervalos, frac_corte=frac_corte,
-            min_dur_segmento=min_dur_seg)
+            min_dur_segmento=min_dur_seg, zerar_potencia_descanso=zerar_pot)
 
     if 'erro' in res:
         st.error(f"❌ {res['erro']}")
@@ -566,6 +577,7 @@ def tab_fit_analise():
             'Lap': l['lap_number'],
             'Aquecimento': l['phase'] == 'excluded',
             'Trabalho': l['phase'] == 'work',
+            'Fase actual': _FASE_LBL.get(l['phase'], l['phase']),
             'Início': _mmss(_ini_s),
             'Fim': _mmss(_fim_s),
             'Duração': _mmss(l['duration']),
@@ -593,6 +605,9 @@ def tab_fit_analise():
                 '⚪ Aquec.', help='Excluir este lap de toda a análise', width='small'),
             'Trabalho': st.column_config.CheckboxColumn(
                 '🏃 Trab.', help='Marcar como intervalo de trabalho', width='small'),
+            'Fase actual': st.column_config.TextColumn(
+                'Fase', disabled=True, width='small',
+                help='Resultado: o que não for aquecimento nem trabalho é recuperação'),
             'Início': st.column_config.TextColumn(
                 'Início', help='mm:ss ou h:mm:ss desde o início da sessão', width='small'),
             'Fim': st.column_config.TextColumn(
@@ -746,8 +761,8 @@ def tab_fit_analise():
             st.plotly_chart(fig, use_container_width=True,
                             config={'displayModeBar': True, 'scrollZoom': True},
                             key=f'g_multi_{ficheiro.name}')
-            st.caption("Bandas vermelhas = laps de trabalho · cinzentas = excluídos. "
-                       "Podes fazer zoom e arrastar no gráfico.")
+            st.caption("🔴 Bandas vermelhas = trabalho · 🔵 azuis = recuperação · "
+                       "⚪ cinzentas = excluídos. Podes fazer zoom e arrastar.")
         else:
             st.info("Escolhe pelo menos uma métrica.")
     else:
@@ -761,7 +776,7 @@ def tab_fit_analise():
                 st.plotly_chart(fig, use_container_width=True,
                                 config={'displayModeBar': False},
                                 key=f'g_series_{ficheiro.name}')
-                st.caption("Bandas vermelhas = laps de trabalho · cinzentas = excluídos.")
+                st.caption("🔴 Trabalho · 🔵 recuperação · ⚪ excluídos.")
 
     # ── Cinética de restauração ───────────────────────────────────────────────
     rest = res['restauracao']
