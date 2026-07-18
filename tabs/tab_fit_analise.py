@@ -27,7 +27,7 @@ sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))
 warnings.filterwarnings('ignore')
 
 from utils.fit_analyzer import (
-    analisar_fit, resumir_para_historico, NOMES_METRICAS,
+    analisar_fit, resumir_para_historico, parse_intervalos, NOMES_METRICAS,
 )
 
 # Cores por métrica (paleta Wong 2011, colorblind-safe)
@@ -218,7 +218,7 @@ def tab_fit_analise():
     laps_manual = st.session_state.get(chave_manual)
     laps_excl = st.session_state.get(chave_excl, [])
 
-    # Janela de estado estacionário
+    # ── Definições da análise ────────────────────────────────────────────────
     with st.expander("⚙️ Definições da análise", expanded=False):
         janela = st.slider(
             "Janela de estado estacionário (segundos finais de cada lap)",
@@ -232,9 +232,65 @@ def tab_fit_analise():
             st.warning("⚠️ A usar o lap inteiro — as médias incluem a fase de transição, "
                        "o que tende a sobrestimar o SmO₂ e a deslocar os limiares.")
 
+        st.markdown("---")
+        st.markdown("**Como identificar os intervalos de trabalho**")
+        modo = st.radio(
+            "Modo",
+            options=['auto', 'corte', 'intervalos'],
+            format_func=lambda m: {
+                'auto': '🤖 Automático (laps do ficheiro, ou detecção pelo sinal)',
+                'corte': '📉 Detecção por corte de intensidade (defino a %)',
+                'intervalos': '⏱️ Eu defino os tempos de trabalho',
+            }[m],
+            key=f'modo_{ficheiro.name}',
+            help="Se a detecção automática não acertar no teu ficheiro, usa um dos "
+                 "outros modos.")
+
+        frac_corte = None
+        intervalos = None
+        min_dur_seg = 45
+
+        if modo == 'corte':
+            pct = st.slider(
+                "Recuperação = abaixo de X% da intensidade de trabalho",
+                min_value=20, max_value=90, value=50, step=5,
+                key=f'pct_{ficheiro.name}',
+                help="Tudo o que estiver abaixo desta percentagem da potência (ou FC) "
+                     "típica de trabalho é considerado recuperação.")
+            frac_corte = pct / 100.0
+            min_dur_seg = st.slider(
+                "Duração mínima de um bloco (s)", 10, 180, 45, 5,
+                key=f'mindur_{ficheiro.name}',
+                help="Blocos mais curtos são fundidos com o anterior, para evitar "
+                     "dezenas de micro-intervalos por causa de oscilações.")
+
+        elif modo == 'intervalos':
+            st.caption("Escreve um intervalo de **trabalho** por linha. Tudo o que ficar "
+                       "fora (os 'buracos') passa automaticamente a recuperação.")
+            texto = st.text_area(
+                "Intervalos de trabalho",
+                value=st.session_state.get(f'txt_iv_{ficheiro.name}', ''),
+                placeholder="10:00-13:00\n14:00-17:00\n18:00-21:00",
+                height=140, key=f'txt_iv_{ficheiro.name}',
+                help="Formatos aceites: mm:ss-mm:ss, h:mm:ss-h:mm:ss, ou segundos "
+                     "(600-780). Um intervalo por linha, ou separados por ';'.")
+            intervalos, erros_iv = parse_intervalos(texto)
+            if erros_iv:
+                st.error("Não consegui interpretar: " + ", ".join(f"`{e}`" for e in erros_iv))
+            if intervalos:
+                st.success(f"✅ {len(intervalos)} intervalos de trabalho: " +
+                           ", ".join(f"{_mmss(a)}–{_mmss(b)}" for a, b in intervalos))
+            elif texto.strip():
+                st.warning("Nenhum intervalo válido — a usar detecção automática.")
+
+    _modo_seg = {'auto': 'auto', 'corte': 'forcar', 'intervalos': 'intervalos'}[modo]
+
     with st.spinner("A analisar o ficheiro..."):
-        res = analisar_fit(bytes_fit, laps_trabalho_manual=laps_manual,
-                           laps_excluidos=laps_excl, janela_final_s=janela)
+        res = analisar_fit(
+            bytes_fit, laps_trabalho_manual=laps_manual, laps_excluidos=laps_excl,
+            janela_final_s=janela, modo_segmentacao=_modo_seg,
+            intervalos_trabalho=intervalos, frac_corte=frac_corte,
+            min_dur_segmento=min_dur_seg)
 
     if 'erro' in res:
         st.error(f"❌ {res['erro']}")
@@ -270,7 +326,12 @@ def tab_fit_analise():
     _trigger0 = lap_stats[0].get('lap_trigger') if lap_stats else None
     _auto_seg = _trigger0 == 'auto_segmentado'
     _sem_seg = _trigger0 == 'auto_none'
-    if _auto_seg:
+    _por_tempo = _trigger0 == 'manual_tempo'
+    if _por_tempo:
+        st.success(
+            "⏱️ **Intervalos definidos por ti** — os blocos que indicaste são o trabalho; "
+            "os períodos entre eles foram convertidos automaticamente em recuperação.")
+    elif _auto_seg:
         st.info(
             "🤖 **O ficheiro não tinha laps marcados** — os intervalos foram detectados "
             "automaticamente a partir do sinal de intensidade (blocos alto/baixo). "
