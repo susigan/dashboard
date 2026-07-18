@@ -90,22 +90,37 @@ _PADROES_METRICAS = {
     'thb':          ['thb', 't hb', 'total hemoglobin'],
     'dfa1':         ['alpha1', 'alpha 1', 'dfa1', 'dfa a1', 'dfa_alpha1'],
     'respiration':  ['respirationrate', 'respiration rate', 'respiration', 'resp_rate'],
-    'rr_ratio':     ['rra1 ratio', 'rr_ratio', 'rr ratio'],
+    'resp_enhanced': ['enhanced_respiration_rate', 'enhanced respiration rate'],
+    # Qualidade do sinal HRV: percentagem de batimentos corrigidos/interpolados.
+    # Valores altos (>5%) indicam que o DFA-α1 desse período é pouco fiável.
+    'artifacts':    ['artifacts', 'artefacts', 'artifact'],
+    # Rácio RR do algoritmo alpha1 (métrica auxiliar do sensor)
+    'rr_ratio':     ['rra1_ratio', 'rra1 ratio', 'rr_ratio', 'rr ratio'],
+    'hr_alphahrv':  ['heartrate_alphahrv', 'heartrate alphahrv'],
     'power':        ['power'],
     'heart_rate':   ['heart_rate', 'heartrate', 'heart rate'],
     'cadence':      ['cadence'],
+    'speed':        ['enhanced_speed', 'speed'],
+    'distance':     ['distance'],
+    'cycle_length': ['cycle_length16', 'cycle_length'],
 }
 
 # Nomes "bonitos" para mostrar na interface
 NOMES_METRICAS = {
-    'smo2':        'SmO₂ (%)',
-    'thb':         'THb',
-    'dfa1':        'DFA-α1',
-    'respiration': 'Respiração (rpm)',
-    'rr_ratio':    'RR ratio',
-    'power':       'Potência (W)',
-    'heart_rate':  'FC (bpm)',
-    'cadence':     'Cadência',
+    'smo2':          'SmO₂ (%)',
+    'thb':           'THb',
+    'dfa1':          'DFA-α1',
+    'respiration':   'Respiração (rpm)',
+    'resp_enhanced': 'Respiração enhanced',
+    'artifacts':     'Artifacts (%)',
+    'rr_ratio':      'RRa1 ratio',
+    'hr_alphahrv':   'FC (alphaHRV)',
+    'power':         'Potência (W)',
+    'heart_rate':    'FC (bpm)',
+    'cadence':       'Cadência',
+    'speed':         'Velocidade',
+    'distance':      'Distância',
+    'cycle_length':  'Comprimento de ciclo',
 }
 
 
@@ -120,6 +135,10 @@ def detectar_colunas(df):
     cols = list(df.columns)
     cols_lower = {c: str(c).lower().strip() for c in cols}
 
+    # Colunas que nunca devem ser apanhadas por substring (derivadas/acumuladas
+    # que confundiriam com a métrica instantânea — ex.: accumulated_power vs power)
+    _EXCLUIR = ('accumulated', 'total_', 'avg_', 'max_', 'min_', 'norm', 'fractional')
+
     for metrica, padroes in _PADROES_METRICAS.items():
         achou = None
         # 1ª passagem: correspondência exacta com um padrão
@@ -127,12 +146,15 @@ def detectar_colunas(df):
             if cl in padroes:
                 achou = col
                 break
-        # 2ª passagem: substring
+        # 2ª passagem: substring, evitando derivadas e colunas já usadas
         if achou is None:
             for padrao in padroes:
                 for col, cl in cols_lower.items():
-                    if padrao in cl and col not in encontradas.values():
-                        # evitar apanhar 'power' dentro de 'hf_power' etc.
+                    if col in encontradas.values():
+                        continue
+                    if any(x in cl for x in _EXCLUIR):
+                        continue
+                    if padrao in cl:
                         achou = col
                         break
                 if achou:
