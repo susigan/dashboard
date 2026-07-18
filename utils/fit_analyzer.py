@@ -1082,6 +1082,9 @@ def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
 
     restauracao = analisar_restauracao_completa(df, lap_stats, colunas)
     limiares = calcular_limiares_smo2(lap_stats, colunas)
+    # Métodos da literatura NIRS (muscleoxygentraining.com / Murias et al.)
+    bp_continuo = breakpoint_smo2_continuo(df, colunas, lap_stats)
+    lim_dfa1 = limiar_dfa1(lap_stats, colunas)
     decoupling = calcular_decoupling(lap_stats)
     fadiga = classificar_fadiga(restauracao, decoupling)
     falha = tempo_ate_falha(lap_stats)
@@ -1093,6 +1096,8 @@ def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
         'laps_info': laps_info,
         'restauracao': restauracao,
         'limiares': limiares,
+        'bp_continuo': bp_continuo,
+        'limiar_dfa1': lim_dfa1,
         'decoupling': decoupling,
         'fadiga': fadiga,
         'tempo_falha': falha,
@@ -1222,3 +1227,270 @@ def parse_intervalos(texto):
         intervalos.append((ini, fim))
 
     return intervalos, erros
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BREAKPOINT DOUBLE-LINEAR (método muscleoxygentraining.com / Murias et al.)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _ajuste_double_linear(x, y, margem=0.15):
+    """
+    Ajusta um modelo de duas rectas que se intersectam ("double linear"), o modelo
+    usado na literatura de NIRS para localizar o breakpoint de desoxigenação.
+
+    Testa cada ponto candidato como ponto de quebra, ajusta uma recta antes e outra
+    depois, e escolhe o que minimiza a soma dos quadrados dos resíduos (SSE).
+
+    margem : fracção dos extremos a ignorar como candidatos (evita quebras logo no
+             início ou no fim, que ajustam bem mas não têm significado fisiológico).
+
+    Devolve dict com o ponto de quebra, os declives antes/depois, R² e as rectas
+    para desenhar, ou None se não for possível ajustar.
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    n = len(x)
+    if n < 12:
+        return None
+
+    ini = max(4, int(n * margem))
+    fim = min(n - 4, int(n * (1 - margem)))
+    if fim <= ini:
+        return None
+
+    melhor = None
+    sse_total = np.sum((y - y.mean()) ** 2)
+
+    for i in range(ini, fim):
+        x1, y1 = x[:i], y[:i]
+        x2, y2 = x[i:], y[i:]
+        if len(x1) < 3 or len(x2) < 3:
+            continue
+        # Rectas exigem variação em x
+        if np.ptp(x1) < 1e-9 or np.ptp(x2) < 1e-9:
+            continue
+        try:
+            c1 = np.polyfit(x1, y1, 1)
+            c2 = np.polyfit(x2, y2, 1)
+        except Exception:
+            continue
+        sse = (np.sum((y1 - np.polyval(c1, x1)) ** 2) +
+               np.sum((y2 - np.polyval(c2, x2)) ** 2))
+        if melhor is None or sse < melhor['sse']:
+            melhor = {'idx': i, 'sse': sse, 'c1': c1, 'c2': c2}
+
+    if melhor is None:
+        return None
+
+    c1, c2 = melhor['c1'], melhor['c2']
+    # Ponto de intersecção das duas rectas (o breakpoint propriamente dito)
+    if abs(c1[0] - c2[0]) > 1e-9:
+        x_bp = (c2[1] - c1[1]) / (c1[0] - c2[0])
+        # Se a intersecção cair fora do intervalo, usa o ponto candidato
+        if not (x.min() <= x_bp <= x.max()):
+            x_bp = float(x[melhor['idx']])
+    else:
+        x_bp = float(x[melhor['idx']])
+
+    r2 = 1 - melhor['sse'] / sse_total if sse_total > 0 else np.nan
+
+    return {
+        'breakpoint': float(x_bp),
+        'idx': melhor['idx'],
+        'slope_antes': float(c1[0]),
+        'slope_depois': float(c2[0]),
+        'coef_antes': c1.tolist(),
+        'coef_depois': c2.tolist(),
+        'r2': float(r2),
+        'n_pontos': n,
+    }
+
+
+def breakpoint_smo2_continuo(df, colunas, lap_stats=None, janela_media=10,
+                             usar_apenas_trabalho=True, so_estado_estacionario=True,
+                             janela_estavel_s=90):
+    """
+    Breakpoint de SmO2 pelo método contínuo (muscleoxygentraining.com):
+      • média móvel de `janela_media` segundos do SmO2
+      • amostragem a cada `janela_media` segundos (reduz autocorrelação)
+      • regressão double-linear SmO2 vs intensidade
+
+    IMPORTANTE — protocolos por degraus vs rampa contínua:
+    O método original foi desenhado para uma RAMPA CONTÍNUA (20-30 W/min), onde a
+    intensidade sobe suavemente e cada ponto tem uma intensidade distinta. Num
+    protocolo por DEGRAUS (ex.: 3 min a potência fixa), a potência é constante
+    dentro do degrau mas o SmO2 desce ao longo dele — o que produz "nuvens
+    verticais" (o mesmo x com muitos valores de y) que fazem o ajuste seguir o
+    ruído em vez do sinal.
+    Por isso, com `so_estado_estacionario=True` usa-se apenas a parte final de
+    cada lap (os últimos `janela_estavel_s` segundos), onde o SmO2 já estabilizou
+    naquela intensidade. Isto torna a estimativa muito mais robusta em degraus.
+
+    NOTA sobre o músculo: assume-se sensor no RECTO FEMORAL, onde o padrão
+    esperado é uma descida gradual seguida de ACELERAÇÃO da queda no MLSS.
+    (No vasto lateral o padrão é o oposto — descida linear seguida de plateau.)
+
+    Devolve dict com o breakpoint (em W ou bpm), os declives, R², e os pontos
+    usados — ou None.
+    """
+    if 'smo2' not in colunas:
+        return None
+
+    col_smo2 = colunas['smo2']
+    col_int = colunas.get('power') or colunas.get('heart_rate')
+    if col_int is None:
+        return None
+    unidade = 'W' if col_int == colunas.get('power') else 'bpm'
+
+    d = df[['time_seconds', 'lap_number', col_smo2, col_int]].copy()
+    d.columns = ['t', 'lap', 'smo2', 'intensidade']
+    d['smo2'] = pd.to_numeric(d['smo2'], errors='coerce')
+    d['intensidade'] = pd.to_numeric(d['intensidade'], errors='coerce')
+
+    if usar_apenas_trabalho and lap_stats:
+        laps_ok = {l['lap_number'] for l in lap_stats if l.get('phase') == 'work'}
+        if laps_ok:
+            d = d[d['lap'].isin(laps_ok)]
+
+    # Restringir à parte estável de cada lap (essencial em protocolos por degraus)
+    if so_estado_estacionario and janela_estavel_s and janela_estavel_s > 0:
+        partes = []
+        for _, g in d.groupby('lap'):
+            if len(g) == 0:
+                continue
+            t_fim = g['t'].max()
+            sub = g[g['t'] >= t_fim - janela_estavel_s]
+            # Se o lap for curto, usa pelo menos a segunda metade
+            if len(sub) < 10:
+                sub = g.tail(max(10, len(g) // 2))
+            partes.append(sub)
+        if partes:
+            d = pd.concat(partes, ignore_index=True)
+
+    d = d.dropna(subset=['smo2', 'intensidade'])
+    if len(d) < 40:
+        return None
+
+    # Média móvel + amostragem a cada janela_media segundos
+    d = d.sort_values('t').reset_index(drop=True)
+    _mp = max(3, janela_media // 2)
+    d['smo2_ma'] = d['smo2'].rolling(janela_media, min_periods=_mp).mean()
+    d['int_ma'] = d['intensidade'].rolling(janela_media, min_periods=_mp).mean()
+    amostra = d.iloc[::janela_media].dropna(subset=['smo2_ma', 'int_ma'])
+    if len(amostra) < 12:
+        return None
+
+    # Ordenar por intensidade (a relação é SmO2 vs intensidade, não vs tempo)
+    amostra = amostra.sort_values('int_ma').reset_index(drop=True)
+
+    res = _ajuste_double_linear(amostra['int_ma'].values, amostra['smo2_ma'].values)
+    if res is None:
+        return None
+
+    # Interpretação do padrão (recto femoral: espera-se aceleração da queda)
+    s1, s2 = res['slope_antes'], res['slope_depois']
+    if s2 < s1:
+        padrao = 'aceleração da desoxigenação'
+        coerente = True
+    elif abs(s2) < abs(s1) * 0.5:
+        padrao = 'plateau (padrão típico de vasto lateral)'
+        coerente = False
+    else:
+        padrao = 'sem mudança clara de declive'
+        coerente = False
+
+    res.update({
+        'unidade': unidade,
+        'pontos': amostra[['int_ma', 'smo2_ma', 't']].rename(
+            columns={'int_ma': 'intensidade', 'smo2_ma': 'smo2', 't': 'tempo_s'}),
+        'janela_media': janela_media,
+        'padrao': padrao,
+        'coerente_recto_femoral': coerente,
+    })
+    return res
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LIMIAR VT1 PELO DFA-alpha1 (método Gronwald / muscleoxygentraining.com)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Valores de referência do DFA-alpha1 (Gronwald et al.; blog muscleoxygentraining)
+DFA1_VT1 = 0.75      # aproximação do VT1 / topo da zona 1
+DFA1_LIMITE = 0.70   # limite de segurança recomendado para sessões fáceis
+DFA1_RUIDO = 0.50    # ruído branco (não correlacionado) — já bem acima do VT1
+
+
+def limiar_dfa1(lap_stats, colunas, alvos=(0.75, 0.70, 0.50), max_artifacts=5.0):
+    """
+    Estima a intensidade (potência ou FC) correspondente a valores-alvo de DFA-α1,
+    por regressão linear de DFA-α1 vs intensidade nos laps de trabalho.
+
+    Base: o DFA-α1 decresce com a intensidade. Um valor de ~0.75 aproxima o VT1
+    (topo da zona 1); 0.5 é ruído branco, já bem acima do VT1. O blog recomenda
+    0.7 como limite prático de segurança para sessões de baixa intensidade.
+
+    max_artifacts : se a métrica 'artifacts' existir, laps com mais do que esta
+        percentagem de artefactos são EXCLUÍDOS — o DFA-α1 é muito sensível a
+        erros de intervalo RR e valores contaminados distorceriam a recta.
+
+    Devolve dict com a recta, os limiares estimados por alvo, e os pontos usados.
+    """
+    if 'dfa1' not in colunas:
+        return None
+
+    intensidade = 'avg_power' if any('avg_power' in l for l in lap_stats) else 'avg_heart_rate'
+    unidade = 'W' if intensidade == 'avg_power' else 'bpm'
+
+    usados, descartados = [], []
+    for l in lap_stats:
+        if l.get('phase') != 'work':
+            continue
+        if 'avg_dfa1' not in l or intensidade not in l:
+            continue
+        art = l.get('avg_artifacts')
+        if art is not None and max_artifacts is not None and art > max_artifacts:
+            descartados.append({'lap': l['lap_number'], 'artifacts': round(art, 1)})
+            continue
+        usados.append({
+            'lap': l['lap_number'],
+            'intensidade': l[intensidade],
+            'dfa1': l['avg_dfa1'],
+            'artifacts': art,
+        })
+
+    if len(usados) < 3:
+        return {'erro': 'poucos laps válidos', 'descartados': descartados,
+                'n_usados': len(usados)}
+
+    pontos = pd.DataFrame(usados).sort_values('intensidade').reset_index(drop=True)
+    x = pontos['intensidade'].values.astype(float)
+    y = pontos['dfa1'].values.astype(float)
+
+    if np.ptp(x) < 1e-9:
+        return {'erro': 'intensidade sem variação', 'descartados': descartados}
+
+    coef = np.polyfit(x, y, 1)
+    y_pred = np.polyval(coef, x)
+    sst = np.sum((y - y.mean()) ** 2)
+    r2 = 1 - np.sum((y - y_pred) ** 2) / sst if sst > 0 else np.nan
+
+    # Resolver para cada alvo: intensidade onde DFA-α1 = alvo
+    limiares = {}
+    for alvo in alvos:
+        if abs(coef[0]) > 1e-12:
+            xi = (alvo - coef[1]) / coef[0]
+            # Só reportar como fiável se cair dentro (ou perto) do intervalo testado
+            dentro = x.min() - 0.1 * np.ptp(x) <= xi <= x.max() + 0.1 * np.ptp(x)
+            limiares[alvo] = {'intensidade': float(xi), 'extrapolado': not dentro}
+        else:
+            limiares[alvo] = None
+
+    return {
+        'limiares': limiares,
+        'coef': coef.tolist(),
+        'r2': float(r2),
+        'unidade': unidade,
+        'pontos': pontos,
+        'descartados_artifacts': descartados,
+        'n_usados': len(usados),
+    }
