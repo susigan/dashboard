@@ -27,7 +27,8 @@ sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))
 warnings.filterwarnings('ignore')
 
 from utils.fit_analyzer import (
-    analisar_fit, resumir_para_historico, parse_intervalos, NOMES_METRICAS,
+    analisar_fit, resumir_para_historico, parse_intervalos,
+    sugerir_offset, NOMES_METRICAS,
 )
 
 # Cores por métrica (paleta Wong 2011, colorblind-safe)
@@ -388,6 +389,7 @@ def tab_fit_analise():
     chave_manual = f'_fit_laps_manual_{ficheiro.name}'
     chave_excl = f'_fit_laps_excl_{ficheiro.name}'
     chave_edit_iv = f'_fit_edit_iv_{ficheiro.name}'
+    chave_offsets = f'_fit_offsets_{ficheiro.name}'
     laps_manual = st.session_state.get(chave_manual)
     laps_excl = st.session_state.get(chave_excl, [])
     iv_editados = st.session_state.get(chave_edit_iv)
@@ -471,12 +473,15 @@ def tab_fit_analise():
         _modo_seg = 'intervalos'
         intervalos = iv_editados
 
+    _offsets = st.session_state.get(chave_offsets, {})
+
     with st.spinner("A analisar o ficheiro..."):
         res = analisar_fit(
             bytes_fit, laps_trabalho_manual=laps_manual, laps_excluidos=laps_excl,
             janela_final_s=janela, modo_segmentacao=_modo_seg,
             intervalos_trabalho=intervalos, frac_corte=frac_corte,
-            min_dur_segmento=min_dur_seg, zerar_potencia_descanso=zerar_pot)
+            min_dur_segmento=min_dur_seg, zerar_potencia_descanso=zerar_pot,
+            offsets=_offsets)
 
     if 'erro' in res:
         st.error(f"❌ {res['erro']}")
@@ -735,6 +740,63 @@ def tab_fit_analise():
         format_func=lambda e: {'multi': '📊 Eixos combinados (Y1/Y2/Y3)',
                                'empilhado': '📑 Painéis empilhados'}[e],
         horizontal=True, key=f'estilo_{ficheiro.name}')
+
+    # ── Correcção de sincronia entre métricas ────────────────────────────────
+    with st.expander("🔧 Corrigir sincronia entre métricas", expanded=False):
+        st.caption(
+            "Se uma métrica aparecer desfasada no tempo (patamares rectos que não "
+            "coincidem com as outras, típico de erro de gravação), podes deslocá-la. "
+            "Valores positivos empurram para a **direita** (mais tarde), negativos "
+            "para a **esquerda**. Nada é recalculado enquanto mexes — só ao aplicar.")
+
+        _sync_sel = st.multiselect(
+            "Métricas a deslocar", options=disponiveis,
+            default=list(_offsets.keys()),
+            format_func=lambda m: NOMES_METRICAS.get(m, m),
+            key=f'sync_sel_{ficheiro.name}')
+
+        _novos_off = {}
+        if _sync_sel:
+            _cols_sync = st.columns(min(len(_sync_sel), 3))
+            for _i, _m in enumerate(_sync_sel):
+                with _cols_sync[_i % len(_cols_sync)]:
+                    _novos_off[_m] = st.slider(
+                        NOMES_METRICAS.get(_m, _m),
+                        min_value=-60, max_value=60,
+                        value=int(_offsets.get(_m, 0)), step=1,
+                        key=f'off_{_m}_{ficheiro.name}',
+                        help="Segundos a deslocar (+ = mais tarde)")
+
+            _cs1, _cs2, _cs3 = st.columns([1, 1, 2])
+            if _cs1.button("✅ Aplicar sincronia", key=f'aplicar_sync_{ficheiro.name}',
+                           type='primary'):
+                st.session_state[chave_offsets] = {k: v for k, v in _novos_off.items() if v}
+                st.rerun()
+            if _cs2.button("↩️ Repor", key=f'repor_sync_{ficheiro.name}'):
+                st.session_state.pop(chave_offsets, None)
+                st.rerun()
+
+            # Sugestão automática por correlação cruzada
+            if len(_sync_sel) == 1 and len(disponiveis) > 1:
+                _ref_op = [m for m in disponiveis if m != _sync_sel[0]]
+                _ref = _cs3.selectbox(
+                    "Sugerir alinhamento com:", options=_ref_op,
+                    format_func=lambda m: NOMES_METRICAS.get(m, m),
+                    key=f'ref_sync_{ficheiro.name}')
+                if _ref:
+                    _sug = sugerir_offset(res['df'], colunas, _ref, _sync_sel[0])
+                    if _sug:
+                        st.caption(
+                            f"💡 Correlação cruzada sugere **{_sug['offset']:+d}s** "
+                            f"(r={_sug['r']:.2f}). Confirma visualmente antes de aplicar: "
+                            "atrasos fisiológicos reais (o SmO₂ responde 20-40s depois da "
+                            "potência) **não** devem ser corrigidos — só erros de gravação.")
+
+        if _offsets:
+            _txt_off = ", ".join(f"{NOMES_METRICAS.get(k, k)} {v:+d}s"
+                                 for k, v in _offsets.items())
+            st.info(f"🔧 Sincronia aplicada: {_txt_off}. Todas as análises "
+                    "(limiares, restauração, decoupling) usam os dados corrigidos.")
 
     if estilo == 'multi':
         st.caption("Escolhe que métricas vão em cada eixo. Métricas no mesmo eixo "
