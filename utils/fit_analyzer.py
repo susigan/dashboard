@@ -239,7 +239,94 @@ def construir_dataframe(fit_data):
     return df, laps_info
 
 
-def _segmentar_sem_laps(df, min_dur=45, suavizacao=15):
+def segmentar_por_intervalos(df, intervalos):
+    """
+    Cria laps a partir de intervalos de TRABALHO definidos manualmente pelo
+    utilizador (em segundos desde o início da sessão). Tudo o que fica fora dos
+    intervalos ("buracos") passa a ser recuperação.
+
+    intervalos : lista de tuplos (inicio_s, fim_s) — os blocos de trabalho.
+
+    Exemplo: [(600, 780), (840, 1020)] numa sessão de 1200s produz:
+        1. 0-600s      → recuperação (aquecimento)
+        2. 600-780s    → trabalho
+        3. 780-840s    → recuperação
+        4. 840-1020s   → trabalho
+        5. 1020-1200s  → recuperação
+
+    Devolve (df com lap_number, laps_info) com 'intensity' já definido
+    ('active' para trabalho, 'rest' para os buracos).
+    """
+    d = df.copy()
+    t_min = float(d['time_seconds'].min())
+    t_max = float(d['time_seconds'].max())
+
+    # Normalizar, validar e ordenar os intervalos
+    limpos = []
+    for par in (intervalos or []):
+        try:
+            ini, fim = float(par[0]), float(par[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        ini, fim = max(ini, t_min), min(fim, t_max)
+        if fim - ini >= 5:  # ignorar intervalos degenerados
+            limpos.append((ini, fim))
+    limpos.sort()
+
+    # Fundir intervalos sobrepostos
+    fundidos = []
+    for ini, fim in limpos:
+        if fundidos and ini <= fundidos[-1][1]:
+            fundidos[-1] = (fundidos[-1][0], max(fundidos[-1][1], fim))
+        else:
+            fundidos.append((ini, fim))
+
+    if not fundidos:
+        return _segmentar_sem_laps(df)
+
+    # Construir a sequência completa: buracos + trabalho, por ordem temporal
+    blocos = []
+    cursor = t_min
+    for ini, fim in fundidos:
+        if ini - cursor >= 5:
+            blocos.append((cursor, ini, 'rest'))
+        blocos.append((ini, fim, 'active'))
+        cursor = fim
+    if t_max - cursor >= 5:
+        blocos.append((cursor, t_max, 'rest'))
+
+    d['lap_number'] = np.nan
+    laps_info = []
+    for n, (ini, fim, tipo) in enumerate(blocos, start=1):
+        mask = (d['time_seconds'] >= ini) & (d['time_seconds'] <= fim)
+        if mask.sum() == 0:
+            continue
+        d.loc[mask, 'lap_number'] = n
+        sub = d[mask]
+        laps_info.append({
+            'lap_number': n,
+            'start_time': sub['timestamp'].iloc[0],
+            'end_time': sub['timestamp'].iloc[-1],
+            'duration': float(fim - ini),
+            'intensity': tipo,
+            'lap_trigger': 'manual_tempo',
+            'event': None, 'event_type': None,
+            'avg_power_fit': None, 'avg_hr_fit': None,
+        })
+
+    d['lap_number'] = d['lap_number'].ffill().bfill().fillna(1).astype(int)
+    # Renumerar de forma contígua (caso algum bloco tenha ficado sem records)
+    mapa = {v: i + 1 for i, v in enumerate(sorted(d['lap_number'].unique()))}
+    d['lap_number'] = d['lap_number'].map(mapa)
+    for info in laps_info:
+        info['lap_number'] = mapa.get(info['lap_number'], info['lap_number'])
+    laps_info = [i for i in laps_info if i['lap_number'] in set(d['lap_number'])]
+    laps_info.sort(key=lambda x: x['lap_number'])
+
+    return d, laps_info
+
+
+def _segmentar_sem_laps(df, min_dur=45, suavizacao=15, frac_corte=None):
     """
     Segmenta a sessão automaticamente quando o ficheiro NÃO tem laps marcados.
 
@@ -289,10 +376,17 @@ def _segmentar_sem_laps(df, min_dur=45, suavizacao=15):
         return _lap_unico()
     modo_alto, modo_baixo = float(np.median(altos)), float(np.median(baixos))
     separacao = (modo_alto - modo_baixo) / modo_alto if modo_alto > 0 else 0
-    if separacao < 0.20:
-        # Intensidade demasiado constante → não é uma sessão intervalada
-        return _lap_unico()
-    corte = (modo_alto + modo_baixo) / 2.0
+
+    if frac_corte is not None:
+        # Corte explícito pedido pelo utilizador: X% do valor típico de trabalho.
+        # Ex.: frac_corte=0.5 → tudo abaixo de 50% da potência de trabalho conta
+        # como recuperação. Útil quando a separação automática não acerta.
+        corte = modo_alto * float(frac_corte)
+    else:
+        if separacao < 0.20:
+            # Intensidade demasiado constante → não é uma sessão intervalada
+            return _lap_unico()
+        corte = (modo_alto + modo_baixo) / 2.0
 
     alto = (sinal >= corte).fillna(False).values
 
@@ -867,15 +961,26 @@ def tempo_ate_falha(lap_stats):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
-                 janela_final_s=60):
+                 janela_final_s=60, modo_segmentacao='auto',
+                 intervalos_trabalho=None, frac_corte=None,
+                 min_dur_segmento=45):
     """
     Pipeline completo: bytes do FIT → análise fisiológica completa.
 
-    laps_trabalho_manual : lista opcional de lap_numbers marcados como trabalho
-                           (sobrepõe a deteção automática).
-    laps_excluidos       : lista de lap_numbers a excluir (aquecimento/arrefecimento).
-    janela_final_s       : segundos finais de cada lap usados para as médias
-                           (estado estacionário). None/0 = lap inteiro.
+    laps_trabalho_manual : lap_numbers marcados como trabalho (sobrepõe a detecção).
+    laps_excluidos       : lap_numbers a excluir (aquecimento/arrefecimento).
+    janela_final_s       : segundos finais de cada lap usados nas médias.
+
+    modo_segmentacao :
+      'auto'      → usa os laps do ficheiro; se não houver, segmenta pelo sinal
+      'forcar'    → ignora os laps do ficheiro e segmenta sempre pelo sinal
+      'intervalos'→ usa intervalos_trabalho definidos pelo utilizador
+
+    intervalos_trabalho : lista de (inicio_s, fim_s) — blocos de TRABALHO. O que
+                          ficar fora torna-se recuperação automaticamente.
+    frac_corte          : fracção da intensidade típica de trabalho abaixo da qual
+                          se considera recuperação (ex.: 0.5 = 50%). None = auto.
+    min_dur_segmento    : duração mínima de um segmento na detecção automática.
 
     Devolve dict com tudo, ou {'erro': str}.
     """
@@ -886,6 +991,18 @@ def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
     df, laps_info = construir_dataframe(fit)
     if df is None or df.empty:
         return {'erro': "Não foi possível construir a série temporal do ficheiro."}
+
+    # ── Re-segmentação conforme o modo escolhido ─────────────────────────────
+    if modo_segmentacao == 'intervalos' and intervalos_trabalho:
+        df, laps_info = segmentar_por_intervalos(df, intervalos_trabalho)
+    elif modo_segmentacao == 'forcar':
+        df, laps_info = _segmentar_sem_laps(
+            df, min_dur=min_dur_segmento, frac_corte=frac_corte)
+    elif modo_segmentacao == 'auto' and frac_corte is not None:
+        # Auto mas com corte explícito: só re-segmenta se os laps forem automáticos
+        if laps_info and laps_info[0].get('lap_trigger') in ('auto_segmentado', 'auto_none'):
+            df, laps_info = _segmentar_sem_laps(
+                df, min_dur=min_dur_segmento, frac_corte=frac_corte)
 
     colunas = detectar_colunas(df)
     lap_stats = estatisticas_por_lap(df, laps_info, colunas,
@@ -987,3 +1104,65 @@ def resumir_para_historico(resultado, nome_ficheiro=''):
     r['fadiga_alertas'] = fad.get('n_alertas')
 
     return r
+
+
+def parse_intervalos(texto):
+    """
+    Converte texto de intervalos de trabalho em lista de (inicio_s, fim_s).
+
+    Aceita, uma linha por intervalo (ou separados por ';'):
+        10:00-13:00      → mm:ss
+        1:05:00-1:08:00  → h:mm:ss
+        600-780          → segundos
+        10:00 13:00      → separado por espaço
+
+    Devolve (intervalos, erros) onde erros é uma lista de linhas não reconhecidas.
+    """
+    def _seg(tok):
+        tok = tok.strip()
+        if not tok:
+            return None
+        if ':' in tok:
+            partes = tok.split(':')
+            try:
+                partes = [float(p) for p in partes]
+            except ValueError:
+                return None
+            if len(partes) == 2:      # mm:ss
+                return partes[0] * 60 + partes[1]
+            if len(partes) == 3:      # h:mm:ss
+                return partes[0] * 3600 + partes[1] * 60 + partes[2]
+            return None
+        try:
+            return float(tok)
+        except ValueError:
+            return None
+
+    intervalos, erros = [], []
+    if not texto:
+        return intervalos, erros
+
+    linhas = []
+    for bloco in str(texto).replace(';', '\n').split('\n'):
+        if bloco.strip():
+            linhas.append(bloco.strip())
+
+    for linha in linhas:
+        # separadores aceites: '-', '–', 'a', espaço
+        tokens = None
+        for sep in ['-', '–', ' a ', '\t']:
+            if sep in linha:
+                tokens = [t for t in linha.split(sep) if t.strip()]
+                break
+        if tokens is None:
+            tokens = linha.split()
+        if len(tokens) != 2:
+            erros.append(linha)
+            continue
+        ini, fim = _seg(tokens[0]), _seg(tokens[1])
+        if ini is None or fim is None or fim <= ini:
+            erros.append(linha)
+            continue
+        intervalos.append((ini, fim))
+
+    return intervalos, erros
