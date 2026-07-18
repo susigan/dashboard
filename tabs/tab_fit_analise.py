@@ -78,17 +78,19 @@ def _grafico_series(df, colunas, lap_stats, metricas_sel):
             showlegend=False,
             hovertemplate='%{y:.1f}<extra></extra>'), row=i, col=1)
 
-    # Sombrear os laps de trabalho em todos os painéis
+    # Sombrear laps: trabalho (vermelho) e excluídos (cinzento)
     for l in lap_stats:
-        if l.get('phase') != 'work':
+        fase = l.get('phase')
+        if fase not in ('work', 'excluded'):
             continue
         d = df[df['lap_number'] == l['lap_number']]
         if len(d) == 0:
             continue
         x0 = (d['time_seconds'].iloc[0] - tmin) / 60.0
         x1 = (d['time_seconds'].iloc[-1] - tmin) / 60.0
-        fig.add_vrect(x0=x0, x1=x1, fillcolor='rgba(214,39,40,0.07)',
-                      line_width=0, layer='below')
+        cor = ('rgba(214,39,40,0.07)' if fase == 'work'
+               else 'rgba(128,128,128,0.16)')
+        fig.add_vrect(x0=x0, x1=x1, fillcolor=cor, line_width=0, layer='below')
 
     fig.update_layout(
         paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
@@ -212,10 +214,27 @@ def tab_fit_analise():
     # ── Análise ───────────────────────────────────────────────────────────────
     bytes_fit = ficheiro.getvalue()
     chave_manual = f'_fit_laps_manual_{ficheiro.name}'
+    chave_excl = f'_fit_laps_excl_{ficheiro.name}'
     laps_manual = st.session_state.get(chave_manual)
+    laps_excl = st.session_state.get(chave_excl, [])
+
+    # Janela de estado estacionário
+    with st.expander("⚙️ Definições da análise", expanded=False):
+        janela = st.slider(
+            "Janela de estado estacionário (segundos finais de cada lap)",
+            min_value=0, max_value=180, value=60, step=10,
+            key=f'janela_{ficheiro.name}',
+            help="As médias de cada lap são calculadas só sobre os últimos N segundos. "
+                 "Métricas como o SmO₂ têm cinética lenta (~30-60s) e no início do lap "
+                 "ainda estão em transição da intensidade anterior. Usar o lap inteiro "
+                 "sobrestima o SmO₂ e distorce os limiares. 0 = usar o lap inteiro.")
+        if janela == 0:
+            st.warning("⚠️ A usar o lap inteiro — as médias incluem a fase de transição, "
+                       "o que tende a sobrestimar o SmO₂ e a deslocar os limiares.")
 
     with st.spinner("A analisar o ficheiro..."):
-        res = analisar_fit(bytes_fit, laps_trabalho_manual=laps_manual)
+        res = analisar_fit(bytes_fit, laps_trabalho_manual=laps_manual,
+                           laps_excluidos=laps_excl, janela_final_s=janela)
 
     if 'erro' in res:
         st.error(f"❌ {res['erro']}")
@@ -244,16 +263,21 @@ def tab_fit_analise():
 
     st.markdown("---")
 
-    # ── Laps: deteção automática + correção manual ───────────────────────────
-    st.markdown("### 🔧 Laps de trabalho")
-    st.caption("Detecção automática: intensidade ≥70% da mediana e duração entre 60s e 600s. "
-               "Podes corrigir manualmente se a detecção não estiver correcta.")
+    # ── Laps: deteção automática + correção manual + aquecimento ─────────────
+    st.markdown("### 🔧 Laps")
+    _msg_janela = (f"Médias calculadas sobre os últimos {janela}s de cada lap "
+                   "(estado estacionário)." if janela > 0 else
+                   "Médias calculadas sobre o lap inteiro.")
+    st.caption(f"Detecção automática: intensidade ≥70% da mediana e duração entre 60s e 600s. "
+               f"{_msg_janela} Podes corrigir a classificação e excluir o aquecimento abaixo.")
 
+    _FASE_LBL = {'work': '🏃 Trabalho', 'recovery': '🛌 Recuperação',
+                 'excluded': '⚪ Excluído'}
     tabela_laps = []
     for l in lap_stats:
         linha = {
             'Lap': l['lap_number'],
-            'Fase': '🏃 Trabalho' if l['phase'] == 'work' else '🛌 Recuperação',
+            'Fase': _FASE_LBL.get(l['phase'], l['phase']),
             'Duração': _mmss(l['duration']),
         }
         for m in ['power', 'heart_rate', 'smo2', 'dfa1', 'respiration']:
@@ -262,20 +286,42 @@ def tab_fit_analise():
         tabela_laps.append(linha)
     st.dataframe(pd.DataFrame(tabela_laps), hide_index=True, use_container_width=True)
 
-    with st.expander("✏️ Corrigir manualmente quais laps são de trabalho"):
+    if laps_excl:
+        st.info(f"⚪ Laps excluídos da análise: {sorted(laps_excl)} "
+                "(não entram nos limiares, restauração, decoupling nem fadiga).")
+
+    todos_laps = [l['lap_number'] for l in lap_stats]
+
+    with st.expander("✏️ Ajustar laps — aquecimento e classificação"):
+        st.markdown("**1. Excluir aquecimento / arrefecimento**")
+        st.caption("Laps excluídos são ignorados em toda a análise. A mediana de "
+                   "referência da detecção automática também passa a ignorá-los, "
+                   "para o aquecimento não puxar o limiar para baixo.")
+        escolha_excl = st.multiselect(
+            "Laps a excluir", options=todos_laps, default=laps_excl,
+            key=f'ms_excl_{ficheiro.name}')
+
+        st.markdown("**2. Laps de trabalho**")
+        st.caption("A recuperação é inferida: tudo o que não for trabalho nem "
+                   "estiver excluído conta como recuperação.")
         auto_work = [l['lap_number'] for l in lap_stats if l['phase'] == 'work']
-        escolha = st.multiselect(
-            "Laps de trabalho", options=[l['lap_number'] for l in lap_stats],
-            default=auto_work, key=f'ms_{ficheiro.name}')
+        opcoes_work = [n for n in todos_laps if n not in escolha_excl]
+        escolha_work = st.multiselect(
+            "Laps de trabalho", options=opcoes_work,
+            default=[n for n in auto_work if n not in escolha_excl],
+            key=f'ms_work_{ficheiro.name}')
+
         cA, cB = st.columns(2)
-        if cA.button("Aplicar selecção", key=f'aplicar_{ficheiro.name}'):
-            st.session_state[chave_manual] = escolha
+        if cA.button("Aplicar", key=f'aplicar_{ficheiro.name}'):
+            st.session_state[chave_excl] = escolha_excl
+            st.session_state[chave_manual] = escolha_work
             st.rerun()
-        if cB.button("Voltar à detecção automática", key=f'auto_{ficheiro.name}'):
+        if cB.button("Repor detecção automática", key=f'auto_{ficheiro.name}'):
             st.session_state.pop(chave_manual, None)
+            st.session_state.pop(chave_excl, None)
             st.rerun()
         if laps_manual is not None:
-            st.info(f"A usar selecção manual: laps {sorted(laps_manual)}")
+            st.caption(f"A usar selecção manual de trabalho: laps {sorted(laps_manual)}")
 
     st.markdown("---")
 
@@ -292,7 +338,7 @@ def tab_fit_analise():
         if fig:
             st.plotly_chart(fig, use_container_width=True,
                             config={'displayModeBar': False}, key=f'g_series_{ficheiro.name}')
-            st.caption("As bandas vermelhas marcam os laps de trabalho.")
+            st.caption("Bandas vermelhas = laps de trabalho · bandas cinzentas = laps excluídos.")
 
     # ── Cinética de restauração ───────────────────────────────────────────────
     rest = res['restauracao']
