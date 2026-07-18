@@ -384,8 +384,10 @@ def tab_fit_analise():
     bytes_fit = ficheiro.getvalue()
     chave_manual = f'_fit_laps_manual_{ficheiro.name}'
     chave_excl = f'_fit_laps_excl_{ficheiro.name}'
+    chave_edit_iv = f'_fit_edit_iv_{ficheiro.name}'
     laps_manual = st.session_state.get(chave_manual)
     laps_excl = st.session_state.get(chave_excl, [])
+    iv_editados = st.session_state.get(chave_edit_iv)
 
     # ── Definições da análise ────────────────────────────────────────────────
     with st.expander("⚙️ Definições da análise", expanded=False):
@@ -453,6 +455,10 @@ def tab_fit_analise():
                 st.warning("Nenhum intervalo válido — a usar detecção automática.")
 
     _modo_seg = {'auto': 'auto', 'corte': 'forcar', 'intervalos': 'intervalos'}[modo]
+    # Intervalos editados na tabela de laps têm prioridade
+    if iv_editados:
+        _modo_seg = 'intervalos'
+        intervalos = iv_editados
 
     with st.spinner("A analisar o ficheiro..."):
         res = analisar_fit(
@@ -548,23 +554,82 @@ def tab_fit_analise():
 
     _FASE_LBL = {'work': '🏃 Trabalho', 'recovery': '🛌 Recuperação',
                  'excluded': '⚪ Excluído'}
-    tabela_laps = []
+
+    # Tabela editável: o utilizador marca aquecimento/trabalho e corrige os tempos.
+    # Nada é recalculado enquanto edita — só ao carregar em "Aplicar".
+    _t0_sessao = res['df']['time_seconds'].min()
+    _linhas_edit = []
     for l in lap_stats:
-        linha = {
+        _ini_s = float(l.get('_t_ini', 0))
+        _fim_s = float(l.get('_t_fim', l['duration']))
+        _linhas_edit.append({
             'Lap': l['lap_number'],
-            'Fase': _FASE_LBL.get(l['phase'], l['phase']),
+            'Aquecimento': l['phase'] == 'excluded',
+            'Trabalho': l['phase'] == 'work',
+            'Início': _mmss(_ini_s),
+            'Fim': _mmss(_fim_s),
             'Duração': _mmss(l['duration']),
-        }
-        for m in ['power', 'heart_rate', 'smo2', 'dfa1', 'respiration']:
-            if f'avg_{m}' in l:
-                linha[NOMES_METRICAS.get(m, m)] = round(l[f'avg_{m}'], 1)
-        # Mostrar os campos nativos do FIT quando existem e são informativos
-        if l.get('intensity') and not _auto_seg:
-            linha['FIT intensity'] = l['intensity']
-        if l.get('lap_trigger') and l['lap_trigger'] not in ('auto_segmentado', 'auto_none'):
-            linha['FIT trigger'] = l['lap_trigger']
-        tabela_laps.append(linha)
-    st.dataframe(pd.DataFrame(tabela_laps), hide_index=True, use_container_width=True)
+            **{NOMES_METRICAS.get(m, m): round(l[f'avg_{m}'], 1)
+               for m in ['power', 'heart_rate', 'smo2', 'dfa1', 'artifacts']
+               if f'avg_{m}' in l},
+        })
+    _df_edit = pd.DataFrame(_linhas_edit)
+
+    st.caption("Marca os laps de **aquecimento** (excluídos da análise) e de "
+               "**trabalho**. Podes corrigir os tempos de início e fim (mm:ss ou "
+               "h:mm:ss). As alterações só são aplicadas ao carregar no botão.")
+
+    _editado = st.data_editor(
+        _df_edit,
+        hide_index=True, use_container_width=True,
+        key=f'editor_{ficheiro.name}',
+        column_config={
+            'Lap': st.column_config.NumberColumn('Lap', disabled=True, width='small'),
+            'Aquecimento': st.column_config.CheckboxColumn(
+                '⚪ Aquec.', help='Excluir este lap de toda a análise', width='small'),
+            'Trabalho': st.column_config.CheckboxColumn(
+                '🏃 Trab.', help='Marcar como intervalo de trabalho', width='small'),
+            'Início': st.column_config.TextColumn(
+                'Início', help='mm:ss ou h:mm:ss desde o início da sessão', width='small'),
+            'Fim': st.column_config.TextColumn(
+                'Fim', help='mm:ss ou h:mm:ss desde o início da sessão', width='small'),
+            'Duração': st.column_config.TextColumn('Duração', disabled=True, width='small'),
+        },
+        disabled=[c for c in _df_edit.columns
+                  if c not in ('Aquecimento', 'Trabalho', 'Início', 'Fim')])
+
+    _ca, _cb = st.columns([1, 3])
+    if _ca.button("✅ Aplicar alterações", key=f'aplicar_ed_{ficheiro.name}',
+                  type='primary'):
+        # Converter a tabela editada em intervalos + exclusões
+        _novos_iv, _novos_excl, _erros_t = [], [], []
+        for _, row in _editado.iterrows():
+            _lp = int(row['Lap'])
+            if bool(row['Aquecimento']):
+                _novos_excl.append(_lp)
+                continue
+            if not bool(row['Trabalho']):
+                continue
+            _iv, _er = parse_intervalos(f"{row['Início']}-{row['Fim']}")
+            if _iv:
+                _novos_iv.append(_iv[0])
+            else:
+                _erros_t.append(f"lap {_lp}: {row['Início']}–{row['Fim']}")
+        if _erros_t:
+            st.error("Tempos inválidos em: " + ", ".join(_erros_t))
+        else:
+            st.session_state[chave_edit_iv] = _novos_iv
+            st.session_state[chave_excl] = _novos_excl
+            st.rerun()
+    if _cb.button("↩️ Repor detecção automática", key=f'repor_{ficheiro.name}'):
+        for _k in (chave_edit_iv, chave_excl, chave_manual):
+            st.session_state.pop(_k, None)
+        st.rerun()
+
+    if st.session_state.get(chave_edit_iv):
+        _n_iv = len(st.session_state[chave_edit_iv])
+        st.info(f"⏱️ A usar {_n_iv} intervalos de trabalho definidos por ti. "
+                "Os períodos entre eles contam como recuperação.")
 
     if laps_excl:
         st.info(f"⚪ Laps excluídos da análise: {sorted(laps_excl)} "
@@ -814,6 +879,60 @@ def tab_fit_analise():
                    "A literatura sugere subtrair 10-15 W para compensar o atraso da resposta "
                    "metabólica (MRT) em rampas rápidas; em degraus longos como estes o "
                    "efeito é menor (~2-10 W).")
+
+        # ── Método alternativo: estabilidade do SmO₂ dentro de cada intervalo ──
+        _est = res.get('estabilidade_smo2')
+        if _est:
+            st.markdown("---")
+            st.markdown("#### 📉 MLSS por estabilidade intra-intervalo")
+            st.caption(
+                "Método alternativo (o preferido do blog para intervalos a potência "
+                "constante): em vez de olhar para a curva SmO₂-vs-potência **entre** "
+                "degraus, olha para o comportamento **dentro** de cada degrau. "
+                "Se o SmO₂ estabiliza, estás abaixo do MLSS; se desce continuamente, "
+                "estás acima. O MLSS fica entre os dois.")
+
+            _tb = _est['tabela'].copy()
+            _tb['comportamento'] = _tb['estavel'].map(
+                {True: '✅ estável', False: '📉 declínio contínuo'})
+            st.dataframe(
+                _tb[['lap', 'intensidade', 'smo2_inicio', 'smo2_fim', 'delta_smo2',
+                     'slope_pct_min', 'comportamento']].rename(columns={
+                        'lap': 'Lap', 'intensidade': f"Intensidade ({_est['unidade']})",
+                        'smo2_inicio': 'SmO₂ início', 'smo2_fim': 'SmO₂ fim',
+                        'delta_smo2': 'Δ SmO₂', 'slope_pct_min': 'Declive (%/min)',
+                        'comportamento': 'Comportamento'}),
+                hide_index=True, use_container_width=True)
+
+            _lo, _hi = _est['mlss_entre']
+            if _est['confianca'] == 'boa':
+                st.success(
+                    f"✅ **MLSS entre {_lo:.0f} e {_hi:.0f} {_est['unidade']}** "
+                    f"(estimativa: {_est['mlss_estimado']:.0f} {_est['unidade']}) — "
+                    f"último degrau estável a {_lo:.0f}, primeiro instável a {_hi:.0f}.")
+            elif _est['aviso'] == 'intervalos_curtos_todos_instaveis':
+                st.warning(
+                    f"⚠️ **Todos os degraus mostram declínio contínuo** — mas os teus "
+                    f"intervalos analisados têm apenas ~{_est['duracao_mediana_s']:.0f}s. "
+                    "Este método pressupõe intervalos de **5 minutos**: com degraus mais "
+                    "curtos o SmO₂ pode ainda estar em transição mesmo abaixo do MLSS, "
+                    "produzindo falsos 'declínio contínuo'. **Não conclu­as que o teu MLSS "
+                    "está abaixo do degrau mais baixo** — para usar este método, repete o "
+                    "teste com degraus de 5 min. Entretanto, usa o breakpoint double-linear "
+                    "acima, que é adequado a protocolos por degraus.")
+            elif _est['confianca'] == 'todos instáveis':
+                st.warning(
+                    "⚠️ Todos os degraus em declínio contínuo — o MLSS estará **abaixo** "
+                    "da intensidade mais baixa testada. Repete com degraus mais fáceis.")
+            elif _est['confianca'] == 'todos estáveis':
+                st.info(
+                    "ℹ️ Todos os degraus estáveis — o MLSS estará **acima** da intensidade "
+                    "mais alta testada. Repete incluindo degraus mais intensos.")
+            else:
+                st.warning(
+                    "⚠️ Resposta inconsistente: há degraus instáveis abaixo de degraus "
+                    "estáveis. Pode indicar variação de cadência, deriva do sensor, ou "
+                    "pacing irregular.")
 
     # ── Decoupling ────────────────────────────────────────────────────────────
     dec = res['decoupling']
