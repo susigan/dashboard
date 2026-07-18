@@ -32,13 +32,20 @@ from utils.fit_analyzer import (
 
 # Cores por métrica (paleta Wong 2011, colorblind-safe)
 _CORES_METRICA = {
-    'smo2':        '#0072B2',
-    'thb':         '#009E73',
-    'dfa1':        '#CC79A7',
-    'respiration': '#E69F00',
-    'heart_rate':  '#D55E00',
-    'power':       '#56B4E9',
-    'cadence':     '#999999',
+    'smo2':          '#0072B2',
+    'thb':           '#009E73',
+    'dfa1':          '#CC79A7',
+    'respiration':   '#E69F00',
+    'resp_enhanced': '#B8860B',
+    'artifacts':     '#8B0000',
+    'rr_ratio':      '#7B68EE',
+    'hr_alphahrv':   '#FF8C69',
+    'heart_rate':    '#D55E00',
+    'power':         '#56B4E9',
+    'cadence':       '#999999',
+    'speed':         '#4682B4',
+    'distance':      '#708090',
+    'cycle_length':  '#A0522D',
 }
 
 _CHAVE_HIST = '_fit_historico'
@@ -405,6 +412,25 @@ def tab_fit_analise():
             "A análise fica limitada a FC/potência. Se o teu sensor grava estes dados, "
             "verifica se o ficheiro foi exportado com os campos de developer data.")
 
+    # ── Qualidade do sinal HRV (Artifacts) ───────────────────────────────────
+    # Artifacts = % de batimentos corrigidos/interpolados. Acima de ~5% o DFA-α1
+    # desse período torna-se pouco fiável, porque é muito sensível a erros de RR.
+    if 'artifacts' in colunas and 'dfa1' in colunas:
+        _art_laps = [(l['lap_number'], l['avg_artifacts'])
+                     for l in lap_stats
+                     if l.get('phase') == 'work' and 'avg_artifacts' in l]
+        _maus = [(n, v) for n, v in _art_laps if v > 5]
+        if _maus:
+            _txt_maus = ", ".join(f"lap {n} ({v:.0f}%)" for n, v in _maus)
+            st.warning(
+                f"⚠️ **Qualidade do sinal HRV** — artefactos acima de 5% em: {_txt_maus}. "
+                "O DFA-α1 é muito sensível a erros de intervalo RR: nestes laps, "
+                "interpreta-o com reserva. Podes adicionar 'Artifacts' ao gráfico para ver "
+                "onde o sinal degradou.")
+        elif _art_laps:
+            _media_art = np.mean([v for _, v in _art_laps])
+            st.caption(f"✅ Qualidade do sinal HRV boa (artefactos médios: {_media_art:.1f}%).")
+
     st.markdown("---")
 
     # ── Laps: deteção automática + correção manual + aquecimento ─────────────
@@ -507,8 +533,11 @@ def tab_fit_analise():
 
     # ── Séries temporais ──────────────────────────────────────────────────────
     st.markdown("### 📈 Séries temporais")
-    disponiveis = [m for m in ['smo2', 'thb', 'dfa1', 'respiration',
-                               'heart_rate', 'power', 'cadence'] if m in colunas]
+    _ORDEM = ['smo2', 'thb', 'dfa1', 'artifacts', 'rr_ratio', 'respiration',
+              'resp_enhanced', 'heart_rate', 'hr_alphahrv', 'power', 'cadence',
+              'speed', 'cycle_length', 'distance']
+    disponiveis = ([m for m in _ORDEM if m in colunas] +
+                   [m for m in colunas if m not in _ORDEM])
 
     estilo = st.radio(
         "Estilo do gráfico", options=['multi', 'empilhado'],
@@ -587,8 +616,14 @@ def tab_fit_analise():
     if lim and lim.get('media') is not None:
         st.markdown("---")
         st.markdown("### 🎯 Limiares de SmO₂")
-        st.caption("Ponto de inflexão na desoxigenação muscular — a intensidade a partir da "
-                   "qual o SmO₂ cai de forma acelerada. Três métodos independentes.")
+        _n_deg = len(lim['pontos'])
+        _jan_txt = (f"a média dos últimos **{janela}s**" if janela > 0
+                    else "a média do **lap inteiro**")
+        st.caption(
+            f"Ponto de inflexão na desoxigenação muscular. Calculado sobre os "
+            f"**{_n_deg} laps de trabalho** (recuperações e laps excluídos não entram), "
+            f"usando {_jan_txt} de cada um — o estado estacionário daquela intensidade. "
+            f"Três métodos independentes.")
         u = lim.get('unidade', 'W')
         lc = st.columns(4)
         lc[0].metric("Dmax", f"{lim['dmax']:.0f} {u}" if lim['dmax'] else "—")
