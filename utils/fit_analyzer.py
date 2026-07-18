@@ -222,9 +222,22 @@ def construir_dataframe(fit_data):
 # 4. ESTATÍSTICAS POR LAP + CLASSIFICAÇÃO TRABALHO/RECUPERAÇÃO
 # ══════════════════════════════════════════════════════════════════════════════
 
-def estatisticas_por_lap(df, laps_info, colunas):
+def estatisticas_por_lap(df, laps_info, colunas, janela_final_s=60):
     """
     Calcula avg/max/min de cada métrica encontrada, por lap.
+
+    janela_final_s : usa apenas os últimos N segundos de cada lap para calcular as
+        MÉDIAS. Isto é importante porque métricas como o SmO2 têm cinética lenta
+        (tau ~30-60s): no início de um degrau ainda estão em transição a partir da
+        intensidade anterior, e só no final atingem o estado estacionário daquela
+        intensidade. Usar o lap inteiro sobrestima o SmO2 em vários pontos
+        percentuais, e o erro cresce com a intensidade — o que distorce a forma da
+        curva SmO2-vs-intensidade e desloca os limiares.
+        Passar None ou 0 usa o lap inteiro (comportamento antigo).
+
+        max/min continuam a ser calculados sobre o lap INTEIRO (interessa o
+        extremo atingido, não o estado estacionário).
+
     Devolve lista de dicts (lap_stats).
     """
     lap_stats = []
@@ -232,53 +245,109 @@ def estatisticas_por_lap(df, laps_info, colunas):
         d = df[df['lap_number'] == info['lap_number']]
         if len(d) == 0:
             continue
+
+        # Subconjunto de estado estacionário (últimos N segundos do lap)
+        if janela_final_s and janela_final_s > 0 and 'time_seconds' in d.columns:
+            t_fim = d['time_seconds'].iloc[-1]
+            d_est = d[d['time_seconds'] >= t_fim - janela_final_s]
+            # Se o lap for curto demais, usa pelo menos os últimos 25% dos pontos
+            if len(d_est) < 3:
+                d_est = d.tail(max(3, int(len(d) * 0.25)))
+        else:
+            d_est = d
+
         s = {
             'lap_number': info['lap_number'],
             'start_time': info['start_time'],
             'end_time': info['end_time'],
             'duration': info['duration'],
             'n_pontos': len(d),
+            'n_pontos_estacionario': len(d_est),
+            'janela_final_s': janela_final_s if janela_final_s else None,
         }
         for metrica, col in colunas.items():
             if col in d.columns:
-                vals = pd.to_numeric(d[col], errors='coerce').dropna()
-                if len(vals) > 0:
-                    s[f'avg_{metrica}'] = float(vals.mean())
-                    s[f'max_{metrica}'] = float(vals.max())
-                    s[f'min_{metrica}'] = float(vals.min())
+                # Média sobre o estado estacionário
+                vals_est = pd.to_numeric(d_est[col], errors='coerce').dropna()
+                if len(vals_est) > 0:
+                    s[f'avg_{metrica}'] = float(vals_est.mean())
+                # max/min sobre o lap inteiro
+                vals_all = pd.to_numeric(d[col], errors='coerce').dropna()
+                if len(vals_all) > 0:
+                    s[f'max_{metrica}'] = float(vals_all.max())
+                    s[f'min_{metrica}'] = float(vals_all.min())
+                    s[f'avg_lap_inteiro_{metrica}'] = float(vals_all.mean())
         lap_stats.append(s)
     return lap_stats
 
 
-def classificar_laps(lap_stats, dur_min=60, dur_max=600, frac_mediana=0.7):
+def classificar_laps(lap_stats, dur_min=60, dur_max=600, frac_mediana=0.7,
+                     laps_excluidos=None):
     """
-    Classifica cada lap como 'work' ou 'recovery'.
+    Classifica cada lap como 'work', 'recovery' ou 'excluded'.
     Critério (do script original): potência >= frac_mediana × mediana das potências
     E duração entre dur_min e dur_max segundos.
+
+    laps_excluidos : lista de lap_numbers a excluir da análise (ex.: aquecimento,
+        arrefecimento). Ficam com phase='excluded' e são ignorados em todos os
+        cálculos — a mediana de referência também é calculada sem eles, para o
+        aquecimento não puxar o limiar para baixo.
 
     Se não houver potência, usa a FC como alternativa.
     Modifica lap_stats in-place e devolve-o.
     """
+    excluidos = set(laps_excluidos or [])
+
+    # Marcar os excluídos primeiro
+    for l in lap_stats:
+        if l['lap_number'] in excluidos:
+            l['phase'] = 'excluded'
+
+    considerados = [l for l in lap_stats if l['lap_number'] not in excluidos]
+    if not considerados:
+        return lap_stats
+
     chave = None
-    if any('avg_power' in l for l in lap_stats):
+    if any('avg_power' in l for l in considerados):
         chave = 'avg_power'
-    elif any('avg_heart_rate' in l for l in lap_stats):
+    elif any('avg_heart_rate' in l for l in considerados):
         chave = 'avg_heart_rate'
 
     if chave is None:
-        for l in lap_stats:
+        for l in considerados:
             l['phase'] = 'work'
         return lap_stats
 
-    valores = [l[chave] for l in lap_stats if chave in l]
-    if not valores:
-        for l in lap_stats:
+    # Limiar de separação trabalho/recuperação.
+    # Numa sessão intervalada a distribuição de intensidades é bimodal (trabalho
+    # alto vs recuperação baixo). Usar a mediana × fração é frágil quando há poucos
+    # laps ou quando se excluem alguns — a mediana desloca-se e a classificação
+    # muda toda. Usamos o ponto médio entre os dois modos (via mediana dos valores
+    # acima e abaixo da mediana global), que é estável a exclusões, e recorremos à
+    # mediana × fração apenas se a separação bimodal não for clara.
+    valores = np.array([l[chave] for l in considerados if chave in l], dtype=float)
+    if len(valores) == 0:
+        for l in considerados:
             l['phase'] = 'work'
         return lap_stats
 
-    limiar = float(np.median(valores)) * frac_mediana
+    med = float(np.median(valores))
+    altos = valores[valores >= med]
+    baixos = valores[valores < med]
 
-    for l in lap_stats:
+    if len(altos) > 0 and len(baixos) > 0:
+        modo_alto = float(np.median(altos))
+        modo_baixo = float(np.median(baixos))
+        separacao = (modo_alto - modo_baixo) / modo_alto if modo_alto > 0 else 0
+        # Bimodalidade clara → ponto médio entre os dois modos
+        if separacao >= 0.25:
+            limiar = (modo_alto + modo_baixo) / 2.0
+        else:
+            limiar = med * frac_mediana
+    else:
+        limiar = med * frac_mediana
+
+    for l in considerados:
         if chave in l:
             por_intensidade = l[chave] >= limiar
             por_duracao = dur_min <= l['duration'] <= dur_max
@@ -291,13 +360,17 @@ def classificar_laps(lap_stats, dur_min=60, dur_max=600, frac_mediana=0.7):
 def identificar_sequencias(lap_stats):
     """
     Identifica pares consecutivos trabalho→recuperação.
+    Laps excluídos (aquecimento/arrefecimento) são ignorados: a sequência é
+    procurada entre os laps considerados, para que um aquecimento no meio não
+    quebre nem crie pares falsos.
+
     Devolve lista de dicts {'work_lap': ..., 'recovery_lap': ...}.
     """
+    validos = [l for l in lap_stats if l.get('phase') in ('work', 'recovery')]
     seqs = []
-    for i in range(len(lap_stats) - 1):
-        if lap_stats[i].get('phase') == 'work' and \
-           lap_stats[i + 1].get('phase') == 'recovery':
-            seqs.append({'work_lap': lap_stats[i], 'recovery_lap': lap_stats[i + 1]})
+    for i in range(len(validos) - 1):
+        if validos[i].get('phase') == 'work' and validos[i + 1].get('phase') == 'recovery':
+            seqs.append({'work_lap': validos[i], 'recovery_lap': validos[i + 1]})
     return seqs
 
 
@@ -640,12 +713,16 @@ def tempo_ate_falha(lap_stats):
 # 9. PIPELINE COMPLETO
 # ══════════════════════════════════════════════════════════════════════════════
 
-def analisar_fit(file_bytes, laps_trabalho_manual=None):
+def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
+                 janela_final_s=60):
     """
     Pipeline completo: bytes do FIT → análise fisiológica completa.
 
-    laps_trabalho_manual : lista opcional de lap_numbers que o utilizador
-                           marcou como trabalho (sobrepõe a deteção automática).
+    laps_trabalho_manual : lista opcional de lap_numbers marcados como trabalho
+                           (sobrepõe a deteção automática).
+    laps_excluidos       : lista de lap_numbers a excluir (aquecimento/arrefecimento).
+    janela_final_s       : segundos finais de cada lap usados para as médias
+                           (estado estacionário). None/0 = lap inteiro.
 
     Devolve dict com tudo, ou {'erro': str}.
     """
@@ -658,16 +735,24 @@ def analisar_fit(file_bytes, laps_trabalho_manual=None):
         return {'erro': "Não foi possível construir a série temporal do ficheiro."}
 
     colunas = detectar_colunas(df)
-    lap_stats = estatisticas_por_lap(df, laps_info, colunas)
+    lap_stats = estatisticas_por_lap(df, laps_info, colunas,
+                                     janela_final_s=janela_final_s)
     if not lap_stats:
         return {'erro': "Nenhum lap com dados utilizáveis."}
 
-    # Classificação automática, depois override manual se fornecido
-    lap_stats = classificar_laps(lap_stats)
+    excluidos = set(laps_excluidos or [])
+
+    # Classificação automática (já ignora os excluídos no cálculo da mediana)
+    lap_stats = classificar_laps(lap_stats, laps_excluidos=excluidos)
+
+    # Override manual dos laps de trabalho, preservando as exclusões
     if laps_trabalho_manual is not None:
         manual = set(laps_trabalho_manual)
         for l in lap_stats:
-            l['phase'] = 'work' if l['lap_number'] in manual else 'recovery'
+            if l['lap_number'] in excluidos:
+                l['phase'] = 'excluded'
+            else:
+                l['phase'] = 'work' if l['lap_number'] in manual else 'recovery'
 
     restauracao = analisar_restauracao_completa(df, lap_stats, colunas)
     limiares = calcular_limiares_smo2(lap_stats, colunas)
@@ -687,6 +772,8 @@ def analisar_fit(file_bytes, laps_trabalho_manual=None):
         'tempo_falha': falha,
         'activity_name': fit.get('activity_name', 'Atividade'),
         'session': fit.get('session', {}),
+        'janela_final_s': janela_final_s,
+        'laps_excluidos': sorted(excluidos),
         'duracao_total_s': float(df['time_seconds'].iloc[-1]) if len(df) else 0.0,
         'data_sessao': (df['timestamp'].iloc[0].strftime('%Y-%m-%d %H:%M')
                         if 'timestamp' in df.columns and len(df) else None),
@@ -713,6 +800,8 @@ def resumir_para_historico(resultado, nome_ficheiro=''):
         'n_laps': len(resultado.get('lap_stats', [])),
         'n_laps_trabalho': sum(1 for l in resultado.get('lap_stats', [])
                                if l.get('phase') == 'work'),
+        'janela_estacionario_s': resultado.get('janela_final_s'),
+        'laps_excluidos': ','.join(str(x) for x in resultado.get('laps_excluidos', [])) or None,
     }
 
     # Métricas médias dos laps de trabalho
