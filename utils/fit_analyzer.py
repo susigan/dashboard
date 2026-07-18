@@ -533,6 +533,9 @@ def estatisticas_por_lap(df, laps_info, colunas, janela_final_s=60):
             'start_time': info['start_time'],
             'end_time': info['end_time'],
             'duration': info['duration'],
+            # Tempos em segundos desde o início da sessão (para a tabela editável)
+            '_t_ini': float(d['time_seconds'].iloc[0]),
+            '_t_fim': float(d['time_seconds'].iloc[-1]),
             'n_pontos': len(d),
             'n_pontos_estacionario': len(d_est),
             'janela_final_s': janela_final_s if janela_final_s else None,
@@ -1085,6 +1088,7 @@ def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
     # Métodos da literatura NIRS (muscleoxygentraining.com / Murias et al.)
     bp_continuo = breakpoint_smo2_continuo(df, colunas, lap_stats)
     lim_dfa1 = limiar_dfa1(lap_stats, colunas)
+    estab_smo2 = estabilidade_smo2_intervalos(df, colunas, lap_stats)
     decoupling = calcular_decoupling(lap_stats)
     fadiga = classificar_fadiga(restauracao, decoupling)
     falha = tempo_ate_falha(lap_stats)
@@ -1098,6 +1102,7 @@ def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
         'limiares': limiares,
         'bp_continuo': bp_continuo,
         'limiar_dfa1': lim_dfa1,
+        'estabilidade_smo2': estab_smo2,
         'decoupling': decoupling,
         'fadiga': fadiga,
         'tempo_falha': falha,
@@ -1493,4 +1498,138 @@ def limiar_dfa1(lap_stats, colunas, alvos=(0.75, 0.70, 0.50), max_artifacts=5.0)
         'pontos': pontos,
         'descartados_artifacts': descartados,
         'n_usados': len(usados),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MLSS POR ESTABILIDADE INTRA-INTERVALO
+# (método preferido do blog para intervalos de 5 min a potência constante)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def estabilidade_smo2_intervalos(df, colunas, lap_stats, ignorar_inicio_s=60,
+                                 limiar_slope=-0.5):
+    """
+    Analisa, DENTRO de cada lap de trabalho, se o SmO2 estabiliza ou continua a
+    descer. É o método que o blog prefere para intervalos a potência constante:
+
+        "procuramos a transição de estabilidade do SmO2 para um declínio
+         contínuo ao longo de 5 minutos"
+
+    Interpretação:
+      • SmO2 ESTABILIZA no intervalo  → intensidade ABAIXO do MLSS
+      • SmO2 DESCE continuamente      → intensidade ACIMA do MLSS
+      • O MLSS está entre a intensidade mais alta estável e a mais baixa instável.
+
+    Diferença face ao breakpoint double-linear: aqui não se olha para a curva
+    SmO2-vs-potência entre degraus, mas para o COMPORTAMENTO TEMPORAL dentro de
+    cada degrau. São métodos complementares.
+
+    ignorar_inicio_s : segundos iniciais a ignorar (a queda inicial é a transição
+        da intensidade anterior, não o comportamento estacionário).
+    limiar_slope : declive (em % de SmO2 por minuto) abaixo do qual se considera
+        que o SmO2 está em declínio contínuo. -0.5 %/min é um valor conservador.
+
+    Devolve dict com a tabela por intervalo e a estimativa de MLSS, ou None.
+    """
+    if 'smo2' not in colunas:
+        return None
+
+    col_smo2 = colunas['smo2']
+    col_int = colunas.get('power') or colunas.get('heart_rate')
+    if col_int is None:
+        return None
+    unidade = 'W' if col_int == colunas.get('power') else 'bpm'
+
+    linhas = []
+    for l in lap_stats:
+        if l.get('phase') != 'work':
+            continue
+        d = df[df['lap_number'] == l['lap_number']]
+        if len(d) < 60:
+            continue
+        t0 = d['time_seconds'].iloc[0]
+        d = d[d['time_seconds'] >= t0 + ignorar_inicio_s]
+        if len(d) < 30:
+            continue
+
+        y = pd.to_numeric(d[col_smo2], errors='coerce')
+        t = d['time_seconds']
+        mask = y.notna()
+        if mask.sum() < 20:
+            continue
+        y, t = y[mask].values, t[mask].values
+
+        # Declive em % de SmO2 por minuto
+        slope_por_s = float(np.polyfit(t, y, 1)[0])
+        slope_min = slope_por_s * 60.0
+        # R² do ajuste linear (quão consistente é a tendência)
+        y_pred = np.polyval(np.polyfit(t, y, 1), t)
+        sst = np.sum((y - y.mean()) ** 2)
+        r2 = float(1 - np.sum((y - y_pred) ** 2) / sst) if sst > 0 else np.nan
+
+        estavel = slope_min > limiar_slope
+        linhas.append({
+            'lap': l['lap_number'],
+            'intensidade': l.get('avg_power', l.get('avg_heart_rate')),
+            'smo2_inicio': round(float(y[0]), 1),
+            'smo2_fim': round(float(y[-1]), 1),
+            'delta_smo2': round(float(y[-1] - y[0]), 1),
+            'slope_pct_min': round(slope_min, 2),
+            'r2': round(r2, 2) if not np.isnan(r2) else None,
+            'comportamento': 'estável' if estavel else 'declínio contínuo',
+            'estavel': estavel,
+            'duracao_analisada_s': int(t[-1] - t[0]),
+        })
+
+    if len(linhas) < 2:
+        return None
+
+    tabela = pd.DataFrame(linhas).sort_values('intensidade').reset_index(drop=True)
+
+    # Duração típica analisada — o método assume intervalos longos o suficiente
+    # para o SmO2 poder estabilizar. O blog usa 5 min; abaixo de ~4 min de dados
+    # analisados (após ignorar o início) o SmO2 pode ainda estar em transição
+    # mesmo a intensidades abaixo do MLSS, o que produz falsos "declínio contínuo".
+    dur_mediana = float(tabela['duracao_analisada_s'].median())
+    intervalos_curtos = dur_mediana < 180
+
+    # MLSS entre a intensidade mais alta ESTÁVEL e a mais baixa INSTÁVEL
+    estaveis = tabela[tabela['estavel']]
+    instaveis = tabela[~tabela['estavel']]
+    mlss_min = float(estaveis['intensidade'].max()) if len(estaveis) else None
+    mlss_max = float(instaveis['intensidade'].min()) if len(instaveis) else None
+
+    if mlss_min is not None and mlss_max is not None and mlss_min < mlss_max:
+        estimativa = (mlss_min + mlss_max) / 2.0
+        confianca = 'boa'
+    elif mlss_min is not None and mlss_max is not None:
+        # Sobreposição: há instáveis abaixo de estáveis — resposta inconsistente
+        estimativa = None
+        confianca = 'inconsistente'
+    elif mlss_max is not None:
+        estimativa = None
+        confianca = 'todos instáveis'   # MLSS abaixo do intervalo testado
+    else:
+        estimativa = None
+        confianca = 'todos estáveis'    # MLSS acima do intervalo testado
+
+    # Aviso: com intervalos curtos, "todos instáveis" é o resultado esperado
+    # mesmo abaixo do MLSS — não é uma conclusão fisiológica válida.
+    aviso = None
+    if intervalos_curtos and confianca == 'todos instáveis':
+        aviso = ('intervalos_curtos_todos_instaveis')
+    elif intervalos_curtos:
+        aviso = 'intervalos_curtos'
+
+    return {
+        'tabela': tabela,
+        'mlss_entre': (mlss_min, mlss_max),
+        'mlss_estimado': estimativa,
+        'confianca': confianca,
+        'unidade': unidade,
+        'limiar_slope': limiar_slope,
+        'ignorar_inicio_s': ignorar_inicio_s,
+        'duracao_mediana_s': dur_mediana,
+        'intervalos_curtos': intervalos_curtos,
+        'aviso': aviso,
     }
