@@ -34,6 +34,7 @@ from tabs.tab_ctl_kj       import tab_ctl_kj
 from tabs.tab_cp_model     import tab_cp_model
 from tabs.tab_fmt_tensor   import tab_fmt_tensor
 from tabs.tab_hrv_analyzer import tab_hrv_analyzer
+from tabs.tab_fit_analise  import tab_fit_analise
 
 
 def main():
@@ -348,11 +349,12 @@ def main():
 
     (tab1, tab2, tab3, tab4, tab5, tab6, tab7,
      tab8, tab9, tab10, tab11, tab12, tab13, tab14,
-     tab15, tab16) = st.tabs([
+     tab15, tab16, tab17) = st.tabs([
         "📊 Visão Geral", "📈 PMC",        "📦 Volume",     "⚡ eFTP",
         "❤️ HR & RPE",   "🧠 Correlações", "🔋 Recovery",   "🧘 Wellness",
         "🔬 Análises",   "🌡️ Aquecimento", "🧬 Corporal",   "🔄 Padrão",
         "⚗️ CTL vs KJ",  "🏁 CP Model",    "📐 FMT Tensor", "🫀 HRV Analyzer",
+        "🫁 Análise FIT",
     ])
 
     with tab1:  tab_visao_geral(dw, da_filt, di, df_, da_full=ac_full, wc_full=wc, dc=dc)
@@ -371,6 +373,7 @@ def main():
     with tab14: tab_cp_model(ac_full=ac_full)
     with tab15: tab_fmt_tensor(ac_full, wc=wc_full)
     with tab16: tab_hrv_analyzer(dw, da, wc_full=wc_full, da_full=ac_full)
+    with tab17: tab_fit_analise()
 
 
 if __name__ == "__main__":
