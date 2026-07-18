@@ -1022,7 +1022,8 @@ def tempo_ate_falha(lap_stats):
 def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
                  janela_final_s=60, modo_segmentacao='auto',
                  intervalos_trabalho=None, frac_corte=None,
-                 min_dur_segmento=45, zerar_potencia_descanso=False):
+                 min_dur_segmento=45, zerar_potencia_descanso=False,
+                 offsets=None):
     """
     Pipeline completo: bytes do FIT → análise fisiológica completa.
 
@@ -1044,6 +1045,10 @@ def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
                           laps de recuperação. Útil quando o ergómetro regista
                           valores residuais durante a pausa (ex.: inércia do
                           volante) que inflacionam as médias e o decoupling.
+    offsets             : dict {metrica: segundos} para corrigir métricas fora de
+                          sincronia no ficheiro. Aplicado ANTES de qualquer
+                          cálculo, para que todas as análises usem os dados
+                          alinhados.
 
     Devolve dict com tudo, ou {'erro': str}.
     """
@@ -1068,6 +1073,13 @@ def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
                 df, min_dur=min_dur_segmento, frac_corte=frac_corte)
 
     colunas = detectar_colunas(df)
+
+    # Correcção de sincronia — aplicada ANTES de tudo o resto, para que as
+    # estatísticas, limiares, restauração e decoupling usem os dados alinhados.
+    offsets_aplicados = []
+    if offsets:
+        df, offsets_aplicados = aplicar_offsets(df, colunas, offsets)
+
     lap_stats = estatisticas_por_lap(df, laps_info, colunas,
                                      janela_final_s=janela_final_s)
     if not lap_stats:
@@ -1134,6 +1146,7 @@ def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
         'session': fit.get('session', {}),
         'janela_final_s': janela_final_s,
         'laps_excluidos': sorted(excluidos),
+        'offsets_aplicados': offsets_aplicados,
         'duracao_total_s': float(df['time_seconds'].iloc[-1]) if len(df) else 0.0,
         'data_sessao': (df['timestamp'].iloc[0].strftime('%Y-%m-%d %H:%M')
                         if 'timestamp' in df.columns and len(df) else None),
@@ -1646,4 +1659,103 @@ def estabilidade_smo2_intervalos(df, colunas, lap_stats, ignorar_inicio_s=60,
         'limiar_slope': limiar_slope,
         'ignorar_inicio_s': ignorar_inicio_s,
         'duracao_mediana_s': dur_mediana,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CORREÇÃO DE SINCRONIZAÇÃO ENTRE MÉTRICAS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def aplicar_offsets(df, colunas, offsets):
+    """
+    Desloca métricas no tempo para corrigir desfasamentos de gravação.
+
+    Alguns ficheiros FIT têm métricas fora de sincronia: sensores diferentes
+    (potenciómetro, Moxy, cinta cardíaca) podem ter latências distintas, ou o
+    gravador pode ter interpolado/repetido valores. O resultado são patamares
+    rectos ou picos que não coincidem entre séries.
+
+    offsets : dict {metrica: segundos}. Positivo = empurra para a DIREITA
+        (o valor passa a aparecer mais tarde); negativo = para a esquerda.
+
+    NOTA: isto altera o alinhamento dos dados. É uma correcção legítima quando o
+    desfasamento é claramente um artefacto de gravação, mas deve ser usada com
+    critério — deslocar métricas até "encaixarem" pode criar correlações falsas.
+
+    Devolve (df_corrigido, aplicados) onde `aplicados` lista o que foi deslocado.
+    """
+    if not offsets:
+        return df, []
+
+    d = df.copy()
+    aplicados = []
+
+    for metrica, seg in offsets.items():
+        if not seg or metrica not in colunas:
+            continue
+        col = colunas[metrica]
+        if col not in d.columns:
+            continue
+        try:
+            seg = int(round(float(seg)))
+        except (TypeError, ValueError):
+            continue
+        if seg == 0:
+            continue
+        # A série é 1 Hz, por isso deslocar N linhas = deslocar N segundos.
+        # shift positivo em pandas move os valores para baixo = mais tarde.
+        d[col] = pd.to_numeric(d[col], errors='coerce').shift(seg)
+        aplicados.append({'metrica': metrica, 'coluna': col, 'segundos': seg})
+
+    return d, aplicados
+
+
+def sugerir_offset(df, colunas, metrica_ref, metrica_alvo, max_lag=30):
+    """
+    Sugere o deslocamento que maximiza a correlação entre duas métricas.
+
+    Usa correlação cruzada: testa deslocamentos de -max_lag a +max_lag segundos e
+    devolve o que maximiza |r| entre as duas séries (após diferenciação, para
+    alinhar as MUDANÇAS e não os níveis absolutos).
+
+    Útil como ponto de partida, mas confirma sempre visualmente — o máximo de
+    correlação nem sempre corresponde ao alinhamento fisiologicamente correcto,
+    sobretudo entre métricas com cinéticas diferentes (ex.: potência muda de
+    imediato, SmO2 responde com 20-40s de atraso REAL, que não é para corrigir).
+
+    Devolve dict {'offset': int, 'r': float, 'curva': DataFrame} ou None.
+    """
+    if metrica_ref not in colunas or metrica_alvo not in colunas:
+        return None
+
+    a = pd.to_numeric(df[colunas[metrica_ref]], errors='coerce')
+    b = pd.to_numeric(df[colunas[metrica_alvo]], errors='coerce')
+    if a.notna().sum() < 60 or b.notna().sum() < 60:
+        return None
+
+    # Diferenciar para focar nas transições, não nos níveis
+    da = a.diff().fillna(0.0)
+    db = b.diff().fillna(0.0)
+
+    linhas = []
+    for lag in range(-max_lag, max_lag + 1):
+        bb = db.shift(lag)
+        m = da.notna() & bb.notna()
+        if m.sum() < 60:
+            continue
+        x, y = da[m].values, bb[m].values
+        if np.std(x) < 1e-9 or np.std(y) < 1e-9:
+            continue
+        r = float(np.corrcoef(x, y)[0, 1])
+        linhas.append({'offset': lag, 'r': r})
+
+    if not linhas:
+        return None
+
+    curva = pd.DataFrame(linhas)
+    melhor = curva.loc[curva['r'].abs().idxmax()]
+    return {
+        'offset': int(melhor['offset']),
+        'r': float(melhor['r']),
+        'curva': curva,
     }
