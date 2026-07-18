@@ -56,8 +56,96 @@ def _mmss(segundos):
 # GRÁFICOS
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _grafico_multi_eixo(df, colunas, lap_stats, y1, y2=None, y3=None,
+                        suavizar=0):
+    """
+    Gráfico com até 3 eixos Y independentes (estilo fitfileviewer):
+      Y1 → eixo esquerdo
+      Y2 → eixo direito
+      Y3 → segundo eixo direito, deslocado
+
+    Cada grupo pode ter várias métricas (partilham a escala do seu eixo).
+    """
+    if not y1 and not y2 and not y3:
+        return None
+
+    fig = go.Figure()
+    tmin = df['time_seconds'].min()
+    x = (df['time_seconds'] - tmin) / 60.0
+
+    def _serie(metrica):
+        s = pd.to_numeric(df[colunas[metrica]], errors='coerce')
+        if suavizar and suavizar > 1:
+            s = s.rolling(int(suavizar), min_periods=1, center=True).mean()
+        return s
+
+    grupos = [
+        (y1 or [], 'y',  None),
+        (y2 or [], 'y2', None),
+        (y3 or [], 'y3', None),
+    ]
+    for metricas, eixo, _ in grupos:
+        for m in metricas:
+            if m not in colunas:
+                continue
+            fig.add_trace(go.Scatter(
+                x=x, y=_serie(m), mode='lines',
+                name=NOMES_METRICAS.get(m, m), yaxis=eixo,
+                line=dict(color=_CORES_METRICA.get(m, '#333'), width=1.6),
+                hovertemplate='%{y:.1f}<extra>' + NOMES_METRICAS.get(m, m) + '</extra>'))
+
+    # Sombrear laps de trabalho (vermelho) e excluídos (cinzento)
+    for l in lap_stats:
+        fase = l.get('phase')
+        if fase not in ('work', 'excluded'):
+            continue
+        d = df[df['lap_number'] == l['lap_number']]
+        if len(d) == 0:
+            continue
+        x0 = (d['time_seconds'].iloc[0] - tmin) / 60.0
+        x1 = (d['time_seconds'].iloc[-1] - tmin) / 60.0
+        cor = ('rgba(214,39,40,0.07)' if fase == 'work' else 'rgba(128,128,128,0.16)')
+        fig.add_vrect(x0=x0, x1=x1, fillcolor=cor, line_width=0, layer='below')
+
+    def _titulo(metricas):
+        return ' / '.join(NOMES_METRICAS.get(m, m) for m in metricas)
+
+    def _cor_eixo(metricas):
+        return _CORES_METRICA.get(metricas[0], '#333') if metricas else '#333'
+
+    # Com 3 eixos, encolhe o domínio do X para o 3º eixo caber à direita
+    dominio_x = [0.0, 0.88] if y3 else [0.0, 1.0]
+
+    layout = dict(
+        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+        height=460, hovermode='x unified', font=dict(size=11),
+        margin=dict(t=50, b=55, l=60, r=40 if not y3 else 90),
+        legend=dict(orientation='h', y=-0.16, font=dict(size=10)),
+        xaxis=dict(title=dict(text='Tempo (min)'), domain=dominio_x,
+                   showgrid=True, gridcolor='rgba(128,128,128,0.2)'),
+        yaxis=dict(title=dict(text=_titulo(y1) if y1 else None,
+                              font=dict(color=_cor_eixo(y1))),
+                   tickfont=dict(color=_cor_eixo(y1)),
+                   showgrid=True, gridcolor='rgba(128,128,128,0.2)'),
+    )
+    if y2:
+        layout['yaxis2'] = dict(
+            title=dict(text=_titulo(y2), font=dict(color=_cor_eixo(y2))),
+            tickfont=dict(color=_cor_eixo(y2)),
+            overlaying='y', side='right', showgrid=False)
+    if y3:
+        layout['yaxis3'] = dict(
+            title=dict(text=_titulo(y3), font=dict(color=_cor_eixo(y3))),
+            tickfont=dict(color=_cor_eixo(y3)),
+            overlaying='y', side='right', position=0.97,
+            anchor='free', showgrid=False)
+
+    fig.update_layout(**layout)
+    return fig
+
+
 def _grafico_series(df, colunas, lap_stats, metricas_sel):
-    """Séries temporais das métricas seleccionadas, com bandas dos laps de trabalho."""
+    """Séries temporais empilhadas (um painel por métrica)."""
     if not metricas_sel:
         return None
 
@@ -419,18 +507,56 @@ def tab_fit_analise():
 
     # ── Séries temporais ──────────────────────────────────────────────────────
     st.markdown("### 📈 Séries temporais")
-    disponiveis = [m for m in ['smo2', 'thb', 'dfa1', 'respiration', 'heart_rate', 'power']
-                   if m in colunas]
-    default = [m for m in ['smo2', 'heart_rate', 'power'] if m in colunas] or disponiveis[:3]
-    sel = st.multiselect(
-        "Métricas a mostrar", options=disponiveis, default=default,
-        format_func=lambda m: NOMES_METRICAS.get(m, m), key=f'series_{ficheiro.name}')
-    if sel:
-        fig = _grafico_series(res['df'], colunas, lap_stats, sel)
+    disponiveis = [m for m in ['smo2', 'thb', 'dfa1', 'respiration',
+                               'heart_rate', 'power', 'cadence'] if m in colunas]
+
+    estilo = st.radio(
+        "Estilo do gráfico", options=['multi', 'empilhado'],
+        format_func=lambda e: {'multi': '📊 Eixos combinados (Y1/Y2/Y3)',
+                               'empilhado': '📑 Painéis empilhados'}[e],
+        horizontal=True, key=f'estilo_{ficheiro.name}')
+
+    if estilo == 'multi':
+        st.caption("Escolhe que métricas vão em cada eixo. Métricas no mesmo eixo "
+                   "partilham a escala — junta as que têm grandezas parecidas.")
+        ce1, ce2, ce3 = st.columns(3)
+        _def1 = [m for m in ['smo2'] if m in colunas] or disponiveis[:1]
+        _def2 = [m for m in ['power'] if m in colunas]
+        _def3 = [m for m in ['heart_rate'] if m in colunas]
+        y1 = ce1.multiselect("Eixo Y1 (esquerda)", disponiveis, default=_def1,
+                             format_func=lambda m: NOMES_METRICAS.get(m, m),
+                             key=f'y1_{ficheiro.name}')
+        y2 = ce2.multiselect("Eixo Y2 (direita)", disponiveis, default=_def2,
+                             format_func=lambda m: NOMES_METRICAS.get(m, m),
+                             key=f'y2_{ficheiro.name}')
+        y3 = ce3.multiselect("Eixo Y3 (extra)", disponiveis, default=_def3,
+                             format_func=lambda m: NOMES_METRICAS.get(m, m),
+                             key=f'y3_{ficheiro.name}')
+        suav = st.slider("Suavização (média móvel, segundos)", 0, 60, 0, 5,
+                         key=f'suav_{ficheiro.name}',
+                         help="0 = dados brutos a 1Hz. Suavizar ajuda a ver a tendência "
+                              "em métricas ruidosas como o DFA-α1.")
+        fig = _grafico_multi_eixo(res['df'], colunas, lap_stats, y1, y2, y3, suav)
         if fig:
             st.plotly_chart(fig, use_container_width=True,
-                            config={'displayModeBar': False}, key=f'g_series_{ficheiro.name}')
-            st.caption("Bandas vermelhas = laps de trabalho · bandas cinzentas = laps excluídos.")
+                            config={'displayModeBar': True, 'scrollZoom': True},
+                            key=f'g_multi_{ficheiro.name}')
+            st.caption("Bandas vermelhas = laps de trabalho · cinzentas = excluídos. "
+                       "Podes fazer zoom e arrastar no gráfico.")
+        else:
+            st.info("Escolhe pelo menos uma métrica.")
+    else:
+        default = [m for m in ['smo2', 'heart_rate', 'power'] if m in colunas] or disponiveis[:3]
+        sel = st.multiselect(
+            "Métricas a mostrar", options=disponiveis, default=default,
+            format_func=lambda m: NOMES_METRICAS.get(m, m), key=f'series_{ficheiro.name}')
+        if sel:
+            fig = _grafico_series(res['df'], colunas, lap_stats, sel)
+            if fig:
+                st.plotly_chart(fig, use_container_width=True,
+                                config={'displayModeBar': False},
+                                key=f'g_series_{ficheiro.name}')
+                st.caption("Bandas vermelhas = laps de trabalho · cinzentas = excluídos.")
 
     # ── Cinética de restauração ───────────────────────────────────────────────
     rest = res['restauracao']
