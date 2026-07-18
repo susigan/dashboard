@@ -150,6 +150,23 @@ def detectar_colunas(df):
 # 3. CONSTRUÇÃO DO DATAFRAME E ATRIBUIÇÃO DE LAPS
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _txt(valor):
+    """
+    Normaliza um valor de enum do FIT para string minúscula.
+    O fitdecode devolve por vezes o nome do enum ('active'), por vezes o inteiro
+    bruto (0). Esta função trata ambos e devolve None se não houver valor.
+    """
+    if valor is None:
+        return None
+    try:
+        if isinstance(valor, (int, np.integer)) and not isinstance(valor, bool):
+            return str(int(valor))
+        s = str(valor).strip().lower()
+        return s if s and s not in ('nan', 'none') else None
+    except Exception:
+        return None
+
+
 def construir_dataframe(fit_data):
     """
     Constrói o DataFrame 1Hz a partir dos records, com time_seconds e lap_number.
@@ -200,22 +217,127 @@ def construir_dataframe(fit_data):
                 'start_time': inicio,
                 'end_time': fim,
                 'duration': max(dur, 0),
+                # Campos nativos do FIT que ajudam a classificar sem adivinhar:
+                #   intensity   → 'active' | 'rest' | 'warmup' | 'cooldown' | 'recovery'
+                #   lap_trigger → 'manual' | 'time' | 'distance' | 'session_end' | ...
+                #   event/event_type → confirmam que é um evento de lap
+                'intensity': _txt(lap_raw.get('intensity')),
+                'lap_trigger': _txt(lap_raw.get('lap_trigger')),
+                'event': _txt(lap_raw.get('event')),
+                'event_type': _txt(lap_raw.get('event_type')),
+                'avg_power_fit': lap_raw.get('avg_power'),
+                'avg_hr_fit': lap_raw.get('avg_heart_rate'),
             })
             anterior_fim = fim
 
-    # Records sem lap (ou ficheiro sem laps) → lap único
+    # Records sem lap (ou ficheiro sem laps) → tentar segmentar automaticamente
     if df['lap_number'].isna().all():
-        df['lap_number'] = 1
-        laps_info = [{
-            'lap_number': 1,
-            'start_time': df['timestamp'].iloc[0],
-            'end_time': df['timestamp'].iloc[-1],
-            'duration': float(df['time_seconds'].iloc[-1]),
-        }]
+        df, laps_info = _segmentar_sem_laps(df)
     else:
         df['lap_number'] = df['lap_number'].ffill().fillna(1).astype(int)
 
     return df, laps_info
+
+
+def _segmentar_sem_laps(df, min_dur=45, suavizacao=15):
+    """
+    Segmenta a sessão automaticamente quando o ficheiro NÃO tem laps marcados.
+
+    Estratégia: usa o sinal de intensidade (potência, ou FC como alternativa),
+    suaviza-o, e separa em blocos "alto" vs "baixo" pelo ponto médio entre os dois
+    modos da distribuição. Blocos contíguos do mesmo tipo formam um segmento;
+    segmentos mais curtos que min_dur são fundidos com o vizinho, para não gerar
+    dezenas de micro-laps por causa de oscilações.
+
+    Devolve (df com lap_number, laps_info) — cada segmento é tratado como um lap.
+    Se não houver sinal utilizável, devolve um único lap com toda a sessão.
+    """
+    col = None
+    for c in ['power', 'Power', 'heart_rate', 'HeartRate']:
+        if c in df.columns and pd.to_numeric(df[c], errors='coerce').notna().sum() > 30:
+            col = c
+            break
+
+    def _lap_unico():
+        d = df.copy()
+        d['lap_number'] = 1
+        info = [{
+            'lap_number': 1,
+            'start_time': d['timestamp'].iloc[0],
+            'end_time': d['timestamp'].iloc[-1],
+            'duration': float(d['time_seconds'].iloc[-1]),
+            'intensity': None, 'lap_trigger': 'auto_none',
+            'event': None, 'event_type': None,
+            'avg_power_fit': None, 'avg_hr_fit': None,
+        }]
+        return d, info
+
+    if col is None:
+        return _lap_unico()
+
+    sinal = pd.to_numeric(df[col], errors='coerce').interpolate(limit=5)
+    sinal = sinal.rolling(suavizacao, min_periods=1, center=True).mean()
+    vals = sinal.dropna().values
+    if len(vals) < 60:
+        return _lap_unico()
+
+    # Ponto médio entre os dois modos (mesma lógica da classificação de laps)
+    med = float(np.median(vals))
+    altos = vals[vals >= med]
+    baixos = vals[vals < med]
+    if len(altos) == 0 or len(baixos) == 0:
+        return _lap_unico()
+    modo_alto, modo_baixo = float(np.median(altos)), float(np.median(baixos))
+    separacao = (modo_alto - modo_baixo) / modo_alto if modo_alto > 0 else 0
+    if separacao < 0.20:
+        # Intensidade demasiado constante → não é uma sessão intervalada
+        return _lap_unico()
+    corte = (modo_alto + modo_baixo) / 2.0
+
+    alto = (sinal >= corte).fillna(False).values
+
+    # Blocos contíguos
+    blocos = []
+    ini = 0
+    for i in range(1, len(alto)):
+        if alto[i] != alto[i - 1]:
+            blocos.append([ini, i - 1, bool(alto[ini])])
+            ini = i
+    blocos.append([ini, len(alto) - 1, bool(alto[ini])])
+
+    # Fundir blocos curtos com o vizinho anterior
+    tempos = df['time_seconds'].values
+    fundidos = []
+    for b in blocos:
+        dur = tempos[b[1]] - tempos[b[0]]
+        if fundidos and dur < min_dur:
+            fundidos[-1][1] = b[1]
+        else:
+            fundidos.append(b)
+    # Segunda passagem (fundir curtos que sobraram no início)
+    if len(fundidos) > 1:
+        dur0 = tempos[fundidos[0][1]] - tempos[fundidos[0][0]]
+        if dur0 < min_dur:
+            fundidos[1][0] = fundidos[0][0]
+            fundidos.pop(0)
+
+    d = df.copy()
+    d['lap_number'] = 0
+    laps_info = []
+    for n, (i0, i1, eh_alto) in enumerate(fundidos, start=1):
+        d.iloc[i0:i1 + 1, d.columns.get_loc('lap_number')] = n
+        laps_info.append({
+            'lap_number': n,
+            'start_time': d['timestamp'].iloc[i0],
+            'end_time': d['timestamp'].iloc[i1],
+            'duration': float(tempos[i1] - tempos[i0]),
+            'intensity': 'active' if eh_alto else 'rest',
+            'lap_trigger': 'auto_segmentado',
+            'event': None, 'event_type': None,
+            'avg_power_fit': None, 'avg_hr_fit': None,
+        })
+    d['lap_number'] = d['lap_number'].replace(0, np.nan).ffill().bfill().astype(int)
+    return d, laps_info
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -264,6 +386,10 @@ def estatisticas_por_lap(df, laps_info, colunas, janela_final_s=60):
             'n_pontos': len(d),
             'n_pontos_estacionario': len(d_est),
             'janela_final_s': janela_final_s if janela_final_s else None,
+            # Campos nativos do FIT (podem ser None se o dispositivo não os grava)
+            'intensity': info.get('intensity'),
+            'lap_trigger': info.get('lap_trigger'),
+            'event': info.get('event'),
         }
         for metrica, col in colunas.items():
             if col in d.columns:
@@ -307,6 +433,30 @@ def classificar_laps(lap_stats, dur_min=60, dur_max=600, frac_mediana=0.7,
     if not considerados:
         return lap_stats
 
+    # ── Prioridade 1: campo 'intensity' nativo do FIT ────────────────────────
+    # Muitos dispositivos gravam o tipo de lap directamente. Se estiver presente
+    # E distinguir de facto os laps (não for tudo 'active'), é mais fiável do que
+    # inferir pela potência. Valores possíveis: active, rest, warmup, cooldown,
+    # recovery, interval.
+    _MAP_INTENSITY = {
+        'active': 'work', 'interval': 'work',
+        'rest': 'recovery', 'recovery': 'recovery',
+        'warmup': 'excluded', 'cooldown': 'excluded',
+    }
+    intensidades = [l.get('intensity') for l in considerados if l.get('intensity')]
+    usou_intensity = False
+    if len(intensidades) == len(considerados) and len(set(intensidades)) > 1:
+        # O campo existe em todos e distingue — usar directamente
+        if all(i in _MAP_INTENSITY for i in intensidades):
+            for l in considerados:
+                l['phase'] = _MAP_INTENSITY[l['intensity']]
+                l['metodo_classificacao'] = 'FIT intensity'
+            usou_intensity = True
+
+    if usou_intensity:
+        return lap_stats
+
+    # ── Prioridade 2: inferir pela intensidade medida ────────────────────────
     chave = None
     if any('avg_power' in l for l in considerados):
         chave = 'avg_power'
@@ -316,6 +466,7 @@ def classificar_laps(lap_stats, dur_min=60, dur_max=600, frac_mediana=0.7,
     if chave is None:
         for l in considerados:
             l['phase'] = 'work'
+            l['metodo_classificacao'] = 'sem sinal'
         return lap_stats
 
     # Limiar de separação trabalho/recuperação.
@@ -352,8 +503,10 @@ def classificar_laps(lap_stats, dur_min=60, dur_max=600, frac_mediana=0.7,
             por_intensidade = l[chave] >= limiar
             por_duracao = dur_min <= l['duration'] <= dur_max
             l['phase'] = 'work' if (por_intensidade and por_duracao) else 'recovery'
+            l['metodo_classificacao'] = f'auto ({chave.replace("avg_", "")})'
         else:
             l['phase'] = 'recovery'
+            l['metodo_classificacao'] = 'sem dados'
     return lap_stats
 
 
