@@ -575,9 +575,13 @@ def tab_fit_analise():
         })
     _df_edit = pd.DataFrame(_linhas_edit)
 
-    st.caption("Marca os laps de **aquecimento** (excluídos da análise) e de "
-               "**trabalho**. Podes corrigir os tempos de início e fim (mm:ss ou "
-               "h:mm:ss). As alterações só são aplicadas ao carregar no botão.")
+    st.caption(
+        "Marca os laps de **aquecimento** (excluídos da análise) e de **trabalho**. "
+        "Tudo o que não for marcado conta automaticamente como **recuperação**. "
+        "Marcar caixas não altera os tempos dos laps — só muda a classificação. "
+        "Se precisares de corrigir as fronteiras, edita os campos de início/fim "
+        "(mm:ss ou h:mm:ss); só nesse caso a sessão é re-segmentada. "
+        "Nada é recalculado enquanto editas — só ao carregar no botão.")
 
     _editado = st.data_editor(
         _df_edit,
@@ -601,26 +605,53 @@ def tab_fit_analise():
     _ca, _cb = st.columns([1, 3])
     if _ca.button("✅ Aplicar alterações", key=f'aplicar_ed_{ficheiro.name}',
                   type='primary'):
-        # Converter a tabela editada em intervalos + exclusões
-        _novos_iv, _novos_excl, _erros_t = [], [], []
+        # IMPORTANTE: marcar aquecimento/trabalho NÃO re-segmenta a sessão.
+        # As fronteiras dos laps ficam como estão — só mudam os rótulos. Assim os
+        # tempos de início/fim/duração de cada lap nunca se alteram entre cliques.
+        # Só se o utilizador editar de facto os tempos é que a sessão é
+        # re-segmentada a partir dos novos intervalos.
+        _novos_excl, _novos_work = [], []
+        _tempos_alterados = False
+        _erros_t = []
         for _, row in _editado.iterrows():
             _lp = int(row['Lap'])
             if bool(row['Aquecimento']):
                 _novos_excl.append(_lp)
-                continue
-            if not bool(row['Trabalho']):
-                continue
-            _iv, _er = parse_intervalos(f"{row['Início']}-{row['Fim']}")
-            if _iv:
-                _novos_iv.append(_iv[0])
+            elif bool(row['Trabalho']):
+                _novos_work.append(_lp)
+            # Detectar se os tempos foram editados face aos originais
+            _orig = _df_edit[_df_edit['Lap'] == _lp]
+            if len(_orig) == 1:
+                if (str(row['Início']).strip() != str(_orig.iloc[0]['Início']).strip() or
+                        str(row['Fim']).strip() != str(_orig.iloc[0]['Fim']).strip()):
+                    _tempos_alterados = True
+
+        if _tempos_alterados:
+            # O utilizador mexeu nos tempos → re-segmentar pelos intervalos de trabalho
+            _novos_iv = []
+            for _, row in _editado.iterrows():
+                if not bool(row['Trabalho']) or bool(row['Aquecimento']):
+                    continue
+                _iv, _er = parse_intervalos(f"{row['Início']}-{row['Fim']}")
+                if _iv:
+                    _novos_iv.append(_iv[0])
+                else:
+                    _erros_t.append(f"lap {int(row['Lap'])}: "
+                                    f"{row['Início']}–{row['Fim']}")
+            if _erros_t:
+                st.error("Tempos inválidos em: " + ", ".join(_erros_t))
             else:
-                _erros_t.append(f"lap {_lp}: {row['Início']}–{row['Fim']}")
-        if _erros_t:
-            st.error("Tempos inválidos em: " + ", ".join(_erros_t))
+                st.session_state[chave_edit_iv] = _novos_iv
+                st.session_state[chave_excl] = []
+                st.session_state.pop(chave_manual, None)
+                st.rerun()
         else:
-            st.session_state[chave_edit_iv] = _novos_iv
+            # Só rótulos → manter a segmentação actual, mudar apenas as fases
             st.session_state[chave_excl] = _novos_excl
+            st.session_state[chave_manual] = _novos_work
+            st.session_state.pop(chave_edit_iv, None)
             st.rerun()
+
     if _cb.button("↩️ Repor detecção automática", key=f'repor_{ficheiro.name}'):
         for _k in (chave_edit_iv, chave_excl, chave_manual):
             st.session_state.pop(_k, None)
@@ -628,8 +659,14 @@ def tab_fit_analise():
 
     if st.session_state.get(chave_edit_iv):
         _n_iv = len(st.session_state[chave_edit_iv])
-        st.info(f"⏱️ A usar {_n_iv} intervalos de trabalho definidos por ti. "
+        st.info(f"⏱️ A usar {_n_iv} intervalos de trabalho com os tempos que definiste. "
                 "Os períodos entre eles contam como recuperação.")
+    elif st.session_state.get(chave_manual) is not None:
+        _nw = len(st.session_state[chave_manual])
+        _nx = len(st.session_state.get(chave_excl, []))
+        st.info(f"✅ Classificação manual aplicada: {_nw} laps de trabalho, "
+                f"{_nx} de aquecimento. Os restantes contam como recuperação. "
+                "Os tempos dos laps mantêm-se inalterados.")
 
     if laps_excl:
         st.info(f"⚪ Laps excluídos da análise: {sorted(laps_excl)} "
@@ -910,20 +947,14 @@ def tab_fit_analise():
                     f"✅ **MLSS entre {_lo:.0f} e {_hi:.0f} {_est['unidade']}** "
                     f"(estimativa: {_est['mlss_estimado']:.0f} {_est['unidade']}) — "
                     f"último degrau estável a {_lo:.0f}, primeiro instável a {_hi:.0f}.")
-            elif _est['aviso'] == 'intervalos_curtos_todos_instaveis':
-                st.warning(
-                    f"⚠️ **Todos os degraus mostram declínio contínuo** — mas os teus "
-                    f"intervalos analisados têm apenas ~{_est['duracao_mediana_s']:.0f}s. "
-                    "Este método pressupõe intervalos de **5 minutos**: com degraus mais "
-                    "curtos o SmO₂ pode ainda estar em transição mesmo abaixo do MLSS, "
-                    "produzindo falsos 'declínio contínuo'. **Não conclu­as que o teu MLSS "
-                    "está abaixo do degrau mais baixo** — para usar este método, repete o "
-                    "teste com degraus de 5 min. Entretanto, usa o breakpoint double-linear "
-                    "acima, que é adequado a protocolos por degraus.")
             elif _est['confianca'] == 'todos instáveis':
                 st.warning(
-                    "⚠️ Todos os degraus em declínio contínuo — o MLSS estará **abaixo** "
-                    "da intensidade mais baixa testada. Repete com degraus mais fáceis.")
+                    f"⚠️ Todos os intervalos em declínio contínuo — o MLSS estará "
+                    f"**abaixo de {_hi:.0f} {_est['unidade']}** (a intensidade mais baixa "
+                    f"testada). Para o localizar, inclui intervalos mais fáceis. "
+                    f"Nota: intervalos curtos favorecem este resultado, porque o SmO₂ "
+                    f"pode ainda estar em transição — aqui a duração mediana analisada "
+                    f"foi {_est['duracao_mediana_s']:.0f}s.")
             elif _est['confianca'] == 'todos estáveis':
                 st.info(
                     "ℹ️ Todos os degraus estáveis — o MLSS estará **acima** da intensidade "
