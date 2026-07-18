@@ -63,6 +63,80 @@ def _mmss(segundos):
 # GRÁFICOS
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _grafico_double_linear(bp):
+    """SmO2 vs intensidade com as duas rectas do ajuste double-linear."""
+    p = bp['pontos']
+    u = bp['unidade']
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=p['intensidade'], y=p['smo2'], mode='markers',
+        marker=dict(size=6, color='rgba(0,114,178,0.55)'),
+        name='SmO₂ (estado estacionário)',
+        hovertemplate='%{x:.0f}' + u + '<br>SmO₂ %{y:.1f}%<extra></extra>'))
+
+    x = p['intensidade'].values
+    xb = bp['breakpoint']
+    c1, c2 = bp['coef_antes'], bp['coef_depois']
+    x1 = np.linspace(x.min(), xb, 30)
+    x2 = np.linspace(xb, x.max(), 30)
+    fig.add_trace(go.Scatter(x=x1, y=np.polyval(c1, x1), mode='lines',
+        line=dict(color='#27ae60', width=2.5), name='Antes do breakpoint'))
+    fig.add_trace(go.Scatter(x=x2, y=np.polyval(c2, x2), mode='lines',
+        line=dict(color='#e74c3c', width=2.5), name='Depois do breakpoint'))
+    fig.add_vline(x=xb, line_dash='dash', line_color='#333', line_width=2,
+                  annotation_text=f"MLSS ≈ {xb:.0f}{u}", annotation_position='top')
+
+    fig.update_layout(
+        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+        height=380, margin=dict(t=55, b=50, l=55, r=25), font=dict(size=11),
+        xaxis_title=f'Intensidade ({u})', yaxis_title='SmO₂ (%)',
+        legend=dict(orientation='h', y=-0.18, font=dict(size=10)),
+        title=dict(text='Breakpoint de SmO₂ — ajuste double-linear', font=dict(size=13)))
+    fig.update_xaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+    fig.update_yaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+    return fig
+
+
+def _grafico_dfa1(ld):
+    """DFA-α1 vs intensidade com as linhas de referência 0.75 / 0.70 / 0.50."""
+    p = ld['pontos']
+    u = ld['unidade']
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=p['intensidade'], y=p['dfa1'], mode='markers+text',
+        marker=dict(size=12, color='#CC79A7'),
+        text=[f"L{int(l)}" for l in p['lap']], textposition='top center',
+        textfont=dict(size=9), name='DFA-α1 por lap',
+        hovertemplate='%{x:.0f}' + u + '<br>DFA-α1 %{y:.2f}<extra></extra>'))
+
+    x = p['intensidade'].values
+    xr = np.linspace(x.min() * 0.9, x.max() * 1.1, 50)
+    fig.add_trace(go.Scatter(x=xr, y=np.polyval(ld['coef'], xr), mode='lines',
+        line=dict(color='#CC79A7', width=2, dash='dot'),
+        name=f"Ajuste (R²={ld['r2']:.2f})"))
+
+    for alvo, cor, txt in [(0.75, '#27ae60', 'α1=0.75 (≈VT1)'),
+                           (0.70, '#f39c12', 'α1=0.70 (limite Z1)'),
+                           (0.50, '#e74c3c', 'α1=0.50 (ruído branco)')]:
+        fig.add_hline(y=alvo, line_dash='dash', line_color=cor, line_width=1.5,
+                      annotation_text=txt, annotation_position='right',
+                      annotation_font_size=9, annotation_font_color=cor)
+        v = ld['limiares'].get(alvo)
+        if v and not v['extrapolado']:
+            fig.add_vline(x=v['intensidade'], line_dash='dot', line_color=cor,
+                          line_width=1)
+
+    fig.update_layout(
+        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+        height=380, margin=dict(t=55, b=50, l=55, r=140), font=dict(size=11),
+        xaxis_title=f'Intensidade ({u})', yaxis_title='DFA-α1',
+        legend=dict(orientation='h', y=-0.18, font=dict(size=10)),
+        title=dict(text='DFA-α1 vs intensidade — estimativa do VT1', font=dict(size=13)))
+    fig.update_xaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+    fig.update_yaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+    return fig
+
+
 def _grafico_multi_eixo(df, colunas, lap_stats, y1, y2=None, y3=None,
                         suavizar=0):
     """
@@ -643,6 +717,103 @@ def tab_fit_analise():
             else:
                 st.success(f"✅ Os três métodos concordam (dispersão {_disp:.0f}%) — "
                            "estimativa fiável.")
+
+    # ── Limiares fisiológicos (métodos da literatura NIRS/HRV) ───────────────
+    _bp = res.get('bp_continuo')
+    _ldfa = res.get('limiar_dfa1')
+    if _bp or (_ldfa and 'limiares' in _ldfa):
+        st.markdown("---")
+        st.markdown("### 🔬 Limiares fisiológicos")
+        st.caption(
+            "Métodos da literatura de NIRS e HRV, que estimam os dois limiares "
+            "fundamentais **sem análise de gases**: o VT1/LT1 (topo da zona 1) pelo "
+            "DFA-α1, e o MLSS/LT2/RCP (início da zona 3) pelo breakpoint de SmO₂. "
+            "Referência: muscleoxygentraining.com (Murias, Gronwald et al.).")
+
+        _cl1, _cl2 = st.columns(2)
+
+        # VT1 pelo DFA-α1
+        with _cl1:
+            st.markdown("**VT1 / topo da zona 1 — DFA-α1**")
+            if _ldfa and 'limiares' in _ldfa:
+                _u = _ldfa['unidade']
+                _v075 = _ldfa['limiares'].get(0.75)
+                _v070 = _ldfa['limiares'].get(0.70)
+                _v050 = _ldfa['limiares'].get(0.50)
+                if _v070:
+                    _ex = " ⚠️ extrapolado" if _v070['extrapolado'] else ""
+                    st.metric("Limite de zona 1 (α1 = 0.70)",
+                              f"{_v070['intensidade']:.0f} {_u}{_ex}")
+                if _v075:
+                    st.caption(f"α1 = 0.75 (≈VT1): {_v075['intensidade']:.0f} {_u}")
+                if _v050:
+                    st.caption(f"α1 = 0.50 (ruído branco, já bem acima do VT1): "
+                               f"{_v050['intensidade']:.0f} {_u}")
+                st.caption(f"Ajuste sobre {_ldfa['n_usados']} laps · R² = {_ldfa['r2']:.2f}")
+                if _ldfa.get('descartados_artifacts'):
+                    _dd = ", ".join(f"lap {x['lap']} ({x['artifacts']:.0f}%)"
+                                    for x in _ldfa['descartados_artifacts'])
+                    st.caption(f"⚠️ Descartados por artefactos >5%: {_dd}")
+                if _ldfa['n_usados'] < 4:
+                    st.warning("Poucos laps válidos — estimativa pouco fiável. "
+                               "Um R² alto com 3 pontos não significa precisão.")
+            else:
+                _msg = _ldfa.get('erro') if _ldfa else 'sem DFA-α1 no ficheiro'
+                st.info(f"Não calculado ({_msg}).")
+
+        # MLSS pelo breakpoint de SmO₂
+        with _cl2:
+            st.markdown("**MLSS / início da zona 3 — breakpoint SmO₂**")
+            if _bp:
+                st.metric("Breakpoint (double-linear)",
+                          f"{_bp['breakpoint']:.0f} {_bp['unidade']}")
+                st.caption(f"Declive antes: {_bp['slope_antes']:.3f} · "
+                           f"depois: {_bp['slope_depois']:.3f} %/{_bp['unidade']}")
+                st.caption(f"Ajuste sobre {_bp['n_pontos']} pontos · R² = {_bp['r2']:.2f}")
+                if _bp['coerente_recto_femoral']:
+                    st.caption("✅ Padrão de aceleração da desoxigenação — o esperado "
+                               "no recto femoral.")
+                else:
+                    st.warning(f"⚠️ Padrão detectado: {_bp['padrao']}. No recto femoral "
+                               "espera-se aceleração da queda; se o sensor estiver no "
+                               "vasto lateral o padrão correcto seria um plateau.")
+                if _bp['r2'] < 0.8:
+                    st.warning("R² baixo — o modelo de duas rectas não descreve bem "
+                               "estes dados. Interpreta com reserva.")
+            else:
+                st.info("Não calculado (sem SmO₂ ou dados insuficientes).")
+
+        if _bp and _ldfa and 'limiares' in _ldfa and _ldfa['limiares'].get(0.70):
+            _vt1 = _ldfa['limiares'][0.70]['intensidade']
+            _mlss = _bp['breakpoint']
+            if _bp['unidade'] == _ldfa['unidade']:
+                if _vt1 < _mlss:
+                    st.success(
+                        f"✅ **Zonas estimadas:** Z1 até ~{_vt1:.0f}{_bp['unidade']} · "
+                        f"Z2 entre {_vt1:.0f} e {_mlss:.0f} · Z3 acima de ~{_mlss:.0f}. "
+                        "A ordem é fisiologicamente coerente (VT1 abaixo do MLSS).")
+                else:
+                    st.warning(
+                        f"⚠️ O VT1 estimado ({_vt1:.0f}{_bp['unidade']}) ficou **acima** do "
+                        f"MLSS ({_mlss:.0f}{_bp['unidade']}), o que é fisiologicamente "
+                        "improvável. Provavelmente um dos ajustes não é fiável — verifica "
+                        "o R² e o número de laps de cada um.")
+        _gc1, _gc2 = st.columns(2)
+        if _ldfa and 'limiares' in _ldfa and len(_ldfa.get('pontos', [])) >= 3:
+            with _gc1:
+                st.plotly_chart(_grafico_dfa1(_ldfa), use_container_width=True,
+                                config={'displayModeBar': False},
+                                key=f'g_dfa1_{ficheiro.name}')
+        if _bp:
+            with _gc2:
+                st.plotly_chart(_grafico_double_linear(_bp), use_container_width=True,
+                                config={'displayModeBar': False},
+                                key=f'g_dbl_{ficheiro.name}')
+
+        st.caption("Nota: o breakpoint corresponde à intensidade no momento da transição. "
+                   "A literatura sugere subtrair 10-15 W para compensar o atraso da resposta "
+                   "metabólica (MRT) em rampas rápidas; em degraus longos como estes o "
+                   "efeito é menor (~2-10 W).")
 
     # ── Decoupling ────────────────────────────────────────────────────────────
     dec = res['decoupling']
