@@ -192,23 +192,57 @@ def construir_dataframe(fit_data):
     df['lap_number'] = np.nan
 
     if laps:
-        # Cada lap tem 'timestamp' (fim do lap) e opcionalmente 'start_time'
-        fronteiras = []
+        # ── Determinar as fronteiras de cada lap ─────────────────────────────
+        # Nem todos os gravadores preenchem o 'timestamp' do lap correctamente:
+        # há ficheiros em que TODOS os laps partilham o mesmo timestamp (o do
+        # início da sessão), o que faria colapsar tudo num único lap. Por isso a
+        # ordem de preferência para o fim do lap é:
+        #   1) start_time + total_elapsed_time (o mais fiável quando existe)
+        #   2) start_time do lap seguinte
+        #   3) timestamp do lap (só se for coerente)
+        brutos = []
         for i, lap in enumerate(laps):
-            fim = lap.get('timestamp')
-            ini = lap.get('start_time')
-            if fim is None:
-                continue
-            fim = pd.to_datetime(fim, utc=True, errors='coerce')
-            ini = pd.to_datetime(ini, utc=True, errors='coerce') if ini is not None else None
+            ini = pd.to_datetime(lap.get('start_time'), utc=True, errors='coerce') \
+                if lap.get('start_time') is not None else pd.NaT
+            ts = pd.to_datetime(lap.get('timestamp'), utc=True, errors='coerce') \
+                if lap.get('timestamp') is not None else pd.NaT
+            elapsed = lap.get('total_elapsed_time')
+            if elapsed is None:
+                elapsed = lap.get('total_timer_time')
+            try:
+                elapsed = float(elapsed) if elapsed is not None else None
+            except (TypeError, ValueError):
+                elapsed = None
+            brutos.append({'idx': i + 1, 'ini': ini, 'ts': ts,
+                           'elapsed': elapsed, 'raw': lap})
+
+        # O 'timestamp' é fiável se os laps tiverem timestamps distintos entre si
+        ts_validos = [b['ts'] for b in brutos if pd.notna(b['ts'])]
+        ts_fiavel = len(set(ts_validos)) > 1 and len(ts_validos) == len(brutos)
+
+        fronteiras = []
+        for i, b in enumerate(brutos):
+            inicio = b['ini']
+            if pd.isna(inicio):
+                # Sem start_time: usa o fim do lap anterior, ou o início da sessão
+                inicio = fronteiras[-1][2] if fronteiras else t0
+
+            fim = pd.NaT
+            if b['elapsed'] is not None and b['elapsed'] > 0:
+                fim = inicio + pd.Timedelta(seconds=b['elapsed'])
+            if pd.isna(fim) and i + 1 < len(brutos) and pd.notna(brutos[i + 1]['ini']):
+                fim = brutos[i + 1]['ini']
+            if pd.isna(fim) and ts_fiavel and pd.notna(b['ts']):
+                fim = b['ts']
             if pd.isna(fim):
-                continue
-            fronteiras.append((i + 1, ini, fim, lap))
+                fim = df['timestamp'].iloc[-1]
+
+            if fim > inicio:
+                fronteiras.append((b['idx'], inicio, fim, b['raw']))
 
         anterior_fim = t0
-        for lap_num, ini, fim, lap_raw in fronteiras:
-            inicio = ini if (ini is not None and not pd.isna(ini)) else anterior_fim
-            mask = (df['timestamp'] > inicio - pd.Timedelta(seconds=1)) & \
+        for lap_num, inicio, fim, lap_raw in fronteiras:
+            mask = (df['timestamp'] >= inicio - pd.Timedelta(seconds=0.5)) & \
                    (df['timestamp'] <= fim)
             df.loc[mask, 'lap_number'] = lap_num
             dur = (fim - inicio).total_seconds()
