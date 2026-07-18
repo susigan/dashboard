@@ -1022,7 +1022,7 @@ def tempo_ate_falha(lap_stats):
 def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
                  janela_final_s=60, modo_segmentacao='auto',
                  intervalos_trabalho=None, frac_corte=None,
-                 min_dur_segmento=45):
+                 min_dur_segmento=45, zerar_potencia_descanso=False):
     """
     Pipeline completo: bytes do FIT → análise fisiológica completa.
 
@@ -1040,6 +1040,10 @@ def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
     frac_corte          : fracção da intensidade típica de trabalho abaixo da qual
                           se considera recuperação (ex.: 0.5 = 50%). None = auto.
     min_dur_segmento    : duração mínima de um segmento na detecção automática.
+    zerar_potencia_descanso : se True, força potência e trabalho (kJ) a zero nos
+                          laps de recuperação. Útil quando o ergómetro regista
+                          valores residuais durante a pausa (ex.: inércia do
+                          volante) que inflacionam as médias e o decoupling.
 
     Devolve dict com tudo, ou {'erro': str}.
     """
@@ -1082,6 +1086,26 @@ def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
                 l['phase'] = 'excluded'
             else:
                 l['phase'] = 'work' if l['lap_number'] in manual else 'recovery'
+
+    # ── Zerar potência/trabalho nos laps de recuperação (opcional) ────────────
+    # Alguns ergómetros registam potência residual durante a pausa (inércia do
+    # volante, movimento leve). Isso inflaciona as médias de recuperação e
+    # distorce o decoupling. Com esta opção, força-se tudo a zero nesses laps e
+    # recalculam-se as estatísticas para reflectir a correcção.
+    if zerar_potencia_descanso:
+        laps_rec = {l['lap_number'] for l in lap_stats if l.get('phase') == 'recovery'}
+        if laps_rec:
+            _fases_atuais = {l['lap_number']: l['phase'] for l in lap_stats}
+            mask_rec = df['lap_number'].isin(laps_rec)
+            for _c in ('power', 'cadence'):
+                if _c in colunas and colunas[_c] in df.columns:
+                    df.loc[mask_rec, colunas[_c]] = 0.0
+            # Recalcular estatísticas com os valores zerados
+            lap_stats = estatisticas_por_lap(df, laps_info, colunas,
+                                             janela_final_s=janela_final_s)
+            for l in lap_stats:
+                l['phase'] = _fases_atuais.get(l['lap_number'], 'recovery')
+                l['metodo_classificacao'] = 'manual/auto (potência zerada no descanso)'
 
     restauracao = analisar_restauracao_completa(df, lap_stats, colunas)
     limiares = calcular_limiares_smo2(lap_stats, colunas)
