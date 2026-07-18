@@ -265,11 +265,37 @@ def tab_fit_analise():
 
     # ── Laps: deteção automática + correção manual + aquecimento ─────────────
     st.markdown("### 🔧 Laps")
+
+    # Origem dos laps: marcados no ficheiro vs segmentados automaticamente
+    _trigger0 = lap_stats[0].get('lap_trigger') if lap_stats else None
+    _auto_seg = _trigger0 == 'auto_segmentado'
+    _sem_seg = _trigger0 == 'auto_none'
+    if _auto_seg:
+        st.info(
+            "🤖 **O ficheiro não tinha laps marcados** — os intervalos foram detectados "
+            "automaticamente a partir do sinal de intensidade (blocos alto/baixo). "
+            "Confirma na tabela abaixo se a segmentação corresponde ao teu protocolo; "
+            "se não, ajusta manualmente.")
+    elif _sem_seg:
+        st.warning(
+            "⚠️ **Ficheiro sem laps e sem estrutura de intervalos detectável** — a sessão "
+            "foi tratada como um bloco único. As análises que dependem de pares "
+            "trabalho→recuperação não estarão disponíveis.")
+
+    _metodo = lap_stats[0].get('metodo_classificacao') if lap_stats else None
+    _msg_metodo = ""
+    if _metodo == 'FIT intensity':
+        _msg_metodo = ("Classificação a partir do campo `intensity` gravado no próprio "
+                       "ficheiro FIT (mais fiável que inferir). ")
+    elif _metodo and _metodo.startswith('auto'):
+        _msg_metodo = ("Classificação inferida da intensidade medida (separação entre os "
+                       "blocos de trabalho e de recuperação). ")
+
     _msg_janela = (f"Médias calculadas sobre os últimos {janela}s de cada lap "
                    "(estado estacionário)." if janela > 0 else
                    "Médias calculadas sobre o lap inteiro.")
-    st.caption(f"Detecção automática: intensidade ≥70% da mediana e duração entre 60s e 600s. "
-               f"{_msg_janela} Podes corrigir a classificação e excluir o aquecimento abaixo.")
+    st.caption(f"{_msg_metodo}{_msg_janela} "
+               "Podes corrigir a classificação e excluir o aquecimento abaixo.")
 
     _FASE_LBL = {'work': '🏃 Trabalho', 'recovery': '🛌 Recuperação',
                  'excluded': '⚪ Excluído'}
@@ -283,6 +309,11 @@ def tab_fit_analise():
         for m in ['power', 'heart_rate', 'smo2', 'dfa1', 'respiration']:
             if f'avg_{m}' in l:
                 linha[NOMES_METRICAS.get(m, m)] = round(l[f'avg_{m}'], 1)
+        # Mostrar os campos nativos do FIT quando existem e são informativos
+        if l.get('intensity') and not _auto_seg:
+            linha['FIT intensity'] = l['intensity']
+        if l.get('lap_trigger') and l['lap_trigger'] not in ('auto_segmentado', 'auto_none'):
+            linha['FIT trigger'] = l['lap_trigger']
         tabela_laps.append(linha)
     st.dataframe(pd.DataFrame(tabela_laps), hide_index=True, use_container_width=True)
 
