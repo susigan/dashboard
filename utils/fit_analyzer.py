@@ -1586,12 +1586,9 @@ def estabilidade_smo2_intervalos(df, colunas, lap_stats, ignorar_inicio_s=60,
 
     tabela = pd.DataFrame(linhas).sort_values('intensidade').reset_index(drop=True)
 
-    # Duração típica analisada — o método assume intervalos longos o suficiente
-    # para o SmO2 poder estabilizar. O blog usa 5 min; abaixo de ~4 min de dados
-    # analisados (após ignorar o início) o SmO2 pode ainda estar em transição
-    # mesmo a intensidades abaixo do MLSS, o que produz falsos "declínio contínuo".
+    # Duração típica analisada (informativa; a análise corre com qualquer duração,
+    # que varia naturalmente conforme a modalidade e o protocolo).
     dur_mediana = float(tabela['duracao_analisada_s'].median())
-    intervalos_curtos = dur_mediana < 180
 
     # MLSS entre a intensidade mais alta ESTÁVEL e a mais baixa INSTÁVEL
     estaveis = tabela[tabela['estavel']]
@@ -1615,11 +1612,6 @@ def estabilidade_smo2_intervalos(df, colunas, lap_stats, ignorar_inicio_s=60,
 
     # Aviso: com intervalos curtos, "todos instáveis" é o resultado esperado
     # mesmo abaixo do MLSS — não é uma conclusão fisiológica válida.
-    aviso = None
-    if intervalos_curtos and confianca == 'todos instáveis':
-        aviso = ('intervalos_curtos_todos_instaveis')
-    elif intervalos_curtos:
-        aviso = 'intervalos_curtos'
 
     return {
         'tabela': tabela,
@@ -1630,6 +1622,4 @@ def estabilidade_smo2_intervalos(df, colunas, lap_stats, ignorar_inicio_s=60,
         'limiar_slope': limiar_slope,
         'ignorar_inicio_s': ignorar_inicio_s,
         'duracao_mediana_s': dur_mediana,
-        'intervalos_curtos': intervalos_curtos,
-        'aviso': aviso,
     }
