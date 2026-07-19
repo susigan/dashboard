@@ -848,7 +848,70 @@ def _deflexao_smo2(x, y, taxa_lim=-0.1):
         return None
 
 
-def calcular_limiares_smo2(lap_stats, colunas):
+def calcular_limiares_smo2(lap_stats, colunas, df=None, protocolo=None,
+                           n_bins=8):
+    """Wrapper que adapta o cálculo ao protocolo (ver _limiares_smo2_laps)."""
+    # Numa RAMPA não há laps de trabalho: divide-se a rampa em faixas de
+    # intensidade e usa-se a média de SmO2 em cada faixa como "ponto",
+    # replicando a estrutura que os métodos de breakpoint esperam.
+    if protocolo in ('rampa', 'continuo') and df is not None:
+        return _limiares_smo2_bins(df, colunas, n_bins=n_bins)
+    return _limiares_smo2_laps(lap_stats, colunas)
+
+
+def _limiares_smo2_bins(df, colunas, n_bins=8):
+    """
+    Limiares de SmO2 para protocolos SEM laps de trabalho (rampa contínua).
+
+    Divide o intervalo de intensidade em `n_bins` faixas de igual largura e
+    calcula o SmO2 médio de cada uma. Isto produz uma relação
+    intensidade→SmO2 comparável à que se obtém com degraus, permitindo aplicar
+    os mesmos três métodos de detecção de breakpoint.
+    """
+    if 'smo2' not in colunas:
+        return None
+    col_int = colunas.get('power') or colunas.get('heart_rate')
+    if col_int is None:
+        return None
+    unidade = 'W' if col_int == colunas.get('power') else 'bpm'
+
+    d = df[[col_int, colunas['smo2']]].copy()
+    d.columns = ['intensidade', 'smo2']
+    d = d.apply(pd.to_numeric, errors='coerce').dropna()
+    # Ignorar intensidades muito baixas (arranque/aquecimento)
+    if len(d) > 60:
+        lim_baixo = d['intensidade'].quantile(0.05)
+        d = d[d['intensidade'] >= lim_baixo]
+    if len(d) < 60 or np.ptp(d['intensidade'].values) < 1e-6:
+        return None
+
+    bins = np.linspace(d['intensidade'].min(), d['intensidade'].max(), n_bins + 1)
+    d['bin'] = pd.cut(d['intensidade'], bins, include_lowest=True)
+    g = d.groupby('bin', observed=True).agg(
+        intensidade=('intensidade', 'mean'), smo2=('smo2', 'mean'),
+        n=('smo2', 'size')).reset_index(drop=True)
+    g = g[g['n'] >= 10].dropna()
+    if len(g) < 3:
+        return None
+    g['lap'] = range(1, len(g) + 1)
+    pontos = g[['lap', 'intensidade', 'smo2']].sort_values('intensidade').reset_index(drop=True)
+
+    x = pontos['intensidade'].values.astype(float)
+    y = pontos['smo2'].values.astype(float)
+    dmax = _dmax_smo2(x, y)
+    quebra = _quebra_inclinacao(x, y)
+    defl = _deflexao_smo2(x, y)
+    validos = [v for v in (dmax, quebra, defl) if v is not None]
+
+    return {
+        'dmax': dmax, 'quebra': quebra, 'deflexao': defl,
+        'media': float(np.mean(validos)) if validos else None,
+        'pontos': pontos, 'unidade': unidade,
+        'metodo': f'faixas de intensidade (n={len(pontos)})',
+    }
+
+
+def _limiares_smo2_laps(lap_stats, colunas):
     """
     Calcula limiares de SmO2 vs intensidade a partir das médias por lap de trabalho.
     Usa três métodos independentes e faz a média dos que produzirem resultado.
@@ -1119,12 +1182,18 @@ def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
                 l['phase'] = _fases_atuais.get(l['lap_number'], 'recovery')
                 l['metodo_classificacao'] = 'manual/auto (potência zerada no descanso)'
 
+    protocolo = detectar_protocolo(df, colunas, lap_stats)
+    _tipo = protocolo.get('tipo')
+
     restauracao = analisar_restauracao_completa(df, lap_stats, colunas)
-    limiares = calcular_limiares_smo2(lap_stats, colunas)
+    limiares = calcular_limiares_smo2(lap_stats, colunas, df=df, protocolo=_tipo)
     # Métodos da literatura NIRS (muscleoxygentraining.com / Murias et al.)
-    bp_continuo = breakpoint_smo2_continuo(df, colunas, lap_stats)
+    bp_continuo = breakpoint_smo2_continuo(df, colunas, lap_stats, protocolo=_tipo)
     lim_dfa1 = limiar_dfa1(lap_stats, colunas)
-    estab_smo2 = estabilidade_smo2_intervalos(df, colunas, lap_stats)
+    # A estabilidade intra-intervalo só faz sentido em protocolos com blocos
+    # (degraus/intervalos); numa rampa não há intervalos onde estabilizar.
+    estab_smo2 = (estabilidade_smo2_intervalos(df, colunas, lap_stats)
+                  if _tipo in ('degraus', 'intervalos') else None)
 
     # ── DFA-alpha1 a partir dos RR brutos + HRVT2 + Combo (Murias 2023) ──────
     rr_info = extrair_rr(file_bytes)
@@ -1138,7 +1207,7 @@ def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
             if len(dfa1_serie) >= 10:
                 hrvt2 = calcular_hrvt(dfa1_serie, df_metricas=df, colunas=colunas,
                                       alvo=DFA1_HRVT2, lap_stats=lap_stats,
-                                      df_tempo=df)
+                                      df_tempo=df, protocolo=_tipo)
     combo = combo_limiares(hrvt2, bp_continuo)
     decoupling = calcular_decoupling(lap_stats)
     fadiga = classificar_fadiga(restauracao, decoupling)
@@ -1154,6 +1223,7 @@ def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
         'bp_continuo': bp_continuo,
         'limiar_dfa1': lim_dfa1,
         'estabilidade_smo2': estab_smo2,
+        'protocolo': protocolo,
         'rr_info': rr_info,
         'dfa1_serie': dfa1_serie,
         'dfa1_qualidade': dfa1_qualidade,
@@ -1370,7 +1440,7 @@ def _ajuste_double_linear(x, y, margem=0.15):
 
 def breakpoint_smo2_continuo(df, colunas, lap_stats=None, janela_media=10,
                              usar_apenas_trabalho=True, so_estado_estacionario=True,
-                             janela_estavel_s=90):
+                             janela_estavel_s=90, protocolo=None):
     """
     Breakpoint de SmO2 pelo método contínuo (muscleoxygentraining.com):
       • média móvel de `janela_media` segundos do SmO2
@@ -1397,6 +1467,16 @@ def breakpoint_smo2_continuo(df, colunas, lap_stats=None, janela_media=10,
     """
     if 'smo2' not in colunas:
         return None
+
+    # ── Adaptação ao protocolo ───────────────────────────────────────────────
+    # Numa RAMPA CONTÍNUA não existem "laps de trabalho" nem estado estacionário:
+    # cada instante tem a sua própria intensidade, e é precisamente essa
+    # continuidade que o método double-linear pressupõe. Restringir aos laps ou
+    # ao fim de cada bloco destruiria a maior parte dos dados. Em DEGRAUS e
+    # INTERVALOS, pelo contrário, as restrições são essenciais (ver docstring).
+    if protocolo in ('rampa', 'continuo'):
+        usar_apenas_trabalho = False
+        so_estado_estacionario = False
 
     col_smo2 = colunas['smo2']
     col_int = colunas.get('power') or colunas.get('heart_rate')
@@ -1466,6 +1546,9 @@ def breakpoint_smo2_continuo(df, colunas, lap_stats=None, janela_media=10,
         'pontos': amostra[['int_ma', 'smo2_ma', 't']].rename(
             columns={'int_ma': 'intensidade', 'smo2_ma': 'smo2', 't': 'tempo_s'}),
         'janela_media': janela_media,
+        'protocolo': protocolo,
+        'usou_estado_estacionario': bool(so_estado_estacionario),
+        'usou_apenas_trabalho': bool(usar_apenas_trabalho),
         'padrao': padrao,
         'coerente_recto_femoral': coerente,
     })
@@ -2046,7 +2129,7 @@ DFA1_HRVT1 = 0.75   # aproximação do VT1 / limiar BAIXO (Gronwald, Rogers 2020
 
 def calcular_hrvt(serie_dfa1, df_metricas=None, colunas=None, alvo=0.50,
                   janela_ajuste=(0.4, 1.0), lap_stats=None, df_tempo=None,
-                  so_trabalho=True):
+                  so_trabalho=True, protocolo=None):
     """
     Estima o limiar associado a um valor-alvo de DFA-alpha1, pelo método do estudo:
 
@@ -2081,6 +2164,8 @@ def calcular_hrvt(serie_dfa1, df_metricas=None, colunas=None, alvo=0.50,
     # foi desenhado para rampas contínuas; restringir aos períodos de trabalho
     # recupera a relação monotónica que o ajuste pressupõe.
     n_antes = len(s)
+    if protocolo in ('rampa', 'continuo'):
+        so_trabalho = False
     if so_trabalho and lap_stats and df_tempo is not None:
         janelas = [(l['_t_ini'], l['_t_fim']) for l in lap_stats
                    if l.get('phase') == 'work' and '_t_ini' in l]
@@ -2233,4 +2318,155 @@ def combo_limiares(hrvt2, bp_nirs, tolerancia_pct=15):
         'hrv_descartado': hrv_descartado,
         'n_metodos': len(disponiveis),
         'tolerancia_pct': tolerancia_pct,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DETEÇÃO DO TIPO DE PROTOCOLO
+# As análises de limiares diferem consoante o teste seja uma RAMPA CONTÍNUA,
+# DEGRAUS INCREMENTAIS ou INTERVALOS. Detectar isto automaticamente evita
+# aplicar o método errado.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def detectar_protocolo(df, colunas, lap_stats=None):
+    """
+    Classifica o tipo de sessão a partir do comportamento da intensidade:
+
+      'rampa'      → intensidade sobe de forma quase monótona, sem recuperações
+                     (ex.: +10-30 W/min contínuo). É o protocolo dos estudos.
+      'degraus'    → patamares de intensidade constante separados por
+                     recuperações ou por saltos (o teu caso habitual).
+      'intervalos' → alternância trabalho/recuperação sem progressão clara de
+                     intensidade (ex.: 5x3min à mesma potência).
+      'continuo'   → intensidade estável do início ao fim (ex.: tempo run).
+      'indefinido' → sem sinal utilizável.
+
+    Devolve dict com o tipo, métricas de suporte e o método de limiar recomendado.
+    """
+    col = colunas.get('power') or colunas.get('heart_rate')
+    if col is None:
+        return {'tipo': 'indefinido', 'motivo': 'sem potência nem FC'}
+
+    s = pd.to_numeric(df[col], errors='coerce')
+    t = df['time_seconds']
+    m = s.notna()
+    if m.sum() < 120:
+        return {'tipo': 'indefinido', 'motivo': 'poucos dados'}
+    s, t = s[m].values, t[m].values
+
+    # Suavizar para avaliar a forma geral, não o ruído
+    ss = pd.Series(s).rolling(30, min_periods=1, center=True).mean().values
+
+    dur_min = (t[-1] - t[0]) / 60.0
+    amp = float(np.percentile(ss, 95) - np.percentile(ss, 5))
+    nivel = float(np.median(ss))
+    amp_rel = amp / nivel if nivel > 0 else 0
+
+    # Tendência global: quanto da variação é explicada por uma subida linear?
+    coef = np.polyfit(t, ss, 1)
+    pred = np.polyval(coef, t)
+    sst = np.sum((ss - ss.mean()) ** 2)
+    r2_linear = float(1 - np.sum((ss - pred) ** 2) / sst) if sst > 0 else 0.0
+    subida_por_min = float(coef[0] * 60)
+
+    # Fracção do tempo em "recuperação" — só conta como recuperação se for uma
+    # QUEDA a partir de intensidade alta, não o início baixo de uma rampa.
+    # Por isso avalia-se em relação ao valor local anterior, não ao global.
+    modo_alto = float(np.median(ss[ss >= np.median(ss)]))
+    baixo = ss < modo_alto * 0.5
+    # Ignorar o troço inicial contíguo abaixo do limiar (aquecimento/arranque)
+    if baixo.size and baixo[0]:
+        i = 0
+        while i < len(baixo) and baixo[i]:
+            baixo[i] = False
+            i += 1
+    frac_baixo = float(np.mean(baixo))
+
+    # Monotonia: fracção do tempo em que o sinal suavizado sobe
+    d = np.diff(ss)
+    frac_sobe = float(np.mean(d > 0)) if len(d) else 0.0
+
+    # "Escadaria": numa rampa a intensidade muda continuamente; em degraus há
+    # patamares planos separados por saltos. Compara-se a variação dentro de cada
+    # janela com a variação ESPERADA se fosse rampa (declive × duração da janela),
+    # e não com a amplitude global — caso contrário uma rampa lenta pareceria
+    # toda "plana".
+    jan = 30
+    n_jan = max(len(ss) // jan, 1)
+    esperado_rampa = abs(coef[0]) * jan   # variação esperada numa janela, se rampa
+    planos = 0
+    for i in range(n_jan):
+        w = ss[i * jan:(i + 1) * jan]
+        if len(w) < 5:
+            continue
+        # É "plano" se variar muito menos do que uma rampa variaria
+        if np.ptp(w) < max(esperado_rampa * 0.4, amp * 0.01):
+            planos += 1
+    frac_planos = planos / n_jan if n_jan else 0.0
+
+    # Tendência dos BLOCOS DE TRABALHO. Num protocolo com pausas, a alternância
+    # destrói o R² global — mas se cada bloco de trabalho for mais intenso que o
+    # anterior, trata-se de degraus incrementais e não de intervalos repetidos.
+    r2_trabalho, subida_trabalho = 0.0, 0.0
+    trabalho = ss >= modo_alto * 0.6
+    if trabalho.sum() > 60:
+        tt, st_ = t[trabalho], ss[trabalho]
+        if np.ptp(tt) > 0:
+            ct = np.polyfit(tt, st_, 1)
+            pt = np.polyval(ct, tt)
+            sst_t = np.sum((st_ - st_.mean()) ** 2)
+            r2_trabalho = float(1 - np.sum((st_ - pt) ** 2) / sst_t) if sst_t > 0 else 0.0
+            subida_trabalho = float(ct[0] * 60)
+
+    # ── Classificação ────────────────────────────────────────────────────────
+    if amp_rel < 0.15:
+        tipo = 'continuo'
+        motivo = f'intensidade estável (amplitude {amp_rel*100:.0f}% do nível)'
+    elif frac_baixo > 0.12:
+        # Há quedas claras para intensidade baixa → protocolo com recuperações.
+        # Se os blocos de trabalho sobem ao longo do tempo, são degraus
+        # incrementais; caso contrário, intervalos repetidos à mesma intensidade.
+        if r2_trabalho > 0.30 and subida_trabalho > 0:
+            tipo = 'degraus'
+            motivo = (f'{frac_baixo*100:.0f}% em recuperação, blocos de trabalho '
+                      f'a subir {subida_trabalho:.1f}/min (R²={r2_trabalho:.2f})')
+        else:
+            tipo = 'intervalos'
+            motivo = (f'{frac_baixo*100:.0f}% do tempo em recuperação, sem '
+                      f'progressão clara entre blocos (R²={r2_trabalho:.2f})')
+    elif r2_linear > 0.70 and subida_por_min > 0 and frac_planos < 0.35:
+        tipo = 'rampa'
+        motivo = (f'subida contínua de {subida_por_min:.1f}/min, '
+                  f'R²={r2_linear:.2f}, sem patamares')
+    elif r2_linear > 0.60 and subida_por_min > 0 and frac_planos >= 0.35:
+        tipo = 'degraus'
+        motivo = (f'subida em patamares ({frac_planos*100:.0f}% do tempo plano), '
+                  f'{subida_por_min:.1f}/min')
+    elif frac_sobe > 0.55 and amp_rel > 0.3 and frac_planos < 0.35:
+        tipo = 'rampa'
+        motivo = f'intensidade sobe em {frac_sobe*100:.0f}% do tempo'
+    else:
+        tipo = 'degraus'
+        motivo = f'variação em patamares (R²={r2_linear:.2f})'
+
+    # Método de limiar recomendado por tipo
+    _METODOS = {
+        'rampa': 'breakpoint contínuo (double-linear) sobre toda a rampa',
+        'degraus': 'breakpoint sobre o estado estacionário de cada degrau',
+        'intervalos': 'estabilidade do SmO₂ dentro de cada intervalo',
+        'continuo': 'sem limiares — sessão de intensidade única',
+        'indefinido': '—',
+    }
+
+    return {
+        'tipo': tipo,
+        'motivo': motivo,
+        'metodo_recomendado': _METODOS[tipo],
+        'duracao_min': round(dur_min, 1),
+        'amplitude_rel': round(amp_rel, 2),
+        'r2_linear': round(r2_linear, 2),
+        'subida_por_min': round(subida_por_min, 1),
+        'frac_recuperacao': round(frac_baixo, 2),
+        'frac_planos': round(frac_planos, 2),
+        'unidade': 'W' if col == colunas.get('power') else 'bpm',
     }
