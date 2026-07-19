@@ -1122,6 +1122,10 @@ def preparar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
 
     colunas = detectar_colunas(df)
 
+    # Derivar HHb/O2Hb a partir de SmO2 e THb. Fica disponível para os gráficos
+    # e para todas as análises — é a métrica que a literatura NIRS usa.
+    df, colunas = derivar_hhb(df, colunas)
+
     # Correcção de sincronia — antes de calcular estatísticas
     offsets_aplicados = []
     if offsets:
@@ -1202,7 +1206,12 @@ def analisar_completo(prep):
 
     restauracao = analisar_restauracao_completa(df, lap_stats, colunas)
     limiares = calcular_limiares_smo2(lap_stats, colunas, df=df, protocolo=_tipo)
-    bp_continuo = breakpoint_smo2_continuo(df, colunas, lap_stats, protocolo=_tipo)
+    bp_continuo = breakpoint_smo2_continuo(df, colunas, lap_stats, protocolo=_tipo,
+                                           sinal='smo2')
+    # O mesmo breakpoint calculado sobre o HHb — é a métrica dos estudos, e
+    # serve de verificação cruzada ao resultado obtido com SmO2.
+    bp_hhb = (breakpoint_smo2_continuo(df, colunas, lap_stats, protocolo=_tipo,
+                                       sinal='hhb') if 'hhb' in colunas else None)
     lim_dfa1 = limiar_dfa1(lap_stats, colunas)
     estab_smo2 = (estabilidade_smo2_intervalos(df, colunas, lap_stats)
                   if _tipo in ('degraus', 'intervalos') else None)
@@ -1243,6 +1252,7 @@ def analisar_completo(prep):
         'restauracao': restauracao,
         'limiares': limiares,
         'bp_continuo': bp_continuo,
+        'bp_hhb': bp_hhb,
         'limiar_dfa1': lim_dfa1,
         'estabilidade_smo2': estab_smo2,
         'mlss_intervalos': mlss_longos,
@@ -1469,7 +1479,7 @@ def _ajuste_double_linear(x, y, margem=0.15):
 
 def breakpoint_smo2_continuo(df, colunas, lap_stats=None, janela_media=10,
                              usar_apenas_trabalho=True, so_estado_estacionario=True,
-                             janela_estavel_s=90, protocolo=None):
+                             janela_estavel_s=90, protocolo=None, sinal='smo2'):
     """
     Breakpoint de SmO2 pelo método contínuo (muscleoxygentraining.com):
       • média móvel de `janela_media` segundos do SmO2
@@ -1494,7 +1504,7 @@ def breakpoint_smo2_continuo(df, colunas, lap_stats=None, janela_media=10,
     Devolve dict com o breakpoint (em W ou bpm), os declives, R², e os pontos
     usados — ou None.
     """
-    if 'smo2' not in colunas:
+    if 'smo2' not in colunas and 'hhb' not in colunas:
         return None
 
     # ── Adaptação ao protocolo ───────────────────────────────────────────────
@@ -1507,7 +1517,11 @@ def breakpoint_smo2_continuo(df, colunas, lap_stats=None, janela_media=10,
         usar_apenas_trabalho = False
         so_estado_estacionario = False
 
-    col_smo2 = colunas['smo2']
+    # `sinal` escolhe a métrica: 'smo2' (proporção) ou 'hhb' (quantidade
+    # absoluta de hemoglobina desoxigenada — o que a literatura NIRS analisa).
+    _chave = sinal if sinal in colunas else ('smo2' if 'smo2' in colunas else 'hhb')
+    col_smo2 = colunas[_chave]
+    nome_sinal = 'HHb' if _chave == 'hhb' else 'SmO₂'
     col_int = colunas.get('power') or colunas.get('heart_rate')
     if col_int is None:
         return None
@@ -1558,9 +1572,12 @@ def breakpoint_smo2_continuo(df, colunas, lap_stats=None, janela_media=10,
     if res is None:
         return None
 
-    # Interpretação do padrão (recto femoral: espera-se aceleração da queda)
+    # Interpretação do padrão (recto femoral: espera-se aceleração da
+    # desoxigenação). Em SmO2 isso é a queda a acelerar (declive mais negativo);
+    # em HHb é a subida a acelerar (declive mais positivo).
     s1, s2 = res['slope_antes'], res['slope_depois']
-    if s2 < s1:
+    _acelerou = (s2 > s1) if _chave == 'hhb' else (s2 < s1)
+    if _acelerou:
         padrao = 'aceleração da desoxigenação'
         coerente = True
     elif abs(s2) < abs(s1) * 0.5:
@@ -1576,6 +1593,8 @@ def breakpoint_smo2_continuo(df, colunas, lap_stats=None, janela_media=10,
             columns={'int_ma': 'intensidade', 'smo2_ma': 'smo2', 't': 'tempo_s'}),
         'janela_media': janela_media,
         'protocolo': protocolo,
+        'sinal': nome_sinal,
+        'chave_sinal': _chave,
         'usou_estado_estacionario': bool(so_estado_estacionario),
         'usou_apenas_trabalho': bool(usar_apenas_trabalho),
         'padrao': padrao,
@@ -3004,8 +3023,10 @@ def mlss_intervalos_longos(df, colunas, lap_stats, ignorar_inicio_s=120,
 
     Devolve dict com a tabela por bloco, o enquadramento do MLSS e o diagnóstico.
     """
-    # Preferir HHb (o que a literatura usa); cair para SmO2 se não houver THb
-    df, colunas = derivar_hhb(df, colunas)
+    # Preferir HHb (o que a literatura usa); cair para SmO2 se não houver THb.
+    # Normalmente já vem derivado da preparação; deriva aqui se faltar.
+    if 'hhb' not in colunas:
+        df, colunas = derivar_hhb(df, colunas)
     usa_hhb = 'hhb' in colunas
     col_sinal = colunas.get('hhb') or colunas.get('smo2')
     if col_sinal is None:
