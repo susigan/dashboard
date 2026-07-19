@@ -27,7 +27,7 @@ sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))
 warnings.filterwarnings('ignore')
 
 from utils.fit_analyzer import (
-    analisar_fit, resumir_para_historico, parse_intervalos,
+    preparar_fit, analisar_completo, resumir_para_historico, parse_intervalos,
     sugerir_offset, sugerir_offset_por_laps, NOMES_METRICAS,
     DFA1_HRVT2, DFA1_HRVT1, LOA_LITERATURA,
 )
@@ -607,8 +607,8 @@ decoupling. Não há limiares a estimar.
 
     _offsets = st.session_state.get(chave_offsets, {})
 
-    with st.spinner("A analisar o ficheiro..."):
-        res = analisar_fit(
+    with st.spinner("A ler o ficheiro..."):
+        res = preparar_fit(
             bytes_fit, laps_trabalho_manual=laps_manual, laps_excluidos=laps_excl,
             janela_final_s=janela, modo_segmentacao=_modo_seg,
             intervalos_trabalho=intervalos, frac_corte=frac_corte,
@@ -658,24 +658,6 @@ decoupling. Não há limiares a estimar.
         elif _art_laps:
             _media_art = np.mean([v for _, v in _art_laps])
             st.caption(f"✅ Qualidade do sinal HRV boa (artefactos médios: {_media_art:.1f}%).")
-
-    # ── Tipo de protocolo detectado ───────────────────────────────────────────
-    _proto = res.get('protocolo')
-    if _proto and _proto.get('tipo') != 'indefinido':
-        _ICONE = {'rampa': '📈', 'degraus': '🪜', 'intervalos': '🔁', 'continuo': '➡️'}
-        _NOME = {'rampa': 'Rampa contínua', 'degraus': 'Degraus incrementais',
-                 'intervalos': 'Intervalos repetidos', 'continuo': 'Intensidade contínua'}
-        _t = _proto['tipo']
-        st.info(
-            f"{_ICONE.get(_t, '📊')} **Protocolo detectado: {_NOME.get(_t, _t)}** — "
-            f"{_proto['motivo']}.\n\n"
-            f"As análises de limiares foram adaptadas: {_proto['metodo_recomendado']}.")
-        if _t == 'continuo':
-            st.caption("Numa sessão de intensidade constante não há limiares a "
-                       "detectar — só faz sentido olhar para a deriva (decoupling) "
-                       "e para a estabilidade das métricas ao longo do tempo.")
-
-    st.markdown("---")
 
     # ── Laps: deteção automática + correção manual + aquecimento ─────────────
     st.markdown("### 🔧 Laps")
@@ -842,37 +824,6 @@ decoupling. Não há limiares a estimar.
 
     todos_laps = [l['lap_number'] for l in lap_stats]
 
-    with st.expander("✏️ Ajustar laps — aquecimento e classificação"):
-        st.markdown("**1. Excluir aquecimento / arrefecimento**")
-        st.caption("Laps excluídos são ignorados em toda a análise. A mediana de "
-                   "referência da detecção automática também passa a ignorá-los, "
-                   "para o aquecimento não puxar o limiar para baixo.")
-        escolha_excl = st.multiselect(
-            "Laps a excluir", options=todos_laps, default=laps_excl,
-            key=f'ms_excl_{ficheiro.name}')
-
-        st.markdown("**2. Laps de trabalho**")
-        st.caption("A recuperação é inferida: tudo o que não for trabalho nem "
-                   "estiver excluído conta como recuperação.")
-        auto_work = [l['lap_number'] for l in lap_stats if l['phase'] == 'work']
-        opcoes_work = [n for n in todos_laps if n not in escolha_excl]
-        escolha_work = st.multiselect(
-            "Laps de trabalho", options=opcoes_work,
-            default=[n for n in auto_work if n not in escolha_excl],
-            key=f'ms_work_{ficheiro.name}')
-
-        cA, cB = st.columns(2)
-        if cA.button("Aplicar", key=f'aplicar_{ficheiro.name}'):
-            st.session_state[chave_excl] = escolha_excl
-            st.session_state[chave_manual] = escolha_work
-            st.rerun()
-        if cB.button("Repor detecção automática", key=f'auto_{ficheiro.name}'):
-            st.session_state.pop(chave_manual, None)
-            st.session_state.pop(chave_excl, None)
-            st.rerun()
-        if laps_manual is not None:
-            st.caption(f"A usar selecção manual de trabalho: laps {sorted(laps_manual)}")
-
     st.markdown("---")
 
     # ── Séries temporais ──────────────────────────────────────────────────────
@@ -1034,6 +985,66 @@ decoupling. Não há limiares a estimar.
                                 config={'displayModeBar': False},
                                 key=f'g_series_{ficheiro.name}')
                 st.caption("🔴 Trabalho · 🔵 recuperação · ⚪ excluídos.")
+
+    # ══════════════════════════════════════════════════════════════════════
+    # FASE 2 — Análises fisiológicas
+    # Só corre depois de o utilizador confirmar que os laps e o alinhamento
+    # das métricas estão correctos. Antes disso, calcular limiares seria
+    # trabalhar sobre dados que ainda vão ser corrigidos.
+    # ══════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    _chave_run = f'_fit_run_{ficheiro.name}'
+    _assinatura = (str(sorted(laps_excl)), str(sorted(laps_manual or [])),
+                   str(iv_editados), str(sorted(_offsets.items())),
+                   janela, zerar_pot, modo)
+    _prev = st.session_state.get(f'{_chave_run}_sig')
+    if _prev is not None and _prev != _assinatura:
+        # Os dados mudaram desde a última análise — invalidar o resultado
+        st.session_state.pop(_chave_run, None)
+        st.session_state.pop(f'{_chave_run}_sig', None)
+
+    _ja_analisado = st.session_state.get(_chave_run) is not None
+
+    _cb1, _cb2 = st.columns([1, 3])
+    if _cb1.button("🔬 Analisar" if not _ja_analisado else "🔄 Reanalisar",
+                   key=f'run_{ficheiro.name}', type='primary'):
+        with st.spinner("A correr as análises fisiológicas..."):
+            st.session_state[_chave_run] = True
+            st.session_state[f'{_chave_run}_sig'] = _assinatura
+        st.rerun()
+    _cb2.caption(
+        "Confirma primeiro que os laps estão bem classificados e que as métricas "
+        "estão alinhadas no gráfico. Só depois carrega em Analisar — as análises "
+        "(limiares, cinética, DFA-α1, fiabilidade) usarão exactamente estes dados."
+        if not _ja_analisado else
+        "As análises abaixo usam os dados actuais. Se alterares laps, sincronia ou "
+        "definições, carrega em Reanalisar.")
+
+    if not st.session_state.get(_chave_run):
+        _mostrar_historico()
+        return
+
+    with st.spinner("A analisar..."):
+        res = analisar_completo(res)
+    if 'erro' in res:
+        st.error(f"❌ {res['erro']}")
+        return
+    lap_stats = res['lap_stats']
+
+    # ── Protocolo detectado (a partir dos laps já corrigidos) ─────────────────
+    _proto = res.get('protocolo')
+    if _proto and _proto.get('tipo') != 'indefinido':
+        _ICONE = {'rampa': '📈', 'degraus': '🪜', 'intervalos': '🔁', 'continuo': '➡️'}
+        _NOME = {'rampa': 'Rampa contínua', 'degraus': 'Degraus incrementais',
+                 'intervalos': 'Intervalos repetidos', 'continuo': 'Intensidade contínua'}
+        _t = _proto['tipo']
+        st.info(
+            f"{_ICONE.get(_t, '📊')} **Protocolo detectado: {_NOME.get(_t, _t)}** — "
+            f"{_proto['motivo']}.\n\n"
+            f"Método aplicado: {_proto['metodo_recomendado']}.")
+        if _t == 'continuo':
+            st.caption("Numa sessão de intensidade constante não há limiares a "
+                       "detectar — a análise foca-se na durabilidade e no decoupling.")
 
     # ── Cinética de restauração ───────────────────────────────────────────────
     rest = res['restauracao']
