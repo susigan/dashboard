@@ -1082,38 +1082,24 @@ def tempo_ate_falha(lap_stats):
 # 9. PIPELINE COMPLETO
 # ══════════════════════════════════════════════════════════════════════════════
 
-def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
+def preparar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
                  janela_final_s=60, modo_segmentacao='auto',
                  intervalos_trabalho=None, frac_corte=None,
                  min_dur_segmento=45, zerar_potencia_descanso=False,
                  offsets=None):
     """
-    Pipeline completo: bytes do FIT → análise fisiológica completa.
+    FASE 1 — preparação dos dados. Leve e rápida.
 
-    laps_trabalho_manual : lap_numbers marcados como trabalho (sobrepõe a detecção).
-    laps_excluidos       : lap_numbers a excluir (aquecimento/arrefecimento).
-    janela_final_s       : segundos finais de cada lap usados nas médias.
+    Faz apenas o necessário para o utilizador poder VER e CORRIGIR os dados:
+    lê o ficheiro, segmenta em laps, classifica trabalho/recuperação/aquecimento,
+    aplica correcções de sincronia e o zeramento da potência em recuperação.
 
-    modo_segmentacao :
-      'auto'      → usa os laps do ficheiro; se não houver, segmenta pelo sinal
-      'forcar'    → ignora os laps do ficheiro e segmenta sempre pelo sinal
-      'intervalos'→ usa intervalos_trabalho definidos pelo utilizador
+    NÃO faz nenhuma análise fisiológica. Isso é a fase 2 (analisar_completo),
+    executada só depois de o utilizador confirmar que os laps e o alinhamento
+    das métricas estão correctos — caso contrário estaríamos a calcular limiares
+    sobre dados que ainda vão ser corrigidos.
 
-    intervalos_trabalho : lista de (inicio_s, fim_s) — blocos de TRABALHO. O que
-                          ficar fora torna-se recuperação automaticamente.
-    frac_corte          : fracção da intensidade típica de trabalho abaixo da qual
-                          se considera recuperação (ex.: 0.5 = 50%). None = auto.
-    min_dur_segmento    : duração mínima de um segmento na detecção automática.
-    zerar_potencia_descanso : se True, força potência e trabalho (kJ) a zero nos
-                          laps de recuperação. Útil quando o ergómetro regista
-                          valores residuais durante a pausa (ex.: inércia do
-                          volante) que inflacionam as médias e o decoupling.
-    offsets             : dict {metrica: segundos} para corrigir métricas fora de
-                          sincronia no ficheiro. Aplicado ANTES de qualquer
-                          cálculo, para que todas as análises usem os dados
-                          alinhados.
-
-    Devolve dict com tudo, ou {'erro': str}.
+    Devolve dict com df, colunas, lap_stats e metadados, ou {'erro': str}.
     """
     fit = ler_fit(file_bytes)
     if 'erro' in fit:
@@ -1123,22 +1109,20 @@ def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
     if df is None or df.empty:
         return {'erro': "Não foi possível construir a série temporal do ficheiro."}
 
-    # ── Re-segmentação conforme o modo escolhido ─────────────────────────────
+    # Re-segmentação conforme o modo escolhido
     if modo_segmentacao == 'intervalos' and intervalos_trabalho:
         df, laps_info = segmentar_por_intervalos(df, intervalos_trabalho)
     elif modo_segmentacao == 'forcar':
         df, laps_info = _segmentar_sem_laps(
             df, min_dur=min_dur_segmento, frac_corte=frac_corte)
     elif modo_segmentacao == 'auto' and frac_corte is not None:
-        # Auto mas com corte explícito: só re-segmenta se os laps forem automáticos
         if laps_info and laps_info[0].get('lap_trigger') in ('auto_segmentado', 'auto_none'):
             df, laps_info = _segmentar_sem_laps(
                 df, min_dur=min_dur_segmento, frac_corte=frac_corte)
 
     colunas = detectar_colunas(df)
 
-    # Correcção de sincronia — aplicada ANTES de tudo o resto, para que as
-    # estatísticas, limiares, restauração e decoupling usem os dados alinhados.
+    # Correcção de sincronia — antes de calcular estatísticas
     offsets_aplicados = []
     if offsets:
         df, offsets_aplicados = aplicar_offsets(df, colunas, offsets)
@@ -1149,11 +1133,8 @@ def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
         return {'erro': "Nenhum lap com dados utilizáveis."}
 
     excluidos = set(laps_excluidos or [])
-
-    # Classificação automática (já ignora os excluídos no cálculo da mediana)
     lap_stats = classificar_laps(lap_stats, laps_excluidos=excluidos)
 
-    # Override manual dos laps de trabalho, preservando as exclusões
     if laps_trabalho_manual is not None:
         manual = set(laps_trabalho_manual)
         for l in lap_stats:
@@ -1162,40 +1143,74 @@ def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
             else:
                 l['phase'] = 'work' if l['lap_number'] in manual else 'recovery'
 
-    # ── Zerar potência/trabalho nos laps de recuperação (opcional) ────────────
-    # Alguns ergómetros registam potência residual durante a pausa (inércia do
-    # volante, movimento leve). Isso inflaciona as médias de recuperação e
-    # distorce o decoupling. Com esta opção, força-se tudo a zero nesses laps e
-    # recalculam-se as estatísticas para reflectir a correcção.
+    # Zerar potência nos laps de recuperação (opcional)
     if zerar_potencia_descanso:
         laps_rec = {l['lap_number'] for l in lap_stats if l.get('phase') == 'recovery'}
         if laps_rec:
-            _fases_atuais = {l['lap_number']: l['phase'] for l in lap_stats}
+            _fases = {l['lap_number']: l['phase'] for l in lap_stats}
             mask_rec = df['lap_number'].isin(laps_rec)
             for _c in ('power', 'cadence'):
                 if _c in colunas and colunas[_c] in df.columns:
                     df.loc[mask_rec, colunas[_c]] = 0.0
-            # Recalcular estatísticas com os valores zerados
             lap_stats = estatisticas_por_lap(df, laps_info, colunas,
                                              janela_final_s=janela_final_s)
             for l in lap_stats:
-                l['phase'] = _fases_atuais.get(l['lap_number'], 'recovery')
+                l['phase'] = _fases.get(l['lap_number'], 'recovery')
                 l['metodo_classificacao'] = 'manual/auto (potência zerada no descanso)'
 
+    return {
+        'df': df,
+        'colunas': colunas,
+        'lap_stats': lap_stats,
+        'laps_info': laps_info,
+        'file_bytes': file_bytes,
+        'activity_name': fit.get('activity_name', 'Atividade'),
+        'session': fit.get('session', {}),
+        'janela_final_s': janela_final_s,
+        'laps_excluidos': sorted(excluidos),
+        'offsets_aplicados': offsets_aplicados,
+        'zerar_potencia_descanso': zerar_potencia_descanso,
+        'duracao_total_s': float(df['time_seconds'].iloc[-1]) if len(df) else 0.0,
+        'data_sessao': (df['timestamp'].iloc[0].strftime('%Y-%m-%d %H:%M')
+                        if 'timestamp' in df.columns and len(df) else None),
+    }
+
+
+def analisar_completo(prep):
+    """
+    FASE 2 — análises fisiológicas, sobre os dados JÁ CORRIGIDOS pelo utilizador.
+
+    Recebe o resultado de preparar_fit() e corre todas as análises: detecção de
+    protocolo, cinética de restauração, limiares de SmO₂, DFA-α1 e HRVTs,
+    decoupling, fadiga, durabilidade e avaliação de fiabilidade.
+
+    A detecção de protocolo acontece AQUI (não na preparação), porque depende da
+    classificação final dos laps — que o utilizador pode ter corrigido.
+    """
+    if not prep or 'erro' in prep:
+        return prep
+
+    df = prep['df']
+    colunas = prep['colunas']
+    lap_stats = prep['lap_stats']
+    file_bytes = prep['file_bytes']
+    janela_final_s = prep.get('janela_final_s', 60)
+
+    # Protocolo detectado a partir dos laps FINAIS (após correcção do utilizador)
     protocolo = detectar_protocolo(df, colunas, lap_stats)
     _tipo = protocolo.get('tipo')
 
     restauracao = analisar_restauracao_completa(df, lap_stats, colunas)
     limiares = calcular_limiares_smo2(lap_stats, colunas, df=df, protocolo=_tipo)
-    # Métodos da literatura NIRS (muscleoxygentraining.com / Murias et al.)
     bp_continuo = breakpoint_smo2_continuo(df, colunas, lap_stats, protocolo=_tipo)
     lim_dfa1 = limiar_dfa1(lap_stats, colunas)
-    # A estabilidade intra-intervalo só faz sentido em protocolos com blocos
-    # (degraus/intervalos); numa rampa não há intervalos onde estabilizar.
     estab_smo2 = (estabilidade_smo2_intervalos(df, colunas, lap_stats)
                   if _tipo in ('degraus', 'intervalos') else None)
+    decoupling = calcular_decoupling(lap_stats)
+    fadiga = classificar_fadiga(restauracao, decoupling)
+    falha = tempo_ate_falha(lap_stats)
 
-    # ── DFA-alpha1 a partir dos RR brutos + HRVT2 + Combo (Murias 2023) ──────
+    # DFA-alpha1 a partir dos RR brutos + HRVTs + Combo
     rr_info = extrair_rr(file_bytes)
     dfa1_serie = pd.DataFrame()
     dfa1_qualidade = None
@@ -1208,7 +1223,7 @@ def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
                 hrvt2 = calcular_hrvt(dfa1_serie, df_metricas=df, colunas=colunas,
                                       alvo=DFA1_HRVT2, lap_stats=lap_stats,
                                       df_tempo=df, protocolo=_tipo)
-    # Análises adicionais dos estudos (IJSPP 2024, JSCR 2025, EJAP 2025)
+
     hrvt1c = None
     hrvt2_sub = None
     if len(dfa1_serie) >= 10:
@@ -1217,21 +1232,18 @@ def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
     durabilidade = (analisar_durabilidade(df, colunas, dfa1_serie, lap_stats)
                     if _tipo in ('continuo', 'intervalos', 'degraus') else None)
     combo = combo_limiares(hrvt2, bp_continuo)
-    decoupling = calcular_decoupling(lap_stats)
-    fadiga = classificar_fadiga(restauracao, decoupling)
-    falha = tempo_ate_falha(lap_stats)
 
-    _res = {
-        'df': df,
-        'colunas': colunas,
-        'lap_stats': lap_stats,
-        'laps_info': laps_info,
+    _res = dict(prep)
+    _res.update({
+        'protocolo': protocolo,
         'restauracao': restauracao,
         'limiares': limiares,
         'bp_continuo': bp_continuo,
         'limiar_dfa1': lim_dfa1,
         'estabilidade_smo2': estab_smo2,
-        'protocolo': protocolo,
+        'decoupling': decoupling,
+        'fadiga': fadiga,
+        'tempo_falha': falha,
         'rr_info': rr_info,
         'dfa1_serie': dfa1_serie,
         'dfa1_qualidade': dfa1_qualidade,
@@ -1240,21 +1252,20 @@ def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
         'hrvt2_submax': hrvt2_sub,
         'durabilidade': durabilidade,
         'combo': combo,
-        'decoupling': decoupling,
-        'fadiga': fadiga,
-        'tempo_falha': falha,
-        'activity_name': fit.get('activity_name', 'Atividade'),
-        'session': fit.get('session', {}),
-        'janela_final_s': janela_final_s,
-        'laps_excluidos': sorted(excluidos),
-        'offsets_aplicados': offsets_aplicados,
-        'duracao_total_s': float(df['time_seconds'].iloc[-1]) if len(df) else 0.0,
-        'data_sessao': (df['timestamp'].iloc[0].strftime('%Y-%m-%d %H:%M')
-                        if 'timestamp' in df.columns and len(df) else None),
-    }
+    })
     _res['fiabilidade'] = avaliar_fiabilidade(_res)
     return _res
 
+
+def analisar_fit(file_bytes, **kwargs):
+    """
+    Pipeline completo em duas fases (retrocompatível).
+    Para controlar as fases separadamente, usa preparar_fit() + analisar_completo().
+    """
+    prep = preparar_fit(file_bytes, **kwargs)
+    if 'erro' in prep:
+        return prep
+    return analisar_completo(prep)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 10. RESUMO PARA HISTÓRICO (comparar sessões ao longo do tempo)
