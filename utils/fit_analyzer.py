@@ -1208,12 +1208,20 @@ def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
                 hrvt2 = calcular_hrvt(dfa1_serie, df_metricas=df, colunas=colunas,
                                       alvo=DFA1_HRVT2, lap_stats=lap_stats,
                                       df_tempo=df, protocolo=_tipo)
+    # Análises adicionais dos estudos (IJSPP 2024, JSCR 2025, EJAP 2025)
+    hrvt1c = None
+    hrvt2_sub = None
+    if len(dfa1_serie) >= 10:
+        hrvt1c = calcular_hrvt1c(dfa1_serie, df_metricas=df, colunas=colunas)
+        hrvt2_sub = hrvt2_submaximo(dfa1_serie, df_metricas=df, colunas=colunas)
+    durabilidade = (analisar_durabilidade(df, colunas, dfa1_serie, lap_stats)
+                    if _tipo in ('continuo', 'intervalos', 'degraus') else None)
     combo = combo_limiares(hrvt2, bp_continuo)
     decoupling = calcular_decoupling(lap_stats)
     fadiga = classificar_fadiga(restauracao, decoupling)
     falha = tempo_ate_falha(lap_stats)
 
-    return {
+    _res = {
         'df': df,
         'colunas': colunas,
         'lap_stats': lap_stats,
@@ -1228,6 +1236,9 @@ def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
         'dfa1_serie': dfa1_serie,
         'dfa1_qualidade': dfa1_qualidade,
         'hrvt2': hrvt2,
+        'hrvt1c': hrvt1c,
+        'hrvt2_submax': hrvt2_sub,
+        'durabilidade': durabilidade,
         'combo': combo,
         'decoupling': decoupling,
         'fadiga': fadiga,
@@ -1241,6 +1252,8 @@ def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
         'data_sessao': (df['timestamp'].iloc[0].strftime('%Y-%m-%d %H:%M')
                         if 'timestamp' in df.columns and len(df) else None),
     }
+    _res['fiabilidade'] = avaliar_fiabilidade(_res)
+    return _res
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2469,4 +2482,429 @@ def detectar_protocolo(df, colunas, lap_stats=None):
         'frac_recuperacao': round(frac_baixo, 2),
         'frac_planos': round(frac_planos, 2),
         'unidade': 'W' if col == colunas.get('power') else 'bpm',
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HRVT1c — ponto médio INDIVIDUAL (Rogers/Fleitas-Paniagua/Murias, IJSPP 2024)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def calcular_hrvt1c(serie_dfa1, df_metricas=None, colunas=None,
+                    janela_inicial_frac=0.35, sd_limite=3.0):
+    """
+    HRVT1 "custom" — corrige o viés do alpha1=0.75 fixo usando o ponto médio
+    INDIVIDUAL de cada atleta.
+
+    Base (IJSPP 2024): o alpha1=0.75 assume que toda a gente parte de ~1.0 no
+    início do esforço. Mas há quem comece em 1.5 ou mais. Nesses casos o
+    "ponto médio entre bem correlacionado e não-correlacionado" não é 0.75 —
+    é (max_inicial + 0.5) / 2.
+
+    No estudo, o max inicial médio foi 1.52 e o alvo calculado 1.01. A correcção
+    eliminou o viés face ao GET: de +16 bpm (α1=0.75) para +2 bpm (individual),
+    e reduziu os limites de concordância de ±35 para ±26 bpm.
+
+    janela_inicial_frac : fracção inicial do esforço onde procurar o alpha1 máximo.
+    sd_limite : o máximo tem de estar dentro deste nº de SD da média local
+        (evita apanhar um pico de artefacto).
+
+    Devolve dict com o alvo individual, o limiar em FC/potência, e comparação
+    com o método fixo — ou {'erro': ...}.
+    """
+    if serie_dfa1 is None or len(serie_dfa1) < 10:
+        return {'erro': 'série DFA-α1 insuficiente'}
+
+    s = serie_dfa1.dropna(subset=['dfa1', 'fc_media']).copy().sort_values('tempo_s')
+    n_ini = max(int(len(s) * janela_inicial_frac), 5)
+    inicial = s.head(n_ini)
+
+    # Máximo do início, mas filtrado: tem de estar dentro de sd_limite da média
+    # local (janela de ~45 s como no estudo), para não apanhar artefactos.
+    _loc = inicial['dfa1'].rolling(9, min_periods=3, center=True).mean()
+    _sd = inicial['dfa1'].rolling(9, min_periods=3, center=True).std()
+    _ok = inicial['dfa1'] <= (_loc + sd_limite * _sd.fillna(0))
+    cand = inicial[_ok] if _ok.sum() >= 3 else inicial
+    max_inicial = float(cand['dfa1'].max())
+
+    # Ponto médio individual entre o máximo inicial e 0.5 (não-correlacionado)
+    alvo_c = (max_inicial + DFA1_HRVT2) / 2.0
+
+    r_c = calcular_hrvt(serie_dfa1, df_metricas=df_metricas, colunas=colunas,
+                        alvo=alvo_c, janela_ajuste=(DFA1_HRVT2, max(max_inicial, 1.0)))
+    if 'erro' in r_c:
+        return {'erro': r_c['erro'], 'max_inicial': max_inicial, 'alvo': alvo_c}
+
+    # Para comparação: o método fixo de 0.75
+    r_s = calcular_hrvt(serie_dfa1, df_metricas=df_metricas, colunas=colunas,
+                        alvo=DFA1_HRVT1)
+
+    r_c.update({
+        'max_inicial_dfa1': round(max_inicial, 2),
+        'alvo_individual': round(alvo_c, 2),
+        'fc_metodo_fixo': (r_s.get('fc') if 'erro' not in r_s else None),
+        'diferenca_vs_fixo': (round(r_c['fc'] - r_s['fc'], 1)
+                              if 'erro' not in r_s and r_s.get('fc') else None),
+        'metodo': 'HRVT1c (ponto médio individual)',
+    })
+    return r_c
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HRVT2 SUBMÁXIMO — previsão sem chegar à exaustão (Rogers et al., JSCR 2025)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def hrvt2_submaximo(serie_dfa1, df_metricas=None, colunas=None,
+                    janela=(0.75, 1.5), min_pontos=8):
+    """
+    Prevê o HRVT2 usando APENAS dados submáximos, extrapolando a recta.
+
+    Base (JSCR 2025): a trajectória do alpha1 é aproximadamente linear entre 1.5
+    e 0.5. Basta ajustar a recta no troço 1.5→0.75 (que se atinge sem sair da
+    zona 2) e extrapolar até 0.5 para prever o HRVT2 — sem ter de fazer uma rampa
+    até à exaustão.
+
+    Vantagem prática: o teste pode repetir-se com frequência, sem impacto no
+    treino nem na recuperação.
+
+    Cuidados do estudo (verificados aqui e devolvidos em 'avisos'):
+      • a recta tem de ser inequívoca — se o alpha1 ondula (desce, sobe, desce),
+        o resultado não é de confiança
+      • o atleta tem de estar fresco; feito no dia seguinte a um esforço
+        exaustivo, dá resultados errados por supressão autonómica
+
+    Devolve dict com a previsão e o diagnóstico de qualidade.
+    """
+    if serie_dfa1 is None or len(serie_dfa1) < min_pontos:
+        return {'erro': 'série DFA-α1 insuficiente'}
+
+    s = serie_dfa1.dropna(subset=['dfa1', 'fc_media']).copy()
+    lo, hi = janela
+    sub = s[(s['dfa1'] >= lo) & (s['dfa1'] <= hi)]
+    if len(sub) < min_pontos:
+        return {'erro': f'poucos pontos na janela submáxima {lo}-{hi} (n={len(sub)})'}
+
+    x = sub['fc_media'].values.astype(float)
+    y = sub['dfa1'].values.astype(float)
+    if np.ptp(x) < 5:
+        return {'erro': 'variação de FC insuficiente na janela submáxima'}
+
+    coef = np.polyfit(x, y, 1)
+    y_pred = np.polyval(coef, x)
+    sst = np.sum((y - y.mean()) ** 2)
+    r2 = float(1 - np.sum((y - y_pred) ** 2) / sst) if sst > 0 else np.nan
+    if abs(coef[0]) < 1e-12:
+        return {'erro': 'declive nulo'}
+
+    fc_prev = float((DFA1_HRVT2 - coef[1]) / coef[0])
+
+    # Quanto se extrapolou para lá dos dados
+    extrapolacao_bpm = float(fc_prev - x.max())
+
+    # Ondulação: o alpha1 deve descer de forma monótona. Contam-se as inversões
+    # de sentido na série suavizada — muitas inversões = recta equívoca.
+    _sm = s.sort_values('tempo_s')['dfa1'].rolling(5, min_periods=2, center=True).mean()
+    _d = np.diff(_sm.dropna().values)
+    inversoes = int(np.sum(np.diff(np.sign(_d[np.abs(_d) > 0.005])) != 0))
+    ondulacao_pct = inversoes / max(len(_d), 1) * 100
+
+    pot_prev = None
+    if df_metricas is not None and colunas and 'power' in colunas and 'heart_rate' in colunas:
+        try:
+            dm = df_metricas[[colunas['heart_rate'], colunas['power']]].copy()
+            dm.columns = ['fc', 'pot']
+            dm = dm.apply(pd.to_numeric, errors='coerce').dropna()
+            dm = dm[dm['pot'] > 0]
+            if len(dm) > 30 and np.ptp(dm['fc'].values) > 5:
+                pot_prev = float(np.polyval(np.polyfit(dm['fc'].values,
+                                                      dm['pot'].values, 1), fc_prev))
+        except Exception:
+            pot_prev = None
+
+    avisos = []
+    if r2 < 0.7:
+        avisos.append(f'recta pouco definida na zona submáxima (R²={r2:.2f})')
+    if ondulacao_pct > 25:
+        avisos.append(f'o α1 ondula ao longo do esforço ({ondulacao_pct:.0f}% de '
+                      'inversões) — o estudo desaconselha confiar no resultado')
+    if extrapolacao_bpm > 25:
+        avisos.append(f'extrapolação longa ({extrapolacao_bpm:.0f} bpm acima do '
+                      'medido) — quanto mais longe, menos fiável')
+
+    return {
+        'fc': fc_prev,
+        'potencia': pot_prev,
+        'coef': coef.tolist(),
+        'r2': r2,
+        'n_pontos': len(sub),
+        'janela': janela,
+        'fc_max_medida': float(x.max()),
+        'extrapolacao_bpm': round(extrapolacao_bpm, 1),
+        'ondulacao_pct': round(ondulacao_pct, 1),
+        'inversoes': inversoes,
+        'avisos': avisos,
+        'fiavel': len(avisos) == 0,
+        'pontos': sub,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DURABILIDADE — deriva de HR, fB e DFA-alpha1 (Rogers et al., EJAP 2025)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def analisar_durabilidade(df, colunas, serie_dfa1=None, lap_stats=None,
+                          n_blocos=4):
+    """
+    Durabilidade / resiliência fisiológica: deterioração das características
+    fisiológicas ao longo de uma sessão prolongada.
+
+    Base (EJAP 2025): num esforço constante abaixo do MMSS, os marcadores
+    metabólicos (VO2, lactato, glicose) estabilizam — mas **HR e frequência
+    respiratória sobem** e o **DFA-alpha1 desce** progressivamente. Essa deriva é
+    o sinal de perda de durabilidade, e é repetível entre sessões (ICC 0.73-0.94).
+
+    O estudo usa o método "isotime": divide a sessão em quartos e compara as
+    médias de cada quarto — o que normaliza sessões de duração diferente.
+
+    Importante: os três sinais devem ser lidos em conjunto. Alguém pode ter pouca
+    deriva de fB mas queda normal do alpha1, e olhar só para um marcador levaria a
+    concluir erradamente que não houve degradação.
+
+    Só faz sentido em sessões contínuas/longas; não em intervalos curtos.
+    """
+    d = df.copy()
+    if lap_stats:
+        excl = {l['lap_number'] for l in lap_stats if l.get('phase') == 'excluded'}
+        if excl:
+            d = d[~d['lap_number'].isin(excl)]
+    if len(d) < 600:  # menos de 10 min não faz sentido
+        return None
+
+    t0, t1 = d['time_seconds'].min(), d['time_seconds'].max()
+    dur_min = (t1 - t0) / 60.0
+    bordas = np.linspace(t0, t1, n_blocos + 1)
+
+    _METRICAS = [('heart_rate', 'FC', 'sobe'),
+                 ('respiration', 'Respiração', 'sobe'),
+                 ('resp_enhanced', 'Respiração enh.', 'sobe'),
+                 ('power', 'Potência', 'estavel'),
+                 ('smo2', 'SmO₂', 'estavel')]
+
+    linhas = []
+    for i in range(n_blocos):
+        m = (d['time_seconds'] >= bordas[i]) & (d['time_seconds'] < bordas[i + 1])
+        sub = d[m]
+        if len(sub) < 30:
+            continue
+        linha = {'bloco': f'Q{i+1}', 'n': len(sub),
+                 'inicio_min': round((bordas[i] - t0) / 60, 1)}
+        for met, _, _ in _METRICAS:
+            if met in colunas and colunas[met] in sub.columns:
+                v = pd.to_numeric(sub[colunas[met]], errors='coerce').dropna()
+                if len(v) > 10:
+                    linha[met] = round(float(v.mean()), 1)
+        # DFA-alpha1 do bloco (da série recalculada)
+        if serie_dfa1 is not None and len(serie_dfa1) > 0:
+            sd = serie_dfa1[(serie_dfa1['tempo_s'] >= bordas[i]) &
+                            (serie_dfa1['tempo_s'] < bordas[i + 1])]
+            if len(sd) >= 3:
+                linha['dfa1'] = round(float(sd['dfa1'].mean()), 3)
+        linhas.append(linha)
+
+    if len(linhas) < 3:
+        return None
+
+    tabela = pd.DataFrame(linhas)
+
+    # Deriva de cada marcador: variação do último bloco face ao primeiro
+    derivas = {}
+    for met, nome, esperado in _METRICAS + [('dfa1', 'DFA-α1', 'desce')]:
+        if met not in tabela.columns:
+            continue
+        v = tabela[met].dropna()
+        if len(v) < 3:
+            continue
+        delta = float(v.iloc[-1] - v.iloc[0])
+        base = float(v.iloc[0])
+        pct = (delta / abs(base) * 100) if abs(base) > 1e-9 else None
+        derivas[met] = {
+            'nome': nome,
+            'inicio': base,
+            'fim': float(v.iloc[-1]),
+            'delta': round(delta, 2),
+            'delta_pct': round(pct, 1) if pct is not None else None,
+            'esperado': esperado,
+        }
+
+    # Veredicto: contam-se os sinais de degradação
+    sinais = 0
+    detalhe = []
+    if 'heart_rate' in derivas and derivas['heart_rate']['delta'] > 3:
+        sinais += 1
+        detalhe.append(f"FC subiu {derivas['heart_rate']['delta']:.0f} bpm")
+    for _r in ('respiration', 'resp_enhanced'):
+        if _r in derivas and derivas[_r]['delta'] > 2:
+            sinais += 1
+            detalhe.append(f"respiração subiu {derivas[_r]['delta']:.0f} rpm")
+            break
+    if 'dfa1' in derivas and derivas['dfa1']['delta'] < -0.1:
+        sinais += 1
+        detalhe.append(f"DFA-α1 desceu {abs(derivas['dfa1']['delta']):.2f}")
+
+    if sinais >= 2:
+        veredicto, cor = 'Perda de durabilidade evidente', '#e74c3c'
+    elif sinais == 1:
+        veredicto, cor = 'Sinais ligeiros de deriva', '#f39c12'
+    else:
+        veredicto, cor = 'Durabilidade mantida', '#27ae60'
+
+    return {
+        'tabela': tabela,
+        'derivas': derivas,
+        'n_sinais': sinais,
+        'detalhe': detalhe,
+        'veredicto': veredicto,
+        'cor': cor,
+        'duracao_min': round(dur_min, 1),
+        'n_blocos': len(linhas),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AVALIAÇÃO DE FIABILIDADE — critérios explícitos dos estudos publicados
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Limites de concordância reportados na literatura (para calibrar expectativas)
+LOA_LITERATURA = {
+    'HRVT2_vs_RCP': '±15-21 bpm (MSSE 2024, IJSPP 2024)',
+    'HRVT1c_vs_GET': '±26 bpm (IJSPP 2024)',
+    'HRVT1_fixo_vs_GET': '±35 bpm, viés +16 bpm (MSSE 2024)',
+    'NIRS_BP_vs_RCP': 'variável; combo reduz o erro individual (JSCR 2024)',
+}
+
+
+def avaliar_fiabilidade(resultado):
+    """
+    Avalia a fiabilidade dos limiares estimados, segundo os critérios explícitos
+    da literatura. Devolve um semáforo global e a lista de critérios verificados.
+
+    Critérios (com a fonte):
+      • artefactos HRV ≤5%          — limite usado em todos os estudos do grupo
+      • ajuste inequívoco (R²)      — JSCR 2025: "recta de regressão inequívoca"
+      • sem ondulação do alpha1     — JSCR 2025: "se o α1 ondula, não confiar"
+      • alpha1 atinge o alvo        — senão o valor é extrapolação
+      • concordância entre métodos  — JSCR 2024: combo NIRS+HRV reduz erro
+      • duração/estrutura adequadas — janelas de 2 min precisam de tempo
+
+    O objectivo não é dar uma nota, é dizer ao utilizador **em que pode confiar**.
+    """
+    criterios = []
+
+    def _add(nome, estado, detalhe, fonte=''):
+        criterios.append({'criterio': nome, 'estado': estado,
+                          'detalhe': detalhe, 'fonte': fonte})
+
+    # 1. Qualidade do sinal HRV
+    q = resultado.get('dfa1_qualidade')
+    if q:
+        pct = q.get('pct_artefactos', 0)
+        if pct <= 5:
+            _add('Artefactos HRV', 'ok', f'{pct:.1f}% (limite: 5%)',
+                 'critério usado em todos os estudos do grupo Murias/Rogers')
+        else:
+            _add('Artefactos HRV', 'mau',
+                 f'{pct:.1f}% — acima do limite de 5%',
+                 'acima deste valor os estudos excluem o participante')
+    elif resultado.get('rr_info') is None:
+        _add('Intervalos RR', 'ausente',
+             'o ficheiro não contém RR — DFA-α1 não pode ser recalculado', '')
+
+    # 2. Ondulação e ajuste do alpha1
+    sub = resultado.get('hrvt2_submax')
+    if sub and 'erro' not in sub:
+        if sub.get('ondulacao_pct', 0) <= 25:
+            _add('Trajectória do α1', 'ok',
+                 f"desce de forma consistente ({sub['ondulacao_pct']:.0f}% de inversões)",
+                 'JSCR 2025: a recta deve ser inequívoca')
+        else:
+            _add('Trajectória do α1', 'mau',
+                 f"ondula ao longo do esforço ({sub['ondulacao_pct']:.0f}% de inversões)",
+                 'JSCR 2025: "se há ondulação, não confiar no teste"')
+
+    # 3. HRVT2 atingido ou extrapolado
+    h2 = resultado.get('hrvt2')
+    if h2 and 'erro' not in h2:
+        if h2.get('fiavel'):
+            _add('HRVT2 (α1=0.50)', 'ok',
+                 f"R²={h2.get('r2', 0):.2f}, {h2.get('pct_abaixo_alvo', 0):.0f}% "
+                 "das janelas abaixo do alvo", 'MSSE 2024')
+        else:
+            _add('HRVT2 (α1=0.50)', 'mau',
+                 '; '.join(h2.get('avisos', [])), 'MSSE 2024')
+
+    # 4. Breakpoint NIRS
+    bp = resultado.get('bp_continuo')
+    if bp:
+        if bp.get('r2', 0) >= 0.8 and bp.get('coerente_recto_femoral'):
+            _add('Breakpoint SmO₂', 'ok',
+                 f"R²={bp['r2']:.2f}, padrão coerente", 'JSCR 2024')
+        elif bp.get('r2', 0) >= 0.8:
+            _add('Breakpoint SmO₂', 'aviso',
+                 f"R²={bp['r2']:.2f} mas padrão inesperado: {bp.get('padrao')}",
+                 'JSCR 2024')
+        else:
+            _add('Breakpoint SmO₂', 'mau',
+                 f"ajuste fraco (R²={bp.get('r2', 0):.2f})", 'JSCR 2024')
+
+    # 5. Concordância entre métodos independentes
+    cb = resultado.get('combo')
+    if cb and cb.get('n_metodos', 0) >= 2:
+        if cb['estado'] == 'concordante':
+            _add('Concordância NIRS↔HRV', 'ok',
+                 f"divergência de {cb['divergencia_pct']:.0f}%",
+                 'JSCR 2024: métodos independentes que concordam dão mais confiança')
+        else:
+            _add('Concordância NIRS↔HRV', 'aviso',
+                 f"divergência de {cb['divergencia_pct']:.0f}% entre métodos",
+                 'JSCR 2024: divergência grande sugere problema num dos sinais')
+    elif cb and cb.get('n_metodos') == 1:
+        _add('Concordância NIRS↔HRV', 'aviso',
+             'só um método disponível — sem validação cruzada',
+             'JSCR 2024: o combo reduz o erro individual de ~25% para 14%')
+
+    # 6. Estrutura do protocolo
+    proto = resultado.get('protocolo')
+    if proto:
+        t = proto.get('tipo')
+        if t in ('rampa', 'degraus'):
+            _add('Protocolo', 'ok', f"{t} — adequado a estimativa de limiares", '')
+        elif t == 'intervalos':
+            _add('Protocolo', 'aviso',
+                 'intervalos repetidos — os métodos de limiar assumem intensidade '
+                 'progressiva', '')
+        else:
+            _add('Protocolo', 'aviso',
+                 f'{t} — sem progressão de intensidade para estimar limiares', '')
+
+    # ── Semáforo global ──────────────────────────────────────────────────────
+    n_mau = sum(1 for c in criterios if c['estado'] == 'mau')
+    n_aviso = sum(1 for c in criterios if c['estado'] == 'aviso')
+    n_ok = sum(1 for c in criterios if c['estado'] == 'ok')
+
+    if n_mau == 0 and n_aviso <= 1:
+        nivel, cor, texto = ('alta', '#27ae60',
+                             'Resultados fiáveis — os critérios da literatura estão cumpridos.')
+    elif n_mau <= 1:
+        nivel, cor, texto = ('média', '#f39c12',
+                             'Fiabilidade moderada — usa os valores como orientação, '
+                             'não como referência definitiva.')
+    else:
+        nivel, cor, texto = ('baixa', '#e74c3c',
+                             'Fiabilidade baixa — vários critérios falharam. '
+                             'Recomenda-se repetir o teste antes de usar estes números.')
+
+    return {
+        'nivel': nivel, 'cor': cor, 'texto': texto,
+        'criterios': criterios,
+        'n_ok': n_ok, 'n_aviso': n_aviso, 'n_mau': n_mau,
+        'loa': LOA_LITERATURA,
     }
