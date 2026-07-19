@@ -1206,6 +1206,10 @@ def analisar_completo(prep):
     lim_dfa1 = limiar_dfa1(lap_stats, colunas)
     estab_smo2 = (estabilidade_smo2_intervalos(df, colunas, lap_stats)
                   if _tipo in ('degraus', 'intervalos') else None)
+    # Método dos intervalos longos (o que a literatura considera mais fiável
+    # que os breakpoints por rampa, pelo erro >10 W destes)
+    mlss_longos = (mlss_intervalos_longos(df, colunas, lap_stats)
+                   if _tipo in ('degraus', 'intervalos') else None)
     decoupling = calcular_decoupling(lap_stats)
     fadiga = classificar_fadiga(restauracao, decoupling)
     falha = tempo_ate_falha(lap_stats)
@@ -1241,6 +1245,7 @@ def analisar_completo(prep):
         'bp_continuo': bp_continuo,
         'limiar_dfa1': lim_dfa1,
         'estabilidade_smo2': estab_smo2,
+        'mlss_intervalos': mlss_longos,
         'decoupling': decoupling,
         'fadiga': fadiga,
         'tempo_falha': falha,
@@ -2918,4 +2923,204 @@ def avaliar_fiabilidade(resultado):
         'criterios': criterios,
         'n_ok': n_ok, 'n_aviso': n_aviso, 'n_mau': n_mau,
         'loa': LOA_LITERATURA,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HHb — hemoglobina desoxigenada derivada de SmO2 e THb
+# É a métrica que a literatura NIRS usa (Murias et al.), não o SmO2 directamente.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def derivar_hhb(df, colunas):
+    """
+    Deriva o HHb (hemoglobina desoxigenada) a partir do SmO2 e do THb.
+
+    Relação: o SmO2 é a percentagem de hemoglobina oxigenada no volume medido,
+    e o THb é a hemoglobina total. Logo:
+
+        HHb = THb × (1 − SmO2/100)
+        O2Hb = THb × (SmO2/100)
+
+    PORQUÊ ISTO IMPORTA: os estudos de NIRS (Murias, Fleitas-Paniagua) analisam
+    os breakpoints no **HHb**, não no SmO2. As duas métricas são inversamente
+    relacionadas, mas não são equivalentes: o SmO2 é uma proporção (satura), o
+    HHb é uma quantidade absoluta e mantém amplitude dinâmica útil a intensidades
+    altas — precisamente onde o SmO2 começa a achatar.
+
+    Se o THb não estiver disponível, devolve None (não se pode derivar).
+
+    Devolve (df com colunas HHb/O2Hb, colunas actualizado).
+    """
+    if 'smo2' not in colunas or 'thb' not in colunas:
+        return df, colunas
+
+    d = df.copy()
+    smo2 = pd.to_numeric(d[colunas['smo2']], errors='coerce')
+    thb = pd.to_numeric(d[colunas['thb']], errors='coerce')
+    if smo2.notna().sum() < 30 or thb.notna().sum() < 30:
+        return df, colunas
+
+    d['_HHb'] = thb * (1.0 - smo2 / 100.0)
+    d['_O2Hb'] = thb * (smo2 / 100.0)
+    cols = dict(colunas)
+    cols['hhb'] = '_HHb'
+    cols['o2hb'] = '_O2Hb'
+    return d, cols
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MLSS POR INTERVALOS LONGOS — método de comparação abaixo/acima
+# (muscleoxygentraining.com 2019/03, baseado em Murias et al.)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def mlss_intervalos_longos(df, colunas, lap_stats, ignorar_inicio_s=120,
+                           limiar_slope_hhb=0.10, limiar_slope_smo2=-0.5,
+                           min_dur_s=180):
+    """
+    Estima o MLSS comparando blocos de intensidade constante — o método que o
+    autor considera MAIS FIÁVEL do que os breakpoints por rampa.
+
+    Fundamento (artigo 2019/03 e Murias et al. 2018):
+      • ABAIXO do MLSS: o HHb/SmO2 estabiliza após a transição inicial
+      • ACIMA do MLSS: o HHb sobe continuamente (SmO2 desce continuamente),
+        acompanhando a acumulação de lactato e a subida da ventilação
+      • O MLSS fica ENTRE a intensidade mais alta estável e a mais baixa instável
+
+    Porquê preferir isto a rampas: o artigo é explícito — "a maioria dos métodos
+    para estimar a potência do MLSS tem um erro superior a 10 W", e o estudo de
+    Murias mostrou que exercitar apenas +10 W acima do MLSS (~3-5%) já provoca
+    subida progressiva do lactato e prejudica o desempenho posterior. Um erro de
+    rampa maior que 10 W torna a estimativa pouco útil na prática.
+
+    Diferença face a estabilidade_smo2_intervalos(): aqui a análise é
+    COMPARATIVA entre blocos e produz um enquadramento do MLSS, em vez de
+    classificar cada bloco isoladamente.
+
+    ignorar_inicio_s : segundos iniciais a ignorar em cada bloco (a queda inicial
+        é a transição da intensidade anterior, não o comportamento estacionário).
+        O artigo observa que o SmO2 só estabiliza a partir do minuto ~2-3.
+    min_dur_s : duração mínima de bloco a considerar. Blocos curtos não dão tempo
+        para o padrão se manifestar.
+
+    Devolve dict com a tabela por bloco, o enquadramento do MLSS e o diagnóstico.
+    """
+    # Preferir HHb (o que a literatura usa); cair para SmO2 se não houver THb
+    df, colunas = derivar_hhb(df, colunas)
+    usa_hhb = 'hhb' in colunas
+    col_sinal = colunas.get('hhb') or colunas.get('smo2')
+    if col_sinal is None:
+        return None
+    col_int = colunas.get('power') or colunas.get('heart_rate')
+    if col_int is None:
+        return None
+    unidade = 'W' if col_int == colunas.get('power') else 'bpm'
+
+    # Em HHb, "instável" = sobe; em SmO2, "instável" = desce
+    limiar = limiar_slope_hhb if usa_hhb else limiar_slope_smo2
+    nome_sinal = 'HHb' if usa_hhb else 'SmO₂'
+
+    linhas = []
+    for l in lap_stats:
+        if l.get('phase') != 'work':
+            continue
+        if l.get('duration', 0) < min_dur_s:
+            continue
+        d = df[df['lap_number'] == l['lap_number']]
+        if len(d) < 60:
+            continue
+        t0 = d['time_seconds'].iloc[0]
+        d = d[d['time_seconds'] >= t0 + ignorar_inicio_s]
+        if len(d) < 40:
+            continue
+
+        y = pd.to_numeric(d[col_sinal], errors='coerce')
+        t = d['time_seconds']
+        m = y.notna()
+        if m.sum() < 30:
+            continue
+        y, t = y[m].values, t[m].values
+
+        coef = np.polyfit(t, y, 1)
+        slope_min = float(coef[0] * 60)          # unidades por minuto
+        y_pred = np.polyval(coef, t)
+        sst = np.sum((y - y.mean()) ** 2)
+        r2 = float(1 - np.sum((y - y_pred) ** 2) / sst) if sst > 0 else np.nan
+
+        # Um declive só é credível se a tendência for consistente. Em blocos
+        # curtos ou com sinal ruidoso, o ajuste linear pode dar um declive
+        # aparente que é apenas ruído — daí exigir um R² mínimo antes de
+        # classificar o bloco como instável.
+        tendencia_credivel = (not np.isnan(r2)) and r2 >= 0.25
+
+        # Estável: o declive não excede o limiar no sentido "de instabilidade"
+        if usa_hhb:
+            excede = slope_min >= limiar          # HHb sobe → instável
+        else:
+            excede = slope_min <= limiar          # SmO2 desce → instável
+        estavel = not (excede and tendencia_credivel)
+
+        linhas.append({
+            'lap': l['lap_number'],
+            'intensidade': l.get('avg_power', l.get('avg_heart_rate')),
+            'fc': l.get('avg_heart_rate'),
+            f'{nome_sinal}_inicio': round(float(y[0]), 2),
+            f'{nome_sinal}_fim': round(float(y[-1]), 2),
+            'delta': round(float(y[-1] - y[0]), 2),
+            'slope_por_min': round(slope_min, 3),
+            'r2_tendencia': round(r2, 2) if not np.isnan(r2) else None,
+            'comportamento': ('estável' if estavel else 'deriva contínua'),
+            'tendencia_credivel': bool(tendencia_credivel),
+            'estavel': estavel,
+            'dur_analisada_s': int(t[-1] - t[0]),
+        })
+
+    if len(linhas) < 2:
+        return None
+
+    tabela = pd.DataFrame(linhas).sort_values('intensidade').reset_index(drop=True)
+    estaveis = tabela[tabela['estavel']]
+    instaveis = tabela[~tabela['estavel']]
+
+    lim_inf = float(estaveis['intensidade'].max()) if len(estaveis) else None
+    lim_sup = float(instaveis['intensidade'].min()) if len(instaveis) else None
+    fc_inf = (float(estaveis.loc[estaveis['intensidade'].idxmax(), 'fc'])
+              if len(estaveis) and estaveis['fc'].notna().any() else None)
+    fc_sup = (float(instaveis.loc[instaveis['intensidade'].idxmin(), 'fc'])
+              if len(instaveis) and instaveis['fc'].notna().any() else None)
+
+    if lim_inf is not None and lim_sup is not None and lim_inf < lim_sup:
+        estimativa = (lim_inf + lim_sup) / 2.0
+        fc_est = ((fc_inf + fc_sup) / 2.0
+                  if fc_inf is not None and fc_sup is not None else None)
+        largura = lim_sup - lim_inf
+        estado = 'enquadrado'
+        # O artigo mostra que ±10 W já altera a resposta fisiológica
+        precisao = ('boa' if largura <= 20 else
+                    'moderada' if largura <= 40 else 'grosseira')
+    elif lim_inf is not None and lim_sup is not None:
+        estimativa, fc_est, largura, precisao = None, None, None, None
+        estado = 'inconsistente'
+    elif lim_sup is not None:
+        estimativa, fc_est, largura, precisao = None, None, None, None
+        estado = 'abaixo_do_testado'
+    else:
+        estimativa, fc_est, largura, precisao = None, None, None, None
+        estado = 'acima_do_testado'
+
+    return {
+        'tabela': tabela,
+        'sinal': nome_sinal,
+        'usa_hhb': usa_hhb,
+        'mlss_entre': (lim_inf, lim_sup),
+        'mlss_estimado': estimativa,
+        'mlss_fc': fc_est,
+        'largura_janela': largura,
+        'precisao': precisao,
+        'estado': estado,
+        'unidade': unidade,
+        'n_blocos': len(tabela),
+        'n_estaveis': len(estaveis),
+        'n_instaveis': len(instaveis),
+        'ignorar_inicio_s': ignorar_inicio_s,
+        'limiar_slope': limiar,
     }
