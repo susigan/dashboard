@@ -28,7 +28,7 @@ warnings.filterwarnings('ignore')
 
 from utils.fit_analyzer import (
     analisar_fit, resumir_para_historico, parse_intervalos,
-    sugerir_offset, NOMES_METRICAS,
+    sugerir_offset, sugerir_offset_por_laps, NOMES_METRICAS,
 )
 
 # Cores por métrica (paleta Wong 2011, colorblind-safe)
@@ -197,8 +197,49 @@ def _grafico_multi_eixo(df, colunas, lap_stats, y1, y2=None, y3=None,
     def _cor_eixo(metricas):
         return _CORES_METRICA.get(metricas[0], '#333') if metricas else '#333'
 
+    def _intervalo(metricas, folga=0.08):
+        """
+        Calcula o intervalo do eixo a partir dos dados reais, com uma folga.
+
+        Sem isto, o Plotly inclui o zero por defeito, o que esmaga métricas de
+        amplitude pequena: o THb, por exemplo, varia entre 12.4 e 12.8 — se o
+        eixo for de 0 a 13, toda a variação real aparece como uma linha recta.
+        Ajustando o eixo à amplitude real, a variação torna-se visível.
+        """
+        vals = []
+        for m in metricas:
+            if m not in colunas:
+                continue
+            s = pd.to_numeric(df[colunas[m]], errors='coerce')
+            if suavizar and suavizar > 1:
+                s = s.rolling(int(suavizar), min_periods=1, center=True).mean()
+            s = s.dropna()
+            if len(s) > 0:
+                vals.append((float(s.min()), float(s.max())))
+        if not vals:
+            return None
+        lo = min(v[0] for v in vals)
+        hi = max(v[1] for v in vals)
+        amp = hi - lo
+        if amp <= 0:
+            margem = max(abs(lo) * 0.01, 0.5)
+            return [lo - margem, hi + margem]
+        _lo_f, _hi_f = lo - amp * folga, hi + amp * folga
+        # Métricas que não podem ser negativas: não deixar o eixo passar abaixo de
+        # zero só por causa da folga (potência a -22W não faz sentido físico).
+        _NAO_NEGATIVAS = {'power', 'cadence', 'speed', 'distance', 'heart_rate',
+                          'hr_alphahrv', 'smo2', 'thb', 'respiration',
+                          'resp_enhanced', 'artifacts', 'cycle_length'}
+        if lo >= 0 and any(m in _NAO_NEGATIVAS for m in metricas):
+            _lo_f = max(0.0, _lo_f)
+        return [_lo_f, _hi_f]
+
     # Com 3 eixos, encolhe o domínio do X para o 3º eixo caber à direita
     dominio_x = [0.0, 0.88] if y3 else [0.0, 1.0]
+
+    _r1 = _intervalo(y1) if y1 else None
+    _r2 = _intervalo(y2) if y2 else None
+    _r3 = _intervalo(y3) if y3 else None
 
     layout = dict(
         paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
@@ -210,17 +251,20 @@ def _grafico_multi_eixo(df, colunas, lap_stats, y1, y2=None, y3=None,
         yaxis=dict(title=dict(text=_titulo(y1) if y1 else None,
                               font=dict(color=_cor_eixo(y1))),
                    tickfont=dict(color=_cor_eixo(y1)),
+                   range=_r1,
                    showgrid=True, gridcolor='rgba(128,128,128,0.2)'),
     )
     if y2:
         layout['yaxis2'] = dict(
             title=dict(text=_titulo(y2), font=dict(color=_cor_eixo(y2))),
             tickfont=dict(color=_cor_eixo(y2)),
+            range=_r2,
             overlaying='y', side='right', showgrid=False)
     if y3:
         layout['yaxis3'] = dict(
             title=dict(text=_titulo(y3), font=dict(color=_cor_eixo(y3))),
             tickfont=dict(color=_cor_eixo(y3)),
+            range=_r3,
             overlaying='y', side='right', position=0.97,
             anchor='free', showgrid=False)
 
@@ -249,6 +293,22 @@ def _grafico_series(df, colunas, lap_stats, metricas_sel):
             line=dict(color=_CORES_METRICA.get(metrica, '#333'), width=1.4),
             showlegend=False,
             hovertemplate='%{y:.1f}<extra></extra>'), row=i, col=1)
+
+        # Ajustar o eixo à amplitude real desta métrica. Sem isto, métricas de
+        # amplitude pequena (ex.: THb, que varia ~0.4 unidades) ficam esmagadas
+        # porque o Plotly inclui o zero por defeito.
+        _s = serie.dropna()
+        if len(_s) > 0:
+            _lo, _hi = float(_s.min()), float(_s.max())
+            _amp = _hi - _lo
+            if _amp > 0:
+                _f0, _f1 = _lo - _amp * 0.08, _hi + _amp * 0.08
+                if _lo >= 0:
+                    _f0 = max(0.0, _f0)
+                fig.update_yaxes(range=[_f0, _f1], row=i, col=1)
+            else:
+                _mg = max(abs(_lo) * 0.01, 0.5)
+                fig.update_yaxes(range=[_lo - _mg, _hi + _mg], row=i, col=1)
 
     # Sombrear laps: trabalho (vermelho) e excluídos (cinzento)
     for l in lap_stats:
@@ -767,7 +827,7 @@ def tab_fit_analise():
                         key=f'off_{_m}_{ficheiro.name}',
                         help="Segundos a deslocar (+ = mais tarde)")
 
-            _cs1, _cs2, _cs3 = st.columns([1, 1, 2])
+            _cs1, _cs2 = st.columns(2)
             if _cs1.button("✅ Aplicar sincronia", key=f'aplicar_sync_{ficheiro.name}',
                            type='primary'):
                 st.session_state[chave_offsets] = {k: v for k, v in _novos_off.items() if v}
@@ -776,21 +836,68 @@ def tab_fit_analise():
                 st.session_state.pop(chave_offsets, None)
                 st.rerun()
 
-            # Sugestão automática por correlação cruzada
-            if len(_sync_sel) == 1 and len(disponiveis) > 1:
-                _ref_op = [m for m in disponiveis if m != _sync_sel[0]]
-                _ref = _cs3.selectbox(
-                    "Sugerir alinhamento com:", options=_ref_op,
-                    format_func=lambda m: NOMES_METRICAS.get(m, m),
-                    key=f'ref_sync_{ficheiro.name}')
-                if _ref:
-                    _sug = sugerir_offset(res['df'], colunas, _ref, _sync_sel[0])
-                    if _sug:
-                        st.caption(
-                            f"💡 Correlação cruzada sugere **{_sug['offset']:+d}s** "
-                            f"(r={_sug['r']:.2f}). Confirma visualmente antes de aplicar: "
-                            "atrasos fisiológicos reais (o SmO₂ responde 20-40s depois da "
-                            "potência) **não** devem ser corrigidos — só erros de gravação.")
+            # ── Sugestão automática ──────────────────────────────────────────
+            if len(_sync_sel) == 1:
+                _m_sel = _sync_sel[0]
+                st.markdown("**💡 Sugerir alinhamento**")
+                _sg1, _sg2 = st.columns(2)
+                _base = _sg1.radio(
+                    "Alinhar com:",
+                    options=['laps', 'metrica'],
+                    format_func=lambda b: {
+                        'laps': '🏃 Laps de trabalho (recomendado)',
+                        'metrica': '📊 Outra métrica'}[b],
+                    key=f'base_sync_{ficheiro.name}',
+                    help="Os laps de trabalho são marcadores temporais nítidos "
+                         "(a intensidade sobe de forma abrupta), por isso costumam "
+                         "dar um alinhamento mais fiável do que comparar duas séries.")
+                _dir = _sg2.radio(
+                    "Direcção:",
+                    options=['ambas', 'frente', 'tras'],
+                    format_func=lambda x: {'ambas': '↔️ Ambas',
+                                           'frente': '➡️ Só para a frente',
+                                           'tras': '⬅️ Só para trás'}[x],
+                    key=f'dir_sync_{ficheiro.name}',
+                    help="Restringe a procura ao sentido que sabes ser o correcto.")
+
+                _sug = None
+                if _base == 'laps':
+                    _sug = sugerir_offset_por_laps(
+                        res['df'], colunas, _m_sel, lap_stats, direcao=_dir)
+                    _ref_txt = f"{_sug['n_laps_trabalho']} laps de trabalho" if _sug else ''
+                else:
+                    _ref_op = [m for m in disponiveis if m != _m_sel]
+                    if _ref_op:
+                        _ref = st.selectbox(
+                            "Métrica de referência", options=_ref_op,
+                            format_func=lambda m: NOMES_METRICAS.get(m, m),
+                            key=f'ref_sync_{ficheiro.name}')
+                        _sug = sugerir_offset(res['df'], colunas, _ref, _m_sel)
+                        _ref_txt = NOMES_METRICAS.get(_ref, _ref)
+
+                if _sug:
+                    _r = _sug['r']
+                    _forca = ('forte' if abs(_r) >= 0.5 else
+                              'moderada' if abs(_r) >= 0.25 else 'fraca')
+                    _msg = (f"Sugestão: **{_sug['offset']:+d}s** "
+                            f"(correlação {_r:.2f} — {_forca}, vs {_ref_txt})")
+                    if abs(_r) < 0.25:
+                        st.warning(
+                            f"{_msg}. Correlação fraca — pode não haver desfasamento "
+                            "real a corrigir, ou o problema ser de outra natureza "
+                            "(ex.: o gravador repetir valores em vez de os deslocar).")
+                    elif _sug['offset'] == 0:
+                        st.success(
+                            f"✅ {_msg}. **A métrica já parece sincronizada** — os "
+                            "patamares que vês no gráfico podem ser um problema de "
+                            "resolução do sinal (valores repetidos), não de "
+                            "desfasamento temporal. Nesse caso deslocar não resolve.")
+                    else:
+                        st.info(f"{_msg}")
+                    st.caption(
+                        "Confirma sempre visualmente: atrasos fisiológicos reais "
+                        "(o SmO₂ responde 20-40s depois da potência) **não** devem ser "
+                        "corrigidos — só erros de gravação.")
 
         if _offsets:
             _txt_off = ", ".join(f"{NOMES_METRICAS.get(k, k)} {v:+d}s"
