@@ -29,7 +29,7 @@ warnings.filterwarnings('ignore')
 from utils.fit_analyzer import (
     analisar_fit, resumir_para_historico, parse_intervalos,
     sugerir_offset, sugerir_offset_por_laps, NOMES_METRICAS,
-    DFA1_HRVT2, DFA1_HRVT1,
+    DFA1_HRVT2, DFA1_HRVT1, LOA_LITERATURA,
 )
 
 # Cores por métrica (paleta Wong 2011, colorblind-safe)
@@ -481,6 +481,36 @@ def tab_fit_analise():
         "Ficheiro .fit", type=['fit'], key='fit_upload',
         help="A sessão deve ter laps definidos (intervalos de trabalho e recuperação). "
              "Métricas MOXY/DFA-α1 são detectadas automaticamente se existirem no ficheiro.")
+
+    with st.expander("📖 Que protocolos são suportados e o que fazer em cada um",
+                     expanded=False):
+        st.markdown("""
+**📈 Rampa contínua** — a intensidade sobe sem paragens (ex.: +15 a 30 W/min).
+É o protocolo dos estudos publicados e o que dá as melhores estimativas de limiares.
+*Análises:* breakpoint SmO₂ (double-linear), HRVT2 (α1=0.50), HRVT1c, Combo.
+*Dica:* rampas mais lentas (5-15 W/min) dão limiares de **potência** mais fiáveis.
+A FC dos limiares não é afectada pela inclinação — a potência é.
+
+**🪜 Degraus incrementais** — patamares de 3-5 min com intensidade crescente.
+*Análises:* as mesmas, mas usando o estado estacionário do fim de cada degrau.
+*Dica:* degraus de 5 min permitem também o método de estabilidade do SmO₂.
+
+**🔁 Intervalos repetidos** — blocos à mesma intensidade com recuperações.
+*Análises:* cinética de restauração, decoupling, fadiga. Os limiares são menos
+fiáveis porque não há progressão de intensidade.
+
+**➡️ Sessão contínua** (tempo run, zona 2 longa) — intensidade estável.
+*Análises:* **durabilidade** (deriva de FC, respiração e DFA-α1 ao longo do tempo),
+decoupling. Não há limiares a estimar.
+
+---
+**Para resultados fiáveis, em qualquer protocolo:**
+- Estar **fresco** — um teste no dia seguinte a um esforço duro dá valores errados
+  por supressão autonómica
+- **Posição da cinta cardíaca**: o pico R deve ser maior que a onda S. Esta é uma
+  das causas mais comuns de erro no DFA-α1
+- Artefactos HRV **abaixo de 5%** (o painel de fiabilidade verifica isto)
+        """)
 
     if ficheiro is None:
         _mostrar_historico()
@@ -1062,6 +1092,40 @@ def tab_fit_analise():
                 st.success(f"✅ Os três métodos concordam (dispersão {_disp:.0f}%) — "
                            "estimativa fiável.")
 
+    # ── Painel de fiabilidade ────────────────────────────────────────────────
+    _fi = res.get('fiabilidade')
+    if _fi:
+        st.markdown("---")
+        st.markdown("### 🚦 Fiabilidade dos resultados")
+        _ICO = {'ok': '✅', 'aviso': '⚠️', 'mau': '❌', 'ausente': '➖'}
+        st.markdown(
+            f"<div style='padding:14px 18px;border-radius:8px;"
+            f"background:{_fi['cor']}1A;border-left:5px solid {_fi['cor']}'>"
+            f"<b style='color:{_fi['cor']};font-size:16px'>"
+            f"Fiabilidade {_fi['nivel']}</b><br>"
+            f"<span style='font-size:13px'>{_fi['texto']}</span></div>",
+            unsafe_allow_html=True)
+
+        _tb_fi = pd.DataFrame([{
+            'Critério': c['criterio'],
+            '': _ICO.get(c['estado'], ''),
+            'Resultado': c['detalhe'],
+        } for c in _fi['criterios']])
+        st.dataframe(_tb_fi, hide_index=True, use_container_width=True)
+
+        with st.expander("ℹ️ De onde vêm estes critérios"):
+            for c in _fi['criterios']:
+                if c.get('fonte'):
+                    st.caption(f"**{c['criterio']}** — {c['fonte']}")
+            st.markdown("---")
+            st.markdown("**Margens de erro esperadas na literatura**")
+            st.caption(
+                "Mesmo quando tudo corre bem, estes métodos têm limites de "
+                "concordância largos face aos padrões-ouro laboratoriais. "
+                "Convém ter isto presente ao usar os números:")
+            for k, v in _fi['loa'].items():
+                st.caption(f"- **{k.replace('_', ' ')}**: {v}")
+
     # ── Limiares fisiológicos (métodos da literatura NIRS/HRV) ───────────────
     _bp = res.get('bp_continuo')
     _ldfa = res.get('limiar_dfa1')
@@ -1069,10 +1133,18 @@ def tab_fit_analise():
         st.markdown("---")
         st.markdown("### 🔬 Limiares fisiológicos")
         st.caption(
-            "Métodos da literatura de NIRS e HRV, que estimam os dois limiares "
-            "fundamentais **sem análise de gases**: o VT1/LT1 (topo da zona 1) pelo "
-            "DFA-α1, e o MLSS/LT2/RCP (início da zona 3) pelo breakpoint de SmO₂. "
-            "Referência: muscleoxygentraining.com (Murias, Gronwald et al.).")
+            "Métodos da literatura de NIRS e HRV, que estimam os limiares "
+            "**sem análise de gases**. Referência: estudos do grupo Murias/Rogers "
+            "(JSCR 2024, MSSE 2024, IJSPP 2024, JSCR 2025).")
+        st.info(
+            "💡 **Use a FC como referência principal.** O estudo Physiological "
+            "Reports 2023 mostrou que a **FC** dos limiares é praticamente "
+            "independente da inclinação da rampa (15, 30 ou 45 W/min dão o mesmo "
+            "resultado), mas a **potência** varia bastante — até 60 W de diferença "
+            "no limiar alto entre uma rampa lenta e uma rápida. Os valores de "
+            "potência aqui apresentados são estimativas derivadas da relação "
+            "FC↔potência desta sessão, e só são comparáveis entre testes com o "
+            "mesmo protocolo.")
 
         _cl1, _cl2 = st.columns(2)
 
@@ -1192,9 +1264,13 @@ def tab_fit_analise():
             if _h2 and 'erro' not in _h2:
                 if _h2.get('fiavel'):
                     _cm1, _cm2 = st.columns(2)
-                    _cm1.metric("HRVT2 — FC", f"{_h2['fc']:.0f} bpm")
+                    _cm1.metric("HRVT2 — FC", f"{_h2['fc']:.0f} bpm",
+                                help="Valor principal: a FC do limiar é estável "
+                                     "entre protocolos")
                     if _h2.get('potencia'):
-                        _cm2.metric("HRVT2 — Potência", f"{_h2['potencia']:.0f} W")
+                        _cm2.metric("HRVT2 — Potência (estimada)",
+                                    f"{_h2['potencia']:.0f} W",
+                                    help="Secundário: depende da inclinação da rampa")
                     st.caption(f"Regressão na secção linear da curva α1 vs FC · "
                                f"R²={_h2['r2']:.2f} · n={_h2['n_pontos']} janelas")
                 else:
@@ -1221,6 +1297,9 @@ def tab_fit_analise():
                 _cc2.metric("NIRS breakpoint",
                             f"{_cb['nirs']:.0f} W" if _cb['nirs'] else "—")
                 _cc3.metric("**COMBO**", f"{_cb['combo']:.0f} W")
+                if _h2 and 'erro' not in _h2 and _h2.get('fc'):
+                    st.caption(f"Em FC (mais estável entre protocolos): "
+                               f"HRVT2 = {_h2['fc']:.0f} bpm")
 
                 if _cb.get('hrv_descartado'):
                     st.info(
@@ -1246,6 +1325,58 @@ def tab_fit_analise():
                                 use_container_width=True,
                                 config={'displayModeBar': False},
                                 key=f'g_curva_dfa1_{ficheiro.name}')
+
+        # ── HRVT1c — ponto médio individual (IJSPP 2024) ─────────────────────
+        _h1c = res.get('hrvt1c')
+        if _h1c and 'erro' not in _h1c:
+            st.markdown("---")
+            st.markdown("#### 🎯 HRVT1c — limiar baixo com ponto médio individual")
+            st.caption(
+                "O valor fixo de α1=0.75 para o VT1 assume que toda a gente parte "
+                "de ~1.0 em baixa intensidade. Quem parte mais alto fica com o "
+                "limiar sobrestimado — no estudo IJSPP 2024 o viés era de **+16 bpm**. "
+                "A correcção usa o ponto médio individual entre o α1 máximo inicial "
+                "e 0.50, o que reduziu o viés para +2 bpm.")
+            _c1, _c2, _c3 = st.columns(3)
+            _c1.metric("α1 máximo inicial", f"{_h1c['max_inicial_dfa1']:.2f}")
+            _c2.metric("Alvo individual", f"{_h1c['alvo_individual']:.2f}",
+                       delta=f"vs 0.75 fixo")
+            _c3.metric("HRVT1c", f"{_h1c['fc']:.0f} bpm")
+            if _h1c.get('diferenca_vs_fixo') is not None:
+                _d = _h1c['diferenca_vs_fixo']
+                st.caption(
+                    f"O método fixo (α1=0.75) daria **{_h1c['fc_metodo_fixo']:.0f} bpm** — "
+                    f"uma diferença de **{_d:+.0f} bpm**. "
+                    + ("A correcção individual é a que a literatura recomenda."
+                       if abs(_d) > 5 else
+                       "Neste caso os dois métodos quase coincidem."))
+            if not _h1c.get('fiavel', True):
+                st.warning("⚠️ " + "; ".join(_h1c.get('avisos', [])))
+
+        # ── HRVT2 submáximo (JSCR 2025) ──────────────────────────────────────
+        _sub = res.get('hrvt2_submax')
+        if _sub:
+            st.markdown("---")
+            st.markdown("#### 📉 HRVT2 previsto por dados submáximos")
+            st.caption(
+                "Prevê o limiar alto **sem chegar à exaustão**, extrapolando a recta "
+                "do α1 no troço 1.5→0.75 (que se atinge dentro da zona 2). "
+                "Vantagem: pode repetir-se com frequência sem afectar o treino.")
+            if 'erro' in _sub:
+                st.info(f"Não calculado: {_sub['erro']}")
+            else:
+                _s1, _s2, _s3 = st.columns(3)
+                _s1.metric("HRVT2 previsto", f"{_sub['fc']:.0f} bpm")
+                _s2.metric("FC máxima medida", f"{_sub['fc_max_medida']:.0f} bpm")
+                _s3.metric("Extrapolação", f"{_sub['extrapolacao_bpm']:+.0f} bpm")
+                st.caption(f"Ajuste sobre {_sub['n_pontos']} janelas · "
+                           f"R²={_sub['r2']:.2f} · ondulação {_sub['ondulacao_pct']:.0f}%")
+                if _sub['fiavel']:
+                    st.success("✅ Previsão fiável — a recta é inequívoca e a "
+                               "extrapolação é curta.")
+                else:
+                    st.warning("⚠️ **Previsão pouco fiável:**\n\n"
+                               + "\n".join(f"- {a}" for a in _sub['avisos']))
 
         # ── Método alternativo: estabilidade do SmO₂ dentro de cada intervalo ──
         _est = res.get('estabilidade_smo2')
@@ -1294,6 +1425,45 @@ def tab_fit_analise():
                     "⚠️ Resposta inconsistente: há degraus instáveis abaixo de degraus "
                     "estáveis. Pode indicar variação de cadência, deriva do sensor, ou "
                     "pacing irregular.")
+
+    # ── Durabilidade (EJAP 2025) ──────────────────────────────────────────────
+    _dur = res.get('durabilidade')
+    if _dur:
+        st.markdown("---")
+        st.markdown("### 🏋️ Durabilidade / resiliência fisiológica")
+        st.caption(
+            "Deterioração das características fisiológicas ao longo da sessão. "
+            "Num esforço abaixo do MMSS, o metabolismo estabiliza — mas a FC e a "
+            "respiração sobem e o DFA-α1 desce progressivamente. Essa deriva é o "
+            "sinal de perda de durabilidade, e é repetível entre sessões "
+            "(ICC 0.73-0.94 no estudo EJAP 2025). A sessão é dividida em quartos "
+            "para comparar o início com o fim.")
+
+        st.markdown(
+            f"<div style='padding:12px 16px;border-radius:8px;"
+            f"background:{_dur['cor']}1A;border-left:5px solid {_dur['cor']}'>"
+            f"<b style='color:{_dur['cor']};font-size:15px'>{_dur['veredicto']}</b> "
+            f"<span style='font-size:13px'>({_dur['n_sinais']}/3 marcadores com "
+            f"deriva significativa)</span></div>", unsafe_allow_html=True)
+
+        if _dur['detalhe']:
+            st.caption("Do primeiro ao último quarto: " + " · ".join(_dur['detalhe']))
+
+        _cd = st.columns(max(len(_dur['derivas']), 1))
+        for _i, (_k, _v) in enumerate(_dur['derivas'].items()):
+            if _k in ('power', 'smo2'):
+                continue
+            with _cd[_i % len(_cd)]:
+                st.metric(_v['nome'], f"{_v['fim']:.1f}",
+                          delta=f"{_v['delta']:+.2f} vs início")
+
+        st.dataframe(_dur['tabela'].rename(columns={
+            'bloco': 'Quarto', 'inicio_min': 'Início (min)',
+            **{k: NOMES_METRICAS.get(k, k) for k in _dur['tabela'].columns}}),
+            hide_index=True, use_container_width=True)
+        st.caption("Os três marcadores devem ser lidos em conjunto: alguém pode ter "
+                   "pouca deriva da respiração mas queda normal do α1 — olhar só para "
+                   "um levaria a concluir erradamente que não houve degradação.")
 
     # ── Decoupling ────────────────────────────────────────────────────────────
     dec = res['decoupling']
