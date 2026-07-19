@@ -1125,6 +1125,21 @@ def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
     bp_continuo = breakpoint_smo2_continuo(df, colunas, lap_stats)
     lim_dfa1 = limiar_dfa1(lap_stats, colunas)
     estab_smo2 = estabilidade_smo2_intervalos(df, colunas, lap_stats)
+
+    # ── DFA-alpha1 a partir dos RR brutos + HRVT2 + Combo (Murias 2023) ──────
+    rr_info = extrair_rr(file_bytes)
+    dfa1_serie = pd.DataFrame()
+    dfa1_qualidade = None
+    hrvt2 = None
+    if rr_info is not None:
+        rr_lim, dfa1_qualidade = limpar_rr(rr_info['rr_ms'])
+        if rr_lim is not None:
+            dfa1_serie = calcular_dfa1_serie(rr_lim, rr_info['tempo_s'])
+            if len(dfa1_serie) >= 10:
+                hrvt2 = calcular_hrvt(dfa1_serie, df_metricas=df, colunas=colunas,
+                                      alvo=DFA1_HRVT2, lap_stats=lap_stats,
+                                      df_tempo=df)
+    combo = combo_limiares(hrvt2, bp_continuo)
     decoupling = calcular_decoupling(lap_stats)
     fadiga = classificar_fadiga(restauracao, decoupling)
     falha = tempo_ate_falha(lap_stats)
@@ -1139,6 +1154,11 @@ def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
         'bp_continuo': bp_continuo,
         'limiar_dfa1': lim_dfa1,
         'estabilidade_smo2': estab_smo2,
+        'rr_info': rr_info,
+        'dfa1_serie': dfa1_serie,
+        'dfa1_qualidade': dfa1_qualidade,
+        'hrvt2': hrvt2,
+        'combo': combo,
         'decoupling': decoupling,
         'fadiga': fadiga,
         'tempo_falha': falha,
@@ -1831,4 +1851,386 @@ def sugerir_offset_por_laps(df, colunas, metrica, lap_stats, max_lag=60,
         'curva': curva,
         'direcao': direcao,
         'n_laps_trabalho': len(laps_work),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DFA-alpha1 A PARTIR DOS INTERVALOS RR
+# Método: Peng et al. (algoritmo DFA), com os parâmetros do estudo
+# Fleitas-Paniagua/Murias 2023 (JSCR) e do Kubios: janela alpha1 = 4-16 batimentos,
+# janelas móveis de 2 min recalculadas a cada 5 s.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def extrair_rr(file_bytes):
+    """
+    Extrai os intervalos RR brutos das mensagens 'hrv' do ficheiro FIT.
+
+    Muitos gravadores (Garmin, apps com Polar H10) guardam os RR além das
+    métricas por segundo. Tê-los permite recalcular o DFA-alpha1 em vez de
+    depender do valor pré-calculado pelo sensor.
+
+    Devolve dict {'rr_ms': array, 'tempo_s': array (tempo cumulativo), 'n': int}
+    ou None se o ficheiro não tiver RR.
+    """
+    if not _TEM_FITDECODE:
+        return None
+    rr = []
+    try:
+        with fitdecode.FitReader(io.BytesIO(file_bytes)) as fit:
+            for frame in fit:
+                if not isinstance(frame, fitdecode.FitDataMessage):
+                    continue
+                if frame.name != 'hrv':
+                    continue
+                for f in frame.fields:
+                    if f.name != 'time' or f.value is None:
+                        continue
+                    v = f.value
+                    if isinstance(v, (list, tuple)):
+                        rr.extend([x for x in v if x is not None])
+                    else:
+                        rr.append(v)
+    except Exception:
+        return None
+
+    if len(rr) < 100:
+        return None
+
+    rr = np.array([float(x) for x in rr], dtype=float)
+    # O FIT guarda os RR em segundos; converter para ms se necessário
+    rr_ms = rr * 1000.0 if np.nanmax(rr) < 10 else rr
+    tempo = np.cumsum(rr_ms) / 1000.0  # segundos desde o início
+    return {'rr_ms': rr_ms, 'tempo_s': tempo, 'n': len(rr_ms)}
+
+
+def limpar_rr(rr_ms, low=300, high=2000, malik_pct=20):
+    """
+    Pré-processamento dos intervalos RR antes do DFA.
+
+    Réplica do pipeline descrito no artigo Kubios-vs-Python:
+      1. remove_outliers  → fora de [low, high] ms
+      2. remove_ectopic_beats (regra de Malik) → um RR difere >20% do anterior
+      3. interpolação linear dos removidos
+
+    ATENÇÃO: o artigo mostra que o método de correcção de artefactos é a maior
+    fonte de divergência face ao Kubios (R²=0.85, viés ~20% abaixo de alpha1=0.75).
+    Isto é uma aproximação razoável, não uma réplica exacta do Kubios.
+
+    Devolve (rr_limpo, info) com a percentagem de artefactos corrigidos.
+    """
+    x = np.array(rr_ms, dtype=float)
+    n0 = len(x)
+    mask_bad = (x < low) | (x > high) | ~np.isfinite(x)
+
+    # Regra de Malik: comparar cada intervalo com o anterior válido
+    for i in range(1, len(x)):
+        if mask_bad[i] or mask_bad[i - 1]:
+            continue
+        if abs(x[i] - x[i - 1]) > (malik_pct / 100.0) * x[i - 1]:
+            mask_bad[i] = True
+
+    n_bad = int(mask_bad.sum())
+    xc = x.copy()
+    xc[mask_bad] = np.nan
+    # Interpolação linear
+    idx = np.arange(len(xc))
+    ok = ~np.isnan(xc)
+    if ok.sum() < 10:
+        return None, {'pct_artefactos': 100.0, 'n_corrigidos': n_bad, 'n_total': n0}
+    xc = np.interp(idx, idx[ok], xc[ok])
+
+    return xc, {
+        'pct_artefactos': round(n_bad / n0 * 100, 2),
+        'n_corrigidos': n_bad,
+        'n_total': n0,
+    }
+
+
+def _dfa_alpha(serie, n_min=4, n_max=16):
+    """
+    Detrended Fluctuation Analysis — expoente de escala.
+
+    Implementação do algoritmo clássico (Peng et al.), com a mesma estrutura do
+    dokato/dfa mas com as escalas do alpha1 usado em HRV:
+
+        n_min=4, n_max=16 batimentos  ← alpha1 (curto prazo)
+
+    NOTA sobre o dokato/dfa: o seu default é scale_lim=[5,9], ou seja escalas de
+    2^5=32 a 2^9=512 amostras. Isso NÃO é o alpha1 — corresponde a escalas muito
+    maiores (alpha2 e além). Usar o default daria um valor sem relação com os
+    limiares de intensidade. Daqui a escolha explícita de 4-16 batimentos.
+
+    Passos:
+      1. y = soma cumulativa do sinal centrado
+      2. para cada escala n: dividir y em janelas de n pontos, remover a
+         tendência linear de cada uma, calcular o RMS
+      3. F(n) = RMS médio; alpha = declive de log F(n) vs log n
+    """
+    x = np.asarray(serie, dtype=float)
+    x = x[np.isfinite(x)]
+    if len(x) < n_max * 4:
+        return None
+
+    y = np.cumsum(x - np.mean(x))
+    escalas = np.arange(n_min, n_max + 1)
+    flut = []
+    escalas_ok = []
+
+    for n in escalas:
+        n_janelas = len(y) // n
+        if n_janelas < 2:
+            continue
+        seg = y[:n_janelas * n].reshape(n_janelas, n)
+        eixo = np.arange(n)
+        rms = np.empty(n_janelas)
+        for i in range(n_janelas):
+            coef = np.polyfit(eixo, seg[i], 1)
+            rms[i] = np.sqrt(np.mean((seg[i] - np.polyval(coef, eixo)) ** 2))
+        f = np.sqrt(np.mean(rms ** 2))
+        if f > 0:
+            flut.append(f)
+            escalas_ok.append(n)
+
+    if len(flut) < 3:
+        return None
+
+    coef = np.polyfit(np.log(escalas_ok), np.log(flut), 1)
+    return float(coef[0])
+
+
+def calcular_dfa1_serie(rr_ms, tempo_s, janela_s=120, passo_s=5,
+                        n_min=4, n_max=16):
+    """
+    Calcula o DFA-alpha1 ao longo do tempo, com janelas móveis.
+
+    Parâmetros do estudo Murias 2023:
+      "the DFA a1 was calculated over time using 2 min HRV measurement windows
+       with a recalculation every 5 s"
+
+    Devolve DataFrame com tempo_s, dfa1, n_batimentos, fc_media.
+    """
+    rr = np.asarray(rr_ms, dtype=float)
+    t = np.asarray(tempo_s, dtype=float)
+    if len(rr) < 50:
+        return pd.DataFrame()
+
+    linhas = []
+    t_fim = t[-1]
+    t_ini = janela_s
+    for centro in np.arange(t_ini, t_fim + 0.001, passo_s):
+        m = (t > centro - janela_s) & (t <= centro)
+        if m.sum() < n_max * 4:
+            continue
+        seg = rr[m]
+        a1 = _dfa_alpha(seg, n_min=n_min, n_max=n_max)
+        if a1 is None:
+            continue
+        linhas.append({
+            'tempo_s': float(centro),
+            'dfa1': round(a1, 4),
+            'n_batimentos': int(m.sum()),
+            'fc_media': round(60000.0 / np.mean(seg), 1),
+        })
+
+    return pd.DataFrame(linhas)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HRVT2 — segundo limiar pelo DFA-alpha1 (Fleitas-Paniagua/Murias 2023)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Valores de referência do DFA-alpha1 na literatura
+DFA1_HRVT2 = 0.50   # HRVT2 ≈ RCP / MLSS / limiar ALTO (Murias 2023, Rogers et al.)
+DFA1_HRVT1 = 0.75   # aproximação do VT1 / limiar BAIXO (Gronwald, Rogers 2020)
+
+
+def calcular_hrvt(serie_dfa1, df_metricas=None, colunas=None, alvo=0.50,
+                  janela_ajuste=(0.4, 1.0), lap_stats=None, df_tempo=None,
+                  so_trabalho=True):
+    """
+    Estima o limiar associado a um valor-alvo de DFA-alpha1, pelo método do estudo:
+
+        "The relationship generally showed a reverse sigmoidal curve, with a
+         stable area above 1.0 at low work rates, a rapid, near linear drop
+         reaching below 0.5 at higher intensity, then flattening without major
+         change. A linear regression line was drawn through the appropriate
+         section with the HRVT2 defined as the RI time or HR where DFA a1
+         equaled 0.5"
+
+    Ou seja: a regressão é feita SÓ na secção de queda quase-linear, não em toda
+    a curva (que é sigmoidal invertida e achataria a estimativa).
+
+    alvo=0.50 → HRVT2 (limiar ALTO, ≈ RCP/MLSS)
+    alvo=0.75 → aproximação do VT1 (limiar baixo)
+
+    janela_ajuste : intervalo de alpha1 considerado "secção linear de queda".
+
+    df_metricas/colunas : opcionais; se fornecidos, converte o tempo do limiar
+        na potência correspondente.
+
+    Devolve dict com o limiar em FC (e potência, se disponível), a recta, R² e
+    os pontos usados — ou {'erro': ...}.
+    """
+    if serie_dfa1 is None or len(serie_dfa1) < 10:
+        return {'erro': 'série DFA-α1 insuficiente'}
+
+    s = serie_dfa1.dropna(subset=['dfa1', 'fc_media']).copy()
+
+    # Em protocolos INTERVALADOS, as recuperações produzem pontos com FC baixa e
+    # alpha1 alto que não pertencem à curva intensidade→alpha1. O método original
+    # foi desenhado para rampas contínuas; restringir aos períodos de trabalho
+    # recupera a relação monotónica que o ajuste pressupõe.
+    n_antes = len(s)
+    if so_trabalho and lap_stats and df_tempo is not None:
+        janelas = [(l['_t_ini'], l['_t_fim']) for l in lap_stats
+                   if l.get('phase') == 'work' and '_t_ini' in l]
+        if janelas:
+            m = pd.Series(False, index=s.index)
+            for t0, t1 in janelas:
+                m |= (s['tempo_s'] >= t0) & (s['tempo_s'] <= t1)
+            if m.sum() >= 10:
+                s = s[m].copy()
+
+    lo, hi = janela_ajuste
+    linear = s[(s['dfa1'] >= lo) & (s['dfa1'] <= hi)]
+
+    # Se a janela não apanhar pontos suficientes, alargar progressivamente
+    if len(linear) < 6:
+        for margem in (0.1, 0.2, 0.3):
+            linear = s[(s['dfa1'] >= lo - margem) & (s['dfa1'] <= hi + margem)]
+            if len(linear) >= 6:
+                break
+    if len(linear) < 6:
+        return {'erro': f'poucos pontos na secção linear (n={len(linear)})',
+                'serie': s}
+
+    x = linear['fc_media'].values.astype(float)
+    y = linear['dfa1'].values.astype(float)
+    if np.ptp(x) < 1e-9:
+        return {'erro': 'FC sem variação na secção linear', 'serie': s}
+
+    coef = np.polyfit(x, y, 1)
+    y_pred = np.polyval(coef, x)
+    sst = np.sum((y - y.mean()) ** 2)
+    r2 = float(1 - np.sum((y - y_pred) ** 2) / sst) if sst > 0 else np.nan
+
+    if abs(coef[0]) < 1e-12:
+        return {'erro': 'declive nulo', 'serie': s}
+
+    fc_limiar = float((alvo - coef[1]) / coef[0])
+    extrapolado = not (x.min() - 0.1 * np.ptp(x) <= fc_limiar <= x.max() + 0.1 * np.ptp(x))
+
+    # Converter FC em potência, se houver dados
+    pot_limiar = None
+    if df_metricas is not None and colunas and 'power' in colunas and 'heart_rate' in colunas:
+        try:
+            dm = df_metricas[[colunas['heart_rate'], colunas['power']]].copy()
+            dm.columns = ['fc', 'pot']
+            dm = dm.apply(pd.to_numeric, errors='coerce').dropna()
+            dm = dm[dm['pot'] > 0]
+            if len(dm) > 30 and np.ptp(dm['fc'].values) > 5:
+                cfp = np.polyfit(dm['fc'].values, dm['pot'].values, 1)
+                pot_limiar = float(np.polyval(cfp, fc_limiar))
+        except Exception:
+            pot_limiar = None
+
+    # Tempo em que o alpha1 cruza o alvo (primeira travessia descendente)
+    tempo_limiar = None
+    abaixo = s[s['dfa1'] <= alvo]
+    if len(abaixo) > 0:
+        tempo_limiar = float(abaixo['tempo_s'].iloc[0])
+
+    # ── Diagnóstico de fiabilidade ───────────────────────────────────────────
+    # O método pressupõe que o alpha1 atravessa o alvo de forma consistente
+    # durante o teste. Se isso não acontece, a "estimativa" é uma extrapolação
+    # da recta muito para lá dos dados observados — e não deve ser usada.
+    n_abaixo = int((s['dfa1'] <= alvo).sum())
+    pct_abaixo = n_abaixo / len(s) * 100 if len(s) else 0.0
+    avisos = []
+    if pct_abaixo < 5:
+        avisos.append(
+            f"o α1 só desceu abaixo de {alvo} em {n_abaixo}/{len(s)} janelas "
+            f"({pct_abaixo:.1f}%) — o teste pode não ter atingido o limiar")
+    if r2 < 0.5:
+        avisos.append(f"ajuste fraco na secção linear (R²={r2:.2f})")
+    if extrapolado:
+        avisos.append("o valor está extrapolado para fora do intervalo medido")
+    fiavel = (not avisos)
+
+    return {
+        'alvo': alvo,
+        'fiavel': fiavel,
+        'avisos': avisos,
+        'pct_abaixo_alvo': round(pct_abaixo, 1),
+        'fc': fc_limiar,
+        'potencia': pot_limiar,
+        'tempo_s': tempo_limiar,
+        'coef': coef.tolist(),
+        'r2': r2,
+        'n_pontos': len(linear),
+        'extrapolado': extrapolado,
+        'pontos_linear': linear,
+        'serie': s,
+        'janela_ajuste': (lo, hi),
+        'so_trabalho': bool(so_trabalho and len(s) < n_antes),
+        'n_serie_usada': len(s),
+        'n_serie_total': n_antes,
+    }
+
+
+def combo_limiares(hrvt2, bp_nirs, tolerancia_pct=15):
+    """
+    Combo HRVT2 + NIRS breakpoint (Fleitas-Paniagua, Murias et al., JSCR 2023).
+
+    O estudo mostrou que a média das duas estimativas tem menor viés e limites de
+    concordância mais estreitos face ao padrão-ouro (RCP) do que qualquer uma
+    isolada — porque derivam de subsistemas fisiológicos diferentes e os erros
+    tendem a cancelar-se:
+
+        HRVT2 sozinho : 4/19 casos com erro ≥10 bpm (21%)
+        NIRS sozinho  : 5/16 (31%)
+        Combo         : 3/21 (14%)
+
+    Vantagem adicional: se um dos métodos falhar tecnicamente (artefactos no HRV,
+    sinal fraco no NIRS), o outro ainda dá um resultado utilizável.
+
+    Devolve dict com a estimativa combinada, a divergência entre métodos e um
+    aviso quando essa divergência é grande.
+    """
+    v_hrv = None
+    hrv_descartado = False
+    if hrvt2 and 'erro' not in hrvt2 and hrvt2.get('potencia') is not None:
+        if hrvt2.get('fiavel', True):
+            v_hrv = float(hrvt2['potencia'])
+        else:
+            # HRVT2 pouco fiável: não entra no combo, para não contaminar a
+            # estimativa. O estudo assume que ambos os métodos são válidos.
+            hrv_descartado = True
+    v_nirs = float(bp_nirs['breakpoint']) if bp_nirs else None
+
+    disponiveis = [v for v in (v_hrv, v_nirs) if v is not None]
+    if not disponiveis:
+        return None
+
+    combo = float(np.mean(disponiveis))
+    divergencia = abs(v_hrv - v_nirs) if len(disponiveis) == 2 else None
+    div_pct = (divergencia / combo * 100) if divergencia is not None and combo > 0 else None
+
+    if len(disponiveis) == 1:
+        estado = 'metodo_unico'
+    elif div_pct is not None and div_pct > tolerancia_pct:
+        estado = 'divergente'
+    else:
+        estado = 'concordante'
+
+    return {
+        'combo': combo,
+        'hrvt2': v_hrv,
+        'nirs': v_nirs,
+        'divergencia': divergencia,
+        'divergencia_pct': div_pct,
+        'estado': estado,
+        'hrv_descartado': hrv_descartado,
+        'n_metodos': len(disponiveis),
+        'tolerancia_pct': tolerancia_pct,
     }
