@@ -629,6 +629,22 @@ def tab_fit_analise():
             _media_art = np.mean([v for _, v in _art_laps])
             st.caption(f"✅ Qualidade do sinal HRV boa (artefactos médios: {_media_art:.1f}%).")
 
+    # ── Tipo de protocolo detectado ───────────────────────────────────────────
+    _proto = res.get('protocolo')
+    if _proto and _proto.get('tipo') != 'indefinido':
+        _ICONE = {'rampa': '📈', 'degraus': '🪜', 'intervalos': '🔁', 'continuo': '➡️'}
+        _NOME = {'rampa': 'Rampa contínua', 'degraus': 'Degraus incrementais',
+                 'intervalos': 'Intervalos repetidos', 'continuo': 'Intensidade contínua'}
+        _t = _proto['tipo']
+        st.info(
+            f"{_ICONE.get(_t, '📊')} **Protocolo detectado: {_NOME.get(_t, _t)}** — "
+            f"{_proto['motivo']}.\n\n"
+            f"As análises de limiares foram adaptadas: {_proto['metodo_recomendado']}.")
+        if _t == 'continuo':
+            st.caption("Numa sessão de intensidade constante não há limiares a "
+                       "detectar — só faz sentido olhar para a deriva (decoupling) "
+                       "e para a estabilidade das métricas ao longo do tempo.")
+
     st.markdown("---")
 
     # ── Laps: deteção automática + correção manual + aquecimento ─────────────
