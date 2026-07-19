@@ -1389,6 +1389,67 @@ decoupling. Não há limiares a estimar.
                     st.warning("⚠️ **Previsão pouco fiável:**\n\n"
                                + "\n".join(f"- {a}" for a in _sub['avisos']))
 
+        # ── MLSS por intervalos longos (artigo 2019/03) ──────────────────────
+        _mi = res.get('mlss_intervalos')
+        if _mi:
+            st.markdown("---")
+            st.markdown("#### 🎯 MLSS por intervalos longos — método de referência")
+            st.caption(
+                f"Compara o comportamento do **{_mi['sinal']}** dentro de cada bloco de "
+                "intensidade constante. Abaixo do MLSS o sinal estabiliza; acima, "
+                "deriva continuamente. O MLSS fica entre a intensidade mais alta "
+                "estável e a mais baixa instável.\n\n"
+                "**Porquê este método:** a literatura mostra que os breakpoints por "
+                "rampa têm erro acima de 10 W — e exercitar apenas +10 W acima do "
+                "MLSS (~3-5%) já provoca subida progressiva do lactato e prejudica o "
+                "desempenho. Este método por blocos é o que o autor considera mais "
+                "fiável.")
+
+            if _mi['usa_hhb']:
+                st.caption("ℹ️ A análise usa o **HHb** (hemoglobina desoxigenada, "
+                           "derivado de SmO₂ e THb) — é a métrica dos estudos, e "
+                           "mantém amplitude dinâmica em intensidades altas onde o "
+                           "SmO₂ começa a achatar.")
+
+            _tbm = _mi['tabela'].copy()
+            _cols_show = [c for c in _tbm.columns if c not in
+                          ('estavel', 'tendencia_credivel')]
+            st.dataframe(_tbm[_cols_show], hide_index=True, use_container_width=True)
+
+            _lo, _hi = _mi['mlss_entre']
+            if _mi['estado'] == 'enquadrado':
+                _txt_fc = (f" · em FC: ~{_mi['mlss_fc']:.0f} bpm"
+                           if _mi.get('mlss_fc') else "")
+                _msg = (f"✅ **MLSS entre {_lo:.0f} e {_hi:.0f} {_mi['unidade']}** — "
+                        f"estimativa **{_mi['mlss_estimado']:.0f} {_mi['unidade']}**"
+                        f"{_txt_fc}. Janela de ±{_mi['largura_janela']/2:.0f} "
+                        f"{_mi['unidade']} (precisão {_mi['precisao']}).")
+                if _mi['precisao'] == 'boa':
+                    st.success(_msg + " A janela está dentro dos ±10 W que a "
+                               "literatura aponta como limite crítico.")
+                else:
+                    st.warning(_msg + " Para estreitar a janela, inclui blocos com "
+                               "intensidades mais próximas entre si.")
+            elif _mi['estado'] == 'abaixo_do_testado':
+                st.warning(f"⚠️ Todos os blocos derivam — o MLSS estará **abaixo de "
+                           f"{_hi:.0f} {_mi['unidade']}**. Repete incluindo blocos "
+                           "mais fáceis.")
+            elif _mi['estado'] == 'acima_do_testado':
+                st.info(f"ℹ️ Todos os blocos estáveis — o MLSS estará **acima de "
+                        f"{_lo:.0f} {_mi['unidade']}**. Repete incluindo blocos mais "
+                        "intensos.")
+            else:
+                st.warning("⚠️ Resposta inconsistente: há blocos instáveis abaixo de "
+                           "blocos estáveis. Pode indicar variação de cadência, "
+                           "pacing irregular, ou blocos curtos demais para o padrão "
+                           "se manifestar.")
+
+            st.caption(
+                f"Ignorados os primeiros {_mi['ignorar_inicio_s']}s de cada bloco "
+                "(transição da intensidade anterior). Um bloco só é classificado "
+                "como instável se a tendência for consistente (R²≥0.25) — evita "
+                "confundir ruído com deriva real.")
+
         # ── Método alternativo: estabilidade do SmO₂ dentro de cada intervalo ──
         _est = res.get('estabilidade_smo2')
         if _est:
