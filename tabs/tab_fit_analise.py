@@ -40,6 +40,8 @@ _CORES_METRICA = {
     'respiration':   '#E69F00',
     'resp_enhanced': '#B8860B',
     'artifacts':     '#8B0000',
+    'hhb':           '#8E1600',
+    'o2hb':          '#1B7837',
     'rr_ratio':      '#7B68EE',
     'hr_alphahrv':   '#FF8C69',
     'heart_rate':    '#D55E00',
@@ -64,6 +66,111 @@ def _mmss(segundos):
 # ══════════════════════════════════════════════════════════════════════════════
 # GRÁFICOS
 # ══════════════════════════════════════════════════════════════════════════════
+
+def _grafico_breakpoint_hhb(bp_smo2, bp_hhb):
+    """
+    HHb e SmO₂ vs intensidade, lado a lado, cada um com o seu ajuste
+    double-linear. É a visualização que a literatura NIRS usa: o HHb sobe
+    (desoxigenação) e o SmO₂ desce, e o breakpoint deve coincidir.
+    """
+    from plotly.subplots import make_subplots as _msp
+    fig = _msp(rows=1, cols=2, horizontal_spacing=0.10,
+               subplot_titles=['HHb (hemoglobina desoxigenada)', 'SmO₂ (%)'])
+
+    for _col, _bp, _cor_pt in ((1, bp_hhb, '#8E1600'), (2, bp_smo2, '#0072B2')):
+        if _bp is None:
+            continue
+        p = _bp['pontos']
+        u = _bp['unidade']
+        fig.add_trace(go.Scatter(
+            x=p['intensidade'], y=p['smo2'], mode='markers',
+            marker=dict(size=5, color=_cor_pt, opacity=0.55),
+            showlegend=False,
+            hovertemplate='%{x:.0f}' + u + '<br>%{y:.2f}<extra></extra>'),
+            row=1, col=_col)
+
+        x = p['intensidade'].values
+        xb = _bp['breakpoint']
+        x1 = np.linspace(x.min(), xb, 30)
+        x2 = np.linspace(xb, x.max(), 30)
+        fig.add_trace(go.Scatter(
+            x=x1, y=np.polyval(_bp['coef_antes'], x1), mode='lines',
+            line=dict(color='#27ae60', width=2.5), showlegend=(_col == 1),
+            name='Antes do breakpoint'), row=1, col=_col)
+        fig.add_trace(go.Scatter(
+            x=x2, y=np.polyval(_bp['coef_depois'], x2), mode='lines',
+            line=dict(color='#e74c3c', width=2.5), showlegend=(_col == 1),
+            name='Depois do breakpoint'), row=1, col=_col)
+        fig.add_vline(x=xb, line_dash='dash', line_color='#333', line_width=2,
+                      annotation_text=f"{xb:.0f}{u}", annotation_position='top',
+                      row=1, col=_col)
+
+    _u = (bp_hhb or bp_smo2)['unidade'] if (bp_hhb or bp_smo2) else 'W'
+    fig.update_layout(
+        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+        height=380, margin=dict(t=60, b=55, l=55, r=25), font=dict(size=11),
+        legend=dict(orientation='h', y=-0.20, font=dict(size=10)),
+        title=dict(text='Breakpoint nos dois sinais — validação cruzada',
+                   font=dict(size=13)))
+    fig.update_xaxes(title_text=f'Intensidade ({_u})', showgrid=True,
+                     gridcolor='rgba(128,128,128,0.2)')
+    fig.update_yaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+    fig.update_yaxes(title_text='HHb', row=1, col=1)
+    fig.update_yaxes(title_text='SmO₂ (%)', row=1, col=2)
+    return fig
+
+
+def _grafico_hhb_temporal(df, colunas, lap_stats):
+    """HHb e SmO₂ ao longo do tempo, com as fases sombreadas."""
+    fig = go.Figure()
+    tmin = df['time_seconds'].min()
+    x = (df['time_seconds'] - tmin) / 60.0
+
+    if 'hhb' in colunas:
+        fig.add_trace(go.Scatter(
+            x=x, y=pd.to_numeric(df[colunas['hhb']], errors='coerce'),
+            mode='lines', name='HHb (desoxi)',
+            line=dict(color='#8E1600', width=1.6),
+            hovertemplate='HHb %{y:.2f}<extra></extra>'))
+    if 'o2hb' in colunas:
+        fig.add_trace(go.Scatter(
+            x=x, y=pd.to_numeric(df[colunas['o2hb']], errors='coerce'),
+            mode='lines', name='O₂Hb (oxi)',
+            line=dict(color='#1B7837', width=1.6),
+            hovertemplate='O₂Hb %{y:.2f}<extra></extra>'))
+    if 'thb' in colunas:
+        fig.add_trace(go.Scatter(
+            x=x, y=pd.to_numeric(df[colunas['thb']], errors='coerce'),
+            mode='lines', name='THb (total)',
+            line=dict(color='#009E73', width=1.2, dash='dot'),
+            hovertemplate='THb %{y:.2f}<extra></extra>'))
+
+    for l in lap_stats:
+        fase = l.get('phase')
+        if fase not in ('work', 'excluded', 'recovery'):
+            continue
+        d = df[df['lap_number'] == l['lap_number']]
+        if len(d) == 0:
+            continue
+        x0 = (d['time_seconds'].iloc[0] - tmin) / 60.0
+        x1 = (d['time_seconds'].iloc[-1] - tmin) / 60.0
+        cor = {'work': 'rgba(214,39,40,0.09)',
+               'excluded': 'rgba(128,128,128,0.16)',
+               'recovery': 'rgba(52,152,219,0.07)'}[fase]
+        fig.add_vrect(x0=x0, x1=x1, fillcolor=cor, line_width=0, layer='below')
+
+    fig.update_layout(
+        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+        height=340, hovermode='x unified', font=dict(size=11),
+        margin=dict(t=50, b=50, l=55, r=25),
+        legend=dict(orientation='h', y=-0.18, font=dict(size=10)),
+        xaxis_title='Tempo (min)', yaxis_title='Hemoglobina',
+        title=dict(text='Distribuição da hemoglobina ao longo da sessão',
+                   font=dict(size=13)))
+    fig.update_xaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+    fig.update_yaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+    return fig
+
 
 def _grafico_curva_dfa1(serie, hrvt2=None):
     """Curva DFA-α1 vs FC, com as linhas de referência e o ajuste do HRVT2."""
@@ -828,7 +935,7 @@ decoupling. Não há limiares a estimar.
 
     # ── Séries temporais ──────────────────────────────────────────────────────
     st.markdown("### 📈 Séries temporais")
-    _ORDEM = ['smo2', 'thb', 'dfa1', 'artifacts', 'rr_ratio', 'respiration',
+    _ORDEM = ['smo2', 'thb', 'hhb', 'o2hb', 'dfa1', 'artifacts', 'rr_ratio', 'respiration',
               'resp_enhanced', 'heart_rate', 'hr_alphahrv', 'power', 'cadence',
               'speed', 'cycle_length', 'distance']
     disponiveis = ([m for m in _ORDEM if m in colunas] +
@@ -1161,7 +1268,13 @@ decoupling. Não há limiares a estimar.
 
         # VT1 pelo DFA-α1
         with _cl1:
-            st.markdown("**VT1 / topo da zona 1 — DFA-α1**")
+            st.markdown("**VT1 / topo da zona 1 — DFA-α1 (método fixo)**")
+            st.caption(
+                "⚠️ Estes valores usam os limiares **fixos** (0.75/0.70/0.50). "
+                "O 0.50 tem base matemática — é o valor de um padrão "
+                "não-correlacionado. Mas o **0.75 é um palpite empírico**, e o "
+                "estudo MSSE 2024 mostrou que sobrestima o VT1 em +16 bpm. "
+                "Vê a secção **HRVT1c** mais abaixo para a versão individualizada.")
             if _ldfa and 'limiares' in _ldfa:
                 _u = _ldfa['unidade']
                 _v075 = _ldfa['limiares'].get(0.75)
@@ -1192,8 +1305,27 @@ decoupling. Não há limiares a estimar.
         with _cl2:
             st.markdown("**MLSS / início da zona 3 — breakpoint SmO₂**")
             if _bp:
-                st.metric("Breakpoint (double-linear)",
-                          f"{_bp['breakpoint']:.0f} {_bp['unidade']}")
+                _bph = res.get('bp_hhb')
+                if _bph:
+                    _bc1, _bc2 = st.columns(2)
+                    _bc1.metric(f"Breakpoint — SmO₂",
+                                f"{_bp['breakpoint']:.0f} {_bp['unidade']}")
+                    _bc2.metric(f"Breakpoint — HHb",
+                                f"{_bph['breakpoint']:.0f} {_bph['unidade']}",
+                                help="HHb = hemoglobina desoxigenada, derivada de "
+                                     "SmO₂ e THb. É a métrica que os estudos NIRS "
+                                     "analisam — serve de verificação cruzada.")
+                    _dif = abs(_bp['breakpoint'] - _bph['breakpoint'])
+                    if _dif <= 5:
+                        st.caption(f"✅ Os dois sinais concordam (diferença "
+                                   f"{_dif:.0f} {_bp['unidade']}) — a estimativa "
+                                   "é robusta.")
+                    else:
+                        st.caption(f"⚠️ Diferença de {_dif:.0f} {_bp['unidade']} "
+                                   "entre sinais — interpreta com alguma reserva.")
+                else:
+                    st.metric("Breakpoint (double-linear)",
+                              f"{_bp['breakpoint']:.0f} {_bp['unidade']}")
                 st.caption(f"Declive antes: {_bp['slope_antes']:.3f} · "
                            f"depois: {_bp['slope_depois']:.3f} %/{_bp['unidade']}")
                 st.caption(f"Ajuste sobre {_bp['n_pontos']} pontos · R² = {_bp['r2']:.2f}")
@@ -1343,16 +1475,27 @@ decoupling. Não há limiares a estimar.
             st.markdown("---")
             st.markdown("#### 🎯 HRVT1c — limiar baixo com ponto médio individual")
             st.caption(
-                "O valor fixo de α1=0.75 para o VT1 assume que toda a gente parte "
-                "de ~1.0 em baixa intensidade. Quem parte mais alto fica com o "
-                "limiar sobrestimado — no estudo IJSPP 2024 o viés era de **+16 bpm**. "
-                "A correcção usa o ponto médio individual entre o α1 máximo inicial "
-                "e 0.50, o que reduziu o viés para +2 bpm.")
+                "**Porque é que 0.75 é arbitrário e 0.50 não é:** o valor 0.50 tem "
+                "significado matemático — corresponde a um padrão de batimentos "
+                "**não-correlacionado** (ruído branco), com perda das propriedades "
+                "fractais. Por isso a concordância HRVT2↔RCP é forte (viés <1 bpm). "
+                "Já o 0.75 foi escolhido como ponto médio hipotético entre 1.0 e "
+                "0.5 — o próprio autor lhe chama *\"palpite empírico\"*. Como nem "
+                "toda a gente parte de 1.0, quem começa mais alto fica com o limiar "
+                "sobrestimado: o estudo IJSPP 2024 mediu um viés de **+16 bpm**.\n\n"
+                "**A correcção:** em vez de 0.75 fixo, usa-se o ponto médio "
+                "individual `(α1_máximo_inicial + 0.50) / 2`. No estudo, isso "
+                "reduziu o viés de +16 para **+2 bpm** e estreitou os limites de "
+                "concordância de ±35 para ±26 bpm.")
             _c1, _c2, _c3 = st.columns(3)
             _c1.metric("α1 máximo inicial", f"{_h1c['max_inicial_dfa1']:.2f}")
             _c2.metric("Alvo individual", f"{_h1c['alvo_individual']:.2f}",
                        delta=f"vs 0.75 fixo")
             _c3.metric("HRVT1c", f"{_h1c['fc']:.0f} bpm")
+            st.caption(
+                f"Cálculo: (α1 máximo inicial **{_h1c['max_inicial_dfa1']:.2f}** + "
+                f"0.50) ÷ 2 = **{_h1c['alvo_individual']:.2f}** — este é o teu ponto "
+                "médio entre um padrão bem correlacionado e um não-correlacionado.")
             if _h1c.get('diferenca_vs_fixo') is not None:
                 _d = _h1c['diferenca_vs_fixo']
                 st.caption(
@@ -1388,6 +1531,61 @@ decoupling. Não há limiares a estimar.
                 else:
                     st.warning("⚠️ **Previsão pouco fiável:**\n\n"
                                + "\n".join(f"- {a}" for a in _sub['avisos']))
+
+        # ── Análise NIRS: HHb e SmO₂ ─────────────────────────────────────────
+        _bph = res.get('bp_hhb')
+        if _bph or ('hhb' in colunas):
+            st.markdown("---")
+            st.markdown("#### 🩸 Análise NIRS — HHb e SmO₂")
+            st.caption(
+                "O **HHb** (hemoglobina desoxigenada) é a métrica que os estudos "
+                "de NIRS analisam, não o SmO₂ directamente. Deriva-se dos dois "
+                "sinais do sensor: `HHb = THb × (1 − SmO₂/100)`.\n\n"
+                "**Porque importa:** o SmO₂ é uma *proporção* (satura em "
+                "intensidades altas); o HHb é uma *quantidade absoluta* e mantém "
+                "amplitude dinâmica precisamente onde o SmO₂ começa a achatar. "
+                "Como são derivados um do outro, o breakpoint deve coincidir — "
+                "e isso serve de validação cruzada.")
+
+            st.plotly_chart(
+                _grafico_hhb_temporal(res['df'], colunas, lap_stats),
+                use_container_width=True, config={'displayModeBar': False},
+                key=f'g_hhb_temp_{ficheiro.name}')
+            st.caption("🔴 Trabalho · 🔵 recuperação · ⚪ excluídos. "
+                       "O HHb sobe com a intensidade (mais extracção de O₂), "
+                       "o O₂Hb desce, e o THb mantém-se relativamente estável.")
+
+            if _bph and _bp:
+                st.plotly_chart(
+                    _grafico_breakpoint_hhb(_bp, _bph),
+                    use_container_width=True, config={'displayModeBar': False},
+                    key=f'g_bp_hhb_{ficheiro.name}')
+                _dif = abs(_bp['breakpoint'] - _bph['breakpoint'])
+                _cn1, _cn2, _cn3 = st.columns(3)
+                _cn1.metric("Breakpoint HHb",
+                            f"{_bph['breakpoint']:.0f} {_bph['unidade']}")
+                _cn2.metric("Breakpoint SmO₂",
+                            f"{_bp['breakpoint']:.0f} {_bp['unidade']}")
+                _cn3.metric("Diferença", f"{_dif:.0f} {_bp['unidade']}",
+                            delta="concordante" if _dif <= 5 else "divergente",
+                            delta_color="normal" if _dif <= 5 else "inverse")
+                st.caption(
+                    f"HHb: declive {_bph['slope_antes']:+.3f} → "
+                    f"{_bph['slope_depois']:+.3f} · R²={_bph['r2']:.2f} · "
+                    f"{_bph['padrao']}")
+
+            # Amplitude dinâmica dos dois sinais nos laps de trabalho
+            _w = [l for l in lap_stats if l.get('phase') == 'work']
+            if _w and 'avg_hhb' in _w[0]:
+                _hh = [l['avg_hhb'] for l in _w if 'avg_hhb' in l]
+                _ss = [l['avg_smo2'] for l in _w if 'avg_smo2' in l]
+                if len(_hh) >= 2 and len(_ss) >= 2:
+                    st.caption(
+                        f"Amplitude nos degraus de trabalho — "
+                        f"HHb: {min(_hh):.2f} a {max(_hh):.2f} "
+                        f"(Δ {max(_hh)-min(_hh):.2f}) · "
+                        f"SmO₂: {min(_ss):.1f}% a {max(_ss):.1f}% "
+                        f"(Δ {max(_ss)-min(_ss):.1f} pontos)")
 
         # ── MLSS por intervalos longos (artigo 2019/03) ──────────────────────
         _mi = res.get('mlss_intervalos')
