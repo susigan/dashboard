@@ -29,6 +29,7 @@ warnings.filterwarnings('ignore')
 from utils.fit_analyzer import (
     analisar_fit, resumir_para_historico, parse_intervalos,
     sugerir_offset, sugerir_offset_por_laps, NOMES_METRICAS,
+    DFA1_HRVT2, DFA1_HRVT1,
 )
 
 # Cores por métrica (paleta Wong 2011, colorblind-safe)
@@ -63,6 +64,47 @@ def _mmss(segundos):
 # ══════════════════════════════════════════════════════════════════════════════
 # GRÁFICOS
 # ══════════════════════════════════════════════════════════════════════════════
+
+def _grafico_curva_dfa1(serie, hrvt2=None):
+    """Curva DFA-α1 vs FC, com as linhas de referência e o ajuste do HRVT2."""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=serie['fc_media'], y=serie['dfa1'], mode='markers',
+        marker=dict(size=5, color='rgba(204,121,167,0.5)'),
+        name='DFA-α1 (janelas 2 min)',
+        hovertemplate='FC %{x:.0f} bpm<br>α1 %{y:.2f}<extra></extra>'))
+
+    for alvo, cor, txt in [(DFA1_HRVT1, '#f39c12', 'α1=0.75 (≈VT1)'),
+                           (DFA1_HRVT2, '#e74c3c', 'α1=0.50 (HRVT2 ≈ RCP/MLSS)')]:
+        fig.add_hline(y=alvo, line_dash='dash', line_color=cor, line_width=1.5,
+                      annotation_text=txt, annotation_position='right',
+                      annotation_font_size=9, annotation_font_color=cor)
+
+    if hrvt2 and 'erro' not in hrvt2 and hrvt2.get('coef'):
+        pl = hrvt2.get('pontos_linear')
+        if pl is not None and len(pl) > 1:
+            xr = np.linspace(pl['fc_media'].min(), pl['fc_media'].max(), 40)
+            fig.add_trace(go.Scatter(
+                x=xr, y=np.polyval(hrvt2['coef'], xr), mode='lines',
+                line=dict(color='#CC79A7', width=2.5),
+                name=f"Ajuste linear (R²={hrvt2['r2']:.2f})"))
+        if hrvt2.get('fiavel'):
+            fig.add_vline(x=hrvt2['fc'], line_dash='dot', line_color='#e74c3c',
+                          line_width=2,
+                          annotation_text=f"HRVT2 {hrvt2['fc']:.0f} bpm",
+                          annotation_position='top')
+
+    fig.update_layout(
+        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+        height=380, margin=dict(t=55, b=50, l=55, r=160), font=dict(size=11),
+        xaxis_title='FC (bpm)', yaxis_title='DFA-α1',
+        legend=dict(orientation='h', y=-0.18, font=dict(size=10)),
+        title=dict(text='DFA-α1 vs FC — recalculado dos intervalos RR',
+                   font=dict(size=13)))
+    fig.update_xaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+    fig.update_yaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+    return fig
+
 
 def _grafico_double_linear(bp):
     """SmO2 vs intensidade com as duas rectas do ajuste double-linear."""
@@ -1100,6 +1142,94 @@ def tab_fit_analise():
                    "A literatura sugere subtrair 10-15 W para compensar o atraso da resposta "
                    "metabólica (MRT) em rampas rápidas; em degraus longos como estes o "
                    "efeito é menor (~2-10 W).")
+
+        # ── HRVT2 pelo DFA-α1 recalculado + Combo (Murias 2023) ──────────────
+        _h2 = res.get('hrvt2')
+        _cb = res.get('combo')
+        _sdfa = res.get('dfa1_serie')
+        if _h2 or _cb:
+            st.markdown("---")
+            st.markdown("#### 🫀 HRVT2 e Combo (método Murias 2023)")
+            st.caption(
+                "O DFA-α1 é recalculado a partir dos intervalos RR do ficheiro "
+                "(janelas de 2 min, passo 5 s, escalas 4-16 batimentos — os "
+                "parâmetros do estudo). **α1 = 0.50 marca o limiar ALTO** "
+                "(HRVT2 ≈ RCP/MLSS), não o VT1. O estudo mostrou que a média do "
+                "HRVT2 com o breakpoint NIRS tem menor erro individual do que "
+                "qualquer método isolado.")
+
+            _q = res.get('dfa1_qualidade')
+            if _q:
+                _cq1, _cq2, _cq3 = st.columns(3)
+                _cq1.metric("Intervalos RR", f"{_q['n_total']}")
+                _cq2.metric("Artefactos corrigidos",
+                            f"{_q['pct_artefactos']:.1f}%",
+                            delta="acima de 5%" if _q['pct_artefactos'] > 5 else "aceitável",
+                            delta_color="inverse" if _q['pct_artefactos'] > 5 else "normal")
+                _cq3.metric("Janelas de α1", f"{len(_sdfa) if _sdfa is not None else 0}")
+                if _q['pct_artefactos'] > 5:
+                    st.warning(
+                        f"⚠️ {_q['pct_artefactos']:.1f}% de artefactos corrigidos. O estudo "
+                        "exclui registos acima de 5% — o DFA-α1 é muito sensível a erros "
+                        "de intervalo RR. Verifica a posição da cinta cardíaca.")
+
+            if _h2 and 'erro' not in _h2:
+                if _h2.get('fiavel'):
+                    _cm1, _cm2 = st.columns(2)
+                    _cm1.metric("HRVT2 — FC", f"{_h2['fc']:.0f} bpm")
+                    if _h2.get('potencia'):
+                        _cm2.metric("HRVT2 — Potência", f"{_h2['potencia']:.0f} W")
+                    st.caption(f"Regressão na secção linear da curva α1 vs FC · "
+                               f"R²={_h2['r2']:.2f} · n={_h2['n_pontos']} janelas")
+                else:
+                    st.error(
+                        "❌ **HRVT2 não fiável neste teste** — não deve ser usado:\n\n"
+                        + "\n".join(f"- {a}" for a in _h2.get('avisos', []))
+                        + "\n\nPara obter um HRVT2 válido, o protocolo precisa de levar "
+                          "o α1 claramente abaixo de 0.5 (intensidade suficiente) com sinal "
+                          "de HRV limpo. Rampas contínuas funcionam melhor do que degraus "
+                          "curtos, porque o α1 precisa de janelas de 2 min.")
+            elif _h2:
+                st.info(f"HRVT2 não calculado: {_h2.get('erro')}")
+            elif res.get('rr_info') is None:
+                st.info("Este ficheiro não contém intervalos RR — o DFA-α1 não pode ser "
+                        "recalculado. Só ficheiros que gravam RR (Garmin, apps com Polar H10) "
+                        "permitem esta análise.")
+
+            # Combo
+            if _cb:
+                st.markdown("**🎯 Estimativa combinada do limiar alto**")
+                _cc1, _cc2, _cc3 = st.columns(3)
+                _cc1.metric("HRVT2 (DFA-α1)",
+                            f"{_cb['hrvt2']:.0f} W" if _cb['hrvt2'] else "—")
+                _cc2.metric("NIRS breakpoint",
+                            f"{_cb['nirs']:.0f} W" if _cb['nirs'] else "—")
+                _cc3.metric("**COMBO**", f"{_cb['combo']:.0f} W")
+
+                if _cb.get('hrv_descartado'):
+                    st.info(
+                        "ℹ️ O HRVT2 foi **excluído do combo** por não ser fiável neste teste. "
+                        "A estimativa usa apenas o NIRS. Isto é exactamente o cenário de "
+                        "'falha técnica' que o estudo descreve: quando um método falha, o "
+                        "outro ainda dá um resultado utilizável.")
+                elif _cb['estado'] == 'concordante':
+                    st.success(
+                        f"✅ Os dois métodos concordam (divergência {_cb['divergencia']:.0f} W, "
+                        f"{_cb['divergencia_pct']:.0f}%). Segundo o estudo, a média tem menor "
+                        "erro individual do que qualquer um isolado.")
+                elif _cb['estado'] == 'divergente':
+                    st.warning(
+                        f"⚠️ Os métodos divergem {_cb['divergencia']:.0f} W "
+                        f"({_cb['divergencia_pct']:.0f}%). Uma divergência grande sugere que "
+                        "pelo menos um dos sinais tem problemas. A média continua a ser a "
+                        "melhor aposta, mas com menos confiança — vale a pena repetir o teste.")
+
+            # Gráfico da curva α1
+            if _sdfa is not None and len(_sdfa) >= 10:
+                st.plotly_chart(_grafico_curva_dfa1(_sdfa, _h2),
+                                use_container_width=True,
+                                config={'displayModeBar': False},
+                                key=f'g_curva_dfa1_{ficheiro.name}')
 
         # ── Método alternativo: estabilidade do SmO₂ dentro de cada intervalo ──
         _est = res.get('estabilidade_smo2')
