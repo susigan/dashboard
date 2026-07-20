@@ -1195,7 +1195,8 @@ decoupling. Não há limiares a estimar.
         lc[0].metric("Dmax", f"{lim['dmax']:.0f} {u}" if lim['dmax'] else "—")
         lc[1].metric("Quebra inclinação", f"{lim['quebra']:.0f} {u}" if lim['quebra'] else "—")
         lc[2].metric("Deflexão 1%", f"{lim['deflexao']:.0f} {u}" if lim['deflexao'] else "—")
-        lc[3].metric("**Média**", f"{lim['media']:.0f} {u}")
+        lc[3].metric("**Média**", f"{lim['media']:.0f} {u}",
+                     f"{lim['fc_media']:.0f} bpm" if lim.get('fc_media') else None)
 
         st.plotly_chart(_grafico_limiares(lim), use_container_width=True,
                         config={'displayModeBar': False}, key=f'g_lim_{ficheiro.name}')
@@ -1209,6 +1210,94 @@ decoupling. Não há limiares a estimar.
             else:
                 st.success(f"✅ Os três métodos concordam (dispersão {_disp:.0f}%) — "
                            "estimativa fiável.")
+
+    # ── Resumo de zonas (FC e potência) ──────────────────────────────────────
+    _z = res.get('zonas')
+    if _z and (_z.get('baixo') or _z.get('alto')):
+        st.markdown("---")
+        st.markdown("### 🎯 Zonas de treino estimadas")
+        _rel = _z.get('relacao_pot_fc')
+        st.caption(
+            "A **FC é a referência principal** — é praticamente independente do "
+            "protocolo, ao contrário da potência (Physiological Reports 2023). "
+            "Os valores de potência são convertidos a partir da relação "
+            "potência↔FC desta sessão."
+            + (f" Ajuste: R²={_rel['r2']:.2f} sobre {_rel['n']} pontos."
+               if _rel else ""))
+
+        _b, _a = _z.get('baixo'), _z.get('alto')
+
+        def _fmt(v, u):
+            return f"{v:.0f} {u}" if v is not None else "—"
+
+        _zc1, _zc2, _zc3 = st.columns(3)
+        with _zc1:
+            st.markdown("**🟢 Zona 1** (fácil)")
+            if _b:
+                st.metric("até", _fmt(_b.get('fc'), 'bpm'),
+                          _fmt(_b.get('pot'), 'W'))
+            else:
+                st.metric("até", "—", "sem limiar baixo")
+        with _zc2:
+            st.markdown("**🟡 Zona 2** (moderada)")
+            if _b and _a:
+                st.metric("entre",
+                          f"{_b.get('fc', 0):.0f}–{_a.get('fc', 0):.0f} bpm",
+                          f"{_b.get('pot', 0):.0f}–{_a.get('pot', 0):.0f} W")
+            elif _a:
+                st.metric("até", _fmt(_a.get('fc'), 'bpm'), _fmt(_a.get('pot'), 'W'))
+            else:
+                st.metric("entre", "—", "")
+        with _zc3:
+            st.markdown("**🔴 Zona 3** (intensa)")
+            if _a:
+                st.metric("acima de", _fmt(_a.get('fc'), 'bpm'),
+                          _fmt(_a.get('pot'), 'W'))
+            else:
+                st.metric("acima de", "—", "sem limiar alto")
+
+        _orig = []
+        if _b:
+            _orig.append(f"**Limiar baixo (Z1→Z2):** {_b['origem']}"
+                         + ("" if _b.get('fiavel') else " ⚠️ com reservas"))
+        if _a:
+            _orig.append(f"**Limiar alto (Z2→Z3):** {_a['origem']}"
+                         + ("" if _a.get('fiavel') else " ⚠️ com reservas"))
+        if _orig:
+            st.caption(" · ".join(_orig))
+
+        if _z.get('coerente') is False:
+            st.warning("⚠️ O limiar baixo ficou **acima** do alto, o que é "
+                       "fisiologicamente improvável. Pelo menos uma das "
+                       "estimativas não é de confiança — vê o painel de "
+                       "fiabilidade abaixo.")
+        elif not _b:
+            st.info("ℹ️ Sem limiar baixo: precisa de DFA-α1 (intervalos RR no "
+                    "ficheiro). Só a fronteira Z2→Z3 foi estimada.")
+
+        # Todas as estimativas, para comparação
+        _alts = _z.get('alternativas') or []
+        if _alts:
+            with st.expander("📋 Todas as estimativas do limiar alto"):
+                _rows = []
+                for _al in _alts:
+                    _rows.append({
+                        'Método': _al['origem'],
+                        'FC (bpm)': round(_al['fc']) if _al.get('fc') else None,
+                        'Potência (W)': round(_al['pot']) if _al.get('pot') else None,
+                        'Fiável': '✅' if _al.get('fiavel') else '⚠️',
+                    })
+                st.dataframe(pd.DataFrame(_rows), hide_index=True,
+                             use_container_width=True)
+                _fcs = [a['fc'] for a in _alts if a.get('fc')]
+                if len(_fcs) >= 2:
+                    _amp = max(_fcs) - min(_fcs)
+                    if _amp <= 8:
+                        st.success(f"✅ Os métodos concordam (amplitude "
+                                   f"{_amp:.0f} bpm) — estimativa robusta.")
+                    else:
+                        st.warning(f"⚠️ Os métodos divergem {_amp:.0f} bpm. "
+                                   "Prefere os marcados como fiáveis.")
 
     # ── Painel de fiabilidade ────────────────────────────────────────────────
     _fi = res.get('fiabilidade')
@@ -1309,9 +1398,11 @@ decoupling. Não há limiares a estimar.
                 if _bph:
                     _bc1, _bc2 = st.columns(2)
                     _bc1.metric(f"Breakpoint — SmO₂",
-                                f"{_bp['breakpoint']:.0f} {_bp['unidade']}")
+                                f"{_bp['breakpoint']:.0f} {_bp['unidade']}",
+                                f"{_bp['fc']:.0f} bpm" if _bp.get('fc') else None)
                     _bc2.metric(f"Breakpoint — HHb",
                                 f"{_bph['breakpoint']:.0f} {_bph['unidade']}",
+                                f"{_bph['fc']:.0f} bpm" if _bph.get('fc') else None,
                                 help="HHb = hemoglobina desoxigenada, derivada de "
                                      "SmO₂ e THb. É a métrica que os estudos NIRS "
                                      "analisam — serve de verificação cruzada.")
@@ -1439,7 +1530,8 @@ decoupling. Não há limiares a estimar.
                             f"{_cb['hrvt2']:.0f} W" if _cb['hrvt2'] else "—")
                 _cc2.metric("NIRS breakpoint",
                             f"{_cb['nirs']:.0f} W" if _cb['nirs'] else "—")
-                _cc3.metric("**COMBO**", f"{_cb['combo']:.0f} W")
+                _cc3.metric("**COMBO**", f"{_cb['combo']:.0f} W",
+                            f"{_cb['fc']:.0f} bpm" if _cb.get('fc') else None)
                 if _h2 and 'erro' not in _h2 and _h2.get('fc'):
                     st.caption(f"Em FC (mais estável entre protocolos): "
                                f"HRVT2 = {_h2['fc']:.0f} bpm")
