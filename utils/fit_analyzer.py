@@ -1246,6 +1246,26 @@ def analisar_completo(prep):
                     if _tipo in ('continuo', 'intervalos', 'degraus') else None)
     combo = combo_limiares(hrvt2, bp_continuo)
 
+    # Relação potência↔FC desta sessão, para reportar os limiares nas duas
+    # unidades. A FC é mais estável entre protocolos do que a potência
+    # (Physiological Reports 2023), por isso convém ter ambas.
+    relacao_pf = _relacao_pot_fc(df, colunas, lap_stats)
+    for _b in (bp_continuo, bp_hhb):
+        if _b and _b.get('breakpoint') is not None and relacao_pf:
+            if _b.get('unidade') == 'W':
+                _b['fc'] = pot_para_fc(_b['breakpoint'], relacao_pf)
+                _b['potencia'] = _b['breakpoint']
+            else:
+                _b['fc'] = _b['breakpoint']
+                _b['potencia'] = fc_para_pot(_b['breakpoint'], relacao_pf)
+    if limiares and limiares.get('media') is not None and relacao_pf:
+        if limiares.get('unidade') == 'W':
+            limiares['fc_media'] = pot_para_fc(limiares['media'], relacao_pf)
+        else:
+            limiares['fc_media'] = limiares['media']
+    if combo and combo.get('combo') is not None and relacao_pf:
+        combo['fc'] = pot_para_fc(combo['combo'], relacao_pf)
+
     _res = dict(prep)
     _res.update({
         'protocolo': protocolo,
@@ -1267,7 +1287,9 @@ def analisar_completo(prep):
         'hrvt2_submax': hrvt2_sub,
         'durabilidade': durabilidade,
         'combo': combo,
+        'relacao_pot_fc': relacao_pf,
     })
+    _res['zonas'] = resumir_zonas(_res)
     _res['fiabilidade'] = avaliar_fiabilidade(_res)
     return _res
 
@@ -3144,4 +3166,183 @@ def mlss_intervalos_longos(df, colunas, lap_stats, ignorar_inicio_s=120,
         'n_instaveis': len(instaveis),
         'ignorar_inicio_s': ignorar_inicio_s,
         'limiar_slope': limiar,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CONVERSÃO POTÊNCIA ↔ FC
+# A FC dos limiares é mais estável entre protocolos do que a potência
+# (Physiological Reports 2023), por isso convém reportar ambas.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _relacao_pot_fc(df, colunas, lap_stats=None):
+    """
+    Ajusta a relação potência↔FC desta sessão, para converter limiares entre as
+    duas unidades.
+
+    Usa apenas os laps de trabalho (nas recuperações a FC desce com atraso e a
+    relação distorce-se). Devolve dict com os coeficientes nos dois sentidos,
+    ou None se não houver dados suficientes.
+    """
+    if 'power' not in colunas or 'heart_rate' not in colunas:
+        return None
+
+    # Preferir as MÉDIAS DE ESTADO ESTACIONÁRIO por lap (um ponto por degrau).
+    # Usar todos os pontos a 1 Hz distorce a recta: no início de cada degrau a FC
+    # ainda está a subir para o seu valor estacionário, o que achata a relação e
+    # subestima a FC nas potências altas (erros de 5-13 bpm nos testes).
+    usou_medias = False
+    if lap_stats:
+        pares = [(l['avg_power'], l['avg_heart_rate'])
+                 for l in lap_stats
+                 if l.get('phase') == 'work'
+                 and l.get('avg_power') is not None
+                 and l.get('avg_heart_rate') is not None
+                 and l['avg_power'] > 0]
+        if len(pares) >= 3:
+            dm = pd.DataFrame(pares, columns=['pot', 'fc'])
+            usou_medias = True
+
+    if not usou_medias:
+        d = df.copy()
+        if lap_stats:
+            laps_ok = {l['lap_number'] for l in lap_stats if l.get('phase') == 'work'}
+            if laps_ok:
+                d = d[d['lap_number'].isin(laps_ok)]
+        dm = d[[colunas['power'], colunas['heart_rate']]].copy()
+        dm.columns = ['pot', 'fc']
+        dm = dm.apply(pd.to_numeric, errors='coerce').dropna()
+        dm = dm[(dm['pot'] > 0) & (dm['fc'] > 30)]
+
+    if len(dm) < 3 or np.ptp(dm['pot'].values) < 20 or np.ptp(dm['fc'].values) < 5:
+        return None
+
+    x, y = dm['pot'].values, dm['fc'].values
+    c_pf = np.polyfit(x, y, 1)          # potência → FC
+    c_fp = np.polyfit(y, x, 1)          # FC → potência
+    y_pred = np.polyval(c_pf, x)
+    sst = np.sum((y - y.mean()) ** 2)
+    r2 = float(1 - np.sum((y - y_pred) ** 2) / sst) if sst > 0 else np.nan
+
+    return {
+        'coef_pot_fc': c_pf.tolist(),
+        'coef_fc_pot': c_fp.tolist(),
+        'r2': r2,
+        'n': len(dm),
+        'usou_medias_por_lap': usou_medias,
+        'pot_min': float(x.min()), 'pot_max': float(x.max()),
+        'fc_min': float(y.min()), 'fc_max': float(y.max()),
+    }
+
+
+def pot_para_fc(potencia, relacao):
+    """Converte potência em FC usando a relação da sessão."""
+    if relacao is None or potencia is None:
+        return None
+    return float(np.polyval(relacao['coef_pot_fc'], potencia))
+
+
+def fc_para_pot(fc, relacao):
+    """Converte FC em potência usando a relação da sessão."""
+    if relacao is None or fc is None:
+        return None
+    return float(np.polyval(relacao['coef_fc_pot'], fc))
+
+
+def resumir_zonas(resultado):
+    """
+    Consolida todos os métodos numa proposta de zonas de treino, em FC e potência.
+
+    Limiar BAIXO (Z1→Z2): prioridade ao HRVT1c (ponto médio individual), que a
+    literatura mostra ter menos viés que o α1=0.75 fixo.
+
+    Limiar ALTO (Z2→Z3): prioridade ao Combo (HRVT2 + NIRS), depois ao método dos
+    intervalos longos, depois ao breakpoint isolado — pela ordem de fiabilidade
+    que os estudos estabelecem.
+
+    Devolve dict com os limiares nas duas unidades, a origem de cada um, e a
+    lista de todas as estimativas disponíveis para comparação.
+    """
+    rel = resultado.get('relacao_pot_fc')
+
+    def _par(pot=None, fc=None):
+        """Completa o par (potência, FC) a partir do que existir."""
+        if pot is None and fc is not None:
+            pot = fc_para_pot(fc, rel)
+        elif fc is None and pot is not None:
+            fc = pot_para_fc(pot, rel)
+        return pot, fc
+
+    # ── Limiar baixo ─────────────────────────────────────────────────────────
+    baixo = None
+    h1c = resultado.get('hrvt1c')
+    if h1c and 'erro' not in h1c and h1c.get('fiavel', True) and h1c.get('fc'):
+        p, f = _par(h1c.get('potencia'), h1c['fc'])
+        baixo = {'pot': p, 'fc': f, 'origem': 'HRVT1c (ponto médio individual)',
+                 'fiavel': True}
+    elif h1c and 'erro' not in h1c and h1c.get('fc'):
+        p, f = _par(h1c.get('potencia'), h1c['fc'])
+        baixo = {'pot': p, 'fc': f, 'origem': 'HRVT1c (com reservas)',
+                 'fiavel': False}
+    else:
+        ld = resultado.get('limiar_dfa1')
+        if ld and 'limiares' in ld:
+            v = ld['limiares'].get(0.70)
+            if v and not v.get('extrapolado'):
+                if ld.get('unidade') == 'W':
+                    p, f = _par(pot=v['intensidade'])
+                else:
+                    p, f = _par(fc=v['intensidade'])
+                baixo = {'pot': p, 'fc': f,
+                         'origem': 'DFA-α1 = 0.70 (método fixo)', 'fiavel': False}
+
+    # ── Limiar alto ──────────────────────────────────────────────────────────
+    alto = None
+    alternativas = []
+
+    cb = resultado.get('combo')
+    if cb and cb.get('n_metodos', 0) >= 2 and cb.get('estado') == 'concordante':
+        p, f = _par(pot=cb['combo'])
+        alto = {'pot': p, 'fc': f, 'origem': 'Combo HRVT2 + NIRS', 'fiavel': True}
+
+    mi = resultado.get('mlss_intervalos')
+    if mi and mi.get('mlss_estimado'):
+        p, f = _par(mi['mlss_estimado'], mi.get('mlss_fc'))
+        alternativas.append({'pot': p, 'fc': f,
+                             'origem': f"MLSS intervalos longos ({mi['sinal']})",
+                             'fiavel': mi.get('precisao') == 'boa'})
+        if alto is None:
+            alto = dict(alternativas[-1])
+
+    for _k, _lbl in (('bp_continuo', 'Breakpoint SmO₂'), ('bp_hhb', 'Breakpoint HHb')):
+        bp = resultado.get(_k)
+        if bp and bp.get('breakpoint'):
+            if bp.get('unidade') == 'W':
+                p, f = _par(pot=bp['breakpoint'])
+            else:
+                p, f = _par(fc=bp['breakpoint'])
+            _fi = bp.get('r2', 0) >= 0.8
+            alternativas.append({'pot': p, 'fc': f, 'origem': _lbl, 'fiavel': _fi})
+            if alto is None:
+                alto = dict(alternativas[-1])
+
+    h2 = resultado.get('hrvt2')
+    if h2 and 'erro' not in h2 and h2.get('fc'):
+        p, f = _par(h2.get('potencia'), h2['fc'])
+        alternativas.append({'pot': p, 'fc': f, 'origem': 'HRVT2 (DFA-α1 = 0.50)',
+                             'fiavel': bool(h2.get('fiavel'))})
+        if alto is None and h2.get('fiavel'):
+            alto = dict(alternativas[-1])
+
+    # Coerência: o limiar baixo tem de ficar abaixo do alto
+    coerente = None
+    if baixo and alto and baixo.get('fc') and alto.get('fc'):
+        coerente = baixo['fc'] < alto['fc']
+
+    return {
+        'baixo': baixo,
+        'alto': alto,
+        'alternativas': alternativas,
+        'relacao_pot_fc': rel,
+        'coerente': coerente,
     }
