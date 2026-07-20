@@ -2399,6 +2399,43 @@ def combo_limiares(hrvt2, bp_nirs, tolerancia_pct=15):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def detectar_protocolo(df, colunas, lap_stats=None):
+    """Classifica o protocolo. Ver docstring completa abaixo."""
+    # ── Atalho: se os laps já dizem a estrutura, usar isso ───────────────────
+    # Quando o utilizador (ou o ficheiro) define laps de trabalho separados por
+    # recuperações, a estrutura é conhecida e não precisa de ser inferida do
+    # sinal. Inferir pode falhar: por exemplo, ao excluir o aquecimento a série
+    # restante pode parecer uma subida contínua e ser classificada como rampa,
+    # levando a aplicar o método errado (usar todos os pontos em vez do estado
+    # estacionário de cada degrau).
+    if lap_stats:
+        _w = [l for l in lap_stats if l.get('phase') == 'work']
+        _r = [l for l in lap_stats if l.get('phase') == 'recovery']
+        if len(_w) >= 3 and len(_r) >= 2:
+            _pots = [l.get('avg_power') or l.get('avg_heart_rate') for l in _w]
+            _pots = [p for p in _pots if p is not None]
+            _sobe = (len(_pots) >= 3
+                     and np.polyfit(range(len(_pots)), _pots, 1)[0] > 0)
+            _tipo = 'degraus' if _sobe else 'intervalos'
+            _u = 'W' if 'power' in colunas else 'bpm'
+            return {
+                'tipo': _tipo,
+                'motivo': (f'{len(_w)} blocos de trabalho separados por '
+                           f'{len(_r)} recuperações'
+                           + (' com intensidade crescente' if _sobe else
+                              ' à mesma intensidade')),
+                'metodo_recomendado': (
+                    'breakpoint sobre o estado estacionário de cada degrau'
+                    if _tipo == 'degraus' else
+                    'estabilidade do SmO₂ dentro de cada intervalo'),
+                'duracao_min': round((df['time_seconds'].max()
+                                      - df['time_seconds'].min()) / 60, 1),
+                'origem': 'estrutura dos laps',
+                'unidade': _u,
+            }
+    return _detectar_protocolo_sinal(df, colunas, lap_stats)
+
+
+def _detectar_protocolo_sinal(df, colunas, lap_stats=None):
     """
     Classifica o tipo de sessão a partir do comportamento da intensidade:
 
@@ -2897,6 +2934,30 @@ def avaliar_fiabilidade(resultado):
         else:
             _add('HRVT2 (α1=0.50)', 'mau',
                  '; '.join(h2.get('avisos', [])), 'MSSE 2024')
+
+    # 3b. Amplitude do sinal NIRS
+    # Um sensor bem colocado mostra quedas de 20-40 pontos de SmO2 num teste
+    # incremental. Amplitudes pequenas indicam quase sempre má colocação
+    # (tecido adiposo por cima, sensor solto, ou luz ambiente a entrar) — e o
+    # breakpoint pode ter um R² alto mesmo assim, porque ajusta bem a uma recta
+    # quase plana. Daí verificar a amplitude independentemente do ajuste.
+    _w = [l for l in resultado.get('lap_stats', []) if l.get('phase') == 'work']
+    _sm = [l['avg_smo2'] for l in _w if 'avg_smo2' in l]
+    if len(_sm) >= 3:
+        _amp = max(_sm) - min(_sm)
+        if _amp >= 15:
+            _add('Amplitude SmO₂', 'ok',
+                 f'{_amp:.0f} pontos entre o degrau mais fácil e o mais duro',
+                 'um sensor bem colocado mostra 20-40 pontos num incremental')
+        elif _amp >= 8:
+            _add('Amplitude SmO₂', 'aviso',
+                 f'apenas {_amp:.0f} pontos — sinal com pouca dinâmica',
+                 'verifica a colocação do sensor')
+        else:
+            _add('Amplitude SmO₂', 'mau',
+                 f'apenas {_amp:.0f} pontos — o sensor pode estar mal colocado '
+                 '(tecido adiposo, mal fixado, ou luz ambiente)',
+                 'sem amplitude não há breakpoint fisiológico a detectar')
 
     # 4. Breakpoint NIRS
     bp = resultado.get('bp_continuo')
