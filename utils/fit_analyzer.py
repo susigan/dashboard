@@ -1847,7 +1847,7 @@ def limiar_dfa1_recalculado(dfa1_serie, lap_stats, colunas, alvos=(0.75, 0.70, 0
             dentro = x.min() - 0.1 * np.ptp(x) <= xi <= x.max() + 0.1 * np.ptp(x)
             _fisio_ok = True
             if intensidade == 'avg_heart_rate':
-                _fisio_ok, _ = _checar_fc_plausivel(xi)
+                _fisio_ok, _ = _checar_fc_plausivel(xi, fc_max_sessao=float(x.max()))
             limiares[alvo] = {'intensidade': float(xi), 'extrapolado': not dentro,
                               'fisiologicamente_plausivel': _fisio_ok}
         else:
@@ -2495,18 +2495,43 @@ DFA1_HRVT1 = 0.75   # aproximação do VT1 / limiar BAIXO (Gronwald, Rogers 2020
 # — matematicamente correcta pela recta, mas humanamente impossível. Os
 # avisos de R²/extrapolação já cobrem MUITOS casos, mas não todos; este é o
 # último guarda-redes, sempre aplicado.
+#
+# IMPORTANTE: 230 bpm é um tecto GENÉRICO populacional — não diz nada sobre
+# ESTE atleta. Um valor de 220 bpm passaria neste teste sozinho, mas para um
+# atleta cuja FC real nunca passou de ~165 bpm em toda a sessão, 220 bpm é
+# tão implausível como 353 — só que mais difícil de notar à primeira vista.
+# Por isso, sempre que houver FC medida na própria sessão (fc_max_sessao),
+# o tecto usado é essa FC máxima real + uma margem, não o limite genérico.
 FC_PLAUSIVEL_MIN = 30
-FC_PLAUSIVEL_MAX = 230
+FC_PLAUSIVEL_MAX = 230          # usado só quando não há FC de referência da sessão
+FC_PLAUSIVEL_MARGEM_SESSAO = 15  # bpm acima do máximo realmente medido
 
 
-def _checar_fc_plausivel(fc):
-    """Devolve (bool_plausivel, aviso_ou_None) para uma FC extrapolada."""
+def _checar_fc_plausivel(fc, fc_max_sessao=None):
+    """
+    Devolve (bool_plausivel, aviso_ou_None) para uma FC extrapolada.
+
+    fc_max_sessao : FC máxima REALMENTE medida nesta sessão/atleta (não uma
+        constante populacional). Quando fornecida, o tecto de plausibilidade
+        passa a ser fc_max_sessao + FC_PLAUSIVEL_MARGEM_SESSAO — específico
+        do atleta, em vez do limite genérico de 230 bpm. Segue o mesmo
+        princípio já usado no resto do projecto: limiares sempre relativos
+        à distribuição própria do atleta, nunca a normas populacionais.
+    """
     if fc is None or not np.isfinite(fc):
         return False, 'FC não calculável (recta sem solução válida)'
-    if not (FC_PLAUSIVEL_MIN <= fc <= FC_PLAUSIVEL_MAX):
-        return False, (f'FC extrapolada fisiologicamente implausível ({fc:.0f} bpm) — '
-                       'a recta ficou demasiado achatada ou o ajuste é dominado por '
-                       'ruído nesta janela; não usar este resultado')
+
+    if fc_max_sessao is not None and np.isfinite(fc_max_sessao):
+        teto = min(FC_PLAUSIVEL_MAX, fc_max_sessao + FC_PLAUSIVEL_MARGEM_SESSAO)
+        ref = f'{fc_max_sessao:.0f} bpm medidos nesta sessão + {FC_PLAUSIVEL_MARGEM_SESSAO:.0f}'
+    else:
+        teto = FC_PLAUSIVEL_MAX
+        ref = f'{FC_PLAUSIVEL_MAX:.0f} (limite genérico, sem referência da sessão)'
+
+    if not (FC_PLAUSIVEL_MIN <= fc <= teto):
+        return False, (f'FC extrapolada implausível para este atleta ({fc:.0f} bpm, '
+                       f'acima de {ref} bpm) — a recta ficou demasiado achatada ou o '
+                       'ajuste é dominado por ruído nesta janela; não usar este resultado')
     return True, None
 
 
@@ -2623,7 +2648,8 @@ def calcular_hrvt(serie_dfa1, df_metricas=None, colunas=None, alvo=0.50,
         avisos.append(f"ajuste fraco na secção linear (R²={r2:.2f})")
     if extrapolado:
         avisos.append("o valor está extrapolado para fora do intervalo medido")
-    _fc_ok, _fc_aviso = _checar_fc_plausivel(fc_limiar)
+    _fc_max_sessao = float(s['fc_media'].max()) if len(s) else None
+    _fc_ok, _fc_aviso = _checar_fc_plausivel(fc_limiar, fc_max_sessao=_fc_max_sessao)
     if not _fc_ok:
         avisos.append(_fc_aviso)
     fiavel = (not avisos)
@@ -3039,7 +3065,8 @@ def hrvt2_submaximo(serie_dfa1, df_metricas=None, colunas=None,
     if extrapolacao_bpm > 25:
         avisos.append(f'extrapolação longa ({extrapolacao_bpm:.0f} bpm acima do '
                       'medido) — quanto mais longe, menos fiável')
-    _fc_ok, _fc_aviso = _checar_fc_plausivel(fc_prev)
+    _fc_max_sessao = float(s['fc_media'].max()) if len(s) else None
+    _fc_ok, _fc_aviso = _checar_fc_plausivel(fc_prev, fc_max_sessao=_fc_max_sessao)
     if not _fc_ok:
         avisos.append(_fc_aviso)
 
