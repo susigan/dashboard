@@ -1250,9 +1250,16 @@ def analisar_completo(prep, metodo_detrend='local', comparar_detrend=True, lam_s
     if rr_info is not None:
         rr_lim, dfa1_qualidade = limpar_rr(rr_info['rr_ms'])
         if rr_lim is not None:
+            # Só faz sentido "respeitar fases" em protocolos com laps curtos
+            # de trabalho/descanso; numa rampa ou esforço contínuo há
+            # tipicamente um único lap efectivo e a janela de 120s nunca
+            # atravessa fronteira nenhuma que importe.
+            _respeitar_fases = _tipo in ('intervalos', 'degraus')
             dfa1_serie = calcular_dfa1_serie(rr_lim, rr_info['tempo_s'],
                                              metodo_detrend=metodo_detrend,
-                                             lam_sp=lam_sp)
+                                             lam_sp=lam_sp,
+                                             lap_stats=lap_stats,
+                                             respeitar_fases=_respeitar_fases)
             if len(dfa1_serie) >= 10:
                 hrvt2 = calcular_hrvt(dfa1_serie, df_metricas=df, colunas=colunas,
                                       alvo=DFA1_HRVT2, lap_stats=lap_stats,
@@ -1263,7 +1270,9 @@ def analisar_completo(prep, metodo_detrend='local', comparar_detrend=True, lam_s
             if comparar_detrend:
                 dfa1_serie_alt = calcular_dfa1_serie(rr_lim, rr_info['tempo_s'],
                                                      metodo_detrend=metodo_alt,
-                                                     lam_sp=lam_sp)
+                                                     lam_sp=lam_sp,
+                                                     lap_stats=lap_stats,
+                                                     respeitar_fases=_respeitar_fases)
                 if len(dfa1_serie_alt) >= 10:
                     hrvt2_alt = calcular_hrvt(dfa1_serie_alt, df_metricas=df, colunas=colunas,
                                              alvo=DFA1_HRVT2, lap_stats=lap_stats,
@@ -2251,8 +2260,31 @@ def _dfa_alpha(serie, n_min=4, n_max=16):
     return float(coef[0])
 
 
+def _lap_id_por_tempo(tempo_s_pontos, lap_stats):
+    """
+    Atribui a cada ponto temporal o número do lap onde cai, ou -1 se estiver
+    fora de qualquer lap com fronteiras conhecidas ('_t_ini'/'_t_fim').
+
+    Usado para impedir que uma janela de DFA-α1 misture batimentos de dois
+    laps diferentes (ex.: fim da recuperação + início do trabalho seguinte),
+    o que dilui exactamente o mergulho de α1 que se quer detectar em
+    protocolos de intervalos curtos.
+    """
+    t = np.asarray(tempo_s_pontos, dtype=float)
+    ids = np.full(len(t), -1, dtype=int)
+    if not lap_stats:
+        return ids
+    for l in lap_stats:
+        if '_t_ini' not in l or '_t_fim' not in l:
+            continue
+        m = (t >= l['_t_ini']) & (t <= l['_t_fim'])
+        ids[m] = l['lap_number']
+    return ids
+
+
 def calcular_dfa1_serie(rr_ms, tempo_s, janela_s=120, passo_s=5,
-                        n_min=4, n_max=16, metodo_detrend='local', lam_sp=500):
+                        n_min=4, n_max=16, metodo_detrend='local', lam_sp=500,
+                        lap_stats=None, respeitar_fases=True):
     """
     Calcula o DFA-alpha1 ao longo do tempo, com janelas móveis.
 
@@ -2269,11 +2301,27 @@ def calcular_dfa1_serie(rr_ms, tempo_s, janela_s=120, passo_s=5,
                   inteiro antes de janelar (ver detrend_sp()) — replica o
                   pré-processamento por defeito do Kubios HRV.
 
+    lap_stats, respeitar_fases : em protocolos de INTERVALOS (ex.: 3 min de
+        trabalho + 1 min de descanso), um intervalo pode ser mais curto do
+        que os 120s da janela-padrão. Sem cuidado, uma janela centrada
+        pouco depois do início do trabalho ainda "olha para trás" 120s e
+        acaba a incluir batimentos da recuperação anterior — o que dilui
+        para cima exactamente o mergulho de α1 que se quer captar (a
+        recuperação tem α1 mais alto). Com respeitar_fases=True (default,
+        quando lap_stats é fornecido) cada janela é recortada para NUNCA
+        atravessar a fronteira do lap onde está o seu centro: fica mais
+        curta perto do início de cada lap (mas nunca abaixo do mínimo de
+        batimentos exigido) e alcança os 120s completos assim que o lap for
+        longo o suficiente. Para rampas/contínuo (um único lap efectivo)
+        isto não faz diferença — passa respeitar_fases=False para desligar.
+
     Nota: a FC média de cada janela é SEMPRE calculada a partir do RR
     ORIGINAL (nunca do detrendido), já que o SP remove a escala absoluta
     do sinal — só o α1 usa a série processada por metodo_detrend.
 
-    Devolve DataFrame com tempo_s, dfa1, n_batimentos, fc_media.
+    Devolve DataFrame com tempo_s, dfa1, n_batimentos, fc_media,
+    janela_efetiva_s (quantos segundos de RR entraram realmente na janela —
+    menos de janela_s indica um lap curto/início de intervalo).
     """
     rr = np.asarray(rr_ms, dtype=float)
     t = np.asarray(tempo_s, dtype=float)
@@ -2285,11 +2333,25 @@ def calcular_dfa1_serie(rr_ms, tempo_s, janela_s=120, passo_s=5,
     else:
         rr_dfa = rr  # o detrending acontece dentro de _dfa_alpha, por janela
 
+    lap_ids = (_lap_id_por_tempo(t, lap_stats)
+               if (respeitar_fases and lap_stats) else None)
+
     linhas = []
     t_fim = t[-1]
     t_ini = janela_s
     for centro in np.arange(t_ini, t_fim + 0.001, passo_s):
         m = (t > centro - janela_s) & (t <= centro)
+        janela_efetiva = janela_s
+
+        if lap_ids is not None:
+            idx_centro = np.searchsorted(t, centro, side='right') - 1
+            idx_centro = min(max(idx_centro, 0), len(t) - 1)
+            lap_centro = lap_ids[idx_centro]
+            if lap_centro != -1:
+                m = m & (lap_ids == lap_centro)
+                if m.sum() > 0:
+                    janela_efetiva = float(centro - t[m].min())
+
         if m.sum() < n_max * 4:
             continue
         seg_dfa = rr_dfa[m]
@@ -2302,10 +2364,12 @@ def calcular_dfa1_serie(rr_ms, tempo_s, janela_s=120, passo_s=5,
             'dfa1': round(a1, 4),
             'n_batimentos': int(m.sum()),
             'fc_media': round(60000.0 / np.mean(seg_fc), 1),
+            'janela_efetiva_s': round(janela_efetiva, 1),
         })
 
     df_out = pd.DataFrame(linhas)
     df_out.attrs['metodo_detrend'] = metodo_detrend
+    df_out.attrs['respeitar_fases'] = bool(lap_ids is not None)
     return df_out
 
 
