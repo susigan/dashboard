@@ -1101,23 +1101,35 @@ decoupling. Não há limiares a estimar.
     # ══════════════════════════════════════════════════════════════════════
     st.markdown("---")
     _chave_run = f'_fit_run_{ficheiro.name}'
+    _chave_res = f'_fit_res_{ficheiro.name}'   # guarda o RESULTADO, não só um sinalizador
+
+    _comparar_sp = st.checkbox(
+        "🔬 Também comparar com Smoothness Priors global (mais lento)",
+        value=False, key=f'cmp_sp_{ficheiro.name}',
+        help="Recalcula o DFA-α1 uma SEGUNDA vez, usando Smoothness Priors "
+             "(λ=500, estilo Kubios) em vez do detrending local, e mostra os "
+             "dois lado a lado. Praticamente duplica o tempo da Fase 2 — "
+             "deixa desligado para o dia-a-dia e liga só quando quiseres "
+             "verificar a robustez de um resultado específico.")
+
     _assinatura = (str(sorted(laps_excl)), str(sorted(laps_manual or [])),
                    str(iv_editados), str(sorted(_offsets.items())),
-                   janela, zerar_pot, modo)
+                   janela, zerar_pot, modo, _comparar_sp)
     _prev = st.session_state.get(f'{_chave_run}_sig')
     if _prev is not None and _prev != _assinatura:
         # Os dados mudaram desde a última análise — invalidar o resultado
         st.session_state.pop(_chave_run, None)
         st.session_state.pop(f'{_chave_run}_sig', None)
+        st.session_state.pop(_chave_res, None)
 
     _ja_analisado = st.session_state.get(_chave_run) is not None
 
     _cb1, _cb2 = st.columns([1, 3])
     if _cb1.button("🔬 Analisar" if not _ja_analisado else "🔄 Reanalisar",
                    key=f'run_{ficheiro.name}', type='primary'):
-        with st.spinner("A correr as análises fisiológicas..."):
-            st.session_state[_chave_run] = True
-            st.session_state[f'{_chave_run}_sig'] = _assinatura
+        st.session_state[_chave_run] = True
+        st.session_state[f'{_chave_run}_sig'] = _assinatura
+        st.session_state.pop(_chave_res, None)  # força recálculo já a seguir
         st.rerun()
     _cb2.caption(
         "Confirma primeiro que os laps estão bem classificados e que as métricas "
@@ -1131,8 +1143,14 @@ decoupling. Não há limiares a estimar.
         _mostrar_historico()
         return
 
-    with st.spinner("A analisar..."):
-        res = analisar_completo(res, metodo_detrend='local', comparar_detrend=True)
+    # Só recalcula se ainda não houver resultado em cache para esta assinatura —
+    # sem isto, qualquer clique nesta página (mesmo sem tocar nos laps) fazia
+    # correr a Fase 2 inteira outra vez, incluindo o DFA-α1.
+    if _chave_res not in st.session_state:
+        with st.spinner("A analisar..."):
+            st.session_state[_chave_res] = analisar_completo(
+                res, metodo_detrend='local', comparar_detrend=_comparar_sp)
+    res = st.session_state[_chave_res]
     if 'erro' in res:
         st.error(f"❌ {res['erro']}")
         return
