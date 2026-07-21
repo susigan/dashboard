@@ -714,13 +714,29 @@ decoupling. Não há limiares a estimar.
 
     _offsets = st.session_state.get(chave_offsets, {})
 
-    with st.spinner("A ler o ficheiro..."):
-        res = preparar_fit(
-            bytes_fit, laps_trabalho_manual=laps_manual, laps_excluidos=laps_excl,
-            janela_final_s=janela, modo_segmentacao=_modo_seg,
-            intervalos_trabalho=intervalos, frac_corte=frac_corte,
-            min_dur_segmento=min_dur_seg, zerar_potencia_descanso=zerar_pot,
-            offsets=_offsets)
+    # Cache da Fase 1 — sem isto, preparar_fit() (ler o FIT, extrair RR,
+    # segmentar laps) corria em TODOS os reruns do Streamlit, mesmo os que
+    # não têm nada a ver com este ficheiro (ex.: mexer noutro widget da
+    # página, ou até só o auto-refresh de outra secção). Só recalcula
+    # quando algo que realmente afeta o resultado muda.
+    _chave_prep = f'_fit_prep_{ficheiro.name}'
+    _assinatura_prep = (
+        len(bytes_fit), str(sorted(laps_manual or [])), str(sorted(laps_excl)),
+        janela, _modo_seg, str(intervalos), frac_corte, min_dur_seg,
+        zerar_pot, str(sorted(_offsets.items())),
+    )
+    _prep_cache = st.session_state.get(_chave_prep)
+    if _prep_cache is not None and _prep_cache.get('_sig') == _assinatura_prep:
+        res = _prep_cache['res']
+    else:
+        with st.spinner("A ler o ficheiro..."):
+            res = preparar_fit(
+                bytes_fit, laps_trabalho_manual=laps_manual, laps_excluidos=laps_excl,
+                janela_final_s=janela, modo_segmentacao=_modo_seg,
+                intervalos_trabalho=intervalos, frac_corte=frac_corte,
+                min_dur_segmento=min_dur_seg, zerar_potencia_descanso=zerar_pot,
+                offsets=_offsets)
+        st.session_state[_chave_prep] = {'_sig': _assinatura_prep, 'res': res}
 
     if 'erro' in res:
         st.error(f"❌ {res['erro']}")
