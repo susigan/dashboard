@@ -1601,7 +1601,12 @@ decoupling. Não há limiares a estimar.
                     "e olhar para a curva α1×FC de cada um.")
 
                 def _fc_ou_traço(d):
-                    return f"{d['fc']:.0f} bpm" if d and 'erro' not in d and d.get('fc') is not None else "—"
+                    if not d or 'erro' in d or d.get('fc') is None:
+                        return "—"
+                    txt = f"{d['fc']:.0f} bpm"
+                    if not d.get('fiavel', True):
+                        txt += " ⚠️"
+                    return txt
 
                 def _delta_bpm(d1, d2):
                     if (d1 and 'erro' not in d1 and d1.get('fc') is not None
@@ -1609,6 +1614,12 @@ decoupling. Não há limiares a estimar.
                         return d1['fc'] - d2['fc']
                     return None
 
+                st.caption(
+                    "⚠️ = o próprio método marcou este valor como não fiável "
+                    "(R² fraco, extrapolação longa, ou FC fisiologicamente "
+                    "implausível). Não uses um valor marcado só porque o outro "
+                    "método também não é fiável — nesse caso, nenhum dos dois "
+                    "deve ser usado para prescrição.")
                 _linhas_cmp = [
                     ("HRVT2 (α1=0.50)", _h2, _h2_alt),
                     ("HRVT1c (ponto médio individual)", res.get('hrvt1c'), _h1c_alt),
@@ -1622,6 +1633,15 @@ decoupling. Não há limiares a estimar.
                     _c3.metric(_metodo_nomes.get(_metodo_sec, _metodo_sec), _fc_ou_traço(_sec),
                                delta=f"{-_d:+.0f} bpm" if _d is not None else None,
                                delta_color="off")
+                    _avisos_linha = []
+                    if _pri and not _pri.get('fiavel', True):
+                        _avisos_linha += [f"{_metodo_nomes.get(_metodo_pri, _metodo_pri)}: {a}"
+                                          for a in _pri.get('avisos', [])]
+                    if _sec and not _sec.get('fiavel', True):
+                        _avisos_linha += [f"{_metodo_nomes.get(_metodo_sec, _metodo_sec)}: {a}"
+                                          for a in _sec.get('avisos', [])]
+                    if _avisos_linha:
+                        st.caption("⚠️ " + " · ".join(_avisos_linha))
 
                 _sdfa_alt = res.get('dfa1_serie_alt')
                 if _sdfa_alt is not None and len(_sdfa_alt) >= 10:
