@@ -2317,6 +2317,27 @@ def calcular_dfa1_serie(rr_ms, tempo_s, janela_s=120, passo_s=5,
 DFA1_HRVT2 = 0.50   # HRVT2 ≈ RCP / MLSS / limiar ALTO (Murias 2023, Rogers et al.)
 DFA1_HRVT1 = 0.75   # aproximação do VT1 / limiar BAIXO (Gronwald, Rogers 2020)
 
+# Limites de plausibilidade fisiológica para uma FC extrapolada/estimada por
+# regressão. Sem isto, um declive quase-nulo (ex.: janela demasiado "achatada"
+# depois de Smoothness Priors global remover a tendência lenta que era o
+# próprio sinal de interesse) pode gerar uma FC "prevista" de centenas de bpm
+# — matematicamente correcta pela recta, mas humanamente impossível. Os
+# avisos de R²/extrapolação já cobrem MUITOS casos, mas não todos; este é o
+# último guarda-redes, sempre aplicado.
+FC_PLAUSIVEL_MIN = 30
+FC_PLAUSIVEL_MAX = 230
+
+
+def _checar_fc_plausivel(fc):
+    """Devolve (bool_plausivel, aviso_ou_None) para uma FC extrapolada."""
+    if fc is None or not np.isfinite(fc):
+        return False, 'FC não calculável (recta sem solução válida)'
+    if not (FC_PLAUSIVEL_MIN <= fc <= FC_PLAUSIVEL_MAX):
+        return False, (f'FC extrapolada fisiologicamente implausível ({fc:.0f} bpm) — '
+                       'a recta ficou demasiado achatada ou o ajuste é dominado por '
+                       'ruído nesta janela; não usar este resultado')
+    return True, None
+
 
 def calcular_hrvt(serie_dfa1, df_metricas=None, colunas=None, alvo=0.50,
                   janela_ajuste=(0.4, 1.0), lap_stats=None, df_tempo=None,
@@ -2431,6 +2452,9 @@ def calcular_hrvt(serie_dfa1, df_metricas=None, colunas=None, alvo=0.50,
         avisos.append(f"ajuste fraco na secção linear (R²={r2:.2f})")
     if extrapolado:
         avisos.append("o valor está extrapolado para fora do intervalo medido")
+    _fc_ok, _fc_aviso = _checar_fc_plausivel(fc_limiar)
+    if not _fc_ok:
+        avisos.append(_fc_aviso)
     fiavel = (not avisos)
 
     return {
@@ -2844,6 +2868,9 @@ def hrvt2_submaximo(serie_dfa1, df_metricas=None, colunas=None,
     if extrapolacao_bpm > 25:
         avisos.append(f'extrapolação longa ({extrapolacao_bpm:.0f} bpm acima do '
                       'medido) — quanto mais longe, menos fiável')
+    _fc_ok, _fc_aviso = _checar_fc_plausivel(fc_prev)
+    if not _fc_ok:
+        avisos.append(_fc_aviso)
 
     return {
         'fc': fc_prev,
