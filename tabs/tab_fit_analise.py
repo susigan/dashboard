@@ -1406,6 +1406,61 @@ decoupling. Não há limiares a estimar.
                 _msg = _ldfa.get('erro') if _ldfa else 'sem DFA-α1 no ficheiro'
                 st.info(f"Não calculado ({_msg}).")
 
+            # ── Versão recalculada a partir do RR, por lap (degraus/intervalos) ──
+            _ldfa_rec = res.get('limiar_dfa1_recalculado')
+            if _ldfa_rec is not None:
+                with st.expander(
+                        "🔬 Comparar com DFA-α1 recalculado do RR (um ponto por lap)"):
+                    st.caption(
+                        "O quadro acima usa o stream **cru** do dispositivo, sem "
+                        "correcção de artefactos. Esta versão usa o DFA-α1 "
+                        "**recalculado a partir dos RR** (o mesmo do HRVT2 acima), "
+                        "agregado num único ponto por lap de trabalho — pensado "
+                        "para protocolos de degraus/intervalos com descanso "
+                        "genuíno entre cada intensidade: cada degrau fica isolado, "
+                        "sem misturar dados do descanso anterior ou seguinte.")
+                    if 'limiares' in _ldfa_rec:
+                        _ur = _ldfa_rec['unidade']
+                        _r075 = _ldfa_rec['limiares'].get(0.75)
+                        _r070 = _ldfa_rec['limiares'].get(0.70)
+                        _r050 = _ldfa_rec['limiares'].get(0.50)
+                        if _r070:
+                            _avisos_r = []
+                            if _r070['extrapolado']:
+                                _avisos_r.append("extrapolado")
+                            if not _r070.get('fisiologicamente_plausivel', True):
+                                _avisos_r.append("valor implausível")
+                            _ex_r = f" ⚠️ {', '.join(_avisos_r)}" if _avisos_r else ""
+                            st.metric("Limite de zona 1 (α1 = 0.70) — recalculado",
+                                      f"{_r070['intensidade']:.0f} {_ur}{_ex_r}")
+                        if _r075:
+                            st.caption(f"α1 = 0.75 (≈VT1): {_r075['intensidade']:.0f} {_ur}")
+                        if _r050:
+                            st.caption(f"α1 = 0.50: {_r050['intensidade']:.0f} {_ur}")
+                        st.caption(f"Ajuste sobre {_ldfa_rec['n_usados']} laps · "
+                                   f"R² = {_ldfa_rec['r2']:.2f}")
+                        _pts_r = _ldfa_rec.get('pontos')
+                        if _pts_r is not None and len(_pts_r):
+                            st.dataframe(
+                                _pts_r[['lap', 'intensidade', 'dfa1_recalculado',
+                                       'n_janelas', 'janela_efetiva_media_s']]
+                                .rename(columns={
+                                    'lap': 'Lap', 'intensidade': f'Intensidade ({_ur})',
+                                    'dfa1_recalculado': 'DFA-α1 recalculado',
+                                    'n_janelas': 'Nº janelas de 5s',
+                                    'janela_efetiva_media_s': 'Janela efetiva média (s)'}),
+                                hide_index=True, use_container_width=True)
+                            if (_pts_r['janela_efetiva_media_s'] < 90).any():
+                                st.caption(
+                                    "ℹ️ Alguns laps têm janela efetiva bem abaixo de "
+                                    "120s — provavelmente laps de trabalho curtos, "
+                                    "onde a maior parte dos primeiros ~2 min foi "
+                                    "descartada para não misturar com o descanso "
+                                    "anterior. O valor ainda é válido, só com "
+                                    "menos pontos a suportá-lo.")
+                    else:
+                        st.info(f"Não calculado ({_ldfa_rec.get('erro')}).")
+
         # MLSS pelo breakpoint de SmO₂
         with _cl2:
             st.markdown("**MLSS / início da zona 3 — breakpoint SmO₂**")
