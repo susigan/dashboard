@@ -655,6 +655,22 @@ decoupling. Não há limiares a estimar.
                  "de recuperação e distorce o decoupling. Esta opção força a "
                  "potência e a cadência a zero nos laps de recuperação.")
 
+        metodo_detrend = st.radio(
+            "Pré-processamento do DFA-α1",
+            options=['local', 'sp_global'],
+            format_func=lambda m: {
+                'local': '📐 Detrending local por janela (o que já estava implementado)',
+                'sp_global': '🧮 Smoothness Priors global, λ=500 (estilo Kubios)',
+            }[m],
+            key=f'detrend_{ficheiro.name}',
+            help="O Kubios aplica Smoothness Priors (λ=500) ao tacograma INTEIRO "
+                 "antes de calcular o DFA-α1 por janelas. O método 'local' faz o "
+                 "detrending dentro de cada janela de 2 min — mais simples, mas pode "
+                 "divergir do Kubios sobretudo abaixo de α1=0.75. As DUAS análises "
+                 "correm sempre; esta escolha define só qual é o resultado PRINCIPAL "
+                 "— a secção 'Comparar pré-processamento' mostra sempre os dois lado "
+                 "a lado.")
+
         st.markdown("---")
         st.markdown("**Como identificar os intervalos de trabalho**")
         modo = st.radio(
@@ -1103,7 +1119,7 @@ decoupling. Não há limiares a estimar.
     _chave_run = f'_fit_run_{ficheiro.name}'
     _assinatura = (str(sorted(laps_excl)), str(sorted(laps_manual or [])),
                    str(iv_editados), str(sorted(_offsets.items())),
-                   janela, zerar_pot, modo)
+                   janela, zerar_pot, modo, metodo_detrend)
     _prev = st.session_state.get(f'{_chave_run}_sig')
     if _prev is not None and _prev != _assinatura:
         # Os dados mudaram desde a última análise — invalidar o resultado
@@ -1132,7 +1148,7 @@ decoupling. Não há limiares a estimar.
         return
 
     with st.spinner("A analisar..."):
-        res = analisar_completo(res)
+        res = analisar_completo(res, metodo_detrend=metodo_detrend, comparar_detrend=True)
     if 'erro' in res:
         st.error(f"❌ {res['erro']}")
         return
@@ -1560,6 +1576,62 @@ decoupling. Não há limiares a estimar.
                                 use_container_width=True,
                                 config={'displayModeBar': False},
                                 key=f'g_curva_dfa1_{ficheiro.name}')
+
+        # ── Comparação de pré-processamento: local vs Smoothness Priors ───────
+        _metodo_nomes = {'local': 'Detrending local (por janela)',
+                          'sp_global': 'Smoothness Priors global (λ=500, estilo Kubios)'}
+        _h2_alt = res.get('hrvt2_alt')
+        _h1c_alt = res.get('hrvt1c_alt')
+        _sub_alt = res.get('hrvt2_submax_alt')
+        _metodo_pri = res.get('metodo_detrend', 'local')
+        _metodo_sec = res.get('metodo_detrend_alt')
+        if _metodo_sec and (_h2 or _h2_alt):
+            with st.expander(
+                    f"🔬 Comparar pré-processamento — "
+                    f"{_metodo_nomes.get(_metodo_pri, _metodo_pri)} (principal) vs "
+                    f"{_metodo_nomes.get(_metodo_sec, _metodo_sec)}"):
+                st.caption(
+                    "O post 'DFA a1 and ChatGPT interview' (muscleoxygentraining.com, "
+                    "ago/2025) mostrou, com dados reais, que aplicar Smoothness Priors "
+                    "DENTRO de cada janela de 2 min (em vez de ao tacograma inteiro) "
+                    "pode desviar os limiares em várias dezenas de bpm. Esta tabela "
+                    "mostra o efeito nos TEUS dados — se os dois métodos concordarem "
+                    "(diferença de poucos bpm), o resultado é robusto ao "
+                    "pré-processamento; se divergirem muito, vale a pena desconfiar "
+                    "e olhar para a curva α1×FC de cada um.")
+
+                def _fc_ou_traço(d):
+                    return f"{d['fc']:.0f} bpm" if d and 'erro' not in d and d.get('fc') is not None else "—"
+
+                def _delta_bpm(d1, d2):
+                    if (d1 and 'erro' not in d1 and d1.get('fc') is not None
+                            and d2 and 'erro' not in d2 and d2.get('fc') is not None):
+                        return d1['fc'] - d2['fc']
+                    return None
+
+                _linhas_cmp = [
+                    ("HRVT2 (α1=0.50)", _h2, _h2_alt),
+                    ("HRVT1c (ponto médio individual)", res.get('hrvt1c'), _h1c_alt),
+                    ("HRVT2 previsto (submáximo)", res.get('hrvt2_submax'), _sub_alt),
+                ]
+                for _nome, _pri, _sec in _linhas_cmp:
+                    _d = _delta_bpm(_pri, _sec)
+                    _c1, _c2, _c3 = st.columns(3)
+                    _c1.markdown(f"**{_nome}**")
+                    _c2.metric(_metodo_nomes.get(_metodo_pri, _metodo_pri), _fc_ou_traço(_pri))
+                    _c3.metric(_metodo_nomes.get(_metodo_sec, _metodo_sec), _fc_ou_traço(_sec),
+                               delta=f"{-_d:+.0f} bpm" if _d is not None else None,
+                               delta_color="off")
+
+                _sdfa_alt = res.get('dfa1_serie_alt')
+                if _sdfa_alt is not None and len(_sdfa_alt) >= 10:
+                    st.plotly_chart(
+                        _grafico_curva_dfa1(_sdfa_alt, _h2_alt),
+                        use_container_width=True,
+                        config={'displayModeBar': False},
+                        key=f'g_curva_dfa1_alt_{ficheiro.name}')
+                    st.caption(f"Curva α1×FC com "
+                               f"{_metodo_nomes.get(_metodo_sec, _metodo_sec).lower()}.")
 
         # ── HRVT1c — ponto médio individual (IJSPP 2024) ─────────────────────
         _h1c = res.get('hrvt1c')
