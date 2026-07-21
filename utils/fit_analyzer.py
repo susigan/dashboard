@@ -31,15 +31,24 @@ def ler_fit(file_bytes):
     """
     Lê um ficheiro FIT a partir de bytes (upload do Streamlit).
 
+    Faz UMA ÚNICA passagem pelo ficheiro inteiro, extraindo tudo o que é
+    preciso nas duas fases (record/session/lap para a Fase 1, e as mensagens
+    'hrv' com os RR brutos para a Fase 2) — evitar uma segunda passagem
+    completa é importante porque o fitdecode tem de descodificar TODAS as
+    mensagens do ficheiro (incluindo as 'hrv', que em gravações com RR
+    batimento-a-batimento podem ser milhares), mesmo que uma função só
+    aproveite uma parte delas. Ler duas vezes duplicava esse custo.
+
     Devolve dict:
-      {'records': [...], 'session': {...}, 'laps': [...], 'activity_name': str}
+      {'records': [...], 'session': {...}, 'laps': [...], 'activity_name': str,
+       'rr_bruto': [...]}
     ou {'erro': str} em caso de falha.
     """
     if not _TEM_FITDECODE:
         return {'erro': "Biblioteca 'fitdecode' não instalada. "
                         "Adiciona 'fitdecode' ao requirements.txt."}
 
-    records_data, session_data, lap_data = [], {}, []
+    records_data, session_data, lap_data, rr_bruto = [], {}, [], []
     activity_name = None
 
     try:
@@ -64,6 +73,16 @@ def ler_fit(file_bytes):
                     lap_info = {f.name: f.value for f in frame.fields if f.value is not None}
                     if lap_info:
                         lap_data.append(lap_info)
+
+                elif frame.name == 'hrv':
+                    for f in frame.fields:
+                        if f.name != 'time' or f.value is None:
+                            continue
+                        v = f.value
+                        if isinstance(v, (list, tuple)):
+                            rr_bruto.extend([x for x in v if x is not None])
+                        else:
+                            rr_bruto.append(v)
     except Exception as e:
         return {'erro': f"Erro ao ler o ficheiro FIT: {e}"}
 
@@ -75,6 +94,7 @@ def ler_fit(file_bytes):
         'session': session_data,
         'laps': lap_data,
         'activity_name': activity_name or 'Atividade',
+        'rr_bruto': rr_bruto,
     }
 
 
@@ -1168,6 +1188,7 @@ def preparar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
         'lap_stats': lap_stats,
         'laps_info': laps_info,
         'file_bytes': file_bytes,
+        'rr_bruto': fit.get('rr_bruto', []),
         'activity_name': fit.get('activity_name', 'Atividade'),
         'session': fit.get('session', {}),
         'janela_final_s': janela_final_s,
@@ -1234,7 +1255,7 @@ def analisar_completo(prep, metodo_detrend='local', comparar_detrend=True, lam_s
     falha = tempo_ate_falha(lap_stats)
 
     # DFA-alpha1 a partir dos RR brutos + HRVTs + Combo
-    rr_info = extrair_rr(file_bytes)
+    rr_info = extrair_rr(file_bytes, rr_bruto=prep.get('rr_bruto'))
     dfa1_serie = pd.DataFrame()
     dfa1_qualidade = None
     hrvt2 = None
@@ -2166,7 +2187,7 @@ def sugerir_offset_por_laps(df, colunas, metrica, lap_stats, max_lag=60,
 # janelas móveis de 2 min recalculadas a cada 5 s.
 # ══════════════════════════════════════════════════════════════════════════════
 
-def extrair_rr(file_bytes):
+def extrair_rr(file_bytes, rr_bruto=None):
     """
     Extrai os intervalos RR brutos das mensagens 'hrv' do ficheiro FIT.
 
@@ -2174,29 +2195,39 @@ def extrair_rr(file_bytes):
     métricas por segundo. Tê-los permite recalcular o DFA-alpha1 em vez de
     depender do valor pré-calculado pelo sensor.
 
+    rr_bruto : lista já extraída por ler_fit() (ver preparar_fit()['rr_bruto']).
+        Quando fornecida, esta função NÃO volta a abrir/percorrer o ficheiro —
+        evita uma segunda passagem completa do fitdecode, que é cara em
+        ficheiros com RR batimento-a-batimento (milhares de mensagens 'hrv').
+        Se vier None, mantém o comportamento antigo (lê o ficheiro do zero) —
+        para chamadas directas fora do fluxo preparar_fit()+analisar_completo.
+
     Devolve dict {'rr_ms': array, 'tempo_s': array (tempo cumulativo), 'n': int}
     ou None se o ficheiro não tiver RR.
     """
-    if not _TEM_FITDECODE:
-        return None
-    rr = []
-    try:
-        with fitdecode.FitReader(io.BytesIO(file_bytes)) as fit:
-            for frame in fit:
-                if not isinstance(frame, fitdecode.FitDataMessage):
-                    continue
-                if frame.name != 'hrv':
-                    continue
-                for f in frame.fields:
-                    if f.name != 'time' or f.value is None:
+    if rr_bruto is not None:
+        rr = list(rr_bruto)
+    else:
+        if not _TEM_FITDECODE:
+            return None
+        rr = []
+        try:
+            with fitdecode.FitReader(io.BytesIO(file_bytes)) as fit:
+                for frame in fit:
+                    if not isinstance(frame, fitdecode.FitDataMessage):
                         continue
-                    v = f.value
-                    if isinstance(v, (list, tuple)):
-                        rr.extend([x for x in v if x is not None])
-                    else:
-                        rr.append(v)
-    except Exception:
-        return None
+                    if frame.name != 'hrv':
+                        continue
+                    for f in frame.fields:
+                        if f.name != 'time' or f.value is None:
+                            continue
+                        v = f.value
+                        if isinstance(v, (list, tuple)):
+                            rr.extend([x for x in v if x is not None])
+                        else:
+                            rr.append(v)
+        except Exception:
+            return None
 
     if len(rr) < 100:
         return None
