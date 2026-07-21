@@ -1180,7 +1180,7 @@ def preparar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
     }
 
 
-def analisar_completo(prep):
+def analisar_completo(prep, metodo_detrend='local', comparar_detrend=True, lam_sp=500):
     """
     FASE 2 — análises fisiológicas, sobre os dados JÁ CORRIGIDOS pelo utilizador.
 
@@ -1190,6 +1190,16 @@ def analisar_completo(prep):
 
     A detecção de protocolo acontece AQUI (não na preparação), porque depende da
     classificação final dos laps — que o utilizador pode ter corrigido.
+
+    metodo_detrend : 'local' (default, o que já estava implementado) ou
+        'sp_global' (Smoothness Priors λ=lam_sp aplicado ao tacograma inteiro,
+        estilo Kubios — ver detrend_sp()). Define qual dos dois é o resultado
+        PRINCIPAL (hrvt2, hrvt1c, hrvt2_submax, dfa1_serie).
+
+    comparar_detrend : se True (default), corre TAMBÉM o método alternativo e
+        guarda os resultados em '..._alt' — permite comparar os dois lado a
+        lado sem correr a análise duas vezes. Custo extra: mais um DFA sobre
+        a mesma série (poucos segundos).
     """
     if not prep or 'erro' in prep:
         return prep
@@ -1228,20 +1238,39 @@ def analisar_completo(prep):
     dfa1_serie = pd.DataFrame()
     dfa1_qualidade = None
     hrvt2 = None
+    hrvt1c = None
+    hrvt2_sub = None
+
+    metodo_alt = 'sp_global' if metodo_detrend == 'local' else 'local'
+    dfa1_serie_alt = pd.DataFrame()
+    hrvt2_alt = None
+    hrvt1c_alt = None
+    hrvt2_sub_alt = None
+
     if rr_info is not None:
         rr_lim, dfa1_qualidade = limpar_rr(rr_info['rr_ms'])
         if rr_lim is not None:
-            dfa1_serie = calcular_dfa1_serie(rr_lim, rr_info['tempo_s'])
+            dfa1_serie = calcular_dfa1_serie(rr_lim, rr_info['tempo_s'],
+                                             metodo_detrend=metodo_detrend,
+                                             lam_sp=lam_sp)
             if len(dfa1_serie) >= 10:
                 hrvt2 = calcular_hrvt(dfa1_serie, df_metricas=df, colunas=colunas,
                                       alvo=DFA1_HRVT2, lap_stats=lap_stats,
                                       df_tempo=df, protocolo=_tipo)
+                hrvt1c = calcular_hrvt1c(dfa1_serie, df_metricas=df, colunas=colunas)
+                hrvt2_sub = hrvt2_submaximo(dfa1_serie, df_metricas=df, colunas=colunas)
 
-    hrvt1c = None
-    hrvt2_sub = None
-    if len(dfa1_serie) >= 10:
-        hrvt1c = calcular_hrvt1c(dfa1_serie, df_metricas=df, colunas=colunas)
-        hrvt2_sub = hrvt2_submaximo(dfa1_serie, df_metricas=df, colunas=colunas)
+            if comparar_detrend:
+                dfa1_serie_alt = calcular_dfa1_serie(rr_lim, rr_info['tempo_s'],
+                                                     metodo_detrend=metodo_alt,
+                                                     lam_sp=lam_sp)
+                if len(dfa1_serie_alt) >= 10:
+                    hrvt2_alt = calcular_hrvt(dfa1_serie_alt, df_metricas=df, colunas=colunas,
+                                             alvo=DFA1_HRVT2, lap_stats=lap_stats,
+                                             df_tempo=df, protocolo=_tipo)
+                    hrvt1c_alt = calcular_hrvt1c(dfa1_serie_alt, df_metricas=df, colunas=colunas)
+                    hrvt2_sub_alt = hrvt2_submaximo(dfa1_serie_alt, df_metricas=df, colunas=colunas)
+
     durabilidade = (analisar_durabilidade(df, colunas, dfa1_serie, lap_stats)
                     if _tipo in ('continuo', 'intervalos', 'degraus') else None)
     combo = combo_limiares(hrvt2, bp_continuo)
@@ -1288,6 +1317,13 @@ def analisar_completo(prep):
         'durabilidade': durabilidade,
         'combo': combo,
         'relacao_pot_fc': relacao_pf,
+        # ── Comparação de pré-processamento DFA-α1 (local vs SP global) ──────
+        'metodo_detrend': metodo_detrend,
+        'metodo_detrend_alt': metodo_alt if comparar_detrend else None,
+        'dfa1_serie_alt': dfa1_serie_alt,
+        'hrvt2_alt': hrvt2_alt,
+        'hrvt1c_alt': hrvt1c_alt,
+        'hrvt2_submax_alt': hrvt2_sub_alt,
     })
     _res['zonas'] = resumir_zonas(_res)
     _res['fiabilidade'] = avaliar_fiabilidade(_res)
@@ -2099,6 +2135,70 @@ def limpar_rr(rr_ms, low=300, high=2000, malik_pct=20):
     }
 
 
+def detrend_sp(rr_ms, lam=500):
+    """
+    Smoothness Priors detrending (Tarvainen et al. 2002, λ=500) — o método de
+    detrending por DEFEITO do Kubios HRV, aplicado ao tacograma INTEIRO (não
+    por janela) antes de qualquer cálculo de DFA-α1.
+
+    Porquê isto importa (ver "DFA a1 and ChatGPT interview",
+    muscleoxygentraining.com, ago/2025): aplicar Smoothness Priors DENTRO de
+    cada janela de 2 min (em vez de à série completa) cria efeitos de
+    fronteira que "empurram o α1 para baixo" e distorcem a recta α1×FC —
+    foi exactamente essa diferença que fez o pipeline "à mão" divergir ~15-30
+    bpm do Kubios num caso real analisado nesse artigo. A correcção foi
+    aplicar o SP UMA VEZ à série toda, e só depois janelar.
+
+    O que já estava implementado em calcular_dfa1_serie() (metodo_detrend=
+    'local') é o DFA-1 clássico (Peng et al.), que faz o SEU PRÓPRIO
+    detrending linear por escala DENTRO de cada janela — replica o script
+    "Kubios vs Python" (dokato/dfa) já citado em _dfa_alpha(). Isso continua
+    a ser calculado da mesma forma; o SP global é um passo ADICIONAL, antes,
+    que remove a deriva lenta (troca de protocolo, deriva térmica, etc.) que
+    de outra forma dominaria a fractal-scaling nas escalas mais longas.
+
+    Implementação: resolve o sistema esparso
+        tendência = (I + λ² · D2ᵀD2)⁻¹ · RR
+    onde D2 é o operador de 2ª diferença. O resultado devolvido é
+        RR − tendência + média(RR)
+    (mantém a escala em ms, o que ajuda em qualquer plot de diagnóstico;
+    para o DFA em si a constante é irrelevante, pois _dfa_alpha já subtrai
+    a média internamente).
+
+    Requer scipy.sparse. Sistema banda-estreita ⇒ O(n), viável mesmo para
+    sessões de 1h+ (~10 mil batimentos).
+
+    Devolve um array do mesmo comprimento que rr_ms, ou uma cópia sem
+    alteração se a série for demasiado curta ou o sistema mal condicionado.
+    """
+    x = np.asarray(rr_ms, dtype=float)
+    n = len(x)
+    if n < 10:
+        return x.copy()
+
+    try:
+        from scipy import sparse
+        from scipy.sparse.linalg import spsolve
+    except ImportError:
+        return x.copy()
+
+    # Operador de 2ª diferença: (n-2) x n, cada linha [.., 1, -2, 1, ..]
+    D2 = sparse.diags([1.0, -2.0, 1.0], offsets=[0, 1, 2],
+                       shape=(n - 2, n), format='csc')
+    I = sparse.eye(n, format='csc')
+    A = (I + (lam ** 2) * (D2.T @ D2)).tocsc()
+
+    try:
+        tendencia = spsolve(A, x)
+    except Exception:
+        return x.copy()
+
+    if not np.all(np.isfinite(tendencia)):
+        return x.copy()
+
+    return x - tendencia + np.mean(x)
+
+
 def _dfa_alpha(serie, n_min=4, n_max=16):
     """
     Detrended Fluctuation Analysis — expoente de escala.
@@ -2152,13 +2252,26 @@ def _dfa_alpha(serie, n_min=4, n_max=16):
 
 
 def calcular_dfa1_serie(rr_ms, tempo_s, janela_s=120, passo_s=5,
-                        n_min=4, n_max=16):
+                        n_min=4, n_max=16, metodo_detrend='local', lam_sp=500):
     """
     Calcula o DFA-alpha1 ao longo do tempo, com janelas móveis.
 
     Parâmetros do estudo Murias 2023:
       "the DFA a1 was calculated over time using 2 min HRV measurement windows
        with a recalculation every 5 s"
+
+    metodo_detrend:
+      'local'     (default) — cada janela é detrendida linearmente por escala,
+                  dentro do próprio DFA-1 clássico (ver _dfa_alpha). É o que
+                  já estava implementado; replica a abordagem "Kubios vs
+                  Python" (dokato/dfa) já usada neste ficheiro.
+      'sp_global' — aplica Smoothness Priors (λ=lam_sp) UMA VEZ ao tacograma
+                  inteiro antes de janelar (ver detrend_sp()) — replica o
+                  pré-processamento por defeito do Kubios HRV.
+
+    Nota: a FC média de cada janela é SEMPRE calculada a partir do RR
+    ORIGINAL (nunca do detrendido), já que o SP remove a escala absoluta
+    do sinal — só o α1 usa a série processada por metodo_detrend.
 
     Devolve DataFrame com tempo_s, dfa1, n_batimentos, fc_media.
     """
@@ -2167,6 +2280,11 @@ def calcular_dfa1_serie(rr_ms, tempo_s, janela_s=120, passo_s=5,
     if len(rr) < 50:
         return pd.DataFrame()
 
+    if metodo_detrend == 'sp_global':
+        rr_dfa = detrend_sp(rr, lam=lam_sp)
+    else:
+        rr_dfa = rr  # o detrending acontece dentro de _dfa_alpha, por janela
+
     linhas = []
     t_fim = t[-1]
     t_ini = janela_s
@@ -2174,18 +2292,21 @@ def calcular_dfa1_serie(rr_ms, tempo_s, janela_s=120, passo_s=5,
         m = (t > centro - janela_s) & (t <= centro)
         if m.sum() < n_max * 4:
             continue
-        seg = rr[m]
-        a1 = _dfa_alpha(seg, n_min=n_min, n_max=n_max)
+        seg_dfa = rr_dfa[m]
+        seg_fc = rr[m]
+        a1 = _dfa_alpha(seg_dfa, n_min=n_min, n_max=n_max)
         if a1 is None:
             continue
         linhas.append({
             'tempo_s': float(centro),
             'dfa1': round(a1, 4),
             'n_batimentos': int(m.sum()),
-            'fc_media': round(60000.0 / np.mean(seg), 1),
+            'fc_media': round(60000.0 / np.mean(seg_fc), 1),
         })
 
-    return pd.DataFrame(linhas)
+    df_out = pd.DataFrame(linhas)
+    df_out.attrs['metodo_detrend'] = metodo_detrend
+    return df_out
 
 
 # ══════════════════════════════════════════════════════════════════════════════
