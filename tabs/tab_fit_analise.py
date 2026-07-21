@@ -655,22 +655,6 @@ decoupling. Não há limiares a estimar.
                  "de recuperação e distorce o decoupling. Esta opção força a "
                  "potência e a cadência a zero nos laps de recuperação.")
 
-        metodo_detrend = st.radio(
-            "Pré-processamento do DFA-α1",
-            options=['local', 'sp_global'],
-            format_func=lambda m: {
-                'local': '📐 Detrending local por janela (o que já estava implementado)',
-                'sp_global': '🧮 Smoothness Priors global, λ=500 (estilo Kubios)',
-            }[m],
-            key=f'detrend_{ficheiro.name}',
-            help="O Kubios aplica Smoothness Priors (λ=500) ao tacograma INTEIRO "
-                 "antes de calcular o DFA-α1 por janelas. O método 'local' faz o "
-                 "detrending dentro de cada janela de 2 min — mais simples, mas pode "
-                 "divergir do Kubios sobretudo abaixo de α1=0.75. As DUAS análises "
-                 "correm sempre; esta escolha define só qual é o resultado PRINCIPAL "
-                 "— a secção 'Comparar pré-processamento' mostra sempre os dois lado "
-                 "a lado.")
-
         st.markdown("---")
         st.markdown("**Como identificar os intervalos de trabalho**")
         modo = st.radio(
@@ -1119,7 +1103,7 @@ decoupling. Não há limiares a estimar.
     _chave_run = f'_fit_run_{ficheiro.name}'
     _assinatura = (str(sorted(laps_excl)), str(sorted(laps_manual or [])),
                    str(iv_editados), str(sorted(_offsets.items())),
-                   janela, zerar_pot, modo, metodo_detrend)
+                   janela, zerar_pot, modo)
     _prev = st.session_state.get(f'{_chave_run}_sig')
     if _prev is not None and _prev != _assinatura:
         # Os dados mudaram desde a última análise — invalidar o resultado
@@ -1148,7 +1132,7 @@ decoupling. Não há limiares a estimar.
         return
 
     with st.spinner("A analisar..."):
-        res = analisar_completo(res, metodo_detrend=metodo_detrend, comparar_detrend=True)
+        res = analisar_completo(res, metodo_detrend='local', comparar_detrend=True)
     if 'erro' in res:
         st.error(f"❌ {res['erro']}")
         return
