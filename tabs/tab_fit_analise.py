@@ -1495,6 +1495,13 @@ decoupling. Não há limiares a estimar.
                 "(HRVT2 ≈ RCP/MLSS), não o VT1. O estudo mostrou que a média do "
                 "HRVT2 com o breakpoint NIRS tem menor erro individual do que "
                 "qualquer método isolado.")
+            if res.get('protocolo', {}).get('tipo') in ('intervalos', 'degraus'):
+                st.caption(
+                    "ℹ️ Protocolo de intervalos: cada janela de 2 min é recortada para "
+                    "não misturar batimentos de laps diferentes (ex.: recuperação + "
+                    "trabalho seguinte). Perto do início de cada intervalo a janela "
+                    "fica mais curta — e por isso menos precisa — até acumular tempo "
+                    "suficiente dentro do mesmo lap.")
 
             _q = res.get('dfa1_qualidade')
             if _q:
