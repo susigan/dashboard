@@ -1284,6 +1284,15 @@ def analisar_completo(prep, metodo_detrend='local', comparar_detrend=True, lam_s
                     if _tipo in ('continuo', 'intervalos', 'degraus') else None)
     combo = combo_limiares(hrvt2, bp_continuo)
 
+    # Limiar por DFA-α1 RECALCULADO, um ponto por lap de trabalho — pensado
+    # para DEGRAUS/intervalos com descanso entre cada intensidade crescente,
+    # onde faz mais sentido um ponto limpo por degrau (já beneficiando de
+    # respeitar_fases) do que uma regressão contínua ao longo da rampa.
+    lim_dfa1_recalc = (limiar_dfa1_recalculado(dfa1_serie, lap_stats, colunas,
+                                               janela_final_s=janela_final_s)
+                      if _tipo in ('degraus', 'intervalos') and len(dfa1_serie) >= 10
+                      else None)
+
     # Relação potência↔FC desta sessão, para reportar os limiares nas duas
     # unidades. A FC é mais estável entre protocolos do que a potência
     # (Physiological Reports 2023), por isso convém ter ambas.
@@ -1312,6 +1321,7 @@ def analisar_completo(prep, metodo_detrend='local', comparar_detrend=True, lam_s
         'bp_continuo': bp_continuo,
         'bp_hhb': bp_hhb,
         'limiar_dfa1': lim_dfa1,
+        'limiar_dfa1_recalculado': lim_dfa1_recalc,
         'estabilidade_smo2': estab_smo2,
         'mlss_intervalos': mlss_longos,
         'decoupling': decoupling,
@@ -1753,6 +1763,103 @@ def limiar_dfa1(lap_stats, colunas, alvos=(0.75, 0.70, 0.50), max_artifacts=5.0)
         'pontos': pontos,
         'descartados_artifacts': descartados,
         'n_usados': len(usados),
+    }
+
+
+def _agregar_dfa1_recalculado_por_lap(dfa1_serie, lap_stats, janela_final_s=60):
+    """
+    Agrega o DFA-α1 RECALCULADO a partir dos RR (calcular_dfa1_serie) por lap
+    de trabalho — um ponto por lap, média sobre os últimos janela_final_s
+    segundos (o mesmo critério de "estado estacionário" já usado nas outras
+    métricas via estatisticas_por_lap).
+
+    Pensado para protocolos de DEGRAUS/intervalos com descanso genuíno entre
+    cada intensidade crescente: cada degrau vira um ponto único e limpo,
+    já beneficiando de (a) correcção de artefactos do RR e (b) janelas que
+    respeitam as fronteiras dos laps (ver respeitar_fases em
+    calcular_dfa1_serie) — ao contrário do stream cru do dispositivo, que
+    não passa por nenhuma das duas correcções.
+    """
+    if dfa1_serie is None or len(dfa1_serie) == 0:
+        return pd.DataFrame()
+
+    linhas = []
+    for l in lap_stats:
+        if l.get('phase') != 'work' or '_t_ini' not in l or '_t_fim' not in l:
+            continue
+        t_ini, t_fim = l['_t_ini'], l['_t_fim']
+        t0_janela = max(t_ini, t_fim - janela_final_s) if janela_final_s > 0 else t_ini
+        m = (dfa1_serie['tempo_s'] >= t0_janela) & (dfa1_serie['tempo_s'] <= t_fim)
+        sub = dfa1_serie[m]
+        if len(sub) < 2:
+            continue
+        linhas.append({
+            'lap': l['lap_number'],
+            'dfa1_recalculado': float(sub['dfa1'].mean()),
+            'n_janelas': len(sub),
+            'janela_efetiva_media_s': (float(sub['janela_efetiva_s'].mean())
+                                       if 'janela_efetiva_s' in sub.columns else None),
+        })
+    return pd.DataFrame(linhas)
+
+
+def limiar_dfa1_recalculado(dfa1_serie, lap_stats, colunas, alvos=(0.75, 0.70, 0.50),
+                            janela_final_s=60):
+    """
+    Versão de limiar_dfa1() que usa o DFA-α1 RECALCULADO a partir dos
+    intervalos RR, em vez do stream cru do dispositivo.
+
+    Pensado especificamente para protocolos de DEGRAUS/intervalos com
+    descanso entre cada degrau de intensidade crescente — um ponto por lap
+    de trabalho, com janelas que já não misturam descanso com trabalho
+    (ver respeitar_fases em calcular_dfa1_serie). Mesma lógica de
+    regressão/solução que limiar_dfa1(); ver ali para a interpretação dos
+    alvos (0.75/0.70/0.50).
+
+    Devolve dict no mesmo formato de limiar_dfa1(), ou {'erro': ...}.
+    """
+    agg = _agregar_dfa1_recalculado_por_lap(dfa1_serie, lap_stats, janela_final_s)
+    if len(agg) < 3:
+        return {'erro': f'poucos laps de trabalho com α1 recalculado (n={len(agg)})'}
+
+    intensidade = 'avg_power' if any('avg_power' in l for l in lap_stats) else 'avg_heart_rate'
+    unidade = 'W' if intensidade == 'avg_power' else 'bpm'
+    mapa_int = {l['lap_number']: l.get(intensidade) for l in lap_stats}
+    agg['intensidade'] = agg['lap'].map(mapa_int)
+    agg = agg.dropna(subset=['intensidade']).sort_values('intensidade').reset_index(drop=True)
+    if len(agg) < 3:
+        return {'erro': 'poucos laps com intensidade e α1 recalculado em conjunto'}
+
+    x = agg['intensidade'].values.astype(float)
+    y = agg['dfa1_recalculado'].values.astype(float)
+    if np.ptp(x) < 1e-9:
+        return {'erro': 'intensidade sem variação'}
+
+    coef = np.polyfit(x, y, 1)
+    y_pred = np.polyval(coef, x)
+    sst = np.sum((y - y.mean()) ** 2)
+    r2 = 1 - np.sum((y - y_pred) ** 2) / sst if sst > 0 else np.nan
+
+    limiares = {}
+    for alvo in alvos:
+        if abs(coef[0]) > 1e-12:
+            xi = (alvo - coef[1]) / coef[0]
+            dentro = x.min() - 0.1 * np.ptp(x) <= xi <= x.max() + 0.1 * np.ptp(x)
+            _fisio_ok = True
+            if intensidade == 'avg_heart_rate':
+                _fisio_ok, _ = _checar_fc_plausivel(xi)
+            limiares[alvo] = {'intensidade': float(xi), 'extrapolado': not dentro,
+                              'fisiologicamente_plausivel': _fisio_ok}
+        else:
+            limiares[alvo] = None
+
+    return {
+        'limiares': limiares,
+        'coef': coef.tolist(),
+        'r2': float(r2),
+        'unidade': unidade,
+        'pontos': agg,
+        'n_usados': len(agg),
     }
 
 
