@@ -31,24 +31,15 @@ def ler_fit(file_bytes):
     """
     Lê um ficheiro FIT a partir de bytes (upload do Streamlit).
 
-    Faz UMA ÚNICA passagem pelo ficheiro inteiro, extraindo tudo o que é
-    preciso nas duas fases (record/session/lap para a Fase 1, e as mensagens
-    'hrv' com os RR brutos para a Fase 2) — evitar uma segunda passagem
-    completa é importante porque o fitdecode tem de descodificar TODAS as
-    mensagens do ficheiro (incluindo as 'hrv', que em gravações com RR
-    batimento-a-batimento podem ser milhares), mesmo que uma função só
-    aproveite uma parte delas. Ler duas vezes duplicava esse custo.
-
     Devolve dict:
-      {'records': [...], 'session': {...}, 'laps': [...], 'activity_name': str,
-       'rr_bruto': [...]}
+      {'records': [...], 'session': {...}, 'laps': [...], 'activity_name': str}
     ou {'erro': str} em caso de falha.
     """
     if not _TEM_FITDECODE:
         return {'erro': "Biblioteca 'fitdecode' não instalada. "
                         "Adiciona 'fitdecode' ao requirements.txt."}
 
-    records_data, session_data, lap_data, rr_bruto = [], {}, [], []
+    records_data, session_data, lap_data = [], {}, []
     activity_name = None
 
     try:
@@ -73,16 +64,6 @@ def ler_fit(file_bytes):
                     lap_info = {f.name: f.value for f in frame.fields if f.value is not None}
                     if lap_info:
                         lap_data.append(lap_info)
-
-                elif frame.name == 'hrv':
-                    for f in frame.fields:
-                        if f.name != 'time' or f.value is None:
-                            continue
-                        v = f.value
-                        if isinstance(v, (list, tuple)):
-                            rr_bruto.extend([x for x in v if x is not None])
-                        else:
-                            rr_bruto.append(v)
     except Exception as e:
         return {'erro': f"Erro ao ler o ficheiro FIT: {e}"}
 
@@ -94,7 +75,6 @@ def ler_fit(file_bytes):
         'session': session_data,
         'laps': lap_data,
         'activity_name': activity_name or 'Atividade',
-        'rr_bruto': rr_bruto,
     }
 
 
@@ -1188,7 +1168,6 @@ def preparar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
         'lap_stats': lap_stats,
         'laps_info': laps_info,
         'file_bytes': file_bytes,
-        'rr_bruto': fit.get('rr_bruto', []),
         'activity_name': fit.get('activity_name', 'Atividade'),
         'session': fit.get('session', {}),
         'janela_final_s': janela_final_s,
@@ -1201,7 +1180,7 @@ def preparar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
     }
 
 
-def analisar_completo(prep, metodo_detrend='local', comparar_detrend=False, lam_sp=500):
+def analisar_completo(prep):
     """
     FASE 2 — análises fisiológicas, sobre os dados JÁ CORRIGIDOS pelo utilizador.
 
@@ -1211,16 +1190,6 @@ def analisar_completo(prep, metodo_detrend='local', comparar_detrend=False, lam_
 
     A detecção de protocolo acontece AQUI (não na preparação), porque depende da
     classificação final dos laps — que o utilizador pode ter corrigido.
-
-    metodo_detrend : 'local' (default, o que já estava implementado) ou
-        'sp_global' (Smoothness Priors λ=lam_sp aplicado ao tacograma inteiro,
-        estilo Kubios — ver detrend_sp()). Define qual dos dois é o resultado
-        PRINCIPAL (hrvt2, hrvt1c, hrvt2_submax, dfa1_serie).
-
-    comparar_detrend : se True (default), corre TAMBÉM o método alternativo e
-        guarda os resultados em '..._alt' — permite comparar os dois lado a
-        lado sem correr a análise duas vezes. Custo extra: mais um DFA sobre
-        a mesma série (poucos segundos).
     """
     if not prep or 'erro' in prep:
         return prep
@@ -1255,84 +1224,27 @@ def analisar_completo(prep, metodo_detrend='local', comparar_detrend=False, lam_
     falha = tempo_ate_falha(lap_stats)
 
     # DFA-alpha1 a partir dos RR brutos + HRVTs + Combo
-    rr_info = extrair_rr(file_bytes, rr_bruto=prep.get('rr_bruto'))
+    rr_info = extrair_rr(file_bytes)
     dfa1_serie = pd.DataFrame()
     dfa1_qualidade = None
     hrvt2 = None
-    hrvt1c = None
-    hrvt2_sub = None
-
-    metodo_alt = 'sp_global' if metodo_detrend == 'local' else 'local'
-    dfa1_serie_alt = pd.DataFrame()
-    hrvt2_alt = None
-    hrvt1c_alt = None
-    hrvt2_sub_alt = None
-
     if rr_info is not None:
         rr_lim, dfa1_qualidade = limpar_rr(rr_info['rr_ms'])
         if rr_lim is not None:
-            # Só faz sentido "respeitar fases" em protocolos com laps curtos
-            # de trabalho/descanso; numa rampa ou esforço contínuo há
-            # tipicamente um único lap efectivo e a janela de 120s nunca
-            # atravessa fronteira nenhuma que importe.
-            _respeitar_fases = _tipo in ('intervalos', 'degraus')
-            dfa1_serie = calcular_dfa1_serie(rr_lim, rr_info['tempo_s'],
-                                             metodo_detrend=metodo_detrend,
-                                             lam_sp=lam_sp,
-                                             lap_stats=lap_stats,
-                                             respeitar_fases=_respeitar_fases)
+            dfa1_serie = calcular_dfa1_serie(rr_lim, rr_info['tempo_s'])
             if len(dfa1_serie) >= 10:
                 hrvt2 = calcular_hrvt(dfa1_serie, df_metricas=df, colunas=colunas,
                                       alvo=DFA1_HRVT2, lap_stats=lap_stats,
                                       df_tempo=df, protocolo=_tipo)
-                hrvt1c = calcular_hrvt1c(dfa1_serie, df_metricas=df, colunas=colunas)
-                hrvt2_sub = hrvt2_submaximo(dfa1_serie, df_metricas=df, colunas=colunas)
 
-            if comparar_detrend:
-                dfa1_serie_alt = calcular_dfa1_serie(rr_lim, rr_info['tempo_s'],
-                                                     metodo_detrend=metodo_alt,
-                                                     lam_sp=lam_sp,
-                                                     lap_stats=lap_stats,
-                                                     respeitar_fases=_respeitar_fases)
-                if len(dfa1_serie_alt) >= 10:
-                    hrvt2_alt = calcular_hrvt(dfa1_serie_alt, df_metricas=df, colunas=colunas,
-                                             alvo=DFA1_HRVT2, lap_stats=lap_stats,
-                                             df_tempo=df, protocolo=_tipo)
-                    hrvt1c_alt = calcular_hrvt1c(dfa1_serie_alt, df_metricas=df, colunas=colunas)
-                    hrvt2_sub_alt = hrvt2_submaximo(dfa1_serie_alt, df_metricas=df, colunas=colunas)
-
+    hrvt1c = None
+    hrvt2_sub = None
+    if len(dfa1_serie) >= 10:
+        hrvt1c = calcular_hrvt1c(dfa1_serie, df_metricas=df, colunas=colunas)
+        hrvt2_sub = hrvt2_submaximo(dfa1_serie, df_metricas=df, colunas=colunas)
     durabilidade = (analisar_durabilidade(df, colunas, dfa1_serie, lap_stats)
                     if _tipo in ('continuo', 'intervalos', 'degraus') else None)
     combo = combo_limiares(hrvt2, bp_continuo)
-
-    # Limiar por DFA-α1 RECALCULADO, um ponto por lap de trabalho — pensado
-    # para DEGRAUS/intervalos com descanso entre cada intensidade crescente,
-    # onde faz mais sentido um ponto limpo por degrau (já beneficiando de
-    # respeitar_fases) do que uma regressão contínua ao longo da rampa.
-    lim_dfa1_recalc = (limiar_dfa1_recalculado(dfa1_serie, lap_stats, colunas,
-                                               janela_final_s=janela_final_s)
-                      if _tipo in ('degraus', 'intervalos') and len(dfa1_serie) >= 10
-                      else None)
-
-    # Relação potência↔FC desta sessão, para reportar os limiares nas duas
-    # unidades. A FC é mais estável entre protocolos do que a potência
-    # (Physiological Reports 2023), por isso convém ter ambas.
-    relacao_pf = _relacao_pot_fc(df, colunas, lap_stats)
-    for _b in (bp_continuo, bp_hhb):
-        if _b and _b.get('breakpoint') is not None and relacao_pf:
-            if _b.get('unidade') == 'W':
-                _b['fc'] = pot_para_fc(_b['breakpoint'], relacao_pf)
-                _b['potencia'] = _b['breakpoint']
-            else:
-                _b['fc'] = _b['breakpoint']
-                _b['potencia'] = fc_para_pot(_b['breakpoint'], relacao_pf)
-    if limiares and limiares.get('media') is not None and relacao_pf:
-        if limiares.get('unidade') == 'W':
-            limiares['fc_media'] = pot_para_fc(limiares['media'], relacao_pf)
-        else:
-            limiares['fc_media'] = limiares['media']
-    if combo and combo.get('combo') is not None and relacao_pf:
-        combo['fc'] = pot_para_fc(combo['combo'], relacao_pf)
 
     _res = dict(prep)
     _res.update({
@@ -1342,7 +1254,6 @@ def analisar_completo(prep, metodo_detrend='local', comparar_detrend=False, lam_
         'bp_continuo': bp_continuo,
         'bp_hhb': bp_hhb,
         'limiar_dfa1': lim_dfa1,
-        'limiar_dfa1_recalculado': lim_dfa1_recalc,
         'estabilidade_smo2': estab_smo2,
         'mlss_intervalos': mlss_longos,
         'decoupling': decoupling,
@@ -1356,16 +1267,7 @@ def analisar_completo(prep, metodo_detrend='local', comparar_detrend=False, lam_
         'hrvt2_submax': hrvt2_sub,
         'durabilidade': durabilidade,
         'combo': combo,
-        'relacao_pot_fc': relacao_pf,
-        # ── Comparação de pré-processamento DFA-α1 (local vs SP global) ──────
-        'metodo_detrend': metodo_detrend,
-        'metodo_detrend_alt': metodo_alt if comparar_detrend else None,
-        'dfa1_serie_alt': dfa1_serie_alt,
-        'hrvt2_alt': hrvt2_alt,
-        'hrvt1c_alt': hrvt1c_alt,
-        'hrvt2_submax_alt': hrvt2_sub_alt,
     })
-    _res['zonas'] = resumir_zonas(_res)
     _res['fiabilidade'] = avaliar_fiabilidade(_res)
     return _res
 
@@ -1787,103 +1689,6 @@ def limiar_dfa1(lap_stats, colunas, alvos=(0.75, 0.70, 0.50), max_artifacts=5.0)
     }
 
 
-def _agregar_dfa1_recalculado_por_lap(dfa1_serie, lap_stats, janela_final_s=60):
-    """
-    Agrega o DFA-α1 RECALCULADO a partir dos RR (calcular_dfa1_serie) por lap
-    de trabalho — um ponto por lap, média sobre os últimos janela_final_s
-    segundos (o mesmo critério de "estado estacionário" já usado nas outras
-    métricas via estatisticas_por_lap).
-
-    Pensado para protocolos de DEGRAUS/intervalos com descanso genuíno entre
-    cada intensidade crescente: cada degrau vira um ponto único e limpo,
-    já beneficiando de (a) correcção de artefactos do RR e (b) janelas que
-    respeitam as fronteiras dos laps (ver respeitar_fases em
-    calcular_dfa1_serie) — ao contrário do stream cru do dispositivo, que
-    não passa por nenhuma das duas correcções.
-    """
-    if dfa1_serie is None or len(dfa1_serie) == 0:
-        return pd.DataFrame()
-
-    linhas = []
-    for l in lap_stats:
-        if l.get('phase') != 'work' or '_t_ini' not in l or '_t_fim' not in l:
-            continue
-        t_ini, t_fim = l['_t_ini'], l['_t_fim']
-        t0_janela = max(t_ini, t_fim - janela_final_s) if janela_final_s > 0 else t_ini
-        m = (dfa1_serie['tempo_s'] >= t0_janela) & (dfa1_serie['tempo_s'] <= t_fim)
-        sub = dfa1_serie[m]
-        if len(sub) < 2:
-            continue
-        linhas.append({
-            'lap': l['lap_number'],
-            'dfa1_recalculado': float(sub['dfa1'].mean()),
-            'n_janelas': len(sub),
-            'janela_efetiva_media_s': (float(sub['janela_efetiva_s'].mean())
-                                       if 'janela_efetiva_s' in sub.columns else None),
-        })
-    return pd.DataFrame(linhas)
-
-
-def limiar_dfa1_recalculado(dfa1_serie, lap_stats, colunas, alvos=(0.75, 0.70, 0.50),
-                            janela_final_s=60):
-    """
-    Versão de limiar_dfa1() que usa o DFA-α1 RECALCULADO a partir dos
-    intervalos RR, em vez do stream cru do dispositivo.
-
-    Pensado especificamente para protocolos de DEGRAUS/intervalos com
-    descanso entre cada degrau de intensidade crescente — um ponto por lap
-    de trabalho, com janelas que já não misturam descanso com trabalho
-    (ver respeitar_fases em calcular_dfa1_serie). Mesma lógica de
-    regressão/solução que limiar_dfa1(); ver ali para a interpretação dos
-    alvos (0.75/0.70/0.50).
-
-    Devolve dict no mesmo formato de limiar_dfa1(), ou {'erro': ...}.
-    """
-    agg = _agregar_dfa1_recalculado_por_lap(dfa1_serie, lap_stats, janela_final_s)
-    if len(agg) < 3:
-        return {'erro': f'poucos laps de trabalho com α1 recalculado (n={len(agg)})'}
-
-    intensidade = 'avg_power' if any('avg_power' in l for l in lap_stats) else 'avg_heart_rate'
-    unidade = 'W' if intensidade == 'avg_power' else 'bpm'
-    mapa_int = {l['lap_number']: l.get(intensidade) for l in lap_stats}
-    agg['intensidade'] = agg['lap'].map(mapa_int)
-    agg = agg.dropna(subset=['intensidade']).sort_values('intensidade').reset_index(drop=True)
-    if len(agg) < 3:
-        return {'erro': 'poucos laps com intensidade e α1 recalculado em conjunto'}
-
-    x = agg['intensidade'].values.astype(float)
-    y = agg['dfa1_recalculado'].values.astype(float)
-    if np.ptp(x) < 1e-9:
-        return {'erro': 'intensidade sem variação'}
-
-    coef = np.polyfit(x, y, 1)
-    y_pred = np.polyval(coef, x)
-    sst = np.sum((y - y.mean()) ** 2)
-    r2 = 1 - np.sum((y - y_pred) ** 2) / sst if sst > 0 else np.nan
-
-    limiares = {}
-    for alvo in alvos:
-        if abs(coef[0]) > 1e-12:
-            xi = (alvo - coef[1]) / coef[0]
-            dentro = x.min() - 0.1 * np.ptp(x) <= xi <= x.max() + 0.1 * np.ptp(x)
-            _fisio_ok = True
-            if intensidade == 'avg_heart_rate':
-                _fisio_ok, _ = _checar_fc_plausivel(xi, fc_max_sessao=float(x.max()))
-            limiares[alvo] = {'intensidade': float(xi), 'extrapolado': not dentro,
-                              'fisiologicamente_plausivel': _fisio_ok}
-        else:
-            limiares[alvo] = None
-
-    return {
-        'limiares': limiares,
-        'coef': coef.tolist(),
-        'r2': float(r2),
-        'unidade': unidade,
-        'pontos': agg,
-        'n_usados': len(agg),
-    }
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # MLSS POR ESTABILIDADE INTRA-INTERVALO
 # (método preferido do blog para intervalos de 5 min a potência constante)
@@ -2187,7 +1992,7 @@ def sugerir_offset_por_laps(df, colunas, metrica, lap_stats, max_lag=60,
 # janelas móveis de 2 min recalculadas a cada 5 s.
 # ══════════════════════════════════════════════════════════════════════════════
 
-def extrair_rr(file_bytes, rr_bruto=None):
+def extrair_rr(file_bytes):
     """
     Extrai os intervalos RR brutos das mensagens 'hrv' do ficheiro FIT.
 
@@ -2195,39 +2000,29 @@ def extrair_rr(file_bytes, rr_bruto=None):
     métricas por segundo. Tê-los permite recalcular o DFA-alpha1 em vez de
     depender do valor pré-calculado pelo sensor.
 
-    rr_bruto : lista já extraída por ler_fit() (ver preparar_fit()['rr_bruto']).
-        Quando fornecida, esta função NÃO volta a abrir/percorrer o ficheiro —
-        evita uma segunda passagem completa do fitdecode, que é cara em
-        ficheiros com RR batimento-a-batimento (milhares de mensagens 'hrv').
-        Se vier None, mantém o comportamento antigo (lê o ficheiro do zero) —
-        para chamadas directas fora do fluxo preparar_fit()+analisar_completo.
-
     Devolve dict {'rr_ms': array, 'tempo_s': array (tempo cumulativo), 'n': int}
     ou None se o ficheiro não tiver RR.
     """
-    if rr_bruto is not None:
-        rr = list(rr_bruto)
-    else:
-        if not _TEM_FITDECODE:
-            return None
-        rr = []
-        try:
-            with fitdecode.FitReader(io.BytesIO(file_bytes)) as fit:
-                for frame in fit:
-                    if not isinstance(frame, fitdecode.FitDataMessage):
+    if not _TEM_FITDECODE:
+        return None
+    rr = []
+    try:
+        with fitdecode.FitReader(io.BytesIO(file_bytes)) as fit:
+            for frame in fit:
+                if not isinstance(frame, fitdecode.FitDataMessage):
+                    continue
+                if frame.name != 'hrv':
+                    continue
+                for f in frame.fields:
+                    if f.name != 'time' or f.value is None:
                         continue
-                    if frame.name != 'hrv':
-                        continue
-                    for f in frame.fields:
-                        if f.name != 'time' or f.value is None:
-                            continue
-                        v = f.value
-                        if isinstance(v, (list, tuple)):
-                            rr.extend([x for x in v if x is not None])
-                        else:
-                            rr.append(v)
-        except Exception:
-            return None
+                    v = f.value
+                    if isinstance(v, (list, tuple)):
+                        rr.extend([x for x in v if x is not None])
+                    else:
+                        rr.append(v)
+    except Exception:
+        return None
 
     if len(rr) < 100:
         return None
@@ -2282,70 +2077,6 @@ def limpar_rr(rr_ms, low=300, high=2000, malik_pct=20):
     }
 
 
-def detrend_sp(rr_ms, lam=500):
-    """
-    Smoothness Priors detrending (Tarvainen et al. 2002, λ=500) — o método de
-    detrending por DEFEITO do Kubios HRV, aplicado ao tacograma INTEIRO (não
-    por janela) antes de qualquer cálculo de DFA-α1.
-
-    Porquê isto importa (ver "DFA a1 and ChatGPT interview",
-    muscleoxygentraining.com, ago/2025): aplicar Smoothness Priors DENTRO de
-    cada janela de 2 min (em vez de à série completa) cria efeitos de
-    fronteira que "empurram o α1 para baixo" e distorcem a recta α1×FC —
-    foi exactamente essa diferença que fez o pipeline "à mão" divergir ~15-30
-    bpm do Kubios num caso real analisado nesse artigo. A correcção foi
-    aplicar o SP UMA VEZ à série toda, e só depois janelar.
-
-    O que já estava implementado em calcular_dfa1_serie() (metodo_detrend=
-    'local') é o DFA-1 clássico (Peng et al.), que faz o SEU PRÓPRIO
-    detrending linear por escala DENTRO de cada janela — replica o script
-    "Kubios vs Python" (dokato/dfa) já citado em _dfa_alpha(). Isso continua
-    a ser calculado da mesma forma; o SP global é um passo ADICIONAL, antes,
-    que remove a deriva lenta (troca de protocolo, deriva térmica, etc.) que
-    de outra forma dominaria a fractal-scaling nas escalas mais longas.
-
-    Implementação: resolve o sistema esparso
-        tendência = (I + λ² · D2ᵀD2)⁻¹ · RR
-    onde D2 é o operador de 2ª diferença. O resultado devolvido é
-        RR − tendência + média(RR)
-    (mantém a escala em ms, o que ajuda em qualquer plot de diagnóstico;
-    para o DFA em si a constante é irrelevante, pois _dfa_alpha já subtrai
-    a média internamente).
-
-    Requer scipy.sparse. Sistema banda-estreita ⇒ O(n), viável mesmo para
-    sessões de 1h+ (~10 mil batimentos).
-
-    Devolve um array do mesmo comprimento que rr_ms, ou uma cópia sem
-    alteração se a série for demasiado curta ou o sistema mal condicionado.
-    """
-    x = np.asarray(rr_ms, dtype=float)
-    n = len(x)
-    if n < 10:
-        return x.copy()
-
-    try:
-        from scipy import sparse
-        from scipy.sparse.linalg import spsolve
-    except ImportError:
-        return x.copy()
-
-    # Operador de 2ª diferença: (n-2) x n, cada linha [.., 1, -2, 1, ..]
-    D2 = sparse.diags([1.0, -2.0, 1.0], offsets=[0, 1, 2],
-                       shape=(n - 2, n), format='csc')
-    I = sparse.eye(n, format='csc')
-    A = (I + (lam ** 2) * (D2.T @ D2)).tocsc()
-
-    try:
-        tendencia = spsolve(A, x)
-    except Exception:
-        return x.copy()
-
-    if not np.all(np.isfinite(tendencia)):
-        return x.copy()
-
-    return x - tendencia + np.mean(x)
-
-
 def _dfa_alpha(serie, n_min=4, n_max=16):
     """
     Detrended Fluctuation Analysis — expoente de escala.
@@ -2398,31 +2129,8 @@ def _dfa_alpha(serie, n_min=4, n_max=16):
     return float(coef[0])
 
 
-def _lap_id_por_tempo(tempo_s_pontos, lap_stats):
-    """
-    Atribui a cada ponto temporal o número do lap onde cai, ou -1 se estiver
-    fora de qualquer lap com fronteiras conhecidas ('_t_ini'/'_t_fim').
-
-    Usado para impedir que uma janela de DFA-α1 misture batimentos de dois
-    laps diferentes (ex.: fim da recuperação + início do trabalho seguinte),
-    o que dilui exactamente o mergulho de α1 que se quer detectar em
-    protocolos de intervalos curtos.
-    """
-    t = np.asarray(tempo_s_pontos, dtype=float)
-    ids = np.full(len(t), -1, dtype=int)
-    if not lap_stats:
-        return ids
-    for l in lap_stats:
-        if '_t_ini' not in l or '_t_fim' not in l:
-            continue
-        m = (t >= l['_t_ini']) & (t <= l['_t_fim'])
-        ids[m] = l['lap_number']
-    return ids
-
-
 def calcular_dfa1_serie(rr_ms, tempo_s, janela_s=120, passo_s=5,
-                        n_min=4, n_max=16, metodo_detrend='local', lam_sp=500,
-                        lap_stats=None, respeitar_fases=True):
+                        n_min=4, n_max=16):
     """
     Calcula o DFA-alpha1 ao longo do tempo, com janelas móveis.
 
@@ -2430,85 +2138,32 @@ def calcular_dfa1_serie(rr_ms, tempo_s, janela_s=120, passo_s=5,
       "the DFA a1 was calculated over time using 2 min HRV measurement windows
        with a recalculation every 5 s"
 
-    metodo_detrend:
-      'local'     (default) — cada janela é detrendida linearmente por escala,
-                  dentro do próprio DFA-1 clássico (ver _dfa_alpha). É o que
-                  já estava implementado; replica a abordagem "Kubios vs
-                  Python" (dokato/dfa) já usada neste ficheiro.
-      'sp_global' — aplica Smoothness Priors (λ=lam_sp) UMA VEZ ao tacograma
-                  inteiro antes de janelar (ver detrend_sp()) — replica o
-                  pré-processamento por defeito do Kubios HRV.
-
-    lap_stats, respeitar_fases : em protocolos de INTERVALOS (ex.: 3 min de
-        trabalho + 1 min de descanso), um intervalo pode ser mais curto do
-        que os 120s da janela-padrão. Sem cuidado, uma janela centrada
-        pouco depois do início do trabalho ainda "olha para trás" 120s e
-        acaba a incluir batimentos da recuperação anterior — o que dilui
-        para cima exactamente o mergulho de α1 que se quer captar (a
-        recuperação tem α1 mais alto). Com respeitar_fases=True (default,
-        quando lap_stats é fornecido) cada janela é recortada para NUNCA
-        atravessar a fronteira do lap onde está o seu centro: fica mais
-        curta perto do início de cada lap (mas nunca abaixo do mínimo de
-        batimentos exigido) e alcança os 120s completos assim que o lap for
-        longo o suficiente. Para rampas/contínuo (um único lap efectivo)
-        isto não faz diferença — passa respeitar_fases=False para desligar.
-
-    Nota: a FC média de cada janela é SEMPRE calculada a partir do RR
-    ORIGINAL (nunca do detrendido), já que o SP remove a escala absoluta
-    do sinal — só o α1 usa a série processada por metodo_detrend.
-
-    Devolve DataFrame com tempo_s, dfa1, n_batimentos, fc_media,
-    janela_efetiva_s (quantos segundos de RR entraram realmente na janela —
-    menos de janela_s indica um lap curto/início de intervalo).
+    Devolve DataFrame com tempo_s, dfa1, n_batimentos, fc_media.
     """
     rr = np.asarray(rr_ms, dtype=float)
     t = np.asarray(tempo_s, dtype=float)
     if len(rr) < 50:
         return pd.DataFrame()
 
-    if metodo_detrend == 'sp_global':
-        rr_dfa = detrend_sp(rr, lam=lam_sp)
-    else:
-        rr_dfa = rr  # o detrending acontece dentro de _dfa_alpha, por janela
-
-    lap_ids = (_lap_id_por_tempo(t, lap_stats)
-               if (respeitar_fases and lap_stats) else None)
-
     linhas = []
     t_fim = t[-1]
     t_ini = janela_s
     for centro in np.arange(t_ini, t_fim + 0.001, passo_s):
         m = (t > centro - janela_s) & (t <= centro)
-        janela_efetiva = janela_s
-
-        if lap_ids is not None:
-            idx_centro = np.searchsorted(t, centro, side='right') - 1
-            idx_centro = min(max(idx_centro, 0), len(t) - 1)
-            lap_centro = lap_ids[idx_centro]
-            if lap_centro != -1:
-                m = m & (lap_ids == lap_centro)
-                if m.sum() > 0:
-                    janela_efetiva = float(centro - t[m].min())
-
         if m.sum() < n_max * 4:
             continue
-        seg_dfa = rr_dfa[m]
-        seg_fc = rr[m]
-        a1 = _dfa_alpha(seg_dfa, n_min=n_min, n_max=n_max)
+        seg = rr[m]
+        a1 = _dfa_alpha(seg, n_min=n_min, n_max=n_max)
         if a1 is None:
             continue
         linhas.append({
             'tempo_s': float(centro),
             'dfa1': round(a1, 4),
             'n_batimentos': int(m.sum()),
-            'fc_media': round(60000.0 / np.mean(seg_fc), 1),
-            'janela_efetiva_s': round(janela_efetiva, 1),
+            'fc_media': round(60000.0 / np.mean(seg), 1),
         })
 
-    df_out = pd.DataFrame(linhas)
-    df_out.attrs['metodo_detrend'] = metodo_detrend
-    df_out.attrs['respeitar_fases'] = bool(lap_ids is not None)
-    return df_out
+    return pd.DataFrame(linhas)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2518,52 +2173,6 @@ def calcular_dfa1_serie(rr_ms, tempo_s, janela_s=120, passo_s=5,
 # Valores de referência do DFA-alpha1 na literatura
 DFA1_HRVT2 = 0.50   # HRVT2 ≈ RCP / MLSS / limiar ALTO (Murias 2023, Rogers et al.)
 DFA1_HRVT1 = 0.75   # aproximação do VT1 / limiar BAIXO (Gronwald, Rogers 2020)
-
-# Limites de plausibilidade fisiológica para uma FC extrapolada/estimada por
-# regressão. Sem isto, um declive quase-nulo (ex.: janela demasiado "achatada"
-# depois de Smoothness Priors global remover a tendência lenta que era o
-# próprio sinal de interesse) pode gerar uma FC "prevista" de centenas de bpm
-# — matematicamente correcta pela recta, mas humanamente impossível. Os
-# avisos de R²/extrapolação já cobrem MUITOS casos, mas não todos; este é o
-# último guarda-redes, sempre aplicado.
-#
-# IMPORTANTE: 230 bpm é um tecto GENÉRICO populacional — não diz nada sobre
-# ESTE atleta. Um valor de 220 bpm passaria neste teste sozinho, mas para um
-# atleta cuja FC real nunca passou de ~165 bpm em toda a sessão, 220 bpm é
-# tão implausível como 353 — só que mais difícil de notar à primeira vista.
-# Por isso, sempre que houver FC medida na própria sessão (fc_max_sessao),
-# o tecto usado é essa FC máxima real + uma margem, não o limite genérico.
-FC_PLAUSIVEL_MIN = 30
-FC_PLAUSIVEL_MAX = 230          # usado só quando não há FC de referência da sessão
-FC_PLAUSIVEL_MARGEM_SESSAO = 15  # bpm acima do máximo realmente medido
-
-
-def _checar_fc_plausivel(fc, fc_max_sessao=None):
-    """
-    Devolve (bool_plausivel, aviso_ou_None) para uma FC extrapolada.
-
-    fc_max_sessao : FC máxima REALMENTE medida nesta sessão/atleta (não uma
-        constante populacional). Quando fornecida, o tecto de plausibilidade
-        passa a ser fc_max_sessao + FC_PLAUSIVEL_MARGEM_SESSAO — específico
-        do atleta, em vez do limite genérico de 230 bpm. Segue o mesmo
-        princípio já usado no resto do projecto: limiares sempre relativos
-        à distribuição própria do atleta, nunca a normas populacionais.
-    """
-    if fc is None or not np.isfinite(fc):
-        return False, 'FC não calculável (recta sem solução válida)'
-
-    if fc_max_sessao is not None and np.isfinite(fc_max_sessao):
-        teto = min(FC_PLAUSIVEL_MAX, fc_max_sessao + FC_PLAUSIVEL_MARGEM_SESSAO)
-        ref = f'{fc_max_sessao:.0f} bpm medidos nesta sessão + {FC_PLAUSIVEL_MARGEM_SESSAO:.0f}'
-    else:
-        teto = FC_PLAUSIVEL_MAX
-        ref = f'{FC_PLAUSIVEL_MAX:.0f} (limite genérico, sem referência da sessão)'
-
-    if not (FC_PLAUSIVEL_MIN <= fc <= teto):
-        return False, (f'FC extrapolada implausível para este atleta ({fc:.0f} bpm, '
-                       f'acima de {ref} bpm) — a recta ficou demasiado achatada ou o '
-                       'ajuste é dominado por ruído nesta janela; não usar este resultado')
-    return True, None
 
 
 def calcular_hrvt(serie_dfa1, df_metricas=None, colunas=None, alvo=0.50,
@@ -2679,10 +2288,6 @@ def calcular_hrvt(serie_dfa1, df_metricas=None, colunas=None, alvo=0.50,
         avisos.append(f"ajuste fraco na secção linear (R²={r2:.2f})")
     if extrapolado:
         avisos.append("o valor está extrapolado para fora do intervalo medido")
-    _fc_max_sessao = float(s['fc_media'].max()) if len(s) else None
-    _fc_ok, _fc_aviso = _checar_fc_plausivel(fc_limiar, fc_max_sessao=_fc_max_sessao)
-    if not _fc_ok:
-        avisos.append(_fc_aviso)
     fiavel = (not avisos)
 
     return {
@@ -2772,43 +2377,6 @@ def combo_limiares(hrvt2, bp_nirs, tolerancia_pct=15):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def detectar_protocolo(df, colunas, lap_stats=None):
-    """Classifica o protocolo. Ver docstring completa abaixo."""
-    # ── Atalho: se os laps já dizem a estrutura, usar isso ───────────────────
-    # Quando o utilizador (ou o ficheiro) define laps de trabalho separados por
-    # recuperações, a estrutura é conhecida e não precisa de ser inferida do
-    # sinal. Inferir pode falhar: por exemplo, ao excluir o aquecimento a série
-    # restante pode parecer uma subida contínua e ser classificada como rampa,
-    # levando a aplicar o método errado (usar todos os pontos em vez do estado
-    # estacionário de cada degrau).
-    if lap_stats:
-        _w = [l for l in lap_stats if l.get('phase') == 'work']
-        _r = [l for l in lap_stats if l.get('phase') == 'recovery']
-        if len(_w) >= 3 and len(_r) >= 2:
-            _pots = [l.get('avg_power') or l.get('avg_heart_rate') for l in _w]
-            _pots = [p for p in _pots if p is not None]
-            _sobe = (len(_pots) >= 3
-                     and np.polyfit(range(len(_pots)), _pots, 1)[0] > 0)
-            _tipo = 'degraus' if _sobe else 'intervalos'
-            _u = 'W' if 'power' in colunas else 'bpm'
-            return {
-                'tipo': _tipo,
-                'motivo': (f'{len(_w)} blocos de trabalho separados por '
-                           f'{len(_r)} recuperações'
-                           + (' com intensidade crescente' if _sobe else
-                              ' à mesma intensidade')),
-                'metodo_recomendado': (
-                    'breakpoint sobre o estado estacionário de cada degrau'
-                    if _tipo == 'degraus' else
-                    'estabilidade do SmO₂ dentro de cada intervalo'),
-                'duracao_min': round((df['time_seconds'].max()
-                                      - df['time_seconds'].min()) / 60, 1),
-                'origem': 'estrutura dos laps',
-                'unidade': _u,
-            }
-    return _detectar_protocolo_sinal(df, colunas, lap_stats)
-
-
-def _detectar_protocolo_sinal(df, colunas, lap_stats=None):
     """
     Classifica o tipo de sessão a partir do comportamento da intensidade:
 
@@ -3096,10 +2664,6 @@ def hrvt2_submaximo(serie_dfa1, df_metricas=None, colunas=None,
     if extrapolacao_bpm > 25:
         avisos.append(f'extrapolação longa ({extrapolacao_bpm:.0f} bpm acima do '
                       'medido) — quanto mais longe, menos fiável')
-    _fc_max_sessao = float(s['fc_media'].max()) if len(s) else None
-    _fc_ok, _fc_aviso = _checar_fc_plausivel(fc_prev, fc_max_sessao=_fc_max_sessao)
-    if not _fc_ok:
-        avisos.append(_fc_aviso)
 
     return {
         'fc': fc_prev,
@@ -3311,30 +2875,6 @@ def avaliar_fiabilidade(resultado):
         else:
             _add('HRVT2 (α1=0.50)', 'mau',
                  '; '.join(h2.get('avisos', [])), 'MSSE 2024')
-
-    # 3b. Amplitude do sinal NIRS
-    # Um sensor bem colocado mostra quedas de 20-40 pontos de SmO2 num teste
-    # incremental. Amplitudes pequenas indicam quase sempre má colocação
-    # (tecido adiposo por cima, sensor solto, ou luz ambiente a entrar) — e o
-    # breakpoint pode ter um R² alto mesmo assim, porque ajusta bem a uma recta
-    # quase plana. Daí verificar a amplitude independentemente do ajuste.
-    _w = [l for l in resultado.get('lap_stats', []) if l.get('phase') == 'work']
-    _sm = [l['avg_smo2'] for l in _w if 'avg_smo2' in l]
-    if len(_sm) >= 3:
-        _amp = max(_sm) - min(_sm)
-        if _amp >= 15:
-            _add('Amplitude SmO₂', 'ok',
-                 f'{_amp:.0f} pontos entre o degrau mais fácil e o mais duro',
-                 'um sensor bem colocado mostra 20-40 pontos num incremental')
-        elif _amp >= 8:
-            _add('Amplitude SmO₂', 'aviso',
-                 f'apenas {_amp:.0f} pontos — sinal com pouca dinâmica',
-                 'verifica a colocação do sensor')
-        else:
-            _add('Amplitude SmO₂', 'mau',
-                 f'apenas {_amp:.0f} pontos — o sensor pode estar mal colocado '
-                 '(tecido adiposo, mal fixado, ou luz ambiente)',
-                 'sem amplitude não há breakpoint fisiológico a detectar')
 
     # 4. Breakpoint NIRS
     bp = resultado.get('bp_continuo')
@@ -3604,183 +3144,4 @@ def mlss_intervalos_longos(df, colunas, lap_stats, ignorar_inicio_s=120,
         'n_instaveis': len(instaveis),
         'ignorar_inicio_s': ignorar_inicio_s,
         'limiar_slope': limiar,
-    }
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# CONVERSÃO POTÊNCIA ↔ FC
-# A FC dos limiares é mais estável entre protocolos do que a potência
-# (Physiological Reports 2023), por isso convém reportar ambas.
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _relacao_pot_fc(df, colunas, lap_stats=None):
-    """
-    Ajusta a relação potência↔FC desta sessão, para converter limiares entre as
-    duas unidades.
-
-    Usa apenas os laps de trabalho (nas recuperações a FC desce com atraso e a
-    relação distorce-se). Devolve dict com os coeficientes nos dois sentidos,
-    ou None se não houver dados suficientes.
-    """
-    if 'power' not in colunas or 'heart_rate' not in colunas:
-        return None
-
-    # Preferir as MÉDIAS DE ESTADO ESTACIONÁRIO por lap (um ponto por degrau).
-    # Usar todos os pontos a 1 Hz distorce a recta: no início de cada degrau a FC
-    # ainda está a subir para o seu valor estacionário, o que achata a relação e
-    # subestima a FC nas potências altas (erros de 5-13 bpm nos testes).
-    usou_medias = False
-    if lap_stats:
-        pares = [(l['avg_power'], l['avg_heart_rate'])
-                 for l in lap_stats
-                 if l.get('phase') == 'work'
-                 and l.get('avg_power') is not None
-                 and l.get('avg_heart_rate') is not None
-                 and l['avg_power'] > 0]
-        if len(pares) >= 3:
-            dm = pd.DataFrame(pares, columns=['pot', 'fc'])
-            usou_medias = True
-
-    if not usou_medias:
-        d = df.copy()
-        if lap_stats:
-            laps_ok = {l['lap_number'] for l in lap_stats if l.get('phase') == 'work'}
-            if laps_ok:
-                d = d[d['lap_number'].isin(laps_ok)]
-        dm = d[[colunas['power'], colunas['heart_rate']]].copy()
-        dm.columns = ['pot', 'fc']
-        dm = dm.apply(pd.to_numeric, errors='coerce').dropna()
-        dm = dm[(dm['pot'] > 0) & (dm['fc'] > 30)]
-
-    if len(dm) < 3 or np.ptp(dm['pot'].values) < 20 or np.ptp(dm['fc'].values) < 5:
-        return None
-
-    x, y = dm['pot'].values, dm['fc'].values
-    c_pf = np.polyfit(x, y, 1)          # potência → FC
-    c_fp = np.polyfit(y, x, 1)          # FC → potência
-    y_pred = np.polyval(c_pf, x)
-    sst = np.sum((y - y.mean()) ** 2)
-    r2 = float(1 - np.sum((y - y_pred) ** 2) / sst) if sst > 0 else np.nan
-
-    return {
-        'coef_pot_fc': c_pf.tolist(),
-        'coef_fc_pot': c_fp.tolist(),
-        'r2': r2,
-        'n': len(dm),
-        'usou_medias_por_lap': usou_medias,
-        'pot_min': float(x.min()), 'pot_max': float(x.max()),
-        'fc_min': float(y.min()), 'fc_max': float(y.max()),
-    }
-
-
-def pot_para_fc(potencia, relacao):
-    """Converte potência em FC usando a relação da sessão."""
-    if relacao is None or potencia is None:
-        return None
-    return float(np.polyval(relacao['coef_pot_fc'], potencia))
-
-
-def fc_para_pot(fc, relacao):
-    """Converte FC em potência usando a relação da sessão."""
-    if relacao is None or fc is None:
-        return None
-    return float(np.polyval(relacao['coef_fc_pot'], fc))
-
-
-def resumir_zonas(resultado):
-    """
-    Consolida todos os métodos numa proposta de zonas de treino, em FC e potência.
-
-    Limiar BAIXO (Z1→Z2): prioridade ao HRVT1c (ponto médio individual), que a
-    literatura mostra ter menos viés que o α1=0.75 fixo.
-
-    Limiar ALTO (Z2→Z3): prioridade ao Combo (HRVT2 + NIRS), depois ao método dos
-    intervalos longos, depois ao breakpoint isolado — pela ordem de fiabilidade
-    que os estudos estabelecem.
-
-    Devolve dict com os limiares nas duas unidades, a origem de cada um, e a
-    lista de todas as estimativas disponíveis para comparação.
-    """
-    rel = resultado.get('relacao_pot_fc')
-
-    def _par(pot=None, fc=None):
-        """Completa o par (potência, FC) a partir do que existir."""
-        if pot is None and fc is not None:
-            pot = fc_para_pot(fc, rel)
-        elif fc is None and pot is not None:
-            fc = pot_para_fc(pot, rel)
-        return pot, fc
-
-    # ── Limiar baixo ─────────────────────────────────────────────────────────
-    baixo = None
-    h1c = resultado.get('hrvt1c')
-    if h1c and 'erro' not in h1c and h1c.get('fiavel', True) and h1c.get('fc'):
-        p, f = _par(h1c.get('potencia'), h1c['fc'])
-        baixo = {'pot': p, 'fc': f, 'origem': 'HRVT1c (ponto médio individual)',
-                 'fiavel': True}
-    elif h1c and 'erro' not in h1c and h1c.get('fc'):
-        p, f = _par(h1c.get('potencia'), h1c['fc'])
-        baixo = {'pot': p, 'fc': f, 'origem': 'HRVT1c (com reservas)',
-                 'fiavel': False}
-    else:
-        ld = resultado.get('limiar_dfa1')
-        if ld and 'limiares' in ld:
-            v = ld['limiares'].get(0.70)
-            if v and not v.get('extrapolado'):
-                if ld.get('unidade') == 'W':
-                    p, f = _par(pot=v['intensidade'])
-                else:
-                    p, f = _par(fc=v['intensidade'])
-                baixo = {'pot': p, 'fc': f,
-                         'origem': 'DFA-α1 = 0.70 (método fixo)', 'fiavel': False}
-
-    # ── Limiar alto ──────────────────────────────────────────────────────────
-    alto = None
-    alternativas = []
-
-    cb = resultado.get('combo')
-    if cb and cb.get('n_metodos', 0) >= 2 and cb.get('estado') == 'concordante':
-        p, f = _par(pot=cb['combo'])
-        alto = {'pot': p, 'fc': f, 'origem': 'Combo HRVT2 + NIRS', 'fiavel': True}
-
-    mi = resultado.get('mlss_intervalos')
-    if mi and mi.get('mlss_estimado'):
-        p, f = _par(mi['mlss_estimado'], mi.get('mlss_fc'))
-        alternativas.append({'pot': p, 'fc': f,
-                             'origem': f"MLSS intervalos longos ({mi['sinal']})",
-                             'fiavel': mi.get('precisao') == 'boa'})
-        if alto is None:
-            alto = dict(alternativas[-1])
-
-    for _k, _lbl in (('bp_continuo', 'Breakpoint SmO₂'), ('bp_hhb', 'Breakpoint HHb')):
-        bp = resultado.get(_k)
-        if bp and bp.get('breakpoint'):
-            if bp.get('unidade') == 'W':
-                p, f = _par(pot=bp['breakpoint'])
-            else:
-                p, f = _par(fc=bp['breakpoint'])
-            _fi = bp.get('r2', 0) >= 0.8
-            alternativas.append({'pot': p, 'fc': f, 'origem': _lbl, 'fiavel': _fi})
-            if alto is None:
-                alto = dict(alternativas[-1])
-
-    h2 = resultado.get('hrvt2')
-    if h2 and 'erro' not in h2 and h2.get('fc'):
-        p, f = _par(h2.get('potencia'), h2['fc'])
-        alternativas.append({'pot': p, 'fc': f, 'origem': 'HRVT2 (DFA-α1 = 0.50)',
-                             'fiavel': bool(h2.get('fiavel'))})
-        if alto is None and h2.get('fiavel'):
-            alto = dict(alternativas[-1])
-
-    # Coerência: o limiar baixo tem de ficar abaixo do alto
-    coerente = None
-    if baixo and alto and baixo.get('fc') and alto.get('fc'):
-        coerente = baixo['fc'] < alto['fc']
-
-    return {
-        'baixo': baixo,
-        'alto': alto,
-        'alternativas': alternativas,
-        'relacao_pot_fc': rel,
-        'coerente': coerente,
     }
