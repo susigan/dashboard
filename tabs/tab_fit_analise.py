@@ -30,7 +30,7 @@ warnings.filterwarnings('ignore')
 from utils.fit_analyzer import (
     preparar_fit, analisar_completo, resumir_para_historico, parse_intervalos,
     sugerir_offset, sugerir_offset_por_laps, NOMES_METRICAS,
-    DFA1_HRVT2, DFA1_HRVT1, LOA_LITERATURA,
+    DFA1_HRVT2, DFA1_HRVT1, LOA_LITERATURA, ler_fit,
 )
 
 # Cores por métrica (paleta Wong 2011, colorblind-safe)
@@ -722,14 +722,27 @@ decoupling. Não há limiares a estimar.
 
     _offsets = st.session_state.get(chave_offsets, {})
 
-    # Cache da Fase 1 — sem isto, preparar_fit() (ler o FIT, extrair RR,
-    # segmentar laps) corria em TODOS os reruns do Streamlit, mesmo os que
-    # não têm nada a ver com este ficheiro (ex.: mexer noutro widget da
-    # página, ou até só o auto-refresh de outra secção). Só recalcula
-    # quando algo que realmente afeta o resultado muda.
+    # ── Cache em DUAS camadas ─────────────────────────────────────────────────
+    # Camada A — leitura bruta do binário FIT (fitdecode). É a parte cara desta
+    # fase, e NÃO depende dos laps nem de nenhuma definição — só do conteúdo do
+    # ficheiro. Corrigir laps e clicar "Aplicar" nunca deveria obrigar a reler o
+    # ficheiro outra vez, só a reprocessar os dados já decodificados.
+    _chave_raw = f'_fit_raw_{_fid}'
+    if _chave_raw not in st.session_state:
+        with st.spinner("A ler o ficheiro..."):
+            st.session_state[_chave_raw] = ler_fit(bytes_fit)
+    _raw = st.session_state[_chave_raw]
+
+    if 'erro' in _raw:
+        st.error(f"❌ {_raw['erro']}")
+        return
+
+    # Camada B — segmentação/classificação de laps + definições (janela, modo,
+    # offsets, zerar potência). Esta sim depende dos laps corrigidos — mas
+    # parte sempre do _raw já decodificado (camada A), nunca relê o ficheiro.
     _chave_prep = f'_fit_prep_{_fid}'
     _assinatura_prep = (
-        len(bytes_fit), str(sorted(laps_manual or [])), str(sorted(laps_excl)),
+        str(sorted(laps_manual or [])), str(sorted(laps_excl)),
         janela, _modo_seg, str(intervalos), frac_corte, min_dur_seg,
         zerar_pot, str(sorted(_offsets.items())),
     )
@@ -737,9 +750,10 @@ decoupling. Não há limiares a estimar.
     if _prep_cache is not None and _prep_cache.get('_sig') == _assinatura_prep:
         res = _prep_cache['res']
     else:
-        with st.spinner("A ler o ficheiro..."):
+        with st.spinner("A aplicar laps e definições..."):
             res = preparar_fit(
-                bytes_fit, laps_trabalho_manual=laps_manual, laps_excluidos=laps_excl,
+                bytes_fit, raw=_raw,
+                laps_trabalho_manual=laps_manual, laps_excluidos=laps_excl,
                 janela_final_s=janela, modo_segmentacao=_modo_seg,
                 intervalos_trabalho=intervalos, frac_corte=frac_corte,
                 min_dur_segmento=min_dur_seg, zerar_potencia_descanso=zerar_pot,
