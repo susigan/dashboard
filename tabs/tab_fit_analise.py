@@ -27,9 +27,8 @@ sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))
 warnings.filterwarnings('ignore')
 
 from utils.fit_analyzer import (
-    preparar_fit, analisar_completo, resumir_para_historico, parse_intervalos,
-    sugerir_offset, sugerir_offset_por_laps, NOMES_METRICAS,
-    DFA1_HRVT2, DFA1_HRVT1, LOA_LITERATURA,
+    analisar_fit, resumir_para_historico, parse_intervalos,
+    sugerir_offset, NOMES_METRICAS,
 )
 
 # Cores por métrica (paleta Wong 2011, colorblind-safe)
@@ -40,8 +39,6 @@ _CORES_METRICA = {
     'respiration':   '#E69F00',
     'resp_enhanced': '#B8860B',
     'artifacts':     '#8B0000',
-    'hhb':           '#8E1600',
-    'o2hb':          '#1B7837',
     'rr_ratio':      '#7B68EE',
     'hr_alphahrv':   '#FF8C69',
     'heart_rate':    '#D55E00',
@@ -66,152 +63,6 @@ def _mmss(segundos):
 # ══════════════════════════════════════════════════════════════════════════════
 # GRÁFICOS
 # ══════════════════════════════════════════════════════════════════════════════
-
-def _grafico_breakpoint_hhb(bp_smo2, bp_hhb):
-    """
-    HHb e SmO₂ vs intensidade, lado a lado, cada um com o seu ajuste
-    double-linear. É a visualização que a literatura NIRS usa: o HHb sobe
-    (desoxigenação) e o SmO₂ desce, e o breakpoint deve coincidir.
-    """
-    from plotly.subplots import make_subplots as _msp
-    fig = _msp(rows=1, cols=2, horizontal_spacing=0.10,
-               subplot_titles=['HHb (hemoglobina desoxigenada)', 'SmO₂ (%)'])
-
-    for _col, _bp, _cor_pt in ((1, bp_hhb, '#8E1600'), (2, bp_smo2, '#0072B2')):
-        if _bp is None:
-            continue
-        p = _bp['pontos']
-        u = _bp['unidade']
-        fig.add_trace(go.Scatter(
-            x=p['intensidade'], y=p['smo2'], mode='markers',
-            marker=dict(size=5, color=_cor_pt, opacity=0.55),
-            showlegend=False,
-            hovertemplate='%{x:.0f}' + u + '<br>%{y:.2f}<extra></extra>'),
-            row=1, col=_col)
-
-        x = p['intensidade'].values
-        xb = _bp['breakpoint']
-        x1 = np.linspace(x.min(), xb, 30)
-        x2 = np.linspace(xb, x.max(), 30)
-        fig.add_trace(go.Scatter(
-            x=x1, y=np.polyval(_bp['coef_antes'], x1), mode='lines',
-            line=dict(color='#27ae60', width=2.5), showlegend=(_col == 1),
-            name='Antes do breakpoint'), row=1, col=_col)
-        fig.add_trace(go.Scatter(
-            x=x2, y=np.polyval(_bp['coef_depois'], x2), mode='lines',
-            line=dict(color='#e74c3c', width=2.5), showlegend=(_col == 1),
-            name='Depois do breakpoint'), row=1, col=_col)
-        fig.add_vline(x=xb, line_dash='dash', line_color='#333', line_width=2,
-                      annotation_text=f"{xb:.0f}{u}", annotation_position='top',
-                      row=1, col=_col)
-
-    _u = (bp_hhb or bp_smo2)['unidade'] if (bp_hhb or bp_smo2) else 'W'
-    fig.update_layout(
-        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-        height=380, margin=dict(t=60, b=55, l=55, r=25), font=dict(size=11),
-        legend=dict(orientation='h', y=-0.20, font=dict(size=10)),
-        title=dict(text='Breakpoint nos dois sinais — validação cruzada',
-                   font=dict(size=13)))
-    fig.update_xaxes(title_text=f'Intensidade ({_u})', showgrid=True,
-                     gridcolor='rgba(128,128,128,0.2)')
-    fig.update_yaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
-    fig.update_yaxes(title_text='HHb', row=1, col=1)
-    fig.update_yaxes(title_text='SmO₂ (%)', row=1, col=2)
-    return fig
-
-
-def _grafico_hhb_temporal(df, colunas, lap_stats):
-    """HHb e SmO₂ ao longo do tempo, com as fases sombreadas."""
-    fig = go.Figure()
-    tmin = df['time_seconds'].min()
-    x = (df['time_seconds'] - tmin) / 60.0
-
-    if 'hhb' in colunas:
-        fig.add_trace(go.Scatter(
-            x=x, y=pd.to_numeric(df[colunas['hhb']], errors='coerce'),
-            mode='lines', name='HHb (desoxi)',
-            line=dict(color='#8E1600', width=1.6),
-            hovertemplate='HHb %{y:.2f}<extra></extra>'))
-    if 'o2hb' in colunas:
-        fig.add_trace(go.Scatter(
-            x=x, y=pd.to_numeric(df[colunas['o2hb']], errors='coerce'),
-            mode='lines', name='O₂Hb (oxi)',
-            line=dict(color='#1B7837', width=1.6),
-            hovertemplate='O₂Hb %{y:.2f}<extra></extra>'))
-    if 'thb' in colunas:
-        fig.add_trace(go.Scatter(
-            x=x, y=pd.to_numeric(df[colunas['thb']], errors='coerce'),
-            mode='lines', name='THb (total)',
-            line=dict(color='#009E73', width=1.2, dash='dot'),
-            hovertemplate='THb %{y:.2f}<extra></extra>'))
-
-    for l in lap_stats:
-        fase = l.get('phase')
-        if fase not in ('work', 'excluded', 'recovery'):
-            continue
-        d = df[df['lap_number'] == l['lap_number']]
-        if len(d) == 0:
-            continue
-        x0 = (d['time_seconds'].iloc[0] - tmin) / 60.0
-        x1 = (d['time_seconds'].iloc[-1] - tmin) / 60.0
-        cor = {'work': 'rgba(214,39,40,0.09)',
-               'excluded': 'rgba(128,128,128,0.16)',
-               'recovery': 'rgba(52,152,219,0.07)'}[fase]
-        fig.add_vrect(x0=x0, x1=x1, fillcolor=cor, line_width=0, layer='below')
-
-    fig.update_layout(
-        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-        height=340, hovermode='x unified', font=dict(size=11),
-        margin=dict(t=50, b=50, l=55, r=25),
-        legend=dict(orientation='h', y=-0.18, font=dict(size=10)),
-        xaxis_title='Tempo (min)', yaxis_title='Hemoglobina',
-        title=dict(text='Distribuição da hemoglobina ao longo da sessão',
-                   font=dict(size=13)))
-    fig.update_xaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
-    fig.update_yaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
-    return fig
-
-
-def _grafico_curva_dfa1(serie, hrvt2=None):
-    """Curva DFA-α1 vs FC, com as linhas de referência e o ajuste do HRVT2."""
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=serie['fc_media'], y=serie['dfa1'], mode='markers',
-        marker=dict(size=5, color='rgba(204,121,167,0.5)'),
-        name='DFA-α1 (janelas 2 min)',
-        hovertemplate='FC %{x:.0f} bpm<br>α1 %{y:.2f}<extra></extra>'))
-
-    for alvo, cor, txt in [(DFA1_HRVT1, '#f39c12', 'α1=0.75 (≈VT1)'),
-                           (DFA1_HRVT2, '#e74c3c', 'α1=0.50 (HRVT2 ≈ RCP/MLSS)')]:
-        fig.add_hline(y=alvo, line_dash='dash', line_color=cor, line_width=1.5,
-                      annotation_text=txt, annotation_position='right',
-                      annotation_font_size=9, annotation_font_color=cor)
-
-    if hrvt2 and 'erro' not in hrvt2 and hrvt2.get('coef'):
-        pl = hrvt2.get('pontos_linear')
-        if pl is not None and len(pl) > 1:
-            xr = np.linspace(pl['fc_media'].min(), pl['fc_media'].max(), 40)
-            fig.add_trace(go.Scatter(
-                x=xr, y=np.polyval(hrvt2['coef'], xr), mode='lines',
-                line=dict(color='#CC79A7', width=2.5),
-                name=f"Ajuste linear (R²={hrvt2['r2']:.2f})"))
-        if hrvt2.get('fiavel'):
-            fig.add_vline(x=hrvt2['fc'], line_dash='dot', line_color='#e74c3c',
-                          line_width=2,
-                          annotation_text=f"HRVT2 {hrvt2['fc']:.0f} bpm",
-                          annotation_position='top')
-
-    fig.update_layout(
-        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-        height=380, margin=dict(t=55, b=50, l=55, r=160), font=dict(size=11),
-        xaxis_title='FC (bpm)', yaxis_title='DFA-α1',
-        legend=dict(orientation='h', y=-0.18, font=dict(size=10)),
-        title=dict(text='DFA-α1 vs FC — recalculado dos intervalos RR',
-                   font=dict(size=13)))
-    fig.update_xaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
-    fig.update_yaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
-    return fig
-
 
 def _grafico_double_linear(bp):
     """SmO2 vs intensidade com as duas rectas do ajuste double-linear."""
@@ -346,49 +197,8 @@ def _grafico_multi_eixo(df, colunas, lap_stats, y1, y2=None, y3=None,
     def _cor_eixo(metricas):
         return _CORES_METRICA.get(metricas[0], '#333') if metricas else '#333'
 
-    def _intervalo(metricas, folga=0.08):
-        """
-        Calcula o intervalo do eixo a partir dos dados reais, com uma folga.
-
-        Sem isto, o Plotly inclui o zero por defeito, o que esmaga métricas de
-        amplitude pequena: o THb, por exemplo, varia entre 12.4 e 12.8 — se o
-        eixo for de 0 a 13, toda a variação real aparece como uma linha recta.
-        Ajustando o eixo à amplitude real, a variação torna-se visível.
-        """
-        vals = []
-        for m in metricas:
-            if m not in colunas:
-                continue
-            s = pd.to_numeric(df[colunas[m]], errors='coerce')
-            if suavizar and suavizar > 1:
-                s = s.rolling(int(suavizar), min_periods=1, center=True).mean()
-            s = s.dropna()
-            if len(s) > 0:
-                vals.append((float(s.min()), float(s.max())))
-        if not vals:
-            return None
-        lo = min(v[0] for v in vals)
-        hi = max(v[1] for v in vals)
-        amp = hi - lo
-        if amp <= 0:
-            margem = max(abs(lo) * 0.01, 0.5)
-            return [lo - margem, hi + margem]
-        _lo_f, _hi_f = lo - amp * folga, hi + amp * folga
-        # Métricas que não podem ser negativas: não deixar o eixo passar abaixo de
-        # zero só por causa da folga (potência a -22W não faz sentido físico).
-        _NAO_NEGATIVAS = {'power', 'cadence', 'speed', 'distance', 'heart_rate',
-                          'hr_alphahrv', 'smo2', 'thb', 'respiration',
-                          'resp_enhanced', 'artifacts', 'cycle_length'}
-        if lo >= 0 and any(m in _NAO_NEGATIVAS for m in metricas):
-            _lo_f = max(0.0, _lo_f)
-        return [_lo_f, _hi_f]
-
     # Com 3 eixos, encolhe o domínio do X para o 3º eixo caber à direita
     dominio_x = [0.0, 0.88] if y3 else [0.0, 1.0]
-
-    _r1 = _intervalo(y1) if y1 else None
-    _r2 = _intervalo(y2) if y2 else None
-    _r3 = _intervalo(y3) if y3 else None
 
     layout = dict(
         paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
@@ -400,20 +210,17 @@ def _grafico_multi_eixo(df, colunas, lap_stats, y1, y2=None, y3=None,
         yaxis=dict(title=dict(text=_titulo(y1) if y1 else None,
                               font=dict(color=_cor_eixo(y1))),
                    tickfont=dict(color=_cor_eixo(y1)),
-                   range=_r1,
                    showgrid=True, gridcolor='rgba(128,128,128,0.2)'),
     )
     if y2:
         layout['yaxis2'] = dict(
             title=dict(text=_titulo(y2), font=dict(color=_cor_eixo(y2))),
             tickfont=dict(color=_cor_eixo(y2)),
-            range=_r2,
             overlaying='y', side='right', showgrid=False)
     if y3:
         layout['yaxis3'] = dict(
             title=dict(text=_titulo(y3), font=dict(color=_cor_eixo(y3))),
             tickfont=dict(color=_cor_eixo(y3)),
-            range=_r3,
             overlaying='y', side='right', position=0.97,
             anchor='free', showgrid=False)
 
@@ -442,22 +249,6 @@ def _grafico_series(df, colunas, lap_stats, metricas_sel):
             line=dict(color=_CORES_METRICA.get(metrica, '#333'), width=1.4),
             showlegend=False,
             hovertemplate='%{y:.1f}<extra></extra>'), row=i, col=1)
-
-        # Ajustar o eixo à amplitude real desta métrica. Sem isto, métricas de
-        # amplitude pequena (ex.: THb, que varia ~0.4 unidades) ficam esmagadas
-        # porque o Plotly inclui o zero por defeito.
-        _s = serie.dropna()
-        if len(_s) > 0:
-            _lo, _hi = float(_s.min()), float(_s.max())
-            _amp = _hi - _lo
-            if _amp > 0:
-                _f0, _f1 = _lo - _amp * 0.08, _hi + _amp * 0.08
-                if _lo >= 0:
-                    _f0 = max(0.0, _f0)
-                fig.update_yaxes(range=[_f0, _f1], row=i, col=1)
-            else:
-                _mg = max(abs(_lo) * 0.01, 0.5)
-                fig.update_yaxes(range=[_lo - _mg, _hi + _mg], row=i, col=1)
 
     # Sombrear laps: trabalho (vermelho) e excluídos (cinzento)
     for l in lap_stats:
@@ -589,36 +380,6 @@ def tab_fit_analise():
         help="A sessão deve ter laps definidos (intervalos de trabalho e recuperação). "
              "Métricas MOXY/DFA-α1 são detectadas automaticamente se existirem no ficheiro.")
 
-    with st.expander("📖 Que protocolos são suportados e o que fazer em cada um",
-                     expanded=False):
-        st.markdown("""
-**📈 Rampa contínua** — a intensidade sobe sem paragens (ex.: +15 a 30 W/min).
-É o protocolo dos estudos publicados e o que dá as melhores estimativas de limiares.
-*Análises:* breakpoint SmO₂ (double-linear), HRVT2 (α1=0.50), HRVT1c, Combo.
-*Dica:* rampas mais lentas (5-15 W/min) dão limiares de **potência** mais fiáveis.
-A FC dos limiares não é afectada pela inclinação — a potência é.
-
-**🪜 Degraus incrementais** — patamares de 3-5 min com intensidade crescente.
-*Análises:* as mesmas, mas usando o estado estacionário do fim de cada degrau.
-*Dica:* degraus de 5 min permitem também o método de estabilidade do SmO₂.
-
-**🔁 Intervalos repetidos** — blocos à mesma intensidade com recuperações.
-*Análises:* cinética de restauração, decoupling, fadiga. Os limiares são menos
-fiáveis porque não há progressão de intensidade.
-
-**➡️ Sessão contínua** (tempo run, zona 2 longa) — intensidade estável.
-*Análises:* **durabilidade** (deriva de FC, respiração e DFA-α1 ao longo do tempo),
-decoupling. Não há limiares a estimar.
-
----
-**Para resultados fiáveis, em qualquer protocolo:**
-- Estar **fresco** — um teste no dia seguinte a um esforço duro dá valores errados
-  por supressão autonómica
-- **Posição da cinta cardíaca**: o pico R deve ser maior que a onda S. Esta é uma
-  das causas mais comuns de erro no DFA-α1
-- Artefactos HRV **abaixo de 5%** (o painel de fiabilidade verifica isto)
-        """)
-
     if ficheiro is None:
         _mostrar_historico()
         return
@@ -714,8 +475,8 @@ decoupling. Não há limiares a estimar.
 
     _offsets = st.session_state.get(chave_offsets, {})
 
-    with st.spinner("A ler o ficheiro..."):
-        res = preparar_fit(
+    with st.spinner("A analisar o ficheiro..."):
+        res = analisar_fit(
             bytes_fit, laps_trabalho_manual=laps_manual, laps_excluidos=laps_excl,
             janela_final_s=janela, modo_segmentacao=_modo_seg,
             intervalos_trabalho=intervalos, frac_corte=frac_corte,
@@ -765,6 +526,8 @@ decoupling. Não há limiares a estimar.
         elif _art_laps:
             _media_art = np.mean([v for _, v in _art_laps])
             st.caption(f"✅ Qualidade do sinal HRV boa (artefactos médios: {_media_art:.1f}%).")
+
+    st.markdown("---")
 
     # ── Laps: deteção automática + correção manual + aquecimento ─────────────
     st.markdown("### 🔧 Laps")
@@ -931,11 +694,42 @@ decoupling. Não há limiares a estimar.
 
     todos_laps = [l['lap_number'] for l in lap_stats]
 
+    with st.expander("✏️ Ajustar laps — aquecimento e classificação"):
+        st.markdown("**1. Excluir aquecimento / arrefecimento**")
+        st.caption("Laps excluídos são ignorados em toda a análise. A mediana de "
+                   "referência da detecção automática também passa a ignorá-los, "
+                   "para o aquecimento não puxar o limiar para baixo.")
+        escolha_excl = st.multiselect(
+            "Laps a excluir", options=todos_laps, default=laps_excl,
+            key=f'ms_excl_{ficheiro.name}')
+
+        st.markdown("**2. Laps de trabalho**")
+        st.caption("A recuperação é inferida: tudo o que não for trabalho nem "
+                   "estiver excluído conta como recuperação.")
+        auto_work = [l['lap_number'] for l in lap_stats if l['phase'] == 'work']
+        opcoes_work = [n for n in todos_laps if n not in escolha_excl]
+        escolha_work = st.multiselect(
+            "Laps de trabalho", options=opcoes_work,
+            default=[n for n in auto_work if n not in escolha_excl],
+            key=f'ms_work_{ficheiro.name}')
+
+        cA, cB = st.columns(2)
+        if cA.button("Aplicar", key=f'aplicar_{ficheiro.name}'):
+            st.session_state[chave_excl] = escolha_excl
+            st.session_state[chave_manual] = escolha_work
+            st.rerun()
+        if cB.button("Repor detecção automática", key=f'auto_{ficheiro.name}'):
+            st.session_state.pop(chave_manual, None)
+            st.session_state.pop(chave_excl, None)
+            st.rerun()
+        if laps_manual is not None:
+            st.caption(f"A usar selecção manual de trabalho: laps {sorted(laps_manual)}")
+
     st.markdown("---")
 
     # ── Séries temporais ──────────────────────────────────────────────────────
     st.markdown("### 📈 Séries temporais")
-    _ORDEM = ['smo2', 'thb', 'hhb', 'o2hb', 'dfa1', 'artifacts', 'rr_ratio', 'respiration',
+    _ORDEM = ['smo2', 'thb', 'dfa1', 'artifacts', 'rr_ratio', 'respiration',
               'resp_enhanced', 'heart_rate', 'hr_alphahrv', 'power', 'cadence',
               'speed', 'cycle_length', 'distance']
     disponiveis = ([m for m in _ORDEM if m in colunas] +
@@ -973,7 +767,7 @@ decoupling. Não há limiares a estimar.
                         key=f'off_{_m}_{ficheiro.name}',
                         help="Segundos a deslocar (+ = mais tarde)")
 
-            _cs1, _cs2 = st.columns(2)
+            _cs1, _cs2, _cs3 = st.columns([1, 1, 2])
             if _cs1.button("✅ Aplicar sincronia", key=f'aplicar_sync_{ficheiro.name}',
                            type='primary'):
                 st.session_state[chave_offsets] = {k: v for k, v in _novos_off.items() if v}
@@ -982,68 +776,21 @@ decoupling. Não há limiares a estimar.
                 st.session_state.pop(chave_offsets, None)
                 st.rerun()
 
-            # ── Sugestão automática ──────────────────────────────────────────
-            if len(_sync_sel) == 1:
-                _m_sel = _sync_sel[0]
-                st.markdown("**💡 Sugerir alinhamento**")
-                _sg1, _sg2 = st.columns(2)
-                _base = _sg1.radio(
-                    "Alinhar com:",
-                    options=['laps', 'metrica'],
-                    format_func=lambda b: {
-                        'laps': '🏃 Laps de trabalho (recomendado)',
-                        'metrica': '📊 Outra métrica'}[b],
-                    key=f'base_sync_{ficheiro.name}',
-                    help="Os laps de trabalho são marcadores temporais nítidos "
-                         "(a intensidade sobe de forma abrupta), por isso costumam "
-                         "dar um alinhamento mais fiável do que comparar duas séries.")
-                _dir = _sg2.radio(
-                    "Direcção:",
-                    options=['ambas', 'frente', 'tras'],
-                    format_func=lambda x: {'ambas': '↔️ Ambas',
-                                           'frente': '➡️ Só para a frente',
-                                           'tras': '⬅️ Só para trás'}[x],
-                    key=f'dir_sync_{ficheiro.name}',
-                    help="Restringe a procura ao sentido que sabes ser o correcto.")
-
-                _sug = None
-                if _base == 'laps':
-                    _sug = sugerir_offset_por_laps(
-                        res['df'], colunas, _m_sel, lap_stats, direcao=_dir)
-                    _ref_txt = f"{_sug['n_laps_trabalho']} laps de trabalho" if _sug else ''
-                else:
-                    _ref_op = [m for m in disponiveis if m != _m_sel]
-                    if _ref_op:
-                        _ref = st.selectbox(
-                            "Métrica de referência", options=_ref_op,
-                            format_func=lambda m: NOMES_METRICAS.get(m, m),
-                            key=f'ref_sync_{ficheiro.name}')
-                        _sug = sugerir_offset(res['df'], colunas, _ref, _m_sel)
-                        _ref_txt = NOMES_METRICAS.get(_ref, _ref)
-
-                if _sug:
-                    _r = _sug['r']
-                    _forca = ('forte' if abs(_r) >= 0.5 else
-                              'moderada' if abs(_r) >= 0.25 else 'fraca')
-                    _msg = (f"Sugestão: **{_sug['offset']:+d}s** "
-                            f"(correlação {_r:.2f} — {_forca}, vs {_ref_txt})")
-                    if abs(_r) < 0.25:
-                        st.warning(
-                            f"{_msg}. Correlação fraca — pode não haver desfasamento "
-                            "real a corrigir, ou o problema ser de outra natureza "
-                            "(ex.: o gravador repetir valores em vez de os deslocar).")
-                    elif _sug['offset'] == 0:
-                        st.success(
-                            f"✅ {_msg}. **A métrica já parece sincronizada** — os "
-                            "patamares que vês no gráfico podem ser um problema de "
-                            "resolução do sinal (valores repetidos), não de "
-                            "desfasamento temporal. Nesse caso deslocar não resolve.")
-                    else:
-                        st.info(f"{_msg}")
-                    st.caption(
-                        "Confirma sempre visualmente: atrasos fisiológicos reais "
-                        "(o SmO₂ responde 20-40s depois da potência) **não** devem ser "
-                        "corrigidos — só erros de gravação.")
+            # Sugestão automática por correlação cruzada
+            if len(_sync_sel) == 1 and len(disponiveis) > 1:
+                _ref_op = [m for m in disponiveis if m != _sync_sel[0]]
+                _ref = _cs3.selectbox(
+                    "Sugerir alinhamento com:", options=_ref_op,
+                    format_func=lambda m: NOMES_METRICAS.get(m, m),
+                    key=f'ref_sync_{ficheiro.name}')
+                if _ref:
+                    _sug = sugerir_offset(res['df'], colunas, _ref, _sync_sel[0])
+                    if _sug:
+                        st.caption(
+                            f"💡 Correlação cruzada sugere **{_sug['offset']:+d}s** "
+                            f"(r={_sug['r']:.2f}). Confirma visualmente antes de aplicar: "
+                            "atrasos fisiológicos reais (o SmO₂ responde 20-40s depois da "
+                            "potência) **não** devem ser corrigidos — só erros de gravação.")
 
         if _offsets:
             _txt_off = ", ".join(f"{NOMES_METRICAS.get(k, k)} {v:+d}s"
@@ -1092,66 +839,6 @@ decoupling. Não há limiares a estimar.
                                 config={'displayModeBar': False},
                                 key=f'g_series_{ficheiro.name}')
                 st.caption("🔴 Trabalho · 🔵 recuperação · ⚪ excluídos.")
-
-    # ══════════════════════════════════════════════════════════════════════
-    # FASE 2 — Análises fisiológicas
-    # Só corre depois de o utilizador confirmar que os laps e o alinhamento
-    # das métricas estão correctos. Antes disso, calcular limiares seria
-    # trabalhar sobre dados que ainda vão ser corrigidos.
-    # ══════════════════════════════════════════════════════════════════════
-    st.markdown("---")
-    _chave_run = f'_fit_run_{ficheiro.name}'
-    _assinatura = (str(sorted(laps_excl)), str(sorted(laps_manual or [])),
-                   str(iv_editados), str(sorted(_offsets.items())),
-                   janela, zerar_pot, modo)
-    _prev = st.session_state.get(f'{_chave_run}_sig')
-    if _prev is not None and _prev != _assinatura:
-        # Os dados mudaram desde a última análise — invalidar o resultado
-        st.session_state.pop(_chave_run, None)
-        st.session_state.pop(f'{_chave_run}_sig', None)
-
-    _ja_analisado = st.session_state.get(_chave_run) is not None
-
-    _cb1, _cb2 = st.columns([1, 3])
-    if _cb1.button("🔬 Analisar" if not _ja_analisado else "🔄 Reanalisar",
-                   key=f'run_{ficheiro.name}', type='primary'):
-        with st.spinner("A correr as análises fisiológicas..."):
-            st.session_state[_chave_run] = True
-            st.session_state[f'{_chave_run}_sig'] = _assinatura
-        st.rerun()
-    _cb2.caption(
-        "Confirma primeiro que os laps estão bem classificados e que as métricas "
-        "estão alinhadas no gráfico. Só depois carrega em Analisar — as análises "
-        "(limiares, cinética, DFA-α1, fiabilidade) usarão exactamente estes dados."
-        if not _ja_analisado else
-        "As análises abaixo usam os dados actuais. Se alterares laps, sincronia ou "
-        "definições, carrega em Reanalisar.")
-
-    if not st.session_state.get(_chave_run):
-        _mostrar_historico()
-        return
-
-    with st.spinner("A analisar..."):
-        res = analisar_completo(res)
-    if 'erro' in res:
-        st.error(f"❌ {res['erro']}")
-        return
-    lap_stats = res['lap_stats']
-
-    # ── Protocolo detectado (a partir dos laps já corrigidos) ─────────────────
-    _proto = res.get('protocolo')
-    if _proto and _proto.get('tipo') != 'indefinido':
-        _ICONE = {'rampa': '📈', 'degraus': '🪜', 'intervalos': '🔁', 'continuo': '➡️'}
-        _NOME = {'rampa': 'Rampa contínua', 'degraus': 'Degraus incrementais',
-                 'intervalos': 'Intervalos repetidos', 'continuo': 'Intensidade contínua'}
-        _t = _proto['tipo']
-        st.info(
-            f"{_ICONE.get(_t, '📊')} **Protocolo detectado: {_NOME.get(_t, _t)}** — "
-            f"{_proto['motivo']}.\n\n"
-            f"Método aplicado: {_proto['metodo_recomendado']}.")
-        if _t == 'continuo':
-            st.caption("Numa sessão de intensidade constante não há limiares a "
-                       "detectar — a análise foca-se na durabilidade e no decoupling.")
 
     # ── Cinética de restauração ───────────────────────────────────────────────
     rest = res['restauracao']
@@ -1210,40 +897,6 @@ decoupling. Não há limiares a estimar.
                 st.success(f"✅ Os três métodos concordam (dispersão {_disp:.0f}%) — "
                            "estimativa fiável.")
 
-    # ── Painel de fiabilidade ────────────────────────────────────────────────
-    _fi = res.get('fiabilidade')
-    if _fi:
-        st.markdown("---")
-        st.markdown("### 🚦 Fiabilidade dos resultados")
-        _ICO = {'ok': '✅', 'aviso': '⚠️', 'mau': '❌', 'ausente': '➖'}
-        st.markdown(
-            f"<div style='padding:14px 18px;border-radius:8px;"
-            f"background:{_fi['cor']}1A;border-left:5px solid {_fi['cor']}'>"
-            f"<b style='color:{_fi['cor']};font-size:16px'>"
-            f"Fiabilidade {_fi['nivel']}</b><br>"
-            f"<span style='font-size:13px'>{_fi['texto']}</span></div>",
-            unsafe_allow_html=True)
-
-        _tb_fi = pd.DataFrame([{
-            'Critério': c['criterio'],
-            '': _ICO.get(c['estado'], ''),
-            'Resultado': c['detalhe'],
-        } for c in _fi['criterios']])
-        st.dataframe(_tb_fi, hide_index=True, use_container_width=True)
-
-        with st.expander("ℹ️ De onde vêm estes critérios"):
-            for c in _fi['criterios']:
-                if c.get('fonte'):
-                    st.caption(f"**{c['criterio']}** — {c['fonte']}")
-            st.markdown("---")
-            st.markdown("**Margens de erro esperadas na literatura**")
-            st.caption(
-                "Mesmo quando tudo corre bem, estes métodos têm limites de "
-                "concordância largos face aos padrões-ouro laboratoriais. "
-                "Convém ter isto presente ao usar os números:")
-            for k, v in _fi['loa'].items():
-                st.caption(f"- **{k.replace('_', ' ')}**: {v}")
-
     # ── Limiares fisiológicos (métodos da literatura NIRS/HRV) ───────────────
     _bp = res.get('bp_continuo')
     _ldfa = res.get('limiar_dfa1')
@@ -1251,30 +904,16 @@ decoupling. Não há limiares a estimar.
         st.markdown("---")
         st.markdown("### 🔬 Limiares fisiológicos")
         st.caption(
-            "Métodos da literatura de NIRS e HRV, que estimam os limiares "
-            "**sem análise de gases**. Referência: estudos do grupo Murias/Rogers "
-            "(JSCR 2024, MSSE 2024, IJSPP 2024, JSCR 2025).")
-        st.info(
-            "💡 **Use a FC como referência principal.** O estudo Physiological "
-            "Reports 2023 mostrou que a **FC** dos limiares é praticamente "
-            "independente da inclinação da rampa (15, 30 ou 45 W/min dão o mesmo "
-            "resultado), mas a **potência** varia bastante — até 60 W de diferença "
-            "no limiar alto entre uma rampa lenta e uma rápida. Os valores de "
-            "potência aqui apresentados são estimativas derivadas da relação "
-            "FC↔potência desta sessão, e só são comparáveis entre testes com o "
-            "mesmo protocolo.")
+            "Métodos da literatura de NIRS e HRV, que estimam os dois limiares "
+            "fundamentais **sem análise de gases**: o VT1/LT1 (topo da zona 1) pelo "
+            "DFA-α1, e o MLSS/LT2/RCP (início da zona 3) pelo breakpoint de SmO₂. "
+            "Referência: muscleoxygentraining.com (Murias, Gronwald et al.).")
 
         _cl1, _cl2 = st.columns(2)
 
         # VT1 pelo DFA-α1
         with _cl1:
-            st.markdown("**VT1 / topo da zona 1 — DFA-α1 (método fixo)**")
-            st.caption(
-                "⚠️ Estes valores usam os limiares **fixos** (0.75/0.70/0.50). "
-                "O 0.50 tem base matemática — é o valor de um padrão "
-                "não-correlacionado. Mas o **0.75 é um palpite empírico**, e o "
-                "estudo MSSE 2024 mostrou que sobrestima o VT1 em +16 bpm. "
-                "Vê a secção **HRVT1c** mais abaixo para a versão individualizada.")
+            st.markdown("**VT1 / topo da zona 1 — DFA-α1**")
             if _ldfa and 'limiares' in _ldfa:
                 _u = _ldfa['unidade']
                 _v075 = _ldfa['limiares'].get(0.75)
@@ -1305,27 +944,8 @@ decoupling. Não há limiares a estimar.
         with _cl2:
             st.markdown("**MLSS / início da zona 3 — breakpoint SmO₂**")
             if _bp:
-                _bph = res.get('bp_hhb')
-                if _bph:
-                    _bc1, _bc2 = st.columns(2)
-                    _bc1.metric(f"Breakpoint — SmO₂",
-                                f"{_bp['breakpoint']:.0f} {_bp['unidade']}")
-                    _bc2.metric(f"Breakpoint — HHb",
-                                f"{_bph['breakpoint']:.0f} {_bph['unidade']}",
-                                help="HHb = hemoglobina desoxigenada, derivada de "
-                                     "SmO₂ e THb. É a métrica que os estudos NIRS "
-                                     "analisam — serve de verificação cruzada.")
-                    _dif = abs(_bp['breakpoint'] - _bph['breakpoint'])
-                    if _dif <= 5:
-                        st.caption(f"✅ Os dois sinais concordam (diferença "
-                                   f"{_dif:.0f} {_bp['unidade']}) — a estimativa "
-                                   "é robusta.")
-                    else:
-                        st.caption(f"⚠️ Diferença de {_dif:.0f} {_bp['unidade']} "
-                                   "entre sinais — interpreta com alguma reserva.")
-                else:
-                    st.metric("Breakpoint (double-linear)",
-                              f"{_bp['breakpoint']:.0f} {_bp['unidade']}")
+                st.metric("Breakpoint (double-linear)",
+                          f"{_bp['breakpoint']:.0f} {_bp['unidade']}")
                 st.caption(f"Declive antes: {_bp['slope_antes']:.3f} · "
                            f"depois: {_bp['slope_depois']:.3f} %/{_bp['unidade']}")
                 st.caption(f"Ajuste sobre {_bp['n_pontos']} pontos · R² = {_bp['r2']:.2f}")
@@ -1374,280 +994,6 @@ decoupling. Não há limiares a estimar.
                    "metabólica (MRT) em rampas rápidas; em degraus longos como estes o "
                    "efeito é menor (~2-10 W).")
 
-        # ── HRVT2 pelo DFA-α1 recalculado + Combo (Murias 2023) ──────────────
-        _h2 = res.get('hrvt2')
-        _cb = res.get('combo')
-        _sdfa = res.get('dfa1_serie')
-        if _h2 or _cb:
-            st.markdown("---")
-            st.markdown("#### 🫀 HRVT2 e Combo (método Murias 2023)")
-            st.caption(
-                "O DFA-α1 é recalculado a partir dos intervalos RR do ficheiro "
-                "(janelas de 2 min, passo 5 s, escalas 4-16 batimentos — os "
-                "parâmetros do estudo). **α1 = 0.50 marca o limiar ALTO** "
-                "(HRVT2 ≈ RCP/MLSS), não o VT1. O estudo mostrou que a média do "
-                "HRVT2 com o breakpoint NIRS tem menor erro individual do que "
-                "qualquer método isolado.")
-
-            _q = res.get('dfa1_qualidade')
-            if _q:
-                _cq1, _cq2, _cq3 = st.columns(3)
-                _cq1.metric("Intervalos RR", f"{_q['n_total']}")
-                _cq2.metric("Artefactos corrigidos",
-                            f"{_q['pct_artefactos']:.1f}%",
-                            delta="acima de 5%" if _q['pct_artefactos'] > 5 else "aceitável",
-                            delta_color="inverse" if _q['pct_artefactos'] > 5 else "normal")
-                _cq3.metric("Janelas de α1", f"{len(_sdfa) if _sdfa is not None else 0}")
-                if _q['pct_artefactos'] > 5:
-                    st.warning(
-                        f"⚠️ {_q['pct_artefactos']:.1f}% de artefactos corrigidos. O estudo "
-                        "exclui registos acima de 5% — o DFA-α1 é muito sensível a erros "
-                        "de intervalo RR. Verifica a posição da cinta cardíaca.")
-
-            if _h2 and 'erro' not in _h2:
-                if _h2.get('fiavel'):
-                    _cm1, _cm2 = st.columns(2)
-                    _cm1.metric("HRVT2 — FC", f"{_h2['fc']:.0f} bpm",
-                                help="Valor principal: a FC do limiar é estável "
-                                     "entre protocolos")
-                    if _h2.get('potencia'):
-                        _cm2.metric("HRVT2 — Potência (estimada)",
-                                    f"{_h2['potencia']:.0f} W",
-                                    help="Secundário: depende da inclinação da rampa")
-                    st.caption(f"Regressão na secção linear da curva α1 vs FC · "
-                               f"R²={_h2['r2']:.2f} · n={_h2['n_pontos']} janelas")
-                else:
-                    st.error(
-                        "❌ **HRVT2 não fiável neste teste** — não deve ser usado:\n\n"
-                        + "\n".join(f"- {a}" for a in _h2.get('avisos', []))
-                        + "\n\nPara obter um HRVT2 válido, o protocolo precisa de levar "
-                          "o α1 claramente abaixo de 0.5 (intensidade suficiente) com sinal "
-                          "de HRV limpo. Rampas contínuas funcionam melhor do que degraus "
-                          "curtos, porque o α1 precisa de janelas de 2 min.")
-            elif _h2:
-                st.info(f"HRVT2 não calculado: {_h2.get('erro')}")
-            elif res.get('rr_info') is None:
-                st.info("Este ficheiro não contém intervalos RR — o DFA-α1 não pode ser "
-                        "recalculado. Só ficheiros que gravam RR (Garmin, apps com Polar H10) "
-                        "permitem esta análise.")
-
-            # Combo
-            if _cb:
-                st.markdown("**🎯 Estimativa combinada do limiar alto**")
-                _cc1, _cc2, _cc3 = st.columns(3)
-                _cc1.metric("HRVT2 (DFA-α1)",
-                            f"{_cb['hrvt2']:.0f} W" if _cb['hrvt2'] else "—")
-                _cc2.metric("NIRS breakpoint",
-                            f"{_cb['nirs']:.0f} W" if _cb['nirs'] else "—")
-                _cc3.metric("**COMBO**", f"{_cb['combo']:.0f} W")
-                if _h2 and 'erro' not in _h2 and _h2.get('fc'):
-                    st.caption(f"Em FC (mais estável entre protocolos): "
-                               f"HRVT2 = {_h2['fc']:.0f} bpm")
-
-                if _cb.get('hrv_descartado'):
-                    st.info(
-                        "ℹ️ O HRVT2 foi **excluído do combo** por não ser fiável neste teste. "
-                        "A estimativa usa apenas o NIRS. Isto é exactamente o cenário de "
-                        "'falha técnica' que o estudo descreve: quando um método falha, o "
-                        "outro ainda dá um resultado utilizável.")
-                elif _cb['estado'] == 'concordante':
-                    st.success(
-                        f"✅ Os dois métodos concordam (divergência {_cb['divergencia']:.0f} W, "
-                        f"{_cb['divergencia_pct']:.0f}%). Segundo o estudo, a média tem menor "
-                        "erro individual do que qualquer um isolado.")
-                elif _cb['estado'] == 'divergente':
-                    st.warning(
-                        f"⚠️ Os métodos divergem {_cb['divergencia']:.0f} W "
-                        f"({_cb['divergencia_pct']:.0f}%). Uma divergência grande sugere que "
-                        "pelo menos um dos sinais tem problemas. A média continua a ser a "
-                        "melhor aposta, mas com menos confiança — vale a pena repetir o teste.")
-
-            # Gráfico da curva α1
-            if _sdfa is not None and len(_sdfa) >= 10:
-                st.plotly_chart(_grafico_curva_dfa1(_sdfa, _h2),
-                                use_container_width=True,
-                                config={'displayModeBar': False},
-                                key=f'g_curva_dfa1_{ficheiro.name}')
-
-        # ── HRVT1c — ponto médio individual (IJSPP 2024) ─────────────────────
-        _h1c = res.get('hrvt1c')
-        if _h1c and 'erro' not in _h1c:
-            st.markdown("---")
-            st.markdown("#### 🎯 HRVT1c — limiar baixo com ponto médio individual")
-            st.caption(
-                "**Porque é que 0.75 é arbitrário e 0.50 não é:** o valor 0.50 tem "
-                "significado matemático — corresponde a um padrão de batimentos "
-                "**não-correlacionado** (ruído branco), com perda das propriedades "
-                "fractais. Por isso a concordância HRVT2↔RCP é forte (viés <1 bpm). "
-                "Já o 0.75 foi escolhido como ponto médio hipotético entre 1.0 e "
-                "0.5 — o próprio autor lhe chama *\"palpite empírico\"*. Como nem "
-                "toda a gente parte de 1.0, quem começa mais alto fica com o limiar "
-                "sobrestimado: o estudo IJSPP 2024 mediu um viés de **+16 bpm**.\n\n"
-                "**A correcção:** em vez de 0.75 fixo, usa-se o ponto médio "
-                "individual `(α1_máximo_inicial + 0.50) / 2`. No estudo, isso "
-                "reduziu o viés de +16 para **+2 bpm** e estreitou os limites de "
-                "concordância de ±35 para ±26 bpm.")
-            _c1, _c2, _c3 = st.columns(3)
-            _c1.metric("α1 máximo inicial", f"{_h1c['max_inicial_dfa1']:.2f}")
-            _c2.metric("Alvo individual", f"{_h1c['alvo_individual']:.2f}",
-                       delta=f"vs 0.75 fixo")
-            _c3.metric("HRVT1c", f"{_h1c['fc']:.0f} bpm")
-            st.caption(
-                f"Cálculo: (α1 máximo inicial **{_h1c['max_inicial_dfa1']:.2f}** + "
-                f"0.50) ÷ 2 = **{_h1c['alvo_individual']:.2f}** — este é o teu ponto "
-                "médio entre um padrão bem correlacionado e um não-correlacionado.")
-            if _h1c.get('diferenca_vs_fixo') is not None:
-                _d = _h1c['diferenca_vs_fixo']
-                st.caption(
-                    f"O método fixo (α1=0.75) daria **{_h1c['fc_metodo_fixo']:.0f} bpm** — "
-                    f"uma diferença de **{_d:+.0f} bpm**. "
-                    + ("A correcção individual é a que a literatura recomenda."
-                       if abs(_d) > 5 else
-                       "Neste caso os dois métodos quase coincidem."))
-            if not _h1c.get('fiavel', True):
-                st.warning("⚠️ " + "; ".join(_h1c.get('avisos', [])))
-
-        # ── HRVT2 submáximo (JSCR 2025) ──────────────────────────────────────
-        _sub = res.get('hrvt2_submax')
-        if _sub:
-            st.markdown("---")
-            st.markdown("#### 📉 HRVT2 previsto por dados submáximos")
-            st.caption(
-                "Prevê o limiar alto **sem chegar à exaustão**, extrapolando a recta "
-                "do α1 no troço 1.5→0.75 (que se atinge dentro da zona 2). "
-                "Vantagem: pode repetir-se com frequência sem afectar o treino.")
-            if 'erro' in _sub:
-                st.info(f"Não calculado: {_sub['erro']}")
-            else:
-                _s1, _s2, _s3 = st.columns(3)
-                _s1.metric("HRVT2 previsto", f"{_sub['fc']:.0f} bpm")
-                _s2.metric("FC máxima medida", f"{_sub['fc_max_medida']:.0f} bpm")
-                _s3.metric("Extrapolação", f"{_sub['extrapolacao_bpm']:+.0f} bpm")
-                st.caption(f"Ajuste sobre {_sub['n_pontos']} janelas · "
-                           f"R²={_sub['r2']:.2f} · ondulação {_sub['ondulacao_pct']:.0f}%")
-                if _sub['fiavel']:
-                    st.success("✅ Previsão fiável — a recta é inequívoca e a "
-                               "extrapolação é curta.")
-                else:
-                    st.warning("⚠️ **Previsão pouco fiável:**\n\n"
-                               + "\n".join(f"- {a}" for a in _sub['avisos']))
-
-        # ── Análise NIRS: HHb e SmO₂ ─────────────────────────────────────────
-        _bph = res.get('bp_hhb')
-        if _bph or ('hhb' in colunas):
-            st.markdown("---")
-            st.markdown("#### 🩸 Análise NIRS — HHb e SmO₂")
-            st.caption(
-                "O **HHb** (hemoglobina desoxigenada) é a métrica que os estudos "
-                "de NIRS analisam, não o SmO₂ directamente. Deriva-se dos dois "
-                "sinais do sensor: `HHb = THb × (1 − SmO₂/100)`.\n\n"
-                "**Porque importa:** o SmO₂ é uma *proporção* (satura em "
-                "intensidades altas); o HHb é uma *quantidade absoluta* e mantém "
-                "amplitude dinâmica precisamente onde o SmO₂ começa a achatar. "
-                "Como são derivados um do outro, o breakpoint deve coincidir — "
-                "e isso serve de validação cruzada.")
-
-            st.plotly_chart(
-                _grafico_hhb_temporal(res['df'], colunas, lap_stats),
-                use_container_width=True, config={'displayModeBar': False},
-                key=f'g_hhb_temp_{ficheiro.name}')
-            st.caption("🔴 Trabalho · 🔵 recuperação · ⚪ excluídos. "
-                       "O HHb sobe com a intensidade (mais extracção de O₂), "
-                       "o O₂Hb desce, e o THb mantém-se relativamente estável.")
-
-            if _bph and _bp:
-                st.plotly_chart(
-                    _grafico_breakpoint_hhb(_bp, _bph),
-                    use_container_width=True, config={'displayModeBar': False},
-                    key=f'g_bp_hhb_{ficheiro.name}')
-                _dif = abs(_bp['breakpoint'] - _bph['breakpoint'])
-                _cn1, _cn2, _cn3 = st.columns(3)
-                _cn1.metric("Breakpoint HHb",
-                            f"{_bph['breakpoint']:.0f} {_bph['unidade']}")
-                _cn2.metric("Breakpoint SmO₂",
-                            f"{_bp['breakpoint']:.0f} {_bp['unidade']}")
-                _cn3.metric("Diferença", f"{_dif:.0f} {_bp['unidade']}",
-                            delta="concordante" if _dif <= 5 else "divergente",
-                            delta_color="normal" if _dif <= 5 else "inverse")
-                st.caption(
-                    f"HHb: declive {_bph['slope_antes']:+.3f} → "
-                    f"{_bph['slope_depois']:+.3f} · R²={_bph['r2']:.2f} · "
-                    f"{_bph['padrao']}")
-
-            # Amplitude dinâmica dos dois sinais nos laps de trabalho
-            _w = [l for l in lap_stats if l.get('phase') == 'work']
-            if _w and 'avg_hhb' in _w[0]:
-                _hh = [l['avg_hhb'] for l in _w if 'avg_hhb' in l]
-                _ss = [l['avg_smo2'] for l in _w if 'avg_smo2' in l]
-                if len(_hh) >= 2 and len(_ss) >= 2:
-                    st.caption(
-                        f"Amplitude nos degraus de trabalho — "
-                        f"HHb: {min(_hh):.2f} a {max(_hh):.2f} "
-                        f"(Δ {max(_hh)-min(_hh):.2f}) · "
-                        f"SmO₂: {min(_ss):.1f}% a {max(_ss):.1f}% "
-                        f"(Δ {max(_ss)-min(_ss):.1f} pontos)")
-
-        # ── MLSS por intervalos longos (artigo 2019/03) ──────────────────────
-        _mi = res.get('mlss_intervalos')
-        if _mi:
-            st.markdown("---")
-            st.markdown("#### 🎯 MLSS por intervalos longos — método de referência")
-            st.caption(
-                f"Compara o comportamento do **{_mi['sinal']}** dentro de cada bloco de "
-                "intensidade constante. Abaixo do MLSS o sinal estabiliza; acima, "
-                "deriva continuamente. O MLSS fica entre a intensidade mais alta "
-                "estável e a mais baixa instável.\n\n"
-                "**Porquê este método:** a literatura mostra que os breakpoints por "
-                "rampa têm erro acima de 10 W — e exercitar apenas +10 W acima do "
-                "MLSS (~3-5%) já provoca subida progressiva do lactato e prejudica o "
-                "desempenho. Este método por blocos é o que o autor considera mais "
-                "fiável.")
-
-            if _mi['usa_hhb']:
-                st.caption("ℹ️ A análise usa o **HHb** (hemoglobina desoxigenada, "
-                           "derivado de SmO₂ e THb) — é a métrica dos estudos, e "
-                           "mantém amplitude dinâmica em intensidades altas onde o "
-                           "SmO₂ começa a achatar.")
-
-            _tbm = _mi['tabela'].copy()
-            _cols_show = [c for c in _tbm.columns if c not in
-                          ('estavel', 'tendencia_credivel')]
-            st.dataframe(_tbm[_cols_show], hide_index=True, use_container_width=True)
-
-            _lo, _hi = _mi['mlss_entre']
-            if _mi['estado'] == 'enquadrado':
-                _txt_fc = (f" · em FC: ~{_mi['mlss_fc']:.0f} bpm"
-                           if _mi.get('mlss_fc') else "")
-                _msg = (f"✅ **MLSS entre {_lo:.0f} e {_hi:.0f} {_mi['unidade']}** — "
-                        f"estimativa **{_mi['mlss_estimado']:.0f} {_mi['unidade']}**"
-                        f"{_txt_fc}. Janela de ±{_mi['largura_janela']/2:.0f} "
-                        f"{_mi['unidade']} (precisão {_mi['precisao']}).")
-                if _mi['precisao'] == 'boa':
-                    st.success(_msg + " A janela está dentro dos ±10 W que a "
-                               "literatura aponta como limite crítico.")
-                else:
-                    st.warning(_msg + " Para estreitar a janela, inclui blocos com "
-                               "intensidades mais próximas entre si.")
-            elif _mi['estado'] == 'abaixo_do_testado':
-                st.warning(f"⚠️ Todos os blocos derivam — o MLSS estará **abaixo de "
-                           f"{_hi:.0f} {_mi['unidade']}**. Repete incluindo blocos "
-                           "mais fáceis.")
-            elif _mi['estado'] == 'acima_do_testado':
-                st.info(f"ℹ️ Todos os blocos estáveis — o MLSS estará **acima de "
-                        f"{_lo:.0f} {_mi['unidade']}**. Repete incluindo blocos mais "
-                        "intensos.")
-            else:
-                st.warning("⚠️ Resposta inconsistente: há blocos instáveis abaixo de "
-                           "blocos estáveis. Pode indicar variação de cadência, "
-                           "pacing irregular, ou blocos curtos demais para o padrão "
-                           "se manifestar.")
-
-            st.caption(
-                f"Ignorados os primeiros {_mi['ignorar_inicio_s']}s de cada bloco "
-                "(transição da intensidade anterior). Um bloco só é classificado "
-                "como instável se a tendência for consistente (R²≥0.25) — evita "
-                "confundir ruído com deriva real.")
-
         # ── Método alternativo: estabilidade do SmO₂ dentro de cada intervalo ──
         _est = res.get('estabilidade_smo2')
         if _est:
@@ -1695,45 +1041,6 @@ decoupling. Não há limiares a estimar.
                     "⚠️ Resposta inconsistente: há degraus instáveis abaixo de degraus "
                     "estáveis. Pode indicar variação de cadência, deriva do sensor, ou "
                     "pacing irregular.")
-
-    # ── Durabilidade (EJAP 2025) ──────────────────────────────────────────────
-    _dur = res.get('durabilidade')
-    if _dur:
-        st.markdown("---")
-        st.markdown("### 🏋️ Durabilidade / resiliência fisiológica")
-        st.caption(
-            "Deterioração das características fisiológicas ao longo da sessão. "
-            "Num esforço abaixo do MMSS, o metabolismo estabiliza — mas a FC e a "
-            "respiração sobem e o DFA-α1 desce progressivamente. Essa deriva é o "
-            "sinal de perda de durabilidade, e é repetível entre sessões "
-            "(ICC 0.73-0.94 no estudo EJAP 2025). A sessão é dividida em quartos "
-            "para comparar o início com o fim.")
-
-        st.markdown(
-            f"<div style='padding:12px 16px;border-radius:8px;"
-            f"background:{_dur['cor']}1A;border-left:5px solid {_dur['cor']}'>"
-            f"<b style='color:{_dur['cor']};font-size:15px'>{_dur['veredicto']}</b> "
-            f"<span style='font-size:13px'>({_dur['n_sinais']}/3 marcadores com "
-            f"deriva significativa)</span></div>", unsafe_allow_html=True)
-
-        if _dur['detalhe']:
-            st.caption("Do primeiro ao último quarto: " + " · ".join(_dur['detalhe']))
-
-        _cd = st.columns(max(len(_dur['derivas']), 1))
-        for _i, (_k, _v) in enumerate(_dur['derivas'].items()):
-            if _k in ('power', 'smo2'):
-                continue
-            with _cd[_i % len(_cd)]:
-                st.metric(_v['nome'], f"{_v['fim']:.1f}",
-                          delta=f"{_v['delta']:+.2f} vs início")
-
-        st.dataframe(_dur['tabela'].rename(columns={
-            'bloco': 'Quarto', 'inicio_min': 'Início (min)',
-            **{k: NOMES_METRICAS.get(k, k) for k in _dur['tabela'].columns}}),
-            hide_index=True, use_container_width=True)
-        st.caption("Os três marcadores devem ser lidos em conjunto: alguém pode ter "
-                   "pouca deriva da respiração mas queda normal do α1 — olhar só para "
-                   "um levaria a concluir erradamente que não houve degradação.")
 
     # ── Decoupling ────────────────────────────────────────────────────────────
     dec = res['decoupling']
