@@ -1201,7 +1201,7 @@ def preparar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
     }
 
 
-def analisar_completo(prep, metodo_detrend='local', comparar_detrend=True, lam_sp=500):
+def analisar_completo(prep, metodo_detrend='local', comparar_detrend=False, lam_sp=500):
     """
     FASE 2 — análises fisiológicas, sobre os dados JÁ CORRIGIDOS pelo utilizador.
 
