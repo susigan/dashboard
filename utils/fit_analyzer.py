@@ -52,7 +52,7 @@ def ler_fit(file_bytes):
     activity_name = None
 
     try:
-        with fitdecode.FitReader(io.BytesIO(file_bytes)) as fit:
+        with fitdecode.FitReader(io.BytesIO(file_bytes), check_crc=fitdecode.CrcCheck.DISABLED) as fit:
             for frame in fit:
                 if not isinstance(frame, fitdecode.FitDataMessage):
                     continue
@@ -1106,7 +1106,7 @@ def preparar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
                  janela_final_s=60, modo_segmentacao='auto',
                  intervalos_trabalho=None, frac_corte=None,
                  min_dur_segmento=45, zerar_potencia_descanso=False,
-                 offsets=None):
+                 offsets=None, raw=None):
     """
     FASE 1 — preparação dos dados. Leve e rápida.
 
@@ -1119,9 +1119,16 @@ def preparar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
     das métricas estão correctos — caso contrário estaríamos a calcular limiares
     sobre dados que ainda vão ser corrigidos.
 
+    raw : resultado já calculado de ler_fit(file_bytes) — passa isto quando só
+        os laps/definições mudaram (ex.: o utilizador corrigiu um lap e clicou
+        "Aplicar") para NÃO reanalisar o binário do ficheiro outra vez. O
+        parsing do FIT (fitdecode) é a parte mais cara desta fase; a
+        segmentação/classificação de laps é barata em comparação. Se None,
+        lê o ficheiro do zero (comportamento antigo, backward-compatible).
+
     Devolve dict com df, colunas, lap_stats e metadados, ou {'erro': str}.
     """
-    fit = ler_fit(file_bytes)
+    fit = raw if raw is not None else ler_fit(file_bytes)
     if 'erro' in fit:
         return fit
 
@@ -2212,7 +2219,7 @@ def extrair_rr(file_bytes, rr_bruto=None):
             return None
         rr = []
         try:
-            with fitdecode.FitReader(io.BytesIO(file_bytes)) as fit:
+            with fitdecode.FitReader(io.BytesIO(file_bytes), check_crc=fitdecode.CrcCheck.DISABLED) as fit:
                 for frame in fit:
                     if not isinstance(frame, fitdecode.FitDataMessage):
                         continue
