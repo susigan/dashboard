@@ -1759,3 +1759,76 @@ def sugerir_offset(df, colunas, metrica_ref, metrica_alvo, max_lag=30):
         'r': float(melhor['r']),
         'curva': curva,
     }
+
+
+def sugerir_offset_por_laps(df, colunas, metrica, lap_stats, max_lag=60,
+                            direcao='ambas'):
+    """
+    Sugere o deslocamento que melhor alinha uma métrica com as FRONTEIRAS DOS LAPS
+    de trabalho — em vez de a alinhar com outra métrica.
+
+    Porquê: a correlação cruzada entre duas métricas pode falhar quando ambas
+    estão ruidosas ou têm cinéticas diferentes. As transições trabalho↔recuperação
+    são marcadores temporais muito mais nítidos: no início de cada lap de trabalho
+    a intensidade sobe de forma abrupta, e é esse degrau que se procura alinhar.
+
+    Método: constrói um sinal de referência quadrado (1 durante os laps de
+    trabalho, 0 nos restantes), diferencia-o para marcar as transições, e testa
+    deslocamentos da métrica até maximizar a correlação com essas transições.
+
+    direcao : 'ambas' (−max_lag a +max_lag), 'frente' (só positivos, empurra para
+        a direita/mais tarde) ou 'tras' (só negativos, para a esquerda/mais cedo).
+
+    Devolve dict {'offset', 'r', 'curva', 'direcao'} ou None.
+    """
+    if metrica not in colunas or not lap_stats:
+        return None
+
+    serie = pd.to_numeric(df[colunas[metrica]], errors='coerce')
+    if serie.notna().sum() < 60:
+        return None
+
+    laps_work = {l['lap_number'] for l in lap_stats if l.get('phase') == 'work'}
+    if not laps_work:
+        return None
+
+    # Sinal quadrado de referência: 1 no trabalho, 0 fora
+    ref = df['lap_number'].isin(laps_work).astype(float)
+    if ref.sum() < 30 or ref.sum() == len(ref):
+        return None
+
+    # Diferenciar: marca as transições (subidas e descidas)
+    d_ref = ref.diff().fillna(0.0)
+    d_met = serie.diff().fillna(0.0)
+
+    if direcao == 'frente':
+        lags = range(0, max_lag + 1)
+    elif direcao == 'tras':
+        lags = range(-max_lag, 1)
+    else:
+        lags = range(-max_lag, max_lag + 1)
+
+    linhas = []
+    for lag in lags:
+        mm = d_met.shift(lag)
+        m = d_ref.notna() & mm.notna()
+        if m.sum() < 60:
+            continue
+        x, y = d_ref[m].values, mm[m].values
+        if np.std(x) < 1e-9 or np.std(y) < 1e-9:
+            continue
+        linhas.append({'offset': lag, 'r': float(np.corrcoef(x, y)[0, 1])})
+
+    if not linhas:
+        return None
+
+    curva = pd.DataFrame(linhas)
+    # Queremos correlação POSITIVA: a métrica deve subir quando o trabalho começa
+    melhor = curva.loc[curva['r'].idxmax()]
+    return {
+        'offset': int(melhor['offset']),
+        'r': float(melhor['r']),
+        'curva': curva,
+        'direcao': direcao,
+        'n_laps_trabalho': len(laps_work),
+    }
