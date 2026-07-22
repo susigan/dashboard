@@ -1119,18 +1119,9 @@ decoupling. Não há limiares a estimar.
     _chave_run = f'_fit_run_{ficheiro.name}'
     _chave_res = f'_fit_res_{ficheiro.name}'   # guarda o RESULTADO, não só um sinalizador
 
-    _comparar_sp = st.checkbox(
-        "🔬 Também comparar com Smoothness Priors global (mais lento)",
-        value=False, key=f'cmp_sp_{ficheiro.name}',
-        help="Recalcula o DFA-α1 uma SEGUNDA vez, usando Smoothness Priors "
-             "(λ=500, estilo Kubios) em vez do detrending local, e mostra os "
-             "dois lado a lado. Praticamente duplica o tempo da Fase 2 — "
-             "deixa desligado para o dia-a-dia e liga só quando quiseres "
-             "verificar a robustez de um resultado específico.")
-
     _assinatura = (str(sorted(laps_excl)), str(sorted(laps_manual or [])),
                    str(iv_editados), str(sorted(_offsets.items())),
-                   janela, zerar_pot, modo, _comparar_sp)
+                   janela, zerar_pot, modo)
     _prev = st.session_state.get(f'{_chave_run}_sig')
     if _prev is not None and _prev != _assinatura:
         # Os dados mudaram desde a última análise — invalidar o resultado
@@ -1165,7 +1156,7 @@ decoupling. Não há limiares a estimar.
     if _chave_res not in st.session_state:
         with st.spinner("A analisar..."):
             st.session_state[_chave_res] = analisar_completo(
-                res, metodo_detrend='local', comparar_detrend=_comparar_sp)
+                res, metodo_detrend='local', comparar_detrend=False)
     res = st.session_state[_chave_res]
     if 'erro' in res:
         st.error(f"❌ {res['erro']}")
@@ -1656,82 +1647,6 @@ decoupling. Não há limiares a estimar.
                                 use_container_width=True,
                                 config={'displayModeBar': False},
                                 key=f'g_curva_dfa1_{ficheiro.name}')
-
-        # ── Comparação de pré-processamento: local vs Smoothness Priors ───────
-        _metodo_nomes = {'local': 'Detrending local (por janela)',
-                          'sp_global': 'Smoothness Priors global (λ=500, estilo Kubios)'}
-        _h2_alt = res.get('hrvt2_alt')
-        _h1c_alt = res.get('hrvt1c_alt')
-        _sub_alt = res.get('hrvt2_submax_alt')
-        _metodo_pri = res.get('metodo_detrend', 'local')
-        _metodo_sec = res.get('metodo_detrend_alt')
-        if _metodo_sec and (_h2 or _h2_alt):
-            with st.expander(
-                    f"🔬 Comparar pré-processamento — "
-                    f"{_metodo_nomes.get(_metodo_pri, _metodo_pri)} (principal) vs "
-                    f"{_metodo_nomes.get(_metodo_sec, _metodo_sec)}"):
-                st.caption(
-                    "O post 'DFA a1 and ChatGPT interview' (muscleoxygentraining.com, "
-                    "ago/2025) mostrou, com dados reais, que aplicar Smoothness Priors "
-                    "DENTRO de cada janela de 2 min (em vez de ao tacograma inteiro) "
-                    "pode desviar os limiares em várias dezenas de bpm. Esta tabela "
-                    "mostra o efeito nos TEUS dados — se os dois métodos concordarem "
-                    "(diferença de poucos bpm), o resultado é robusto ao "
-                    "pré-processamento; se divergirem muito, vale a pena desconfiar "
-                    "e olhar para a curva α1×FC de cada um.")
-
-                def _fc_ou_traço(d):
-                    if not d or 'erro' in d or d.get('fc') is None:
-                        return "—"
-                    txt = f"{d['fc']:.0f} bpm"
-                    if not d.get('fiavel', True):
-                        txt += " ⚠️"
-                    return txt
-
-                def _delta_bpm(d1, d2):
-                    if (d1 and 'erro' not in d1 and d1.get('fc') is not None
-                            and d2 and 'erro' not in d2 and d2.get('fc') is not None):
-                        return d1['fc'] - d2['fc']
-                    return None
-
-                st.caption(
-                    "⚠️ = o próprio método marcou este valor como não fiável "
-                    "(R² fraco, extrapolação longa, ou FC fisiologicamente "
-                    "implausível). Não uses um valor marcado só porque o outro "
-                    "método também não é fiável — nesse caso, nenhum dos dois "
-                    "deve ser usado para prescrição.")
-                _linhas_cmp = [
-                    ("HRVT2 (α1=0.50)", _h2, _h2_alt),
-                    ("HRVT1c (ponto médio individual)", res.get('hrvt1c'), _h1c_alt),
-                    ("HRVT2 previsto (submáximo)", res.get('hrvt2_submax'), _sub_alt),
-                ]
-                for _nome, _pri, _sec in _linhas_cmp:
-                    _d = _delta_bpm(_pri, _sec)
-                    _c1, _c2, _c3 = st.columns(3)
-                    _c1.markdown(f"**{_nome}**")
-                    _c2.metric(_metodo_nomes.get(_metodo_pri, _metodo_pri), _fc_ou_traço(_pri))
-                    _c3.metric(_metodo_nomes.get(_metodo_sec, _metodo_sec), _fc_ou_traço(_sec),
-                               delta=f"{-_d:+.0f} bpm" if _d is not None else None,
-                               delta_color="off")
-                    _avisos_linha = []
-                    if _pri and not _pri.get('fiavel', True):
-                        _avisos_linha += [f"{_metodo_nomes.get(_metodo_pri, _metodo_pri)}: {a}"
-                                          for a in _pri.get('avisos', [])]
-                    if _sec and not _sec.get('fiavel', True):
-                        _avisos_linha += [f"{_metodo_nomes.get(_metodo_sec, _metodo_sec)}: {a}"
-                                          for a in _sec.get('avisos', [])]
-                    if _avisos_linha:
-                        st.caption("⚠️ " + " · ".join(_avisos_linha))
-
-                _sdfa_alt = res.get('dfa1_serie_alt')
-                if _sdfa_alt is not None and len(_sdfa_alt) >= 10:
-                    st.plotly_chart(
-                        _grafico_curva_dfa1(_sdfa_alt, _h2_alt),
-                        use_container_width=True,
-                        config={'displayModeBar': False},
-                        key=f'g_curva_dfa1_alt_{ficheiro.name}')
-                    st.caption(f"Curva α1×FC com "
-                               f"{_metodo_nomes.get(_metodo_sec, _metodo_sec).lower()}.")
 
         # ── HRVT1c — ponto médio individual (IJSPP 2024) ─────────────────────
         _h1c = res.get('hrvt1c')
