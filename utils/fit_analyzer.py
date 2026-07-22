@@ -31,15 +31,24 @@ def ler_fit(file_bytes):
     """
     Lê um ficheiro FIT a partir de bytes (upload do Streamlit).
 
+    Faz UMA ÚNICA passagem pelo ficheiro inteiro, extraindo tudo o que é
+    preciso nas duas fases (record/session/lap para a Fase 1, e as mensagens
+    'hrv' com os RR brutos para a Fase 2) — evitar uma segunda passagem
+    completa é importante porque o fitdecode tem de descodificar TODAS as
+    mensagens do ficheiro (incluindo as 'hrv', que em gravações com RR
+    batimento-a-batimento podem ser milhares), mesmo que uma função só
+    aproveite uma parte delas. Ler duas vezes duplicava esse custo.
+
     Devolve dict:
-      {'records': [...], 'session': {...}, 'laps': [...], 'activity_name': str}
+      {'records': [...], 'session': {...}, 'laps': [...], 'activity_name': str,
+       'rr_bruto': [...]}
     ou {'erro': str} em caso de falha.
     """
     if not _TEM_FITDECODE:
         return {'erro': "Biblioteca 'fitdecode' não instalada. "
                         "Adiciona 'fitdecode' ao requirements.txt."}
 
-    records_data, session_data, lap_data = [], {}, []
+    records_data, session_data, lap_data, rr_bruto = [], {}, [], []
     activity_name = None
 
     try:
@@ -64,6 +73,16 @@ def ler_fit(file_bytes):
                     lap_info = {f.name: f.value for f in frame.fields if f.value is not None}
                     if lap_info:
                         lap_data.append(lap_info)
+
+                elif frame.name == 'hrv':
+                    for f in frame.fields:
+                        if f.name != 'time' or f.value is None:
+                            continue
+                        v = f.value
+                        if isinstance(v, (list, tuple)):
+                            rr_bruto.extend([x for x in v if x is not None])
+                        else:
+                            rr_bruto.append(v)
     except Exception as e:
         return {'erro': f"Erro ao ler o ficheiro FIT: {e}"}
 
@@ -75,6 +94,7 @@ def ler_fit(file_bytes):
         'session': session_data,
         'laps': lap_data,
         'activity_name': activity_name or 'Atividade',
+        'rr_bruto': rr_bruto,
     }
 
 
@@ -848,7 +868,70 @@ def _deflexao_smo2(x, y, taxa_lim=-0.1):
         return None
 
 
-def calcular_limiares_smo2(lap_stats, colunas):
+def calcular_limiares_smo2(lap_stats, colunas, df=None, protocolo=None,
+                           n_bins=8):
+    """Wrapper que adapta o cálculo ao protocolo (ver _limiares_smo2_laps)."""
+    # Numa RAMPA não há laps de trabalho: divide-se a rampa em faixas de
+    # intensidade e usa-se a média de SmO2 em cada faixa como "ponto",
+    # replicando a estrutura que os métodos de breakpoint esperam.
+    if protocolo in ('rampa', 'continuo') and df is not None:
+        return _limiares_smo2_bins(df, colunas, n_bins=n_bins)
+    return _limiares_smo2_laps(lap_stats, colunas)
+
+
+def _limiares_smo2_bins(df, colunas, n_bins=8):
+    """
+    Limiares de SmO2 para protocolos SEM laps de trabalho (rampa contínua).
+
+    Divide o intervalo de intensidade em `n_bins` faixas de igual largura e
+    calcula o SmO2 médio de cada uma. Isto produz uma relação
+    intensidade→SmO2 comparável à que se obtém com degraus, permitindo aplicar
+    os mesmos três métodos de detecção de breakpoint.
+    """
+    if 'smo2' not in colunas:
+        return None
+    col_int = colunas.get('power') or colunas.get('heart_rate')
+    if col_int is None:
+        return None
+    unidade = 'W' if col_int == colunas.get('power') else 'bpm'
+
+    d = df[[col_int, colunas['smo2']]].copy()
+    d.columns = ['intensidade', 'smo2']
+    d = d.apply(pd.to_numeric, errors='coerce').dropna()
+    # Ignorar intensidades muito baixas (arranque/aquecimento)
+    if len(d) > 60:
+        lim_baixo = d['intensidade'].quantile(0.05)
+        d = d[d['intensidade'] >= lim_baixo]
+    if len(d) < 60 or np.ptp(d['intensidade'].values) < 1e-6:
+        return None
+
+    bins = np.linspace(d['intensidade'].min(), d['intensidade'].max(), n_bins + 1)
+    d['bin'] = pd.cut(d['intensidade'], bins, include_lowest=True)
+    g = d.groupby('bin', observed=True).agg(
+        intensidade=('intensidade', 'mean'), smo2=('smo2', 'mean'),
+        n=('smo2', 'size')).reset_index(drop=True)
+    g = g[g['n'] >= 10].dropna()
+    if len(g) < 3:
+        return None
+    g['lap'] = range(1, len(g) + 1)
+    pontos = g[['lap', 'intensidade', 'smo2']].sort_values('intensidade').reset_index(drop=True)
+
+    x = pontos['intensidade'].values.astype(float)
+    y = pontos['smo2'].values.astype(float)
+    dmax = _dmax_smo2(x, y)
+    quebra = _quebra_inclinacao(x, y)
+    defl = _deflexao_smo2(x, y)
+    validos = [v for v in (dmax, quebra, defl) if v is not None]
+
+    return {
+        'dmax': dmax, 'quebra': quebra, 'deflexao': defl,
+        'media': float(np.mean(validos)) if validos else None,
+        'pontos': pontos, 'unidade': unidade,
+        'metodo': f'faixas de intensidade (n={len(pontos)})',
+    }
+
+
+def _limiares_smo2_laps(lap_stats, colunas):
     """
     Calcula limiares de SmO2 vs intensidade a partir das médias por lap de trabalho.
     Usa três métodos independentes e faz a média dos que produzirem resultado.
@@ -1019,38 +1102,24 @@ def tempo_ate_falha(lap_stats):
 # 9. PIPELINE COMPLETO
 # ══════════════════════════════════════════════════════════════════════════════
 
-def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
+def preparar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
                  janela_final_s=60, modo_segmentacao='auto',
                  intervalos_trabalho=None, frac_corte=None,
                  min_dur_segmento=45, zerar_potencia_descanso=False,
                  offsets=None):
     """
-    Pipeline completo: bytes do FIT → análise fisiológica completa.
+    FASE 1 — preparação dos dados. Leve e rápida.
 
-    laps_trabalho_manual : lap_numbers marcados como trabalho (sobrepõe a detecção).
-    laps_excluidos       : lap_numbers a excluir (aquecimento/arrefecimento).
-    janela_final_s       : segundos finais de cada lap usados nas médias.
+    Faz apenas o necessário para o utilizador poder VER e CORRIGIR os dados:
+    lê o ficheiro, segmenta em laps, classifica trabalho/recuperação/aquecimento,
+    aplica correcções de sincronia e o zeramento da potência em recuperação.
 
-    modo_segmentacao :
-      'auto'      → usa os laps do ficheiro; se não houver, segmenta pelo sinal
-      'forcar'    → ignora os laps do ficheiro e segmenta sempre pelo sinal
-      'intervalos'→ usa intervalos_trabalho definidos pelo utilizador
+    NÃO faz nenhuma análise fisiológica. Isso é a fase 2 (analisar_completo),
+    executada só depois de o utilizador confirmar que os laps e o alinhamento
+    das métricas estão correctos — caso contrário estaríamos a calcular limiares
+    sobre dados que ainda vão ser corrigidos.
 
-    intervalos_trabalho : lista de (inicio_s, fim_s) — blocos de TRABALHO. O que
-                          ficar fora torna-se recuperação automaticamente.
-    frac_corte          : fracção da intensidade típica de trabalho abaixo da qual
-                          se considera recuperação (ex.: 0.5 = 50%). None = auto.
-    min_dur_segmento    : duração mínima de um segmento na detecção automática.
-    zerar_potencia_descanso : se True, força potência e trabalho (kJ) a zero nos
-                          laps de recuperação. Útil quando o ergómetro regista
-                          valores residuais durante a pausa (ex.: inércia do
-                          volante) que inflacionam as médias e o decoupling.
-    offsets             : dict {metrica: segundos} para corrigir métricas fora de
-                          sincronia no ficheiro. Aplicado ANTES de qualquer
-                          cálculo, para que todas as análises usem os dados
-                          alinhados.
-
-    Devolve dict com tudo, ou {'erro': str}.
+    Devolve dict com df, colunas, lap_stats e metadados, ou {'erro': str}.
     """
     fit = ler_fit(file_bytes)
     if 'erro' in fit:
@@ -1060,22 +1129,24 @@ def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
     if df is None or df.empty:
         return {'erro': "Não foi possível construir a série temporal do ficheiro."}
 
-    # ── Re-segmentação conforme o modo escolhido ─────────────────────────────
+    # Re-segmentação conforme o modo escolhido
     if modo_segmentacao == 'intervalos' and intervalos_trabalho:
         df, laps_info = segmentar_por_intervalos(df, intervalos_trabalho)
     elif modo_segmentacao == 'forcar':
         df, laps_info = _segmentar_sem_laps(
             df, min_dur=min_dur_segmento, frac_corte=frac_corte)
     elif modo_segmentacao == 'auto' and frac_corte is not None:
-        # Auto mas com corte explícito: só re-segmenta se os laps forem automáticos
         if laps_info and laps_info[0].get('lap_trigger') in ('auto_segmentado', 'auto_none'):
             df, laps_info = _segmentar_sem_laps(
                 df, min_dur=min_dur_segmento, frac_corte=frac_corte)
 
     colunas = detectar_colunas(df)
 
-    # Correcção de sincronia — aplicada ANTES de tudo o resto, para que as
-    # estatísticas, limiares, restauração e decoupling usem os dados alinhados.
+    # Derivar HHb/O2Hb a partir de SmO2 e THb. Fica disponível para os gráficos
+    # e para todas as análises — é a métrica que a literatura NIRS usa.
+    df, colunas = derivar_hhb(df, colunas)
+
+    # Correcção de sincronia — antes de calcular estatísticas
     offsets_aplicados = []
     if offsets:
         df, offsets_aplicados = aplicar_offsets(df, colunas, offsets)
@@ -1086,11 +1157,8 @@ def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
         return {'erro': "Nenhum lap com dados utilizáveis."}
 
     excluidos = set(laps_excluidos or [])
-
-    # Classificação automática (já ignora os excluídos no cálculo da mediana)
     lap_stats = classificar_laps(lap_stats, laps_excluidos=excluidos)
 
-    # Override manual dos laps de trabalho, preservando as exclusões
     if laps_trabalho_manual is not None:
         manual = set(laps_trabalho_manual)
         for l in lap_stats:
@@ -1099,59 +1167,218 @@ def analisar_fit(file_bytes, laps_trabalho_manual=None, laps_excluidos=None,
             else:
                 l['phase'] = 'work' if l['lap_number'] in manual else 'recovery'
 
-    # ── Zerar potência/trabalho nos laps de recuperação (opcional) ────────────
-    # Alguns ergómetros registam potência residual durante a pausa (inércia do
-    # volante, movimento leve). Isso inflaciona as médias de recuperação e
-    # distorce o decoupling. Com esta opção, força-se tudo a zero nesses laps e
-    # recalculam-se as estatísticas para reflectir a correcção.
+    # Zerar potência nos laps de recuperação (opcional)
     if zerar_potencia_descanso:
         laps_rec = {l['lap_number'] for l in lap_stats if l.get('phase') == 'recovery'}
         if laps_rec:
-            _fases_atuais = {l['lap_number']: l['phase'] for l in lap_stats}
+            _fases = {l['lap_number']: l['phase'] for l in lap_stats}
             mask_rec = df['lap_number'].isin(laps_rec)
             for _c in ('power', 'cadence'):
                 if _c in colunas and colunas[_c] in df.columns:
                     df.loc[mask_rec, colunas[_c]] = 0.0
-            # Recalcular estatísticas com os valores zerados
             lap_stats = estatisticas_por_lap(df, laps_info, colunas,
                                              janela_final_s=janela_final_s)
             for l in lap_stats:
-                l['phase'] = _fases_atuais.get(l['lap_number'], 'recovery')
+                l['phase'] = _fases.get(l['lap_number'], 'recovery')
                 l['metodo_classificacao'] = 'manual/auto (potência zerada no descanso)'
-
-    restauracao = analisar_restauracao_completa(df, lap_stats, colunas)
-    limiares = calcular_limiares_smo2(lap_stats, colunas)
-    # Métodos da literatura NIRS (muscleoxygentraining.com / Murias et al.)
-    bp_continuo = breakpoint_smo2_continuo(df, colunas, lap_stats)
-    lim_dfa1 = limiar_dfa1(lap_stats, colunas)
-    estab_smo2 = estabilidade_smo2_intervalos(df, colunas, lap_stats)
-    decoupling = calcular_decoupling(lap_stats)
-    fadiga = classificar_fadiga(restauracao, decoupling)
-    falha = tempo_ate_falha(lap_stats)
 
     return {
         'df': df,
         'colunas': colunas,
         'lap_stats': lap_stats,
         'laps_info': laps_info,
-        'restauracao': restauracao,
-        'limiares': limiares,
-        'bp_continuo': bp_continuo,
-        'limiar_dfa1': lim_dfa1,
-        'estabilidade_smo2': estab_smo2,
-        'decoupling': decoupling,
-        'fadiga': fadiga,
-        'tempo_falha': falha,
+        'file_bytes': file_bytes,
+        'rr_bruto': fit.get('rr_bruto', []),
         'activity_name': fit.get('activity_name', 'Atividade'),
         'session': fit.get('session', {}),
         'janela_final_s': janela_final_s,
         'laps_excluidos': sorted(excluidos),
         'offsets_aplicados': offsets_aplicados,
+        'zerar_potencia_descanso': zerar_potencia_descanso,
         'duracao_total_s': float(df['time_seconds'].iloc[-1]) if len(df) else 0.0,
         'data_sessao': (df['timestamp'].iloc[0].strftime('%Y-%m-%d %H:%M')
                         if 'timestamp' in df.columns and len(df) else None),
     }
 
+
+def analisar_completo(prep, metodo_detrend='local', comparar_detrend=False, lam_sp=500):
+    """
+    FASE 2 — análises fisiológicas, sobre os dados JÁ CORRIGIDOS pelo utilizador.
+
+    Recebe o resultado de preparar_fit() e corre todas as análises: detecção de
+    protocolo, cinética de restauração, limiares de SmO₂, DFA-α1 e HRVTs,
+    decoupling, fadiga, durabilidade e avaliação de fiabilidade.
+
+    A detecção de protocolo acontece AQUI (não na preparação), porque depende da
+    classificação final dos laps — que o utilizador pode ter corrigido.
+
+    metodo_detrend : 'local' (default, o que já estava implementado) ou
+        'sp_global' (Smoothness Priors λ=lam_sp aplicado ao tacograma inteiro,
+        estilo Kubios — ver detrend_sp()). Define qual dos dois é o resultado
+        PRINCIPAL (hrvt2, hrvt1c, hrvt2_submax, dfa1_serie).
+
+    comparar_detrend : se True (default), corre TAMBÉM o método alternativo e
+        guarda os resultados em '..._alt' — permite comparar os dois lado a
+        lado sem correr a análise duas vezes. Custo extra: mais um DFA sobre
+        a mesma série (poucos segundos).
+    """
+    if not prep or 'erro' in prep:
+        return prep
+
+    df = prep['df']
+    colunas = prep['colunas']
+    lap_stats = prep['lap_stats']
+    file_bytes = prep['file_bytes']
+    janela_final_s = prep.get('janela_final_s', 60)
+
+    # Protocolo detectado a partir dos laps FINAIS (após correcção do utilizador)
+    protocolo = detectar_protocolo(df, colunas, lap_stats)
+    _tipo = protocolo.get('tipo')
+
+    restauracao = analisar_restauracao_completa(df, lap_stats, colunas)
+    limiares = calcular_limiares_smo2(lap_stats, colunas, df=df, protocolo=_tipo)
+    bp_continuo = breakpoint_smo2_continuo(df, colunas, lap_stats, protocolo=_tipo,
+                                           sinal='smo2')
+    # O mesmo breakpoint calculado sobre o HHb — é a métrica dos estudos, e
+    # serve de verificação cruzada ao resultado obtido com SmO2.
+    bp_hhb = (breakpoint_smo2_continuo(df, colunas, lap_stats, protocolo=_tipo,
+                                       sinal='hhb') if 'hhb' in colunas else None)
+    lim_dfa1 = limiar_dfa1(lap_stats, colunas)
+    estab_smo2 = (estabilidade_smo2_intervalos(df, colunas, lap_stats)
+                  if _tipo in ('degraus', 'intervalos') else None)
+    # Método dos intervalos longos (o que a literatura considera mais fiável
+    # que os breakpoints por rampa, pelo erro >10 W destes)
+    mlss_longos = (mlss_intervalos_longos(df, colunas, lap_stats)
+                   if _tipo in ('degraus', 'intervalos') else None)
+    decoupling = calcular_decoupling(lap_stats)
+    fadiga = classificar_fadiga(restauracao, decoupling)
+    falha = tempo_ate_falha(lap_stats)
+
+    # DFA-alpha1 a partir dos RR brutos + HRVTs + Combo
+    rr_info = extrair_rr(file_bytes, rr_bruto=prep.get('rr_bruto'))
+    dfa1_serie = pd.DataFrame()
+    dfa1_qualidade = None
+    hrvt2 = None
+    hrvt1c = None
+    hrvt2_sub = None
+
+    metodo_alt = 'sp_global' if metodo_detrend == 'local' else 'local'
+    dfa1_serie_alt = pd.DataFrame()
+    hrvt2_alt = None
+    hrvt1c_alt = None
+    hrvt2_sub_alt = None
+
+    if rr_info is not None:
+        rr_lim, dfa1_qualidade = limpar_rr(rr_info['rr_ms'])
+        if rr_lim is not None:
+            # Só faz sentido "respeitar fases" em protocolos com laps curtos
+            # de trabalho/descanso; numa rampa ou esforço contínuo há
+            # tipicamente um único lap efectivo e a janela de 120s nunca
+            # atravessa fronteira nenhuma que importe.
+            _respeitar_fases = _tipo in ('intervalos', 'degraus')
+            dfa1_serie = calcular_dfa1_serie(rr_lim, rr_info['tempo_s'],
+                                             metodo_detrend=metodo_detrend,
+                                             lam_sp=lam_sp,
+                                             lap_stats=lap_stats,
+                                             respeitar_fases=_respeitar_fases)
+            if len(dfa1_serie) >= 10:
+                hrvt2 = calcular_hrvt(dfa1_serie, df_metricas=df, colunas=colunas,
+                                      alvo=DFA1_HRVT2, lap_stats=lap_stats,
+                                      df_tempo=df, protocolo=_tipo)
+                hrvt1c = calcular_hrvt1c(dfa1_serie, df_metricas=df, colunas=colunas)
+                hrvt2_sub = hrvt2_submaximo(dfa1_serie, df_metricas=df, colunas=colunas)
+
+            if comparar_detrend:
+                dfa1_serie_alt = calcular_dfa1_serie(rr_lim, rr_info['tempo_s'],
+                                                     metodo_detrend=metodo_alt,
+                                                     lam_sp=lam_sp,
+                                                     lap_stats=lap_stats,
+                                                     respeitar_fases=_respeitar_fases)
+                if len(dfa1_serie_alt) >= 10:
+                    hrvt2_alt = calcular_hrvt(dfa1_serie_alt, df_metricas=df, colunas=colunas,
+                                             alvo=DFA1_HRVT2, lap_stats=lap_stats,
+                                             df_tempo=df, protocolo=_tipo)
+                    hrvt1c_alt = calcular_hrvt1c(dfa1_serie_alt, df_metricas=df, colunas=colunas)
+                    hrvt2_sub_alt = hrvt2_submaximo(dfa1_serie_alt, df_metricas=df, colunas=colunas)
+
+    durabilidade = (analisar_durabilidade(df, colunas, dfa1_serie, lap_stats)
+                    if _tipo in ('continuo', 'intervalos', 'degraus') else None)
+    combo = combo_limiares(hrvt2, bp_continuo)
+
+    # Limiar por DFA-α1 RECALCULADO, um ponto por lap de trabalho — pensado
+    # para DEGRAUS/intervalos com descanso entre cada intensidade crescente,
+    # onde faz mais sentido um ponto limpo por degrau (já beneficiando de
+    # respeitar_fases) do que uma regressão contínua ao longo da rampa.
+    lim_dfa1_recalc = (limiar_dfa1_recalculado(dfa1_serie, lap_stats, colunas,
+                                               janela_final_s=janela_final_s)
+                      if _tipo in ('degraus', 'intervalos') and len(dfa1_serie) >= 10
+                      else None)
+
+    # Relação potência↔FC desta sessão, para reportar os limiares nas duas
+    # unidades. A FC é mais estável entre protocolos do que a potência
+    # (Physiological Reports 2023), por isso convém ter ambas.
+    relacao_pf = _relacao_pot_fc(df, colunas, lap_stats)
+    for _b in (bp_continuo, bp_hhb):
+        if _b and _b.get('breakpoint') is not None and relacao_pf:
+            if _b.get('unidade') == 'W':
+                _b['fc'] = pot_para_fc(_b['breakpoint'], relacao_pf)
+                _b['potencia'] = _b['breakpoint']
+            else:
+                _b['fc'] = _b['breakpoint']
+                _b['potencia'] = fc_para_pot(_b['breakpoint'], relacao_pf)
+    if limiares and limiares.get('media') is not None and relacao_pf:
+        if limiares.get('unidade') == 'W':
+            limiares['fc_media'] = pot_para_fc(limiares['media'], relacao_pf)
+        else:
+            limiares['fc_media'] = limiares['media']
+    if combo and combo.get('combo') is not None and relacao_pf:
+        combo['fc'] = pot_para_fc(combo['combo'], relacao_pf)
+
+    _res = dict(prep)
+    _res.update({
+        'protocolo': protocolo,
+        'restauracao': restauracao,
+        'limiares': limiares,
+        'bp_continuo': bp_continuo,
+        'bp_hhb': bp_hhb,
+        'limiar_dfa1': lim_dfa1,
+        'limiar_dfa1_recalculado': lim_dfa1_recalc,
+        'estabilidade_smo2': estab_smo2,
+        'mlss_intervalos': mlss_longos,
+        'decoupling': decoupling,
+        'fadiga': fadiga,
+        'tempo_falha': falha,
+        'rr_info': rr_info,
+        'dfa1_serie': dfa1_serie,
+        'dfa1_qualidade': dfa1_qualidade,
+        'hrvt2': hrvt2,
+        'hrvt1c': hrvt1c,
+        'hrvt2_submax': hrvt2_sub,
+        'durabilidade': durabilidade,
+        'combo': combo,
+        'relacao_pot_fc': relacao_pf,
+        # ── Comparação de pré-processamento DFA-α1 (local vs SP global) ──────
+        'metodo_detrend': metodo_detrend,
+        'metodo_detrend_alt': metodo_alt if comparar_detrend else None,
+        'dfa1_serie_alt': dfa1_serie_alt,
+        'hrvt2_alt': hrvt2_alt,
+        'hrvt1c_alt': hrvt1c_alt,
+        'hrvt2_submax_alt': hrvt2_sub_alt,
+    })
+    _res['zonas'] = resumir_zonas(_res)
+    _res['fiabilidade'] = avaliar_fiabilidade(_res)
+    return _res
+
+
+def analisar_fit(file_bytes, **kwargs):
+    """
+    Pipeline completo em duas fases (retrocompatível).
+    Para controlar as fases separadamente, usa preparar_fit() + analisar_completo().
+    """
+    prep = preparar_fit(file_bytes, **kwargs)
+    if 'erro' in prep:
+        return prep
+    return analisar_completo(prep)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 10. RESUMO PARA HISTÓRICO (comparar sessões ao longo do tempo)
@@ -1350,7 +1577,7 @@ def _ajuste_double_linear(x, y, margem=0.15):
 
 def breakpoint_smo2_continuo(df, colunas, lap_stats=None, janela_media=10,
                              usar_apenas_trabalho=True, so_estado_estacionario=True,
-                             janela_estavel_s=90):
+                             janela_estavel_s=90, protocolo=None, sinal='smo2'):
     """
     Breakpoint de SmO2 pelo método contínuo (muscleoxygentraining.com):
       • média móvel de `janela_media` segundos do SmO2
@@ -1375,10 +1602,24 @@ def breakpoint_smo2_continuo(df, colunas, lap_stats=None, janela_media=10,
     Devolve dict com o breakpoint (em W ou bpm), os declives, R², e os pontos
     usados — ou None.
     """
-    if 'smo2' not in colunas:
+    if 'smo2' not in colunas and 'hhb' not in colunas:
         return None
 
-    col_smo2 = colunas['smo2']
+    # ── Adaptação ao protocolo ───────────────────────────────────────────────
+    # Numa RAMPA CONTÍNUA não existem "laps de trabalho" nem estado estacionário:
+    # cada instante tem a sua própria intensidade, e é precisamente essa
+    # continuidade que o método double-linear pressupõe. Restringir aos laps ou
+    # ao fim de cada bloco destruiria a maior parte dos dados. Em DEGRAUS e
+    # INTERVALOS, pelo contrário, as restrições são essenciais (ver docstring).
+    if protocolo in ('rampa', 'continuo'):
+        usar_apenas_trabalho = False
+        so_estado_estacionario = False
+
+    # `sinal` escolhe a métrica: 'smo2' (proporção) ou 'hhb' (quantidade
+    # absoluta de hemoglobina desoxigenada — o que a literatura NIRS analisa).
+    _chave = sinal if sinal in colunas else ('smo2' if 'smo2' in colunas else 'hhb')
+    col_smo2 = colunas[_chave]
+    nome_sinal = 'HHb' if _chave == 'hhb' else 'SmO₂'
     col_int = colunas.get('power') or colunas.get('heart_rate')
     if col_int is None:
         return None
@@ -1429,9 +1670,12 @@ def breakpoint_smo2_continuo(df, colunas, lap_stats=None, janela_media=10,
     if res is None:
         return None
 
-    # Interpretação do padrão (recto femoral: espera-se aceleração da queda)
+    # Interpretação do padrão (recto femoral: espera-se aceleração da
+    # desoxigenação). Em SmO2 isso é a queda a acelerar (declive mais negativo);
+    # em HHb é a subida a acelerar (declive mais positivo).
     s1, s2 = res['slope_antes'], res['slope_depois']
-    if s2 < s1:
+    _acelerou = (s2 > s1) if _chave == 'hhb' else (s2 < s1)
+    if _acelerou:
         padrao = 'aceleração da desoxigenação'
         coerente = True
     elif abs(s2) < abs(s1) * 0.5:
@@ -1446,6 +1690,11 @@ def breakpoint_smo2_continuo(df, colunas, lap_stats=None, janela_media=10,
         'pontos': amostra[['int_ma', 'smo2_ma', 't']].rename(
             columns={'int_ma': 'intensidade', 'smo2_ma': 'smo2', 't': 'tempo_s'}),
         'janela_media': janela_media,
+        'protocolo': protocolo,
+        'sinal': nome_sinal,
+        'chave_sinal': _chave,
+        'usou_estado_estacionario': bool(so_estado_estacionario),
+        'usou_apenas_trabalho': bool(usar_apenas_trabalho),
         'padrao': padrao,
         'coerente_recto_femoral': coerente,
     })
@@ -1535,6 +1784,103 @@ def limiar_dfa1(lap_stats, colunas, alvos=(0.75, 0.70, 0.50), max_artifacts=5.0)
         'pontos': pontos,
         'descartados_artifacts': descartados,
         'n_usados': len(usados),
+    }
+
+
+def _agregar_dfa1_recalculado_por_lap(dfa1_serie, lap_stats, janela_final_s=60):
+    """
+    Agrega o DFA-α1 RECALCULADO a partir dos RR (calcular_dfa1_serie) por lap
+    de trabalho — um ponto por lap, média sobre os últimos janela_final_s
+    segundos (o mesmo critério de "estado estacionário" já usado nas outras
+    métricas via estatisticas_por_lap).
+
+    Pensado para protocolos de DEGRAUS/intervalos com descanso genuíno entre
+    cada intensidade crescente: cada degrau vira um ponto único e limpo,
+    já beneficiando de (a) correcção de artefactos do RR e (b) janelas que
+    respeitam as fronteiras dos laps (ver respeitar_fases em
+    calcular_dfa1_serie) — ao contrário do stream cru do dispositivo, que
+    não passa por nenhuma das duas correcções.
+    """
+    if dfa1_serie is None or len(dfa1_serie) == 0:
+        return pd.DataFrame()
+
+    linhas = []
+    for l in lap_stats:
+        if l.get('phase') != 'work' or '_t_ini' not in l or '_t_fim' not in l:
+            continue
+        t_ini, t_fim = l['_t_ini'], l['_t_fim']
+        t0_janela = max(t_ini, t_fim - janela_final_s) if janela_final_s > 0 else t_ini
+        m = (dfa1_serie['tempo_s'] >= t0_janela) & (dfa1_serie['tempo_s'] <= t_fim)
+        sub = dfa1_serie[m]
+        if len(sub) < 2:
+            continue
+        linhas.append({
+            'lap': l['lap_number'],
+            'dfa1_recalculado': float(sub['dfa1'].mean()),
+            'n_janelas': len(sub),
+            'janela_efetiva_media_s': (float(sub['janela_efetiva_s'].mean())
+                                       if 'janela_efetiva_s' in sub.columns else None),
+        })
+    return pd.DataFrame(linhas)
+
+
+def limiar_dfa1_recalculado(dfa1_serie, lap_stats, colunas, alvos=(0.75, 0.70, 0.50),
+                            janela_final_s=60):
+    """
+    Versão de limiar_dfa1() que usa o DFA-α1 RECALCULADO a partir dos
+    intervalos RR, em vez do stream cru do dispositivo.
+
+    Pensado especificamente para protocolos de DEGRAUS/intervalos com
+    descanso entre cada degrau de intensidade crescente — um ponto por lap
+    de trabalho, com janelas que já não misturam descanso com trabalho
+    (ver respeitar_fases em calcular_dfa1_serie). Mesma lógica de
+    regressão/solução que limiar_dfa1(); ver ali para a interpretação dos
+    alvos (0.75/0.70/0.50).
+
+    Devolve dict no mesmo formato de limiar_dfa1(), ou {'erro': ...}.
+    """
+    agg = _agregar_dfa1_recalculado_por_lap(dfa1_serie, lap_stats, janela_final_s)
+    if len(agg) < 3:
+        return {'erro': f'poucos laps de trabalho com α1 recalculado (n={len(agg)})'}
+
+    intensidade = 'avg_power' if any('avg_power' in l for l in lap_stats) else 'avg_heart_rate'
+    unidade = 'W' if intensidade == 'avg_power' else 'bpm'
+    mapa_int = {l['lap_number']: l.get(intensidade) for l in lap_stats}
+    agg['intensidade'] = agg['lap'].map(mapa_int)
+    agg = agg.dropna(subset=['intensidade']).sort_values('intensidade').reset_index(drop=True)
+    if len(agg) < 3:
+        return {'erro': 'poucos laps com intensidade e α1 recalculado em conjunto'}
+
+    x = agg['intensidade'].values.astype(float)
+    y = agg['dfa1_recalculado'].values.astype(float)
+    if np.ptp(x) < 1e-9:
+        return {'erro': 'intensidade sem variação'}
+
+    coef = np.polyfit(x, y, 1)
+    y_pred = np.polyval(coef, x)
+    sst = np.sum((y - y.mean()) ** 2)
+    r2 = 1 - np.sum((y - y_pred) ** 2) / sst if sst > 0 else np.nan
+
+    limiares = {}
+    for alvo in alvos:
+        if abs(coef[0]) > 1e-12:
+            xi = (alvo - coef[1]) / coef[0]
+            dentro = x.min() - 0.1 * np.ptp(x) <= xi <= x.max() + 0.1 * np.ptp(x)
+            _fisio_ok = True
+            if intensidade == 'avg_heart_rate':
+                _fisio_ok, _ = _checar_fc_plausivel(xi, fc_max_sessao=float(x.max()))
+            limiares[alvo] = {'intensidade': float(xi), 'extrapolado': not dentro,
+                              'fisiologicamente_plausivel': _fisio_ok}
+        else:
+            limiares[alvo] = None
+
+    return {
+        'limiares': limiares,
+        'coef': coef.tolist(),
+        'r2': float(r2),
+        'unidade': unidade,
+        'pontos': agg,
+        'n_usados': len(agg),
     }
 
 
@@ -1831,4 +2177,1610 @@ def sugerir_offset_por_laps(df, colunas, metrica, lap_stats, max_lag=60,
         'curva': curva,
         'direcao': direcao,
         'n_laps_trabalho': len(laps_work),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DFA-alpha1 A PARTIR DOS INTERVALOS RR
+# Método: Peng et al. (algoritmo DFA), com os parâmetros do estudo
+# Fleitas-Paniagua/Murias 2023 (JSCR) e do Kubios: janela alpha1 = 4-16 batimentos,
+# janelas móveis de 2 min recalculadas a cada 5 s.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def extrair_rr(file_bytes, rr_bruto=None):
+    """
+    Extrai os intervalos RR brutos das mensagens 'hrv' do ficheiro FIT.
+
+    Muitos gravadores (Garmin, apps com Polar H10) guardam os RR além das
+    métricas por segundo. Tê-los permite recalcular o DFA-alpha1 em vez de
+    depender do valor pré-calculado pelo sensor.
+
+    rr_bruto : lista já extraída por ler_fit() (ver preparar_fit()['rr_bruto']).
+        Quando fornecida, esta função NÃO volta a abrir/percorrer o ficheiro —
+        evita uma segunda passagem completa do fitdecode, que é cara em
+        ficheiros com RR batimento-a-batimento (milhares de mensagens 'hrv').
+        Se vier None, mantém o comportamento antigo (lê o ficheiro do zero) —
+        para chamadas directas fora do fluxo preparar_fit()+analisar_completo.
+
+    Devolve dict {'rr_ms': array, 'tempo_s': array (tempo cumulativo), 'n': int}
+    ou None se o ficheiro não tiver RR.
+    """
+    if rr_bruto is not None:
+        rr = list(rr_bruto)
+    else:
+        if not _TEM_FITDECODE:
+            return None
+        rr = []
+        try:
+            with fitdecode.FitReader(io.BytesIO(file_bytes)) as fit:
+                for frame in fit:
+                    if not isinstance(frame, fitdecode.FitDataMessage):
+                        continue
+                    if frame.name != 'hrv':
+                        continue
+                    for f in frame.fields:
+                        if f.name != 'time' or f.value is None:
+                            continue
+                        v = f.value
+                        if isinstance(v, (list, tuple)):
+                            rr.extend([x for x in v if x is not None])
+                        else:
+                            rr.append(v)
+        except Exception:
+            return None
+
+    if len(rr) < 100:
+        return None
+
+    rr = np.array([float(x) for x in rr], dtype=float)
+    # O FIT guarda os RR em segundos; converter para ms se necessário
+    rr_ms = rr * 1000.0 if np.nanmax(rr) < 10 else rr
+    tempo = np.cumsum(rr_ms) / 1000.0  # segundos desde o início
+    return {'rr_ms': rr_ms, 'tempo_s': tempo, 'n': len(rr_ms)}
+
+
+def limpar_rr(rr_ms, low=300, high=2000, malik_pct=20):
+    """
+    Pré-processamento dos intervalos RR antes do DFA.
+
+    Réplica do pipeline descrito no artigo Kubios-vs-Python:
+      1. remove_outliers  → fora de [low, high] ms
+      2. remove_ectopic_beats (regra de Malik) → um RR difere >20% do anterior
+      3. interpolação linear dos removidos
+
+    ATENÇÃO: o artigo mostra que o método de correcção de artefactos é a maior
+    fonte de divergência face ao Kubios (R²=0.85, viés ~20% abaixo de alpha1=0.75).
+    Isto é uma aproximação razoável, não uma réplica exacta do Kubios.
+
+    Devolve (rr_limpo, info) com a percentagem de artefactos corrigidos.
+    """
+    x = np.array(rr_ms, dtype=float)
+    n0 = len(x)
+    mask_bad = (x < low) | (x > high) | ~np.isfinite(x)
+
+    # Regra de Malik: comparar cada intervalo com o anterior válido
+    for i in range(1, len(x)):
+        if mask_bad[i] or mask_bad[i - 1]:
+            continue
+        if abs(x[i] - x[i - 1]) > (malik_pct / 100.0) * x[i - 1]:
+            mask_bad[i] = True
+
+    n_bad = int(mask_bad.sum())
+    xc = x.copy()
+    xc[mask_bad] = np.nan
+    # Interpolação linear
+    idx = np.arange(len(xc))
+    ok = ~np.isnan(xc)
+    if ok.sum() < 10:
+        return None, {'pct_artefactos': 100.0, 'n_corrigidos': n_bad, 'n_total': n0}
+    xc = np.interp(idx, idx[ok], xc[ok])
+
+    return xc, {
+        'pct_artefactos': round(n_bad / n0 * 100, 2),
+        'n_corrigidos': n_bad,
+        'n_total': n0,
+    }
+
+
+def detrend_sp(rr_ms, lam=500):
+    """
+    Smoothness Priors detrending (Tarvainen et al. 2002, λ=500) — o método de
+    detrending por DEFEITO do Kubios HRV, aplicado ao tacograma INTEIRO (não
+    por janela) antes de qualquer cálculo de DFA-α1.
+
+    Porquê isto importa (ver "DFA a1 and ChatGPT interview",
+    muscleoxygentraining.com, ago/2025): aplicar Smoothness Priors DENTRO de
+    cada janela de 2 min (em vez de à série completa) cria efeitos de
+    fronteira que "empurram o α1 para baixo" e distorcem a recta α1×FC —
+    foi exactamente essa diferença que fez o pipeline "à mão" divergir ~15-30
+    bpm do Kubios num caso real analisado nesse artigo. A correcção foi
+    aplicar o SP UMA VEZ à série toda, e só depois janelar.
+
+    O que já estava implementado em calcular_dfa1_serie() (metodo_detrend=
+    'local') é o DFA-1 clássico (Peng et al.), que faz o SEU PRÓPRIO
+    detrending linear por escala DENTRO de cada janela — replica o script
+    "Kubios vs Python" (dokato/dfa) já citado em _dfa_alpha(). Isso continua
+    a ser calculado da mesma forma; o SP global é um passo ADICIONAL, antes,
+    que remove a deriva lenta (troca de protocolo, deriva térmica, etc.) que
+    de outra forma dominaria a fractal-scaling nas escalas mais longas.
+
+    Implementação: resolve o sistema esparso
+        tendência = (I + λ² · D2ᵀD2)⁻¹ · RR
+    onde D2 é o operador de 2ª diferença. O resultado devolvido é
+        RR − tendência + média(RR)
+    (mantém a escala em ms, o que ajuda em qualquer plot de diagnóstico;
+    para o DFA em si a constante é irrelevante, pois _dfa_alpha já subtrai
+    a média internamente).
+
+    Requer scipy.sparse. Sistema banda-estreita ⇒ O(n), viável mesmo para
+    sessões de 1h+ (~10 mil batimentos).
+
+    Devolve um array do mesmo comprimento que rr_ms, ou uma cópia sem
+    alteração se a série for demasiado curta ou o sistema mal condicionado.
+    """
+    x = np.asarray(rr_ms, dtype=float)
+    n = len(x)
+    if n < 10:
+        return x.copy()
+
+    try:
+        from scipy import sparse
+        from scipy.sparse.linalg import spsolve
+    except ImportError:
+        return x.copy()
+
+    # Operador de 2ª diferença: (n-2) x n, cada linha [.., 1, -2, 1, ..]
+    D2 = sparse.diags([1.0, -2.0, 1.0], offsets=[0, 1, 2],
+                       shape=(n - 2, n), format='csc')
+    I = sparse.eye(n, format='csc')
+    A = (I + (lam ** 2) * (D2.T @ D2)).tocsc()
+
+    try:
+        tendencia = spsolve(A, x)
+    except Exception:
+        return x.copy()
+
+    if not np.all(np.isfinite(tendencia)):
+        return x.copy()
+
+    return x - tendencia + np.mean(x)
+
+
+def _dfa_alpha(serie, n_min=4, n_max=16):
+    """
+    Detrended Fluctuation Analysis — expoente de escala.
+
+    Implementação do algoritmo clássico (Peng et al.), com a mesma estrutura do
+    dokato/dfa mas com as escalas do alpha1 usado em HRV:
+
+        n_min=4, n_max=16 batimentos  ← alpha1 (curto prazo)
+
+    NOTA sobre o dokato/dfa: o seu default é scale_lim=[5,9], ou seja escalas de
+    2^5=32 a 2^9=512 amostras. Isso NÃO é o alpha1 — corresponde a escalas muito
+    maiores (alpha2 e além). Usar o default daria um valor sem relação com os
+    limiares de intensidade. Daqui a escolha explícita de 4-16 batimentos.
+
+    Passos:
+      1. y = soma cumulativa do sinal centrado
+      2. para cada escala n: dividir y em janelas de n pontos, remover a
+         tendência linear de cada uma, calcular o RMS
+      3. F(n) = RMS médio; alpha = declive de log F(n) vs log n
+    """
+    x = np.asarray(serie, dtype=float)
+    x = x[np.isfinite(x)]
+    if len(x) < n_max * 4:
+        return None
+
+    y = np.cumsum(x - np.mean(x))
+    escalas = np.arange(n_min, n_max + 1)
+    flut = []
+    escalas_ok = []
+
+    for n in escalas:
+        n_janelas = len(y) // n
+        if n_janelas < 2:
+            continue
+        seg = y[:n_janelas * n].reshape(n_janelas, n)
+        eixo = np.arange(n)
+        rms = np.empty(n_janelas)
+        for i in range(n_janelas):
+            coef = np.polyfit(eixo, seg[i], 1)
+            rms[i] = np.sqrt(np.mean((seg[i] - np.polyval(coef, eixo)) ** 2))
+        f = np.sqrt(np.mean(rms ** 2))
+        if f > 0:
+            flut.append(f)
+            escalas_ok.append(n)
+
+    if len(flut) < 3:
+        return None
+
+    coef = np.polyfit(np.log(escalas_ok), np.log(flut), 1)
+    return float(coef[0])
+
+
+def _lap_id_por_tempo(tempo_s_pontos, lap_stats):
+    """
+    Atribui a cada ponto temporal o número do lap onde cai, ou -1 se estiver
+    fora de qualquer lap com fronteiras conhecidas ('_t_ini'/'_t_fim').
+
+    Usado para impedir que uma janela de DFA-α1 misture batimentos de dois
+    laps diferentes (ex.: fim da recuperação + início do trabalho seguinte),
+    o que dilui exactamente o mergulho de α1 que se quer detectar em
+    protocolos de intervalos curtos.
+    """
+    t = np.asarray(tempo_s_pontos, dtype=float)
+    ids = np.full(len(t), -1, dtype=int)
+    if not lap_stats:
+        return ids
+    for l in lap_stats:
+        if '_t_ini' not in l or '_t_fim' not in l:
+            continue
+        m = (t >= l['_t_ini']) & (t <= l['_t_fim'])
+        ids[m] = l['lap_number']
+    return ids
+
+
+def calcular_dfa1_serie(rr_ms, tempo_s, janela_s=120, passo_s=5,
+                        n_min=4, n_max=16, metodo_detrend='local', lam_sp=500,
+                        lap_stats=None, respeitar_fases=True):
+    """
+    Calcula o DFA-alpha1 ao longo do tempo, com janelas móveis.
+
+    Parâmetros do estudo Murias 2023:
+      "the DFA a1 was calculated over time using 2 min HRV measurement windows
+       with a recalculation every 5 s"
+
+    metodo_detrend:
+      'local'     (default) — cada janela é detrendida linearmente por escala,
+                  dentro do próprio DFA-1 clássico (ver _dfa_alpha). É o que
+                  já estava implementado; replica a abordagem "Kubios vs
+                  Python" (dokato/dfa) já usada neste ficheiro.
+      'sp_global' — aplica Smoothness Priors (λ=lam_sp) UMA VEZ ao tacograma
+                  inteiro antes de janelar (ver detrend_sp()) — replica o
+                  pré-processamento por defeito do Kubios HRV.
+
+    lap_stats, respeitar_fases : em protocolos de INTERVALOS (ex.: 3 min de
+        trabalho + 1 min de descanso), um intervalo pode ser mais curto do
+        que os 120s da janela-padrão. Sem cuidado, uma janela centrada
+        pouco depois do início do trabalho ainda "olha para trás" 120s e
+        acaba a incluir batimentos da recuperação anterior — o que dilui
+        para cima exactamente o mergulho de α1 que se quer captar (a
+        recuperação tem α1 mais alto). Com respeitar_fases=True (default,
+        quando lap_stats é fornecido) cada janela é recortada para NUNCA
+        atravessar a fronteira do lap onde está o seu centro: fica mais
+        curta perto do início de cada lap (mas nunca abaixo do mínimo de
+        batimentos exigido) e alcança os 120s completos assim que o lap for
+        longo o suficiente. Para rampas/contínuo (um único lap efectivo)
+        isto não faz diferença — passa respeitar_fases=False para desligar.
+
+    Nota: a FC média de cada janela é SEMPRE calculada a partir do RR
+    ORIGINAL (nunca do detrendido), já que o SP remove a escala absoluta
+    do sinal — só o α1 usa a série processada por metodo_detrend.
+
+    Devolve DataFrame com tempo_s, dfa1, n_batimentos, fc_media,
+    janela_efetiva_s (quantos segundos de RR entraram realmente na janela —
+    menos de janela_s indica um lap curto/início de intervalo).
+    """
+    rr = np.asarray(rr_ms, dtype=float)
+    t = np.asarray(tempo_s, dtype=float)
+    if len(rr) < 50:
+        return pd.DataFrame()
+
+    if metodo_detrend == 'sp_global':
+        rr_dfa = detrend_sp(rr, lam=lam_sp)
+    else:
+        rr_dfa = rr  # o detrending acontece dentro de _dfa_alpha, por janela
+
+    lap_ids = (_lap_id_por_tempo(t, lap_stats)
+               if (respeitar_fases and lap_stats) else None)
+
+    linhas = []
+    t_fim = t[-1]
+    t_ini = janela_s
+    for centro in np.arange(t_ini, t_fim + 0.001, passo_s):
+        m = (t > centro - janela_s) & (t <= centro)
+        janela_efetiva = janela_s
+
+        if lap_ids is not None:
+            idx_centro = np.searchsorted(t, centro, side='right') - 1
+            idx_centro = min(max(idx_centro, 0), len(t) - 1)
+            lap_centro = lap_ids[idx_centro]
+            if lap_centro != -1:
+                m = m & (lap_ids == lap_centro)
+                if m.sum() > 0:
+                    janela_efetiva = float(centro - t[m].min())
+
+        if m.sum() < n_max * 4:
+            continue
+        seg_dfa = rr_dfa[m]
+        seg_fc = rr[m]
+        a1 = _dfa_alpha(seg_dfa, n_min=n_min, n_max=n_max)
+        if a1 is None:
+            continue
+        linhas.append({
+            'tempo_s': float(centro),
+            'dfa1': round(a1, 4),
+            'n_batimentos': int(m.sum()),
+            'fc_media': round(60000.0 / np.mean(seg_fc), 1),
+            'janela_efetiva_s': round(janela_efetiva, 1),
+        })
+
+    df_out = pd.DataFrame(linhas)
+    df_out.attrs['metodo_detrend'] = metodo_detrend
+    df_out.attrs['respeitar_fases'] = bool(lap_ids is not None)
+    return df_out
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HRVT2 — segundo limiar pelo DFA-alpha1 (Fleitas-Paniagua/Murias 2023)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Valores de referência do DFA-alpha1 na literatura
+DFA1_HRVT2 = 0.50   # HRVT2 ≈ RCP / MLSS / limiar ALTO (Murias 2023, Rogers et al.)
+DFA1_HRVT1 = 0.75   # aproximação do VT1 / limiar BAIXO (Gronwald, Rogers 2020)
+
+# Limites de plausibilidade fisiológica para uma FC extrapolada/estimada por
+# regressão. Sem isto, um declive quase-nulo (ex.: janela demasiado "achatada"
+# depois de Smoothness Priors global remover a tendência lenta que era o
+# próprio sinal de interesse) pode gerar uma FC "prevista" de centenas de bpm
+# — matematicamente correcta pela recta, mas humanamente impossível. Os
+# avisos de R²/extrapolação já cobrem MUITOS casos, mas não todos; este é o
+# último guarda-redes, sempre aplicado.
+#
+# IMPORTANTE: 230 bpm é um tecto GENÉRICO populacional — não diz nada sobre
+# ESTE atleta. Um valor de 220 bpm passaria neste teste sozinho, mas para um
+# atleta cuja FC real nunca passou de ~165 bpm em toda a sessão, 220 bpm é
+# tão implausível como 353 — só que mais difícil de notar à primeira vista.
+# Por isso, sempre que houver FC medida na própria sessão (fc_max_sessao),
+# o tecto usado é essa FC máxima real + uma margem, não o limite genérico.
+FC_PLAUSIVEL_MIN = 30
+FC_PLAUSIVEL_MAX = 230          # usado só quando não há FC de referência da sessão
+FC_PLAUSIVEL_MARGEM_SESSAO = 15  # bpm acima do máximo realmente medido
+
+
+def _checar_fc_plausivel(fc, fc_max_sessao=None):
+    """
+    Devolve (bool_plausivel, aviso_ou_None) para uma FC extrapolada.
+
+    fc_max_sessao : FC máxima REALMENTE medida nesta sessão/atleta (não uma
+        constante populacional). Quando fornecida, o tecto de plausibilidade
+        passa a ser fc_max_sessao + FC_PLAUSIVEL_MARGEM_SESSAO — específico
+        do atleta, em vez do limite genérico de 230 bpm. Segue o mesmo
+        princípio já usado no resto do projecto: limiares sempre relativos
+        à distribuição própria do atleta, nunca a normas populacionais.
+    """
+    if fc is None or not np.isfinite(fc):
+        return False, 'FC não calculável (recta sem solução válida)'
+
+    if fc_max_sessao is not None and np.isfinite(fc_max_sessao):
+        teto = min(FC_PLAUSIVEL_MAX, fc_max_sessao + FC_PLAUSIVEL_MARGEM_SESSAO)
+        ref = f'{fc_max_sessao:.0f} bpm medidos nesta sessão + {FC_PLAUSIVEL_MARGEM_SESSAO:.0f}'
+    else:
+        teto = FC_PLAUSIVEL_MAX
+        ref = f'{FC_PLAUSIVEL_MAX:.0f} (limite genérico, sem referência da sessão)'
+
+    if not (FC_PLAUSIVEL_MIN <= fc <= teto):
+        return False, (f'FC extrapolada implausível para este atleta ({fc:.0f} bpm, '
+                       f'acima de {ref} bpm) — a recta ficou demasiado achatada ou o '
+                       'ajuste é dominado por ruído nesta janela; não usar este resultado')
+    return True, None
+
+
+def calcular_hrvt(serie_dfa1, df_metricas=None, colunas=None, alvo=0.50,
+                  janela_ajuste=(0.4, 1.0), lap_stats=None, df_tempo=None,
+                  so_trabalho=True, protocolo=None):
+    """
+    Estima o limiar associado a um valor-alvo de DFA-alpha1, pelo método do estudo:
+
+        "The relationship generally showed a reverse sigmoidal curve, with a
+         stable area above 1.0 at low work rates, a rapid, near linear drop
+         reaching below 0.5 at higher intensity, then flattening without major
+         change. A linear regression line was drawn through the appropriate
+         section with the HRVT2 defined as the RI time or HR where DFA a1
+         equaled 0.5"
+
+    Ou seja: a regressão é feita SÓ na secção de queda quase-linear, não em toda
+    a curva (que é sigmoidal invertida e achataria a estimativa).
+
+    alvo=0.50 → HRVT2 (limiar ALTO, ≈ RCP/MLSS)
+    alvo=0.75 → aproximação do VT1 (limiar baixo)
+
+    janela_ajuste : intervalo de alpha1 considerado "secção linear de queda".
+
+    df_metricas/colunas : opcionais; se fornecidos, converte o tempo do limiar
+        na potência correspondente.
+
+    Devolve dict com o limiar em FC (e potência, se disponível), a recta, R² e
+    os pontos usados — ou {'erro': ...}.
+    """
+    if serie_dfa1 is None or len(serie_dfa1) < 10:
+        return {'erro': 'série DFA-α1 insuficiente'}
+
+    s = serie_dfa1.dropna(subset=['dfa1', 'fc_media']).copy()
+
+    # Em protocolos INTERVALADOS, as recuperações produzem pontos com FC baixa e
+    # alpha1 alto que não pertencem à curva intensidade→alpha1. O método original
+    # foi desenhado para rampas contínuas; restringir aos períodos de trabalho
+    # recupera a relação monotónica que o ajuste pressupõe.
+    n_antes = len(s)
+    if protocolo in ('rampa', 'continuo'):
+        so_trabalho = False
+    if so_trabalho and lap_stats and df_tempo is not None:
+        janelas = [(l['_t_ini'], l['_t_fim']) for l in lap_stats
+                   if l.get('phase') == 'work' and '_t_ini' in l]
+        if janelas:
+            m = pd.Series(False, index=s.index)
+            for t0, t1 in janelas:
+                m |= (s['tempo_s'] >= t0) & (s['tempo_s'] <= t1)
+            if m.sum() >= 10:
+                s = s[m].copy()
+
+    lo, hi = janela_ajuste
+    linear = s[(s['dfa1'] >= lo) & (s['dfa1'] <= hi)]
+
+    # Se a janela não apanhar pontos suficientes, alargar progressivamente
+    if len(linear) < 6:
+        for margem in (0.1, 0.2, 0.3):
+            linear = s[(s['dfa1'] >= lo - margem) & (s['dfa1'] <= hi + margem)]
+            if len(linear) >= 6:
+                break
+    if len(linear) < 6:
+        return {'erro': f'poucos pontos na secção linear (n={len(linear)})',
+                'serie': s}
+
+    x = linear['fc_media'].values.astype(float)
+    y = linear['dfa1'].values.astype(float)
+    if np.ptp(x) < 1e-9:
+        return {'erro': 'FC sem variação na secção linear', 'serie': s}
+
+    coef = np.polyfit(x, y, 1)
+    y_pred = np.polyval(coef, x)
+    sst = np.sum((y - y.mean()) ** 2)
+    r2 = float(1 - np.sum((y - y_pred) ** 2) / sst) if sst > 0 else np.nan
+
+    if abs(coef[0]) < 1e-12:
+        return {'erro': 'declive nulo', 'serie': s}
+
+    fc_limiar = float((alvo - coef[1]) / coef[0])
+    extrapolado = not (x.min() - 0.1 * np.ptp(x) <= fc_limiar <= x.max() + 0.1 * np.ptp(x))
+
+    # Converter FC em potência, se houver dados
+    pot_limiar = None
+    if df_metricas is not None and colunas and 'power' in colunas and 'heart_rate' in colunas:
+        try:
+            dm = df_metricas[[colunas['heart_rate'], colunas['power']]].copy()
+            dm.columns = ['fc', 'pot']
+            dm = dm.apply(pd.to_numeric, errors='coerce').dropna()
+            dm = dm[dm['pot'] > 0]
+            if len(dm) > 30 and np.ptp(dm['fc'].values) > 5:
+                cfp = np.polyfit(dm['fc'].values, dm['pot'].values, 1)
+                pot_limiar = float(np.polyval(cfp, fc_limiar))
+        except Exception:
+            pot_limiar = None
+
+    # Tempo em que o alpha1 cruza o alvo (primeira travessia descendente)
+    tempo_limiar = None
+    abaixo = s[s['dfa1'] <= alvo]
+    if len(abaixo) > 0:
+        tempo_limiar = float(abaixo['tempo_s'].iloc[0])
+
+    # ── Diagnóstico de fiabilidade ───────────────────────────────────────────
+    # O método pressupõe que o alpha1 atravessa o alvo de forma consistente
+    # durante o teste. Se isso não acontece, a "estimativa" é uma extrapolação
+    # da recta muito para lá dos dados observados — e não deve ser usada.
+    n_abaixo = int((s['dfa1'] <= alvo).sum())
+    pct_abaixo = n_abaixo / len(s) * 100 if len(s) else 0.0
+    avisos = []
+    if pct_abaixo < 5:
+        avisos.append(
+            f"o α1 só desceu abaixo de {alvo} em {n_abaixo}/{len(s)} janelas "
+            f"({pct_abaixo:.1f}%) — o teste pode não ter atingido o limiar")
+    if r2 < 0.5:
+        avisos.append(f"ajuste fraco na secção linear (R²={r2:.2f})")
+    if extrapolado:
+        avisos.append("o valor está extrapolado para fora do intervalo medido")
+    _fc_max_sessao = float(s['fc_media'].max()) if len(s) else None
+    _fc_ok, _fc_aviso = _checar_fc_plausivel(fc_limiar, fc_max_sessao=_fc_max_sessao)
+    if not _fc_ok:
+        avisos.append(_fc_aviso)
+    fiavel = (not avisos)
+
+    return {
+        'alvo': alvo,
+        'fiavel': fiavel,
+        'avisos': avisos,
+        'pct_abaixo_alvo': round(pct_abaixo, 1),
+        'fc': fc_limiar,
+        'potencia': pot_limiar,
+        'tempo_s': tempo_limiar,
+        'coef': coef.tolist(),
+        'r2': r2,
+        'n_pontos': len(linear),
+        'extrapolado': extrapolado,
+        'pontos_linear': linear,
+        'serie': s,
+        'janela_ajuste': (lo, hi),
+        'so_trabalho': bool(so_trabalho and len(s) < n_antes),
+        'n_serie_usada': len(s),
+        'n_serie_total': n_antes,
+    }
+
+
+def combo_limiares(hrvt2, bp_nirs, tolerancia_pct=15):
+    """
+    Combo HRVT2 + NIRS breakpoint (Fleitas-Paniagua, Murias et al., JSCR 2023).
+
+    O estudo mostrou que a média das duas estimativas tem menor viés e limites de
+    concordância mais estreitos face ao padrão-ouro (RCP) do que qualquer uma
+    isolada — porque derivam de subsistemas fisiológicos diferentes e os erros
+    tendem a cancelar-se:
+
+        HRVT2 sozinho : 4/19 casos com erro ≥10 bpm (21%)
+        NIRS sozinho  : 5/16 (31%)
+        Combo         : 3/21 (14%)
+
+    Vantagem adicional: se um dos métodos falhar tecnicamente (artefactos no HRV,
+    sinal fraco no NIRS), o outro ainda dá um resultado utilizável.
+
+    Devolve dict com a estimativa combinada, a divergência entre métodos e um
+    aviso quando essa divergência é grande.
+    """
+    v_hrv = None
+    hrv_descartado = False
+    if hrvt2 and 'erro' not in hrvt2 and hrvt2.get('potencia') is not None:
+        if hrvt2.get('fiavel', True):
+            v_hrv = float(hrvt2['potencia'])
+        else:
+            # HRVT2 pouco fiável: não entra no combo, para não contaminar a
+            # estimativa. O estudo assume que ambos os métodos são válidos.
+            hrv_descartado = True
+    v_nirs = float(bp_nirs['breakpoint']) if bp_nirs else None
+
+    disponiveis = [v for v in (v_hrv, v_nirs) if v is not None]
+    if not disponiveis:
+        return None
+
+    combo = float(np.mean(disponiveis))
+    divergencia = abs(v_hrv - v_nirs) if len(disponiveis) == 2 else None
+    div_pct = (divergencia / combo * 100) if divergencia is not None and combo > 0 else None
+
+    if len(disponiveis) == 1:
+        estado = 'metodo_unico'
+    elif div_pct is not None and div_pct > tolerancia_pct:
+        estado = 'divergente'
+    else:
+        estado = 'concordante'
+
+    return {
+        'combo': combo,
+        'hrvt2': v_hrv,
+        'nirs': v_nirs,
+        'divergencia': divergencia,
+        'divergencia_pct': div_pct,
+        'estado': estado,
+        'hrv_descartado': hrv_descartado,
+        'n_metodos': len(disponiveis),
+        'tolerancia_pct': tolerancia_pct,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DETEÇÃO DO TIPO DE PROTOCOLO
+# As análises de limiares diferem consoante o teste seja uma RAMPA CONTÍNUA,
+# DEGRAUS INCREMENTAIS ou INTERVALOS. Detectar isto automaticamente evita
+# aplicar o método errado.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def detectar_protocolo(df, colunas, lap_stats=None):
+    """Classifica o protocolo. Ver docstring completa abaixo."""
+    # ── Atalho: se os laps já dizem a estrutura, usar isso ───────────────────
+    # Quando o utilizador (ou o ficheiro) define laps de trabalho separados por
+    # recuperações, a estrutura é conhecida e não precisa de ser inferida do
+    # sinal. Inferir pode falhar: por exemplo, ao excluir o aquecimento a série
+    # restante pode parecer uma subida contínua e ser classificada como rampa,
+    # levando a aplicar o método errado (usar todos os pontos em vez do estado
+    # estacionário de cada degrau).
+    if lap_stats:
+        _w = [l for l in lap_stats if l.get('phase') == 'work']
+        _r = [l for l in lap_stats if l.get('phase') == 'recovery']
+        if len(_w) >= 3 and len(_r) >= 2:
+            _pots = [l.get('avg_power') or l.get('avg_heart_rate') for l in _w]
+            _pots = [p for p in _pots if p is not None]
+            _sobe = (len(_pots) >= 3
+                     and np.polyfit(range(len(_pots)), _pots, 1)[0] > 0)
+            _tipo = 'degraus' if _sobe else 'intervalos'
+            _u = 'W' if 'power' in colunas else 'bpm'
+            return {
+                'tipo': _tipo,
+                'motivo': (f'{len(_w)} blocos de trabalho separados por '
+                           f'{len(_r)} recuperações'
+                           + (' com intensidade crescente' if _sobe else
+                              ' à mesma intensidade')),
+                'metodo_recomendado': (
+                    'breakpoint sobre o estado estacionário de cada degrau'
+                    if _tipo == 'degraus' else
+                    'estabilidade do SmO₂ dentro de cada intervalo'),
+                'duracao_min': round((df['time_seconds'].max()
+                                      - df['time_seconds'].min()) / 60, 1),
+                'origem': 'estrutura dos laps',
+                'unidade': _u,
+            }
+    return _detectar_protocolo_sinal(df, colunas, lap_stats)
+
+
+def _detectar_protocolo_sinal(df, colunas, lap_stats=None):
+    """
+    Classifica o tipo de sessão a partir do comportamento da intensidade:
+
+      'rampa'      → intensidade sobe de forma quase monótona, sem recuperações
+                     (ex.: +10-30 W/min contínuo). É o protocolo dos estudos.
+      'degraus'    → patamares de intensidade constante separados por
+                     recuperações ou por saltos (o teu caso habitual).
+      'intervalos' → alternância trabalho/recuperação sem progressão clara de
+                     intensidade (ex.: 5x3min à mesma potência).
+      'continuo'   → intensidade estável do início ao fim (ex.: tempo run).
+      'indefinido' → sem sinal utilizável.
+
+    Devolve dict com o tipo, métricas de suporte e o método de limiar recomendado.
+    """
+    col = colunas.get('power') or colunas.get('heart_rate')
+    if col is None:
+        return {'tipo': 'indefinido', 'motivo': 'sem potência nem FC'}
+
+    s = pd.to_numeric(df[col], errors='coerce')
+    t = df['time_seconds']
+    m = s.notna()
+    if m.sum() < 120:
+        return {'tipo': 'indefinido', 'motivo': 'poucos dados'}
+    s, t = s[m].values, t[m].values
+
+    # Suavizar para avaliar a forma geral, não o ruído
+    ss = pd.Series(s).rolling(30, min_periods=1, center=True).mean().values
+
+    dur_min = (t[-1] - t[0]) / 60.0
+    amp = float(np.percentile(ss, 95) - np.percentile(ss, 5))
+    nivel = float(np.median(ss))
+    amp_rel = amp / nivel if nivel > 0 else 0
+
+    # Tendência global: quanto da variação é explicada por uma subida linear?
+    coef = np.polyfit(t, ss, 1)
+    pred = np.polyval(coef, t)
+    sst = np.sum((ss - ss.mean()) ** 2)
+    r2_linear = float(1 - np.sum((ss - pred) ** 2) / sst) if sst > 0 else 0.0
+    subida_por_min = float(coef[0] * 60)
+
+    # Fracção do tempo em "recuperação" — só conta como recuperação se for uma
+    # QUEDA a partir de intensidade alta, não o início baixo de uma rampa.
+    # Por isso avalia-se em relação ao valor local anterior, não ao global.
+    modo_alto = float(np.median(ss[ss >= np.median(ss)]))
+    baixo = ss < modo_alto * 0.5
+    # Ignorar o troço inicial contíguo abaixo do limiar (aquecimento/arranque)
+    if baixo.size and baixo[0]:
+        i = 0
+        while i < len(baixo) and baixo[i]:
+            baixo[i] = False
+            i += 1
+    frac_baixo = float(np.mean(baixo))
+
+    # Monotonia: fracção do tempo em que o sinal suavizado sobe
+    d = np.diff(ss)
+    frac_sobe = float(np.mean(d > 0)) if len(d) else 0.0
+
+    # "Escadaria": numa rampa a intensidade muda continuamente; em degraus há
+    # patamares planos separados por saltos. Compara-se a variação dentro de cada
+    # janela com a variação ESPERADA se fosse rampa (declive × duração da janela),
+    # e não com a amplitude global — caso contrário uma rampa lenta pareceria
+    # toda "plana".
+    jan = 30
+    n_jan = max(len(ss) // jan, 1)
+    esperado_rampa = abs(coef[0]) * jan   # variação esperada numa janela, se rampa
+    planos = 0
+    for i in range(n_jan):
+        w = ss[i * jan:(i + 1) * jan]
+        if len(w) < 5:
+            continue
+        # É "plano" se variar muito menos do que uma rampa variaria
+        if np.ptp(w) < max(esperado_rampa * 0.4, amp * 0.01):
+            planos += 1
+    frac_planos = planos / n_jan if n_jan else 0.0
+
+    # Tendência dos BLOCOS DE TRABALHO. Num protocolo com pausas, a alternância
+    # destrói o R² global — mas se cada bloco de trabalho for mais intenso que o
+    # anterior, trata-se de degraus incrementais e não de intervalos repetidos.
+    r2_trabalho, subida_trabalho = 0.0, 0.0
+    trabalho = ss >= modo_alto * 0.6
+    if trabalho.sum() > 60:
+        tt, st_ = t[trabalho], ss[trabalho]
+        if np.ptp(tt) > 0:
+            ct = np.polyfit(tt, st_, 1)
+            pt = np.polyval(ct, tt)
+            sst_t = np.sum((st_ - st_.mean()) ** 2)
+            r2_trabalho = float(1 - np.sum((st_ - pt) ** 2) / sst_t) if sst_t > 0 else 0.0
+            subida_trabalho = float(ct[0] * 60)
+
+    # ── Classificação ────────────────────────────────────────────────────────
+    if amp_rel < 0.15:
+        tipo = 'continuo'
+        motivo = f'intensidade estável (amplitude {amp_rel*100:.0f}% do nível)'
+    elif frac_baixo > 0.12:
+        # Há quedas claras para intensidade baixa → protocolo com recuperações.
+        # Se os blocos de trabalho sobem ao longo do tempo, são degraus
+        # incrementais; caso contrário, intervalos repetidos à mesma intensidade.
+        if r2_trabalho > 0.30 and subida_trabalho > 0:
+            tipo = 'degraus'
+            motivo = (f'{frac_baixo*100:.0f}% em recuperação, blocos de trabalho '
+                      f'a subir {subida_trabalho:.1f}/min (R²={r2_trabalho:.2f})')
+        else:
+            tipo = 'intervalos'
+            motivo = (f'{frac_baixo*100:.0f}% do tempo em recuperação, sem '
+                      f'progressão clara entre blocos (R²={r2_trabalho:.2f})')
+    elif r2_linear > 0.70 and subida_por_min > 0 and frac_planos < 0.35:
+        tipo = 'rampa'
+        motivo = (f'subida contínua de {subida_por_min:.1f}/min, '
+                  f'R²={r2_linear:.2f}, sem patamares')
+    elif r2_linear > 0.60 and subida_por_min > 0 and frac_planos >= 0.35:
+        tipo = 'degraus'
+        motivo = (f'subida em patamares ({frac_planos*100:.0f}% do tempo plano), '
+                  f'{subida_por_min:.1f}/min')
+    elif frac_sobe > 0.55 and amp_rel > 0.3 and frac_planos < 0.35:
+        tipo = 'rampa'
+        motivo = f'intensidade sobe em {frac_sobe*100:.0f}% do tempo'
+    else:
+        tipo = 'degraus'
+        motivo = f'variação em patamares (R²={r2_linear:.2f})'
+
+    # Método de limiar recomendado por tipo
+    _METODOS = {
+        'rampa': 'breakpoint contínuo (double-linear) sobre toda a rampa',
+        'degraus': 'breakpoint sobre o estado estacionário de cada degrau',
+        'intervalos': 'estabilidade do SmO₂ dentro de cada intervalo',
+        'continuo': 'sem limiares — sessão de intensidade única',
+        'indefinido': '—',
+    }
+
+    return {
+        'tipo': tipo,
+        'motivo': motivo,
+        'metodo_recomendado': _METODOS[tipo],
+        'duracao_min': round(dur_min, 1),
+        'amplitude_rel': round(amp_rel, 2),
+        'r2_linear': round(r2_linear, 2),
+        'subida_por_min': round(subida_por_min, 1),
+        'frac_recuperacao': round(frac_baixo, 2),
+        'frac_planos': round(frac_planos, 2),
+        'unidade': 'W' if col == colunas.get('power') else 'bpm',
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HRVT1c — ponto médio INDIVIDUAL (Rogers/Fleitas-Paniagua/Murias, IJSPP 2024)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def calcular_hrvt1c(serie_dfa1, df_metricas=None, colunas=None,
+                    janela_inicial_frac=0.35, sd_limite=3.0):
+    """
+    HRVT1 "custom" — corrige o viés do alpha1=0.75 fixo usando o ponto médio
+    INDIVIDUAL de cada atleta.
+
+    Base (IJSPP 2024): o alpha1=0.75 assume que toda a gente parte de ~1.0 no
+    início do esforço. Mas há quem comece em 1.5 ou mais. Nesses casos o
+    "ponto médio entre bem correlacionado e não-correlacionado" não é 0.75 —
+    é (max_inicial + 0.5) / 2.
+
+    No estudo, o max inicial médio foi 1.52 e o alvo calculado 1.01. A correcção
+    eliminou o viés face ao GET: de +16 bpm (α1=0.75) para +2 bpm (individual),
+    e reduziu os limites de concordância de ±35 para ±26 bpm.
+
+    janela_inicial_frac : fracção inicial do esforço onde procurar o alpha1 máximo.
+    sd_limite : o máximo tem de estar dentro deste nº de SD da média local
+        (evita apanhar um pico de artefacto).
+
+    Devolve dict com o alvo individual, o limiar em FC/potência, e comparação
+    com o método fixo — ou {'erro': ...}.
+    """
+    if serie_dfa1 is None or len(serie_dfa1) < 10:
+        return {'erro': 'série DFA-α1 insuficiente'}
+
+    s = serie_dfa1.dropna(subset=['dfa1', 'fc_media']).copy().sort_values('tempo_s')
+    n_ini = max(int(len(s) * janela_inicial_frac), 5)
+    inicial = s.head(n_ini)
+
+    # Máximo do início, mas filtrado: tem de estar dentro de sd_limite da média
+    # local (janela de ~45 s como no estudo), para não apanhar artefactos.
+    _loc = inicial['dfa1'].rolling(9, min_periods=3, center=True).mean()
+    _sd = inicial['dfa1'].rolling(9, min_periods=3, center=True).std()
+    _ok = inicial['dfa1'] <= (_loc + sd_limite * _sd.fillna(0))
+    cand = inicial[_ok] if _ok.sum() >= 3 else inicial
+    max_inicial = float(cand['dfa1'].max())
+
+    # Ponto médio individual entre o máximo inicial e 0.5 (não-correlacionado)
+    alvo_c = (max_inicial + DFA1_HRVT2) / 2.0
+
+    r_c = calcular_hrvt(serie_dfa1, df_metricas=df_metricas, colunas=colunas,
+                        alvo=alvo_c, janela_ajuste=(DFA1_HRVT2, max(max_inicial, 1.0)))
+    if 'erro' in r_c:
+        return {'erro': r_c['erro'], 'max_inicial': max_inicial, 'alvo': alvo_c}
+
+    # Para comparação: o método fixo de 0.75
+    r_s = calcular_hrvt(serie_dfa1, df_metricas=df_metricas, colunas=colunas,
+                        alvo=DFA1_HRVT1)
+
+    r_c.update({
+        'max_inicial_dfa1': round(max_inicial, 2),
+        'alvo_individual': round(alvo_c, 2),
+        'fc_metodo_fixo': (r_s.get('fc') if 'erro' not in r_s else None),
+        'diferenca_vs_fixo': (round(r_c['fc'] - r_s['fc'], 1)
+                              if 'erro' not in r_s and r_s.get('fc') else None),
+        'metodo': 'HRVT1c (ponto médio individual)',
+    })
+    return r_c
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HRVT2 SUBMÁXIMO — previsão sem chegar à exaustão (Rogers et al., JSCR 2025)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def hrvt2_submaximo(serie_dfa1, df_metricas=None, colunas=None,
+                    janela=(0.75, 1.5), min_pontos=8):
+    """
+    Prevê o HRVT2 usando APENAS dados submáximos, extrapolando a recta.
+
+    Base (JSCR 2025): a trajectória do alpha1 é aproximadamente linear entre 1.5
+    e 0.5. Basta ajustar a recta no troço 1.5→0.75 (que se atinge sem sair da
+    zona 2) e extrapolar até 0.5 para prever o HRVT2 — sem ter de fazer uma rampa
+    até à exaustão.
+
+    Vantagem prática: o teste pode repetir-se com frequência, sem impacto no
+    treino nem na recuperação.
+
+    Cuidados do estudo (verificados aqui e devolvidos em 'avisos'):
+      • a recta tem de ser inequívoca — se o alpha1 ondula (desce, sobe, desce),
+        o resultado não é de confiança
+      • o atleta tem de estar fresco; feito no dia seguinte a um esforço
+        exaustivo, dá resultados errados por supressão autonómica
+
+    Devolve dict com a previsão e o diagnóstico de qualidade.
+    """
+    if serie_dfa1 is None or len(serie_dfa1) < min_pontos:
+        return {'erro': 'série DFA-α1 insuficiente'}
+
+    s = serie_dfa1.dropna(subset=['dfa1', 'fc_media']).copy()
+    lo, hi = janela
+    sub = s[(s['dfa1'] >= lo) & (s['dfa1'] <= hi)]
+    if len(sub) < min_pontos:
+        return {'erro': f'poucos pontos na janela submáxima {lo}-{hi} (n={len(sub)})'}
+
+    x = sub['fc_media'].values.astype(float)
+    y = sub['dfa1'].values.astype(float)
+    if np.ptp(x) < 5:
+        return {'erro': 'variação de FC insuficiente na janela submáxima'}
+
+    coef = np.polyfit(x, y, 1)
+    y_pred = np.polyval(coef, x)
+    sst = np.sum((y - y.mean()) ** 2)
+    r2 = float(1 - np.sum((y - y_pred) ** 2) / sst) if sst > 0 else np.nan
+    if abs(coef[0]) < 1e-12:
+        return {'erro': 'declive nulo'}
+
+    fc_prev = float((DFA1_HRVT2 - coef[1]) / coef[0])
+
+    # Quanto se extrapolou para lá dos dados
+    extrapolacao_bpm = float(fc_prev - x.max())
+
+    # Ondulação: o alpha1 deve descer de forma monótona. Contam-se as inversões
+    # de sentido na série suavizada — muitas inversões = recta equívoca.
+    _sm = s.sort_values('tempo_s')['dfa1'].rolling(5, min_periods=2, center=True).mean()
+    _d = np.diff(_sm.dropna().values)
+    inversoes = int(np.sum(np.diff(np.sign(_d[np.abs(_d) > 0.005])) != 0))
+    ondulacao_pct = inversoes / max(len(_d), 1) * 100
+
+    pot_prev = None
+    if df_metricas is not None and colunas and 'power' in colunas and 'heart_rate' in colunas:
+        try:
+            dm = df_metricas[[colunas['heart_rate'], colunas['power']]].copy()
+            dm.columns = ['fc', 'pot']
+            dm = dm.apply(pd.to_numeric, errors='coerce').dropna()
+            dm = dm[dm['pot'] > 0]
+            if len(dm) > 30 and np.ptp(dm['fc'].values) > 5:
+                pot_prev = float(np.polyval(np.polyfit(dm['fc'].values,
+                                                      dm['pot'].values, 1), fc_prev))
+        except Exception:
+            pot_prev = None
+
+    avisos = []
+    if r2 < 0.7:
+        avisos.append(f'recta pouco definida na zona submáxima (R²={r2:.2f})')
+    if ondulacao_pct > 25:
+        avisos.append(f'o α1 ondula ao longo do esforço ({ondulacao_pct:.0f}% de '
+                      'inversões) — o estudo desaconselha confiar no resultado')
+    if extrapolacao_bpm > 25:
+        avisos.append(f'extrapolação longa ({extrapolacao_bpm:.0f} bpm acima do '
+                      'medido) — quanto mais longe, menos fiável')
+    _fc_max_sessao = float(s['fc_media'].max()) if len(s) else None
+    _fc_ok, _fc_aviso = _checar_fc_plausivel(fc_prev, fc_max_sessao=_fc_max_sessao)
+    if not _fc_ok:
+        avisos.append(_fc_aviso)
+
+    return {
+        'fc': fc_prev,
+        'potencia': pot_prev,
+        'coef': coef.tolist(),
+        'r2': r2,
+        'n_pontos': len(sub),
+        'janela': janela,
+        'fc_max_medida': float(x.max()),
+        'extrapolacao_bpm': round(extrapolacao_bpm, 1),
+        'ondulacao_pct': round(ondulacao_pct, 1),
+        'inversoes': inversoes,
+        'avisos': avisos,
+        'fiavel': len(avisos) == 0,
+        'pontos': sub,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DURABILIDADE — deriva de HR, fB e DFA-alpha1 (Rogers et al., EJAP 2025)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def analisar_durabilidade(df, colunas, serie_dfa1=None, lap_stats=None,
+                          n_blocos=4):
+    """
+    Durabilidade / resiliência fisiológica: deterioração das características
+    fisiológicas ao longo de uma sessão prolongada.
+
+    Base (EJAP 2025): num esforço constante abaixo do MMSS, os marcadores
+    metabólicos (VO2, lactato, glicose) estabilizam — mas **HR e frequência
+    respiratória sobem** e o **DFA-alpha1 desce** progressivamente. Essa deriva é
+    o sinal de perda de durabilidade, e é repetível entre sessões (ICC 0.73-0.94).
+
+    O estudo usa o método "isotime": divide a sessão em quartos e compara as
+    médias de cada quarto — o que normaliza sessões de duração diferente.
+
+    Importante: os três sinais devem ser lidos em conjunto. Alguém pode ter pouca
+    deriva de fB mas queda normal do alpha1, e olhar só para um marcador levaria a
+    concluir erradamente que não houve degradação.
+
+    Só faz sentido em sessões contínuas/longas; não em intervalos curtos.
+    """
+    d = df.copy()
+    if lap_stats:
+        excl = {l['lap_number'] for l in lap_stats if l.get('phase') == 'excluded'}
+        if excl:
+            d = d[~d['lap_number'].isin(excl)]
+    if len(d) < 600:  # menos de 10 min não faz sentido
+        return None
+
+    t0, t1 = d['time_seconds'].min(), d['time_seconds'].max()
+    dur_min = (t1 - t0) / 60.0
+    bordas = np.linspace(t0, t1, n_blocos + 1)
+
+    _METRICAS = [('heart_rate', 'FC', 'sobe'),
+                 ('respiration', 'Respiração', 'sobe'),
+                 ('resp_enhanced', 'Respiração enh.', 'sobe'),
+                 ('power', 'Potência', 'estavel'),
+                 ('smo2', 'SmO₂', 'estavel')]
+
+    linhas = []
+    for i in range(n_blocos):
+        m = (d['time_seconds'] >= bordas[i]) & (d['time_seconds'] < bordas[i + 1])
+        sub = d[m]
+        if len(sub) < 30:
+            continue
+        linha = {'bloco': f'Q{i+1}', 'n': len(sub),
+                 'inicio_min': round((bordas[i] - t0) / 60, 1)}
+        for met, _, _ in _METRICAS:
+            if met in colunas and colunas[met] in sub.columns:
+                v = pd.to_numeric(sub[colunas[met]], errors='coerce').dropna()
+                if len(v) > 10:
+                    linha[met] = round(float(v.mean()), 1)
+        # DFA-alpha1 do bloco (da série recalculada)
+        if serie_dfa1 is not None and len(serie_dfa1) > 0:
+            sd = serie_dfa1[(serie_dfa1['tempo_s'] >= bordas[i]) &
+                            (serie_dfa1['tempo_s'] < bordas[i + 1])]
+            if len(sd) >= 3:
+                linha['dfa1'] = round(float(sd['dfa1'].mean()), 3)
+        linhas.append(linha)
+
+    if len(linhas) < 3:
+        return None
+
+    tabela = pd.DataFrame(linhas)
+
+    # Deriva de cada marcador: variação do último bloco face ao primeiro
+    derivas = {}
+    for met, nome, esperado in _METRICAS + [('dfa1', 'DFA-α1', 'desce')]:
+        if met not in tabela.columns:
+            continue
+        v = tabela[met].dropna()
+        if len(v) < 3:
+            continue
+        delta = float(v.iloc[-1] - v.iloc[0])
+        base = float(v.iloc[0])
+        pct = (delta / abs(base) * 100) if abs(base) > 1e-9 else None
+        derivas[met] = {
+            'nome': nome,
+            'inicio': base,
+            'fim': float(v.iloc[-1]),
+            'delta': round(delta, 2),
+            'delta_pct': round(pct, 1) if pct is not None else None,
+            'esperado': esperado,
+        }
+
+    # Veredicto: contam-se os sinais de degradação
+    sinais = 0
+    detalhe = []
+    if 'heart_rate' in derivas and derivas['heart_rate']['delta'] > 3:
+        sinais += 1
+        detalhe.append(f"FC subiu {derivas['heart_rate']['delta']:.0f} bpm")
+    for _r in ('respiration', 'resp_enhanced'):
+        if _r in derivas and derivas[_r]['delta'] > 2:
+            sinais += 1
+            detalhe.append(f"respiração subiu {derivas[_r]['delta']:.0f} rpm")
+            break
+    if 'dfa1' in derivas and derivas['dfa1']['delta'] < -0.1:
+        sinais += 1
+        detalhe.append(f"DFA-α1 desceu {abs(derivas['dfa1']['delta']):.2f}")
+
+    if sinais >= 2:
+        veredicto, cor = 'Perda de durabilidade evidente', '#e74c3c'
+    elif sinais == 1:
+        veredicto, cor = 'Sinais ligeiros de deriva', '#f39c12'
+    else:
+        veredicto, cor = 'Durabilidade mantida', '#27ae60'
+
+    return {
+        'tabela': tabela,
+        'derivas': derivas,
+        'n_sinais': sinais,
+        'detalhe': detalhe,
+        'veredicto': veredicto,
+        'cor': cor,
+        'duracao_min': round(dur_min, 1),
+        'n_blocos': len(linhas),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AVALIAÇÃO DE FIABILIDADE — critérios explícitos dos estudos publicados
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Limites de concordância reportados na literatura (para calibrar expectativas)
+LOA_LITERATURA = {
+    'HRVT2_vs_RCP': '±15-21 bpm (MSSE 2024, IJSPP 2024)',
+    'HRVT1c_vs_GET': '±26 bpm (IJSPP 2024)',
+    'HRVT1_fixo_vs_GET': '±35 bpm, viés +16 bpm (MSSE 2024)',
+    'NIRS_BP_vs_RCP': 'variável; combo reduz o erro individual (JSCR 2024)',
+}
+
+
+def avaliar_fiabilidade(resultado):
+    """
+    Avalia a fiabilidade dos limiares estimados, segundo os critérios explícitos
+    da literatura. Devolve um semáforo global e a lista de critérios verificados.
+
+    Critérios (com a fonte):
+      • artefactos HRV ≤5%          — limite usado em todos os estudos do grupo
+      • ajuste inequívoco (R²)      — JSCR 2025: "recta de regressão inequívoca"
+      • sem ondulação do alpha1     — JSCR 2025: "se o α1 ondula, não confiar"
+      • alpha1 atinge o alvo        — senão o valor é extrapolação
+      • concordância entre métodos  — JSCR 2024: combo NIRS+HRV reduz erro
+      • duração/estrutura adequadas — janelas de 2 min precisam de tempo
+
+    O objectivo não é dar uma nota, é dizer ao utilizador **em que pode confiar**.
+    """
+    criterios = []
+
+    def _add(nome, estado, detalhe, fonte=''):
+        criterios.append({'criterio': nome, 'estado': estado,
+                          'detalhe': detalhe, 'fonte': fonte})
+
+    # 1. Qualidade do sinal HRV
+    q = resultado.get('dfa1_qualidade')
+    if q:
+        pct = q.get('pct_artefactos', 0)
+        if pct <= 5:
+            _add('Artefactos HRV', 'ok', f'{pct:.1f}% (limite: 5%)',
+                 'critério usado em todos os estudos do grupo Murias/Rogers')
+        else:
+            _add('Artefactos HRV', 'mau',
+                 f'{pct:.1f}% — acima do limite de 5%',
+                 'acima deste valor os estudos excluem o participante')
+    elif resultado.get('rr_info') is None:
+        _add('Intervalos RR', 'ausente',
+             'o ficheiro não contém RR — DFA-α1 não pode ser recalculado', '')
+
+    # 2. Ondulação e ajuste do alpha1
+    sub = resultado.get('hrvt2_submax')
+    if sub and 'erro' not in sub:
+        if sub.get('ondulacao_pct', 0) <= 25:
+            _add('Trajectória do α1', 'ok',
+                 f"desce de forma consistente ({sub['ondulacao_pct']:.0f}% de inversões)",
+                 'JSCR 2025: a recta deve ser inequívoca')
+        else:
+            _add('Trajectória do α1', 'mau',
+                 f"ondula ao longo do esforço ({sub['ondulacao_pct']:.0f}% de inversões)",
+                 'JSCR 2025: "se há ondulação, não confiar no teste"')
+
+    # 3. HRVT2 atingido ou extrapolado
+    h2 = resultado.get('hrvt2')
+    if h2 and 'erro' not in h2:
+        if h2.get('fiavel'):
+            _add('HRVT2 (α1=0.50)', 'ok',
+                 f"R²={h2.get('r2', 0):.2f}, {h2.get('pct_abaixo_alvo', 0):.0f}% "
+                 "das janelas abaixo do alvo", 'MSSE 2024')
+        else:
+            _add('HRVT2 (α1=0.50)', 'mau',
+                 '; '.join(h2.get('avisos', [])), 'MSSE 2024')
+
+    # 3b. Amplitude do sinal NIRS
+    # Um sensor bem colocado mostra quedas de 20-40 pontos de SmO2 num teste
+    # incremental. Amplitudes pequenas indicam quase sempre má colocação
+    # (tecido adiposo por cima, sensor solto, ou luz ambiente a entrar) — e o
+    # breakpoint pode ter um R² alto mesmo assim, porque ajusta bem a uma recta
+    # quase plana. Daí verificar a amplitude independentemente do ajuste.
+    _w = [l for l in resultado.get('lap_stats', []) if l.get('phase') == 'work']
+    _sm = [l['avg_smo2'] for l in _w if 'avg_smo2' in l]
+    if len(_sm) >= 3:
+        _amp = max(_sm) - min(_sm)
+        if _amp >= 15:
+            _add('Amplitude SmO₂', 'ok',
+                 f'{_amp:.0f} pontos entre o degrau mais fácil e o mais duro',
+                 'um sensor bem colocado mostra 20-40 pontos num incremental')
+        elif _amp >= 8:
+            _add('Amplitude SmO₂', 'aviso',
+                 f'apenas {_amp:.0f} pontos — sinal com pouca dinâmica',
+                 'verifica a colocação do sensor')
+        else:
+            _add('Amplitude SmO₂', 'mau',
+                 f'apenas {_amp:.0f} pontos — o sensor pode estar mal colocado '
+                 '(tecido adiposo, mal fixado, ou luz ambiente)',
+                 'sem amplitude não há breakpoint fisiológico a detectar')
+
+    # 4. Breakpoint NIRS
+    bp = resultado.get('bp_continuo')
+    if bp:
+        if bp.get('r2', 0) >= 0.8 and bp.get('coerente_recto_femoral'):
+            _add('Breakpoint SmO₂', 'ok',
+                 f"R²={bp['r2']:.2f}, padrão coerente", 'JSCR 2024')
+        elif bp.get('r2', 0) >= 0.8:
+            _add('Breakpoint SmO₂', 'aviso',
+                 f"R²={bp['r2']:.2f} mas padrão inesperado: {bp.get('padrao')}",
+                 'JSCR 2024')
+        else:
+            _add('Breakpoint SmO₂', 'mau',
+                 f"ajuste fraco (R²={bp.get('r2', 0):.2f})", 'JSCR 2024')
+
+    # 5. Concordância entre métodos independentes
+    cb = resultado.get('combo')
+    if cb and cb.get('n_metodos', 0) >= 2:
+        if cb['estado'] == 'concordante':
+            _add('Concordância NIRS↔HRV', 'ok',
+                 f"divergência de {cb['divergencia_pct']:.0f}%",
+                 'JSCR 2024: métodos independentes que concordam dão mais confiança')
+        else:
+            _add('Concordância NIRS↔HRV', 'aviso',
+                 f"divergência de {cb['divergencia_pct']:.0f}% entre métodos",
+                 'JSCR 2024: divergência grande sugere problema num dos sinais')
+    elif cb and cb.get('n_metodos') == 1:
+        _add('Concordância NIRS↔HRV', 'aviso',
+             'só um método disponível — sem validação cruzada',
+             'JSCR 2024: o combo reduz o erro individual de ~25% para 14%')
+
+    # 6. Estrutura do protocolo
+    proto = resultado.get('protocolo')
+    if proto:
+        t = proto.get('tipo')
+        if t in ('rampa', 'degraus'):
+            _add('Protocolo', 'ok', f"{t} — adequado a estimativa de limiares", '')
+        elif t == 'intervalos':
+            _add('Protocolo', 'aviso',
+                 'intervalos repetidos — os métodos de limiar assumem intensidade '
+                 'progressiva', '')
+        else:
+            _add('Protocolo', 'aviso',
+                 f'{t} — sem progressão de intensidade para estimar limiares', '')
+
+    # ── Semáforo global ──────────────────────────────────────────────────────
+    n_mau = sum(1 for c in criterios if c['estado'] == 'mau')
+    n_aviso = sum(1 for c in criterios if c['estado'] == 'aviso')
+    n_ok = sum(1 for c in criterios if c['estado'] == 'ok')
+
+    if n_mau == 0 and n_aviso <= 1:
+        nivel, cor, texto = ('alta', '#27ae60',
+                             'Resultados fiáveis — os critérios da literatura estão cumpridos.')
+    elif n_mau <= 1:
+        nivel, cor, texto = ('média', '#f39c12',
+                             'Fiabilidade moderada — usa os valores como orientação, '
+                             'não como referência definitiva.')
+    else:
+        nivel, cor, texto = ('baixa', '#e74c3c',
+                             'Fiabilidade baixa — vários critérios falharam. '
+                             'Recomenda-se repetir o teste antes de usar estes números.')
+
+    return {
+        'nivel': nivel, 'cor': cor, 'texto': texto,
+        'criterios': criterios,
+        'n_ok': n_ok, 'n_aviso': n_aviso, 'n_mau': n_mau,
+        'loa': LOA_LITERATURA,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HHb — hemoglobina desoxigenada derivada de SmO2 e THb
+# É a métrica que a literatura NIRS usa (Murias et al.), não o SmO2 directamente.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def derivar_hhb(df, colunas):
+    """
+    Deriva o HHb (hemoglobina desoxigenada) a partir do SmO2 e do THb.
+
+    Relação: o SmO2 é a percentagem de hemoglobina oxigenada no volume medido,
+    e o THb é a hemoglobina total. Logo:
+
+        HHb = THb × (1 − SmO2/100)
+        O2Hb = THb × (SmO2/100)
+
+    PORQUÊ ISTO IMPORTA: os estudos de NIRS (Murias, Fleitas-Paniagua) analisam
+    os breakpoints no **HHb**, não no SmO2. As duas métricas são inversamente
+    relacionadas, mas não são equivalentes: o SmO2 é uma proporção (satura), o
+    HHb é uma quantidade absoluta e mantém amplitude dinâmica útil a intensidades
+    altas — precisamente onde o SmO2 começa a achatar.
+
+    Se o THb não estiver disponível, devolve None (não se pode derivar).
+
+    Devolve (df com colunas HHb/O2Hb, colunas actualizado).
+    """
+    if 'smo2' not in colunas or 'thb' not in colunas:
+        return df, colunas
+
+    d = df.copy()
+    smo2 = pd.to_numeric(d[colunas['smo2']], errors='coerce')
+    thb = pd.to_numeric(d[colunas['thb']], errors='coerce')
+    if smo2.notna().sum() < 30 or thb.notna().sum() < 30:
+        return df, colunas
+
+    d['_HHb'] = thb * (1.0 - smo2 / 100.0)
+    d['_O2Hb'] = thb * (smo2 / 100.0)
+    cols = dict(colunas)
+    cols['hhb'] = '_HHb'
+    cols['o2hb'] = '_O2Hb'
+    return d, cols
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MLSS POR INTERVALOS LONGOS — método de comparação abaixo/acima
+# (muscleoxygentraining.com 2019/03, baseado em Murias et al.)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def mlss_intervalos_longos(df, colunas, lap_stats, ignorar_inicio_s=120,
+                           limiar_slope_hhb=0.10, limiar_slope_smo2=-0.5,
+                           min_dur_s=180):
+    """
+    Estima o MLSS comparando blocos de intensidade constante — o método que o
+    autor considera MAIS FIÁVEL do que os breakpoints por rampa.
+
+    Fundamento (artigo 2019/03 e Murias et al. 2018):
+      • ABAIXO do MLSS: o HHb/SmO2 estabiliza após a transição inicial
+      • ACIMA do MLSS: o HHb sobe continuamente (SmO2 desce continuamente),
+        acompanhando a acumulação de lactato e a subida da ventilação
+      • O MLSS fica ENTRE a intensidade mais alta estável e a mais baixa instável
+
+    Porquê preferir isto a rampas: o artigo é explícito — "a maioria dos métodos
+    para estimar a potência do MLSS tem um erro superior a 10 W", e o estudo de
+    Murias mostrou que exercitar apenas +10 W acima do MLSS (~3-5%) já provoca
+    subida progressiva do lactato e prejudica o desempenho posterior. Um erro de
+    rampa maior que 10 W torna a estimativa pouco útil na prática.
+
+    Diferença face a estabilidade_smo2_intervalos(): aqui a análise é
+    COMPARATIVA entre blocos e produz um enquadramento do MLSS, em vez de
+    classificar cada bloco isoladamente.
+
+    ignorar_inicio_s : segundos iniciais a ignorar em cada bloco (a queda inicial
+        é a transição da intensidade anterior, não o comportamento estacionário).
+        O artigo observa que o SmO2 só estabiliza a partir do minuto ~2-3.
+    min_dur_s : duração mínima de bloco a considerar. Blocos curtos não dão tempo
+        para o padrão se manifestar.
+
+    Devolve dict com a tabela por bloco, o enquadramento do MLSS e o diagnóstico.
+    """
+    # Preferir HHb (o que a literatura usa); cair para SmO2 se não houver THb.
+    # Normalmente já vem derivado da preparação; deriva aqui se faltar.
+    if 'hhb' not in colunas:
+        df, colunas = derivar_hhb(df, colunas)
+    usa_hhb = 'hhb' in colunas
+    col_sinal = colunas.get('hhb') or colunas.get('smo2')
+    if col_sinal is None:
+        return None
+    col_int = colunas.get('power') or colunas.get('heart_rate')
+    if col_int is None:
+        return None
+    unidade = 'W' if col_int == colunas.get('power') else 'bpm'
+
+    # Em HHb, "instável" = sobe; em SmO2, "instável" = desce
+    limiar = limiar_slope_hhb if usa_hhb else limiar_slope_smo2
+    nome_sinal = 'HHb' if usa_hhb else 'SmO₂'
+
+    linhas = []
+    for l in lap_stats:
+        if l.get('phase') != 'work':
+            continue
+        if l.get('duration', 0) < min_dur_s:
+            continue
+        d = df[df['lap_number'] == l['lap_number']]
+        if len(d) < 60:
+            continue
+        t0 = d['time_seconds'].iloc[0]
+        d = d[d['time_seconds'] >= t0 + ignorar_inicio_s]
+        if len(d) < 40:
+            continue
+
+        y = pd.to_numeric(d[col_sinal], errors='coerce')
+        t = d['time_seconds']
+        m = y.notna()
+        if m.sum() < 30:
+            continue
+        y, t = y[m].values, t[m].values
+
+        coef = np.polyfit(t, y, 1)
+        slope_min = float(coef[0] * 60)          # unidades por minuto
+        y_pred = np.polyval(coef, t)
+        sst = np.sum((y - y.mean()) ** 2)
+        r2 = float(1 - np.sum((y - y_pred) ** 2) / sst) if sst > 0 else np.nan
+
+        # Um declive só é credível se a tendência for consistente. Em blocos
+        # curtos ou com sinal ruidoso, o ajuste linear pode dar um declive
+        # aparente que é apenas ruído — daí exigir um R² mínimo antes de
+        # classificar o bloco como instável.
+        tendencia_credivel = (not np.isnan(r2)) and r2 >= 0.25
+
+        # Estável: o declive não excede o limiar no sentido "de instabilidade"
+        if usa_hhb:
+            excede = slope_min >= limiar          # HHb sobe → instável
+        else:
+            excede = slope_min <= limiar          # SmO2 desce → instável
+        estavel = not (excede and tendencia_credivel)
+
+        linhas.append({
+            'lap': l['lap_number'],
+            'intensidade': l.get('avg_power', l.get('avg_heart_rate')),
+            'fc': l.get('avg_heart_rate'),
+            f'{nome_sinal}_inicio': round(float(y[0]), 2),
+            f'{nome_sinal}_fim': round(float(y[-1]), 2),
+            'delta': round(float(y[-1] - y[0]), 2),
+            'slope_por_min': round(slope_min, 3),
+            'r2_tendencia': round(r2, 2) if not np.isnan(r2) else None,
+            'comportamento': ('estável' if estavel else 'deriva contínua'),
+            'tendencia_credivel': bool(tendencia_credivel),
+            'estavel': estavel,
+            'dur_analisada_s': int(t[-1] - t[0]),
+        })
+
+    if len(linhas) < 2:
+        return None
+
+    tabela = pd.DataFrame(linhas).sort_values('intensidade').reset_index(drop=True)
+    estaveis = tabela[tabela['estavel']]
+    instaveis = tabela[~tabela['estavel']]
+
+    lim_inf = float(estaveis['intensidade'].max()) if len(estaveis) else None
+    lim_sup = float(instaveis['intensidade'].min()) if len(instaveis) else None
+    fc_inf = (float(estaveis.loc[estaveis['intensidade'].idxmax(), 'fc'])
+              if len(estaveis) and estaveis['fc'].notna().any() else None)
+    fc_sup = (float(instaveis.loc[instaveis['intensidade'].idxmin(), 'fc'])
+              if len(instaveis) and instaveis['fc'].notna().any() else None)
+
+    if lim_inf is not None and lim_sup is not None and lim_inf < lim_sup:
+        estimativa = (lim_inf + lim_sup) / 2.0
+        fc_est = ((fc_inf + fc_sup) / 2.0
+                  if fc_inf is not None and fc_sup is not None else None)
+        largura = lim_sup - lim_inf
+        estado = 'enquadrado'
+        # O artigo mostra que ±10 W já altera a resposta fisiológica
+        precisao = ('boa' if largura <= 20 else
+                    'moderada' if largura <= 40 else 'grosseira')
+    elif lim_inf is not None and lim_sup is not None:
+        estimativa, fc_est, largura, precisao = None, None, None, None
+        estado = 'inconsistente'
+    elif lim_sup is not None:
+        estimativa, fc_est, largura, precisao = None, None, None, None
+        estado = 'abaixo_do_testado'
+    else:
+        estimativa, fc_est, largura, precisao = None, None, None, None
+        estado = 'acima_do_testado'
+
+    return {
+        'tabela': tabela,
+        'sinal': nome_sinal,
+        'usa_hhb': usa_hhb,
+        'mlss_entre': (lim_inf, lim_sup),
+        'mlss_estimado': estimativa,
+        'mlss_fc': fc_est,
+        'largura_janela': largura,
+        'precisao': precisao,
+        'estado': estado,
+        'unidade': unidade,
+        'n_blocos': len(tabela),
+        'n_estaveis': len(estaveis),
+        'n_instaveis': len(instaveis),
+        'ignorar_inicio_s': ignorar_inicio_s,
+        'limiar_slope': limiar,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CONVERSÃO POTÊNCIA ↔ FC
+# A FC dos limiares é mais estável entre protocolos do que a potência
+# (Physiological Reports 2023), por isso convém reportar ambas.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _relacao_pot_fc(df, colunas, lap_stats=None):
+    """
+    Ajusta a relação potência↔FC desta sessão, para converter limiares entre as
+    duas unidades.
+
+    Usa apenas os laps de trabalho (nas recuperações a FC desce com atraso e a
+    relação distorce-se). Devolve dict com os coeficientes nos dois sentidos,
+    ou None se não houver dados suficientes.
+    """
+    if 'power' not in colunas or 'heart_rate' not in colunas:
+        return None
+
+    # Preferir as MÉDIAS DE ESTADO ESTACIONÁRIO por lap (um ponto por degrau).
+    # Usar todos os pontos a 1 Hz distorce a recta: no início de cada degrau a FC
+    # ainda está a subir para o seu valor estacionário, o que achata a relação e
+    # subestima a FC nas potências altas (erros de 5-13 bpm nos testes).
+    usou_medias = False
+    if lap_stats:
+        pares = [(l['avg_power'], l['avg_heart_rate'])
+                 for l in lap_stats
+                 if l.get('phase') == 'work'
+                 and l.get('avg_power') is not None
+                 and l.get('avg_heart_rate') is not None
+                 and l['avg_power'] > 0]
+        if len(pares) >= 3:
+            dm = pd.DataFrame(pares, columns=['pot', 'fc'])
+            usou_medias = True
+
+    if not usou_medias:
+        d = df.copy()
+        if lap_stats:
+            laps_ok = {l['lap_number'] for l in lap_stats if l.get('phase') == 'work'}
+            if laps_ok:
+                d = d[d['lap_number'].isin(laps_ok)]
+        dm = d[[colunas['power'], colunas['heart_rate']]].copy()
+        dm.columns = ['pot', 'fc']
+        dm = dm.apply(pd.to_numeric, errors='coerce').dropna()
+        dm = dm[(dm['pot'] > 0) & (dm['fc'] > 30)]
+
+    if len(dm) < 3 or np.ptp(dm['pot'].values) < 20 or np.ptp(dm['fc'].values) < 5:
+        return None
+
+    x, y = dm['pot'].values, dm['fc'].values
+    c_pf = np.polyfit(x, y, 1)          # potência → FC
+    c_fp = np.polyfit(y, x, 1)          # FC → potência
+    y_pred = np.polyval(c_pf, x)
+    sst = np.sum((y - y.mean()) ** 2)
+    r2 = float(1 - np.sum((y - y_pred) ** 2) / sst) if sst > 0 else np.nan
+
+    return {
+        'coef_pot_fc': c_pf.tolist(),
+        'coef_fc_pot': c_fp.tolist(),
+        'r2': r2,
+        'n': len(dm),
+        'usou_medias_por_lap': usou_medias,
+        'pot_min': float(x.min()), 'pot_max': float(x.max()),
+        'fc_min': float(y.min()), 'fc_max': float(y.max()),
+    }
+
+
+def pot_para_fc(potencia, relacao):
+    """Converte potência em FC usando a relação da sessão."""
+    if relacao is None or potencia is None:
+        return None
+    return float(np.polyval(relacao['coef_pot_fc'], potencia))
+
+
+def fc_para_pot(fc, relacao):
+    """Converte FC em potência usando a relação da sessão."""
+    if relacao is None or fc is None:
+        return None
+    return float(np.polyval(relacao['coef_fc_pot'], fc))
+
+
+def resumir_zonas(resultado):
+    """
+    Consolida todos os métodos numa proposta de zonas de treino, em FC e potência.
+
+    Limiar BAIXO (Z1→Z2): prioridade ao HRVT1c (ponto médio individual), que a
+    literatura mostra ter menos viés que o α1=0.75 fixo.
+
+    Limiar ALTO (Z2→Z3): prioridade ao Combo (HRVT2 + NIRS), depois ao método dos
+    intervalos longos, depois ao breakpoint isolado — pela ordem de fiabilidade
+    que os estudos estabelecem.
+
+    Devolve dict com os limiares nas duas unidades, a origem de cada um, e a
+    lista de todas as estimativas disponíveis para comparação.
+    """
+    rel = resultado.get('relacao_pot_fc')
+
+    def _par(pot=None, fc=None):
+        """Completa o par (potência, FC) a partir do que existir."""
+        if pot is None and fc is not None:
+            pot = fc_para_pot(fc, rel)
+        elif fc is None and pot is not None:
+            fc = pot_para_fc(pot, rel)
+        return pot, fc
+
+    # ── Limiar baixo ─────────────────────────────────────────────────────────
+    baixo = None
+    h1c = resultado.get('hrvt1c')
+    if h1c and 'erro' not in h1c and h1c.get('fiavel', True) and h1c.get('fc'):
+        p, f = _par(h1c.get('potencia'), h1c['fc'])
+        baixo = {'pot': p, 'fc': f, 'origem': 'HRVT1c (ponto médio individual)',
+                 'fiavel': True}
+    elif h1c and 'erro' not in h1c and h1c.get('fc'):
+        p, f = _par(h1c.get('potencia'), h1c['fc'])
+        baixo = {'pot': p, 'fc': f, 'origem': 'HRVT1c (com reservas)',
+                 'fiavel': False}
+    else:
+        ld = resultado.get('limiar_dfa1')
+        if ld and 'limiares' in ld:
+            v = ld['limiares'].get(0.70)
+            if v and not v.get('extrapolado'):
+                if ld.get('unidade') == 'W':
+                    p, f = _par(pot=v['intensidade'])
+                else:
+                    p, f = _par(fc=v['intensidade'])
+                baixo = {'pot': p, 'fc': f,
+                         'origem': 'DFA-α1 = 0.70 (método fixo)', 'fiavel': False}
+
+    # ── Limiar alto ──────────────────────────────────────────────────────────
+    alto = None
+    alternativas = []
+
+    cb = resultado.get('combo')
+    if cb and cb.get('n_metodos', 0) >= 2 and cb.get('estado') == 'concordante':
+        p, f = _par(pot=cb['combo'])
+        alto = {'pot': p, 'fc': f, 'origem': 'Combo HRVT2 + NIRS', 'fiavel': True}
+
+    mi = resultado.get('mlss_intervalos')
+    if mi and mi.get('mlss_estimado'):
+        p, f = _par(mi['mlss_estimado'], mi.get('mlss_fc'))
+        alternativas.append({'pot': p, 'fc': f,
+                             'origem': f"MLSS intervalos longos ({mi['sinal']})",
+                             'fiavel': mi.get('precisao') == 'boa'})
+        if alto is None:
+            alto = dict(alternativas[-1])
+
+    for _k, _lbl in (('bp_continuo', 'Breakpoint SmO₂'), ('bp_hhb', 'Breakpoint HHb')):
+        bp = resultado.get(_k)
+        if bp and bp.get('breakpoint'):
+            if bp.get('unidade') == 'W':
+                p, f = _par(pot=bp['breakpoint'])
+            else:
+                p, f = _par(fc=bp['breakpoint'])
+            _fi = bp.get('r2', 0) >= 0.8
+            alternativas.append({'pot': p, 'fc': f, 'origem': _lbl, 'fiavel': _fi})
+            if alto is None:
+                alto = dict(alternativas[-1])
+
+    h2 = resultado.get('hrvt2')
+    if h2 and 'erro' not in h2 and h2.get('fc'):
+        p, f = _par(h2.get('potencia'), h2['fc'])
+        alternativas.append({'pot': p, 'fc': f, 'origem': 'HRVT2 (DFA-α1 = 0.50)',
+                             'fiavel': bool(h2.get('fiavel'))})
+        if alto is None and h2.get('fiavel'):
+            alto = dict(alternativas[-1])
+
+    # Coerência: o limiar baixo tem de ficar abaixo do alto
+    coerente = None
+    if baixo and alto and baixo.get('fc') and alto.get('fc'):
+        coerente = baixo['fc'] < alto['fc']
+
+    return {
+        'baixo': baixo,
+        'alto': alto,
+        'alternativas': alternativas,
+        'relacao_pot_fc': rel,
+        'coerente': coerente,
     }
