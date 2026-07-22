@@ -714,29 +714,13 @@ decoupling. Não há limiares a estimar.
 
     _offsets = st.session_state.get(chave_offsets, {})
 
-    # Cache da Fase 1 — sem isto, preparar_fit() (ler o FIT, extrair RR,
-    # segmentar laps) corria em TODOS os reruns do Streamlit, mesmo os que
-    # não têm nada a ver com este ficheiro (ex.: mexer noutro widget da
-    # página, ou até só o auto-refresh de outra secção). Só recalcula
-    # quando algo que realmente afeta o resultado muda.
-    _chave_prep = f'_fit_prep_{ficheiro.name}'
-    _assinatura_prep = (
-        len(bytes_fit), str(sorted(laps_manual or [])), str(sorted(laps_excl)),
-        janela, _modo_seg, str(intervalos), frac_corte, min_dur_seg,
-        zerar_pot, str(sorted(_offsets.items())),
-    )
-    _prep_cache = st.session_state.get(_chave_prep)
-    if _prep_cache is not None and _prep_cache.get('_sig') == _assinatura_prep:
-        res = _prep_cache['res']
-    else:
-        with st.spinner("A ler o ficheiro..."):
-            res = preparar_fit(
-                bytes_fit, laps_trabalho_manual=laps_manual, laps_excluidos=laps_excl,
-                janela_final_s=janela, modo_segmentacao=_modo_seg,
-                intervalos_trabalho=intervalos, frac_corte=frac_corte,
-                min_dur_segmento=min_dur_seg, zerar_potencia_descanso=zerar_pot,
-                offsets=_offsets)
-        st.session_state[_chave_prep] = {'_sig': _assinatura_prep, 'res': res}
+    with st.spinner("A ler o ficheiro..."):
+        res = preparar_fit(
+            bytes_fit, laps_trabalho_manual=laps_manual, laps_excluidos=laps_excl,
+            janela_final_s=janela, modo_segmentacao=_modo_seg,
+            intervalos_trabalho=intervalos, frac_corte=frac_corte,
+            min_dur_segmento=min_dur_seg, zerar_potencia_descanso=zerar_pot,
+            offsets=_offsets)
 
     if 'erro' in res:
         st.error(f"❌ {res['erro']}")
@@ -1117,8 +1101,6 @@ decoupling. Não há limiares a estimar.
     # ══════════════════════════════════════════════════════════════════════
     st.markdown("---")
     _chave_run = f'_fit_run_{ficheiro.name}'
-    _chave_res = f'_fit_res_{ficheiro.name}'   # guarda o RESULTADO, não só um sinalizador
-
     _assinatura = (str(sorted(laps_excl)), str(sorted(laps_manual or [])),
                    str(iv_editados), str(sorted(_offsets.items())),
                    janela, zerar_pot, modo)
@@ -1127,16 +1109,15 @@ decoupling. Não há limiares a estimar.
         # Os dados mudaram desde a última análise — invalidar o resultado
         st.session_state.pop(_chave_run, None)
         st.session_state.pop(f'{_chave_run}_sig', None)
-        st.session_state.pop(_chave_res, None)
 
     _ja_analisado = st.session_state.get(_chave_run) is not None
 
     _cb1, _cb2 = st.columns([1, 3])
     if _cb1.button("🔬 Analisar" if not _ja_analisado else "🔄 Reanalisar",
                    key=f'run_{ficheiro.name}', type='primary'):
-        st.session_state[_chave_run] = True
-        st.session_state[f'{_chave_run}_sig'] = _assinatura
-        st.session_state.pop(_chave_res, None)  # força recálculo já a seguir
+        with st.spinner("A correr as análises fisiológicas..."):
+            st.session_state[_chave_run] = True
+            st.session_state[f'{_chave_run}_sig'] = _assinatura
         st.rerun()
     _cb2.caption(
         "Confirma primeiro que os laps estão bem classificados e que as métricas "
@@ -1150,14 +1131,8 @@ decoupling. Não há limiares a estimar.
         _mostrar_historico()
         return
 
-    # Só recalcula se ainda não houver resultado em cache para esta assinatura —
-    # sem isto, qualquer clique nesta página (mesmo sem tocar nos laps) fazia
-    # correr a Fase 2 inteira outra vez, incluindo o DFA-α1.
-    if _chave_res not in st.session_state:
-        with st.spinner("A analisar..."):
-            st.session_state[_chave_res] = analisar_completo(
-                res, metodo_detrend='local', comparar_detrend=False)
-    res = st.session_state[_chave_res]
+    with st.spinner("A analisar..."):
+        res = analisar_completo(res)
     if 'erro' in res:
         st.error(f"❌ {res['erro']}")
         return
@@ -1220,8 +1195,7 @@ decoupling. Não há limiares a estimar.
         lc[0].metric("Dmax", f"{lim['dmax']:.0f} {u}" if lim['dmax'] else "—")
         lc[1].metric("Quebra inclinação", f"{lim['quebra']:.0f} {u}" if lim['quebra'] else "—")
         lc[2].metric("Deflexão 1%", f"{lim['deflexao']:.0f} {u}" if lim['deflexao'] else "—")
-        lc[3].metric("**Média**", f"{lim['media']:.0f} {u}",
-                     f"{lim['fc_media']:.0f} bpm" if lim.get('fc_media') else None)
+        lc[3].metric("**Média**", f"{lim['media']:.0f} {u}")
 
         st.plotly_chart(_grafico_limiares(lim), use_container_width=True,
                         config={'displayModeBar': False}, key=f'g_lim_{ficheiro.name}')
@@ -1235,94 +1209,6 @@ decoupling. Não há limiares a estimar.
             else:
                 st.success(f"✅ Os três métodos concordam (dispersão {_disp:.0f}%) — "
                            "estimativa fiável.")
-
-    # ── Resumo de zonas (FC e potência) ──────────────────────────────────────
-    _z = res.get('zonas')
-    if _z and (_z.get('baixo') or _z.get('alto')):
-        st.markdown("---")
-        st.markdown("### 🎯 Zonas de treino estimadas")
-        _rel = _z.get('relacao_pot_fc')
-        st.caption(
-            "A **FC é a referência principal** — é praticamente independente do "
-            "protocolo, ao contrário da potência (Physiological Reports 2023). "
-            "Os valores de potência são convertidos a partir da relação "
-            "potência↔FC desta sessão."
-            + (f" Ajuste: R²={_rel['r2']:.2f} sobre {_rel['n']} pontos."
-               if _rel else ""))
-
-        _b, _a = _z.get('baixo'), _z.get('alto')
-
-        def _fmt(v, u):
-            return f"{v:.0f} {u}" if v is not None else "—"
-
-        _zc1, _zc2, _zc3 = st.columns(3)
-        with _zc1:
-            st.markdown("**🟢 Zona 1** (fácil)")
-            if _b:
-                st.metric("até", _fmt(_b.get('fc'), 'bpm'),
-                          _fmt(_b.get('pot'), 'W'))
-            else:
-                st.metric("até", "—", "sem limiar baixo")
-        with _zc2:
-            st.markdown("**🟡 Zona 2** (moderada)")
-            if _b and _a:
-                st.metric("entre",
-                          f"{_b.get('fc', 0):.0f}–{_a.get('fc', 0):.0f} bpm",
-                          f"{_b.get('pot', 0):.0f}–{_a.get('pot', 0):.0f} W")
-            elif _a:
-                st.metric("até", _fmt(_a.get('fc'), 'bpm'), _fmt(_a.get('pot'), 'W'))
-            else:
-                st.metric("entre", "—", "")
-        with _zc3:
-            st.markdown("**🔴 Zona 3** (intensa)")
-            if _a:
-                st.metric("acima de", _fmt(_a.get('fc'), 'bpm'),
-                          _fmt(_a.get('pot'), 'W'))
-            else:
-                st.metric("acima de", "—", "sem limiar alto")
-
-        _orig = []
-        if _b:
-            _orig.append(f"**Limiar baixo (Z1→Z2):** {_b['origem']}"
-                         + ("" if _b.get('fiavel') else " ⚠️ com reservas"))
-        if _a:
-            _orig.append(f"**Limiar alto (Z2→Z3):** {_a['origem']}"
-                         + ("" if _a.get('fiavel') else " ⚠️ com reservas"))
-        if _orig:
-            st.caption(" · ".join(_orig))
-
-        if _z.get('coerente') is False:
-            st.warning("⚠️ O limiar baixo ficou **acima** do alto, o que é "
-                       "fisiologicamente improvável. Pelo menos uma das "
-                       "estimativas não é de confiança — vê o painel de "
-                       "fiabilidade abaixo.")
-        elif not _b:
-            st.info("ℹ️ Sem limiar baixo: precisa de DFA-α1 (intervalos RR no "
-                    "ficheiro). Só a fronteira Z2→Z3 foi estimada.")
-
-        # Todas as estimativas, para comparação
-        _alts = _z.get('alternativas') or []
-        if _alts:
-            with st.expander("📋 Todas as estimativas do limiar alto"):
-                _rows = []
-                for _al in _alts:
-                    _rows.append({
-                        'Método': _al['origem'],
-                        'FC (bpm)': round(_al['fc']) if _al.get('fc') else None,
-                        'Potência (W)': round(_al['pot']) if _al.get('pot') else None,
-                        'Fiável': '✅' if _al.get('fiavel') else '⚠️',
-                    })
-                st.dataframe(pd.DataFrame(_rows), hide_index=True,
-                             use_container_width=True)
-                _fcs = [a['fc'] for a in _alts if a.get('fc')]
-                if len(_fcs) >= 2:
-                    _amp = max(_fcs) - min(_fcs)
-                    if _amp <= 8:
-                        st.success(f"✅ Os métodos concordam (amplitude "
-                                   f"{_amp:.0f} bpm) — estimativa robusta.")
-                    else:
-                        st.warning(f"⚠️ Os métodos divergem {_amp:.0f} bpm. "
-                                   "Prefere os marcados como fiáveis.")
 
     # ── Painel de fiabilidade ────────────────────────────────────────────────
     _fi = res.get('fiabilidade')
@@ -1415,61 +1301,6 @@ decoupling. Não há limiares a estimar.
                 _msg = _ldfa.get('erro') if _ldfa else 'sem DFA-α1 no ficheiro'
                 st.info(f"Não calculado ({_msg}).")
 
-            # ── Versão recalculada a partir do RR, por lap (degraus/intervalos) ──
-            _ldfa_rec = res.get('limiar_dfa1_recalculado')
-            if _ldfa_rec is not None:
-                with st.expander(
-                        "🔬 Comparar com DFA-α1 recalculado do RR (um ponto por lap)"):
-                    st.caption(
-                        "O quadro acima usa o stream **cru** do dispositivo, sem "
-                        "correcção de artefactos. Esta versão usa o DFA-α1 "
-                        "**recalculado a partir dos RR** (o mesmo do HRVT2 acima), "
-                        "agregado num único ponto por lap de trabalho — pensado "
-                        "para protocolos de degraus/intervalos com descanso "
-                        "genuíno entre cada intensidade: cada degrau fica isolado, "
-                        "sem misturar dados do descanso anterior ou seguinte.")
-                    if 'limiares' in _ldfa_rec:
-                        _ur = _ldfa_rec['unidade']
-                        _r075 = _ldfa_rec['limiares'].get(0.75)
-                        _r070 = _ldfa_rec['limiares'].get(0.70)
-                        _r050 = _ldfa_rec['limiares'].get(0.50)
-                        if _r070:
-                            _avisos_r = []
-                            if _r070['extrapolado']:
-                                _avisos_r.append("extrapolado")
-                            if not _r070.get('fisiologicamente_plausivel', True):
-                                _avisos_r.append("valor implausível")
-                            _ex_r = f" ⚠️ {', '.join(_avisos_r)}" if _avisos_r else ""
-                            st.metric("Limite de zona 1 (α1 = 0.70) — recalculado",
-                                      f"{_r070['intensidade']:.0f} {_ur}{_ex_r}")
-                        if _r075:
-                            st.caption(f"α1 = 0.75 (≈VT1): {_r075['intensidade']:.0f} {_ur}")
-                        if _r050:
-                            st.caption(f"α1 = 0.50: {_r050['intensidade']:.0f} {_ur}")
-                        st.caption(f"Ajuste sobre {_ldfa_rec['n_usados']} laps · "
-                                   f"R² = {_ldfa_rec['r2']:.2f}")
-                        _pts_r = _ldfa_rec.get('pontos')
-                        if _pts_r is not None and len(_pts_r):
-                            st.dataframe(
-                                _pts_r[['lap', 'intensidade', 'dfa1_recalculado',
-                                       'n_janelas', 'janela_efetiva_media_s']]
-                                .rename(columns={
-                                    'lap': 'Lap', 'intensidade': f'Intensidade ({_ur})',
-                                    'dfa1_recalculado': 'DFA-α1 recalculado',
-                                    'n_janelas': 'Nº janelas de 5s',
-                                    'janela_efetiva_media_s': 'Janela efetiva média (s)'}),
-                                hide_index=True, use_container_width=True)
-                            if (_pts_r['janela_efetiva_media_s'] < 90).any():
-                                st.caption(
-                                    "ℹ️ Alguns laps têm janela efetiva bem abaixo de "
-                                    "120s — provavelmente laps de trabalho curtos, "
-                                    "onde a maior parte dos primeiros ~2 min foi "
-                                    "descartada para não misturar com o descanso "
-                                    "anterior. O valor ainda é válido, só com "
-                                    "menos pontos a suportá-lo.")
-                    else:
-                        st.info(f"Não calculado ({_ldfa_rec.get('erro')}).")
-
         # MLSS pelo breakpoint de SmO₂
         with _cl2:
             st.markdown("**MLSS / início da zona 3 — breakpoint SmO₂**")
@@ -1478,11 +1309,9 @@ decoupling. Não há limiares a estimar.
                 if _bph:
                     _bc1, _bc2 = st.columns(2)
                     _bc1.metric(f"Breakpoint — SmO₂",
-                                f"{_bp['breakpoint']:.0f} {_bp['unidade']}",
-                                f"{_bp['fc']:.0f} bpm" if _bp.get('fc') else None)
+                                f"{_bp['breakpoint']:.0f} {_bp['unidade']}")
                     _bc2.metric(f"Breakpoint — HHb",
                                 f"{_bph['breakpoint']:.0f} {_bph['unidade']}",
-                                f"{_bph['fc']:.0f} bpm" if _bph.get('fc') else None,
                                 help="HHb = hemoglobina desoxigenada, derivada de "
                                      "SmO₂ e THb. É a métrica que os estudos NIRS "
                                      "analisam — serve de verificação cruzada.")
@@ -1559,13 +1388,6 @@ decoupling. Não há limiares a estimar.
                 "(HRVT2 ≈ RCP/MLSS), não o VT1. O estudo mostrou que a média do "
                 "HRVT2 com o breakpoint NIRS tem menor erro individual do que "
                 "qualquer método isolado.")
-            if res.get('protocolo', {}).get('tipo') in ('intervalos', 'degraus'):
-                st.caption(
-                    "ℹ️ Protocolo de intervalos: cada janela de 2 min é recortada para "
-                    "não misturar batimentos de laps diferentes (ex.: recuperação + "
-                    "trabalho seguinte). Perto do início de cada intervalo a janela "
-                    "fica mais curta — e por isso menos precisa — até acumular tempo "
-                    "suficiente dentro do mesmo lap.")
 
             _q = res.get('dfa1_qualidade')
             if _q:
@@ -1617,8 +1439,7 @@ decoupling. Não há limiares a estimar.
                             f"{_cb['hrvt2']:.0f} W" if _cb['hrvt2'] else "—")
                 _cc2.metric("NIRS breakpoint",
                             f"{_cb['nirs']:.0f} W" if _cb['nirs'] else "—")
-                _cc3.metric("**COMBO**", f"{_cb['combo']:.0f} W",
-                            f"{_cb['fc']:.0f} bpm" if _cb.get('fc') else None)
+                _cc3.metric("**COMBO**", f"{_cb['combo']:.0f} W")
                 if _h2 and 'erro' not in _h2 and _h2.get('fc'):
                     st.caption(f"Em FC (mais estável entre protocolos): "
                                f"HRVT2 = {_h2['fc']:.0f} bpm")
