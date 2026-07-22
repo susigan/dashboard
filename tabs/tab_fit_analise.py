@@ -23,6 +23,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import warnings
 import sys, os as _os
+import hashlib
 sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 warnings.filterwarnings('ignore')
 
@@ -625,10 +626,17 @@ decoupling. Não há limiares a estimar.
 
     # ── Análise ───────────────────────────────────────────────────────────────
     bytes_fit = ficheiro.getvalue()
-    chave_manual = f'_fit_laps_manual_{ficheiro.name}'
-    chave_excl = f'_fit_laps_excl_{ficheiro.name}'
-    chave_edit_iv = f'_fit_edit_iv_{ficheiro.name}'
-    chave_offsets = f'_fit_offsets_{ficheiro.name}'
+    # Identificador por CONTEÚDO, não só pelo nome — ficheiros de teste com nomes
+    # repetidos ou enganadores (ex.: dois ficheiros diferentes chamados
+    # "moxy_remo_2026.fit") não devem herdar laps corrigidos nem análise já
+    # feita de uma sessão anterior. Sem isto, reabrir um ficheiro com o mesmo
+    # nome de outro já analisado disparava a Fase 2 (a mais pesada) logo no
+    # upload, usando estado de uma sessão diferente.
+    _fid = f'{ficheiro.name}_{hashlib.md5(bytes_fit).hexdigest()[:10]}'
+    chave_manual = f'_fit_laps_manual_{_fid}'
+    chave_excl = f'_fit_laps_excl_{_fid}'
+    chave_edit_iv = f'_fit_edit_iv_{_fid}'
+    chave_offsets = f'_fit_offsets_{_fid}'
     laps_manual = st.session_state.get(chave_manual)
     laps_excl = st.session_state.get(chave_excl, [])
     iv_editados = st.session_state.get(chave_edit_iv)
@@ -638,7 +646,7 @@ decoupling. Não há limiares a estimar.
         janela = st.slider(
             "Janela de estado estacionário (segundos finais de cada lap)",
             min_value=0, max_value=180, value=60, step=10,
-            key=f'janela_{ficheiro.name}',
+            key=f'janela_{_fid}',
             help="As médias de cada lap são calculadas só sobre os últimos N segundos. "
                  "Métricas como o SmO₂ têm cinética lenta (~30-60s) e no início do lap "
                  "ainda estão em transição da intensidade anterior. Usar o lap inteiro "
@@ -649,7 +657,7 @@ decoupling. Não há limiares a estimar.
 
         zerar_pot = st.checkbox(
             "Zerar potência nos períodos de recuperação",
-            value=False, key=f'zerar_{ficheiro.name}',
+            value=False, key=f'zerar_{_fid}',
             help="Alguns ergómetros registam potência residual durante a pausa "
                  "(inércia do volante, movimento leve), o que inflaciona as médias "
                  "de recuperação e distorce o decoupling. Esta opção força a "
@@ -665,7 +673,7 @@ decoupling. Não há limiares a estimar.
                 'corte': '📉 Detecção por corte de intensidade (defino a %)',
                 'intervalos': '⏱️ Eu defino os tempos de trabalho',
             }[m],
-            key=f'modo_{ficheiro.name}',
+            key=f'modo_{_fid}',
             help="Se a detecção automática não acertar no teu ficheiro, usa um dos "
                  "outros modos.")
 
@@ -677,13 +685,13 @@ decoupling. Não há limiares a estimar.
             pct = st.slider(
                 "Recuperação = abaixo de X% da intensidade de trabalho",
                 min_value=20, max_value=90, value=50, step=5,
-                key=f'pct_{ficheiro.name}',
+                key=f'pct_{_fid}',
                 help="Tudo o que estiver abaixo desta percentagem da potência (ou FC) "
                      "típica de trabalho é considerado recuperação.")
             frac_corte = pct / 100.0
             min_dur_seg = st.slider(
                 "Duração mínima de um bloco (s)", 10, 180, 45, 5,
-                key=f'mindur_{ficheiro.name}',
+                key=f'mindur_{_fid}',
                 help="Blocos mais curtos são fundidos com o anterior, para evitar "
                      "dezenas de micro-intervalos por causa de oscilações.")
 
@@ -692,9 +700,9 @@ decoupling. Não há limiares a estimar.
                        "fora (os 'buracos') passa automaticamente a recuperação.")
             texto = st.text_area(
                 "Intervalos de trabalho",
-                value=st.session_state.get(f'txt_iv_{ficheiro.name}', ''),
+                value=st.session_state.get(f'txt_iv_{_fid}', ''),
                 placeholder="10:00-13:00\n14:00-17:00\n18:00-21:00",
-                height=140, key=f'txt_iv_{ficheiro.name}',
+                height=140, key=f'txt_iv_{_fid}',
                 help="Formatos aceites: mm:ss-mm:ss, h:mm:ss-h:mm:ss, ou segundos "
                      "(600-780). Um intervalo por linha, ou separados por ';'.")
             intervalos, erros_iv = parse_intervalos(texto)
@@ -719,7 +727,7 @@ decoupling. Não há limiares a estimar.
     # não têm nada a ver com este ficheiro (ex.: mexer noutro widget da
     # página, ou até só o auto-refresh de outra secção). Só recalcula
     # quando algo que realmente afeta o resultado muda.
-    _chave_prep = f'_fit_prep_{ficheiro.name}'
+    _chave_prep = f'_fit_prep_{_fid}'
     _assinatura_prep = (
         len(bytes_fit), str(sorted(laps_manual or [])), str(sorted(laps_excl)),
         janela, _modo_seg, str(intervalos), frac_corte, min_dur_seg,
@@ -856,7 +864,7 @@ decoupling. Não há limiares a estimar.
     _editado = st.data_editor(
         _df_edit,
         hide_index=True, use_container_width=True,
-        key=f'editor_{ficheiro.name}',
+        key=f'editor_{_fid}',
         column_config={
             'Lap': st.column_config.NumberColumn('Lap', disabled=True, width='small'),
             'Aquecimento': st.column_config.CheckboxColumn(
@@ -876,7 +884,7 @@ decoupling. Não há limiares a estimar.
                   if c not in ('Aquecimento', 'Trabalho', 'Início', 'Fim')])
 
     _ca, _cb = st.columns([1, 3])
-    if _ca.button("✅ Aplicar alterações", key=f'aplicar_ed_{ficheiro.name}',
+    if _ca.button("✅ Aplicar alterações", key=f'aplicar_ed_{_fid}',
                   type='primary'):
         # IMPORTANTE: marcar aquecimento/trabalho NÃO re-segmenta a sessão.
         # As fronteiras dos laps ficam como estão — só mudam os rótulos. Assim os
@@ -925,7 +933,7 @@ decoupling. Não há limiares a estimar.
             st.session_state.pop(chave_edit_iv, None)
             st.rerun()
 
-    if _cb.button("↩️ Repor detecção automática", key=f'repor_{ficheiro.name}'):
+    if _cb.button("↩️ Repor detecção automática", key=f'repor_{_fid}'):
         for _k in (chave_edit_iv, chave_excl, chave_manual):
             st.session_state.pop(_k, None)
         st.rerun()
@@ -961,7 +969,7 @@ decoupling. Não há limiares a estimar.
         "Estilo do gráfico", options=['multi', 'empilhado'],
         format_func=lambda e: {'multi': '📊 Eixos combinados (Y1/Y2/Y3)',
                                'empilhado': '📑 Painéis empilhados'}[e],
-        horizontal=True, key=f'estilo_{ficheiro.name}')
+        horizontal=True, key=f'estilo_{_fid}')
 
     # ── Correcção de sincronia entre métricas ────────────────────────────────
     with st.expander("🔧 Corrigir sincronia entre métricas", expanded=False):
@@ -975,7 +983,7 @@ decoupling. Não há limiares a estimar.
             "Métricas a deslocar", options=disponiveis,
             default=list(_offsets.keys()),
             format_func=lambda m: NOMES_METRICAS.get(m, m),
-            key=f'sync_sel_{ficheiro.name}')
+            key=f'sync_sel_{_fid}')
 
         _novos_off = {}
         if _sync_sel:
@@ -986,15 +994,15 @@ decoupling. Não há limiares a estimar.
                         NOMES_METRICAS.get(_m, _m),
                         min_value=-60, max_value=60,
                         value=int(_offsets.get(_m, 0)), step=1,
-                        key=f'off_{_m}_{ficheiro.name}',
+                        key=f'off_{_m}_{_fid}',
                         help="Segundos a deslocar (+ = mais tarde)")
 
             _cs1, _cs2 = st.columns(2)
-            if _cs1.button("✅ Aplicar sincronia", key=f'aplicar_sync_{ficheiro.name}',
+            if _cs1.button("✅ Aplicar sincronia", key=f'aplicar_sync_{_fid}',
                            type='primary'):
                 st.session_state[chave_offsets] = {k: v for k, v in _novos_off.items() if v}
                 st.rerun()
-            if _cs2.button("↩️ Repor", key=f'repor_sync_{ficheiro.name}'):
+            if _cs2.button("↩️ Repor", key=f'repor_sync_{_fid}'):
                 st.session_state.pop(chave_offsets, None)
                 st.rerun()
 
@@ -1009,7 +1017,7 @@ decoupling. Não há limiares a estimar.
                     format_func=lambda b: {
                         'laps': '🏃 Laps de trabalho (recomendado)',
                         'metrica': '📊 Outra métrica'}[b],
-                    key=f'base_sync_{ficheiro.name}',
+                    key=f'base_sync_{_fid}',
                     help="Os laps de trabalho são marcadores temporais nítidos "
                          "(a intensidade sobe de forma abrupta), por isso costumam "
                          "dar um alinhamento mais fiável do que comparar duas séries.")
@@ -1019,7 +1027,7 @@ decoupling. Não há limiares a estimar.
                     format_func=lambda x: {'ambas': '↔️ Ambas',
                                            'frente': '➡️ Só para a frente',
                                            'tras': '⬅️ Só para trás'}[x],
-                    key=f'dir_sync_{ficheiro.name}',
+                    key=f'dir_sync_{_fid}',
                     help="Restringe a procura ao sentido que sabes ser o correcto.")
 
                 _sug = None
@@ -1033,7 +1041,7 @@ decoupling. Não há limiares a estimar.
                         _ref = st.selectbox(
                             "Métrica de referência", options=_ref_op,
                             format_func=lambda m: NOMES_METRICAS.get(m, m),
-                            key=f'ref_sync_{ficheiro.name}')
+                            key=f'ref_sync_{_fid}')
                         _sug = sugerir_offset(res['df'], colunas, _ref, _m_sel)
                         _ref_txt = NOMES_METRICAS.get(_ref, _ref)
 
@@ -1076,22 +1084,22 @@ decoupling. Não há limiares a estimar.
         _def3 = [m for m in ['heart_rate'] if m in colunas]
         y1 = ce1.multiselect("Eixo Y1 (esquerda)", disponiveis, default=_def1,
                              format_func=lambda m: NOMES_METRICAS.get(m, m),
-                             key=f'y1_{ficheiro.name}')
+                             key=f'y1_{_fid}')
         y2 = ce2.multiselect("Eixo Y2 (direita)", disponiveis, default=_def2,
                              format_func=lambda m: NOMES_METRICAS.get(m, m),
-                             key=f'y2_{ficheiro.name}')
+                             key=f'y2_{_fid}')
         y3 = ce3.multiselect("Eixo Y3 (extra)", disponiveis, default=_def3,
                              format_func=lambda m: NOMES_METRICAS.get(m, m),
-                             key=f'y3_{ficheiro.name}')
+                             key=f'y3_{_fid}')
         suav = st.slider("Suavização (média móvel, segundos)", 0, 60, 0, 5,
-                         key=f'suav_{ficheiro.name}',
+                         key=f'suav_{_fid}',
                          help="0 = dados brutos a 1Hz. Suavizar ajuda a ver a tendência "
                               "em métricas ruidosas como o DFA-α1.")
         fig = _grafico_multi_eixo(res['df'], colunas, lap_stats, y1, y2, y3, suav)
         if fig:
             st.plotly_chart(fig, use_container_width=True,
                             config={'displayModeBar': True, 'scrollZoom': True},
-                            key=f'g_multi_{ficheiro.name}')
+                            key=f'g_multi_{_fid}')
             st.caption("🔴 Bandas vermelhas = trabalho · 🔵 azuis = recuperação · "
                        "⚪ cinzentas = excluídos. Podes fazer zoom e arrastar.")
         else:
@@ -1100,13 +1108,13 @@ decoupling. Não há limiares a estimar.
         default = [m for m in ['smo2', 'heart_rate', 'power'] if m in colunas] or disponiveis[:3]
         sel = st.multiselect(
             "Métricas a mostrar", options=disponiveis, default=default,
-            format_func=lambda m: NOMES_METRICAS.get(m, m), key=f'series_{ficheiro.name}')
+            format_func=lambda m: NOMES_METRICAS.get(m, m), key=f'series_{_fid}')
         if sel:
             fig = _grafico_series(res['df'], colunas, lap_stats, sel)
             if fig:
                 st.plotly_chart(fig, use_container_width=True,
                                 config={'displayModeBar': False},
-                                key=f'g_series_{ficheiro.name}')
+                                key=f'g_series_{_fid}')
                 st.caption("🔴 Trabalho · 🔵 recuperação · ⚪ excluídos.")
 
     # ══════════════════════════════════════════════════════════════════════
@@ -1116,8 +1124,8 @@ decoupling. Não há limiares a estimar.
     # trabalhar sobre dados que ainda vão ser corrigidos.
     # ══════════════════════════════════════════════════════════════════════
     st.markdown("---")
-    _chave_run = f'_fit_run_{ficheiro.name}'
-    _chave_res = f'_fit_res_{ficheiro.name}'   # guarda o RESULTADO, não só um sinalizador
+    _chave_run = f'_fit_run_{_fid}'
+    _chave_res = f'_fit_res_{_fid}'   # guarda o RESULTADO, não só um sinalizador
 
     _assinatura = (str(sorted(laps_excl)), str(sorted(laps_manual or [])),
                    str(iv_editados), str(sorted(_offsets.items())),
@@ -1133,7 +1141,7 @@ decoupling. Não há limiares a estimar.
 
     _cb1, _cb2 = st.columns([1, 3])
     if _cb1.button("🔬 Analisar" if not _ja_analisado else "🔄 Reanalisar",
-                   key=f'run_{ficheiro.name}', type='primary'):
+                   key=f'run_{_fid}', type='primary'):
         st.session_state[_chave_run] = True
         st.session_state[f'{_chave_run}_sig'] = _assinatura
         st.session_state.pop(_chave_res, None)  # força recálculo já a seguir
@@ -1197,7 +1205,7 @@ decoupling. Não há limiares a estimar.
         fig_r = _grafico_restauracao(rest['tabela'])
         if fig_r:
             st.plotly_chart(fig_r, use_container_width=True,
-                            config={'displayModeBar': False}, key=f'g_rest_{ficheiro.name}')
+                            config={'displayModeBar': False}, key=f'g_rest_{_fid}')
 
         with st.expander("📋 Detalhe por sequência"):
             st.dataframe(rest['tabela'], hide_index=True, use_container_width=True)
@@ -1224,7 +1232,7 @@ decoupling. Não há limiares a estimar.
                      f"{lim['fc_media']:.0f} bpm" if lim.get('fc_media') else None)
 
         st.plotly_chart(_grafico_limiares(lim), use_container_width=True,
-                        config={'displayModeBar': False}, key=f'g_lim_{ficheiro.name}')
+                        config={'displayModeBar': False}, key=f'g_lim_{_fid}')
 
         _vals = [v for v in (lim['dmax'], lim['quebra'], lim['deflexao']) if v is not None]
         if len(_vals) >= 2:
@@ -1533,12 +1541,12 @@ decoupling. Não há limiares a estimar.
             with _gc1:
                 st.plotly_chart(_grafico_dfa1(_ldfa), use_container_width=True,
                                 config={'displayModeBar': False},
-                                key=f'g_dfa1_{ficheiro.name}')
+                                key=f'g_dfa1_{_fid}')
         if _bp:
             with _gc2:
                 st.plotly_chart(_grafico_double_linear(_bp), use_container_width=True,
                                 config={'displayModeBar': False},
-                                key=f'g_dbl_{ficheiro.name}')
+                                key=f'g_dbl_{_fid}')
 
         st.caption("Nota: o breakpoint corresponde à intensidade no momento da transição. "
                    "A literatura sugere subtrair 10-15 W para compensar o atraso da resposta "
@@ -1646,7 +1654,7 @@ decoupling. Não há limiares a estimar.
                 st.plotly_chart(_grafico_curva_dfa1(_sdfa, _h2),
                                 use_container_width=True,
                                 config={'displayModeBar': False},
-                                key=f'g_curva_dfa1_{ficheiro.name}')
+                                key=f'g_curva_dfa1_{_fid}')
 
         # ── HRVT1c — ponto médio individual (IJSPP 2024) ─────────────────────
         _h1c = res.get('hrvt1c')
@@ -1729,7 +1737,7 @@ decoupling. Não há limiares a estimar.
             st.plotly_chart(
                 _grafico_hhb_temporal(res['df'], colunas, lap_stats),
                 use_container_width=True, config={'displayModeBar': False},
-                key=f'g_hhb_temp_{ficheiro.name}')
+                key=f'g_hhb_temp_{_fid}')
             st.caption("🔴 Trabalho · 🔵 recuperação · ⚪ excluídos. "
                        "O HHb sobe com a intensidade (mais extracção de O₂), "
                        "o O₂Hb desce, e o THb mantém-se relativamente estável.")
@@ -1738,7 +1746,7 @@ decoupling. Não há limiares a estimar.
                 st.plotly_chart(
                     _grafico_breakpoint_hhb(_bp, _bph),
                     use_container_width=True, config={'displayModeBar': False},
-                    key=f'g_bp_hhb_{ficheiro.name}')
+                    key=f'g_bp_hhb_{_fid}')
                 _dif = abs(_bp['breakpoint'] - _bph['breakpoint'])
                 _cn1, _cn2, _cn3 = st.columns(3)
                 _cn1.metric("Breakpoint HHb",
@@ -1922,7 +1930,7 @@ decoupling. Não há limiares a estimar.
         st.caption("Deriva do custo cardíaco: quanto mais FC é necessária para a mesma potência "
                    "ao longo da sessão. Acima de 5% indica deriva cardiovascular relevante.")
         st.plotly_chart(_grafico_decoupling(dec), use_container_width=True,
-                        config={'displayModeBar': False}, key=f'g_dec_{ficheiro.name}')
+                        config={'displayModeBar': False}, key=f'g_dec_{_fid}')
 
     # ── Fadiga ────────────────────────────────────────────────────────────────
     fad = res['fadiga']
@@ -1965,7 +1973,7 @@ decoupling. Não há limiares a estimar.
     st.markdown("### 💾 Guardar no histórico")
     resumo = resumir_para_historico(res, ficheiro.name)
     cg1, cg2 = st.columns([1, 2])
-    if cg1.button("➕ Adicionar esta sessão ao histórico", key=f'guardar_{ficheiro.name}'):
+    if cg1.button("➕ Adicionar esta sessão ao histórico", key=f'guardar_{_fid}'):
         hist = st.session_state.get(_CHAVE_HIST, [])
         if not any(h.get('ficheiro') == resumo['ficheiro'] and h.get('data') == resumo['data']
                    for h in hist):
