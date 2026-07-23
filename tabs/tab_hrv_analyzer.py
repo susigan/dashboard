@@ -1420,6 +1420,20 @@ def _cx_autorunner(sig_hrv, sig_train, da_full=None, hoje_ar=None):
 # TAB AVANÇADA — adicionar à função tab_hrv_analyzer existente
 # ══════════════════════════════════════════════════════════════════════════════
 
+@st.cache_data(show_spinner="A comparar modelos de carga...", ttl=3600)
+def _comparar_modelos_carga_cached(sig_hrv, sig_train, max_lag=21):
+    """
+    Wrapper com cache para _hra.comparar_modelos_carga() — compara ~10 modelos
+    de carga (ATL/CTL/TSB/FTLM/Kalman/etc.) contra até 21 dias de desfasamento.
+
+    Sem isto, esta comparação corria do zero em TODO rerun do Streamlit — nunca
+    estava atrás de um botão, e ficava dentro de uma sub-aba que (tal como
+    qualquer aba do Streamlit) executa sempre, mesmo quando não está visível.
+    Só recalcula quando sig_hrv/sig_train/max_lag realmente mudam.
+    """
+    return _hra.comparar_modelos_carga(sig_hrv, sig_train, max_lag=max_lag)
+
+
 def tab_hrv_advanced(sig_hrv: pd.DataFrame,
                       sig_train: pd.DataFrame,
                       da_full: pd.DataFrame = None,
@@ -1799,7 +1813,7 @@ Confidence = nº de sinais alinhados na mesma direcção (0-5).
                    "e somas de load como preditores do HRV, e em que horizonte cada um funciona.")
 
         try:
-            _cmp = _hra.comparar_modelos_carga(sig_hrv, sig_train, max_lag=21)
+            _cmp = _comparar_modelos_carga_cached(sig_hrv, sig_train, max_lag=21)
             if _cmp['tabela'].empty:
                 st.warning("Sem dados suficientes para comparar modelos de carga.")
             else:
