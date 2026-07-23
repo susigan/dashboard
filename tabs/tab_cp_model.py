@@ -201,11 +201,16 @@ def tab_cp_model(ac_full=None):
     # ── Extrair MMPs da sheet ─────────────────────────────────────────────────
     # MMP60: sempre só validação. Nunca entra no fitting.
     # Row/Ski M1/M2/M3: usar MMP1, MMP5, MMP12 (sem MMP3 nem MMP20)
-    # Row/Ski outros modelos: usar MMP1, MMP3, MMP5, MMP12, MMP20
-    # Bike/Run: usar MMP1, MMP3, MMP5, MMP12, MMP20
+    # Row/Ski outros modelos: usar MMP3, MMP5, MMP12, MMP20 (excluir MMP1)
+    # Bike outros modelos: usar MMP5, MMP12, MMP20 (excluir MMP1 e MMP3 —
+    #   esforços de 1-3min são dominados pela capacidade anaeróbia, não pela
+    #   assíntota aeróbia que os modelos de CP pretendem capturar; sem isto o
+    #   grid search podia escolher 1+3+5min só por dar menor SEE%, mesmo sendo
+    #   fisiologicamente inadequado para estimar CP)
+    # Run: usar MMP1, MMP3, MMP5, MMP12, MMP20 (mantém-se sem restrição)
 
     _all_mmp_pts      = []   # M1/M2/M3 Row/Ski: MMP1+MMP5+MMP12
-    _all_mmp_pts_full = []   # outros modelos: todos excluindo MMP60
+    _all_mmp_pts_full = []   # outros modelos: todos excluindo MMP60 (e MMP1/MMP3 no Bike)
     _mmp60_val        = None
     _pmax_global      = None
 
@@ -245,9 +250,13 @@ def tab_cp_model(ac_full=None):
 
                 # _all_mmp_pts_full — modelos não-clássicos:
                 #   Row/Ski → MMP3+MMP5+MMP12+MMP20 (excluir MMP1 e MMP60)
-                #   Bike/Run → todos exceto MMP60
+                #   Bike    → MMP5+MMP12+MMP20 (excluir MMP1, MMP3 e MMP60)
+                #   Run     → todos exceto MMP60
                 if modalidade in ('Row', 'Ski'):
                     if _dur_f in (180.0, 300.0, 720.0, 1200.0):
+                        _all_mmp_pts_full.append((_mv, _dur_f))
+                elif modalidade == 'Bike':
+                    if _dur_f in (300.0, 720.0, 1200.0):
                         _all_mmp_pts_full.append((_mv, _dur_f))
                 else:
                     _all_mmp_pts_full.append((_mv, _dur_f))
@@ -376,11 +385,14 @@ def tab_cp_model(ac_full=None):
     if _all_mmp_pts_full:
         for _mn, _mcfg in _MODELS.items():
             _px    = _pmax_global if _mcfg['needs_pmax'] else None
-            # M1/M2/M3 Row/Ski: usar MMP1+MMP5+MMP12 apenas
-            # Todos os outros: usar conjunto completo (MMP1+MMP3+MMP5+MMP12+MMP20)
-            _pts_base = (_all_mmp_pts
-                         if _mn in _M_CLASSICOS and modalidade in ('Row','Ski')
-                         else _all_mmp_pts_full)
+            # M1/M2/M3 (clássicos): usam sempre _all_mmp_pts — Row/Ski restrito a
+            # MMP1+MMP5+MMP12; Bike/Run sem restrição (todos os 5 pontos), tal
+            # como já era antes desta correcção. A condição já não depende da
+            # modalidade aqui — é o próprio _all_mmp_pts que já foi construído
+            # por modalidade acima.
+            # Todos os outros modelos: usam _all_mmp_pts_full — Row/Ski exclui
+            # MMP1; Bike exclui MMP1+MMP3; Run sem restrição.
+            _pts_base = (_all_mmp_pts if _mn in _M_CLASSICOS else _all_mmp_pts_full)
             _pts  = ([p for p in _pts_base if p[1] >= 60]
                      if _mcfg.get('exclude_short') else _pts_base)
             _n_pts = _mcfg['n_pts']
