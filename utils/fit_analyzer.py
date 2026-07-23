@@ -1256,6 +1256,12 @@ def analisar_completo(prep, metodo_detrend='local', comparar_detrend=False, lam_
     # serve de verificação cruzada ao resultado obtido com SmO2.
     bp_hhb = (breakpoint_smo2_continuo(df, colunas, lap_stats, protocolo=_tipo,
                                        sinal='hhb') if 'hhb' in colunas else None)
+    # LT1+LT2 (2 breakpoints no mesmo sinal SmO2) — Andri Feldmann, fórum Moxy.
+    # LT2 aqui é um segundo ponto de vista, independente, sobre o mesmo
+    # território do HRVT2/RCP (via DFA-α1); LT1 é novo (não tínhamos nenhuma
+    # estimativa de VT1/LT1 a partir do SmO2 antes disto).
+    bp_lt1_lt2 = breakpoint_smo2_lt1_lt2(df, colunas, lap_stats, protocolo=_tipo,
+                                        sinal='smo2')
     lim_dfa1 = limiar_dfa1(lap_stats, colunas)
     estab_smo2 = (estabilidade_smo2_intervalos(df, colunas, lap_stats)
                   if _tipo in ('degraus', 'intervalos') else None)
@@ -1360,6 +1366,7 @@ def analisar_completo(prep, metodo_detrend='local', comparar_detrend=False, lam_
         'limiares': limiares,
         'bp_continuo': bp_continuo,
         'bp_hhb': bp_hhb,
+        'bp_lt1_lt2': bp_lt1_lt2,
         'limiar_dfa1': lim_dfa1,
         'limiar_dfa1_recalculado': lim_dfa1_recalc,
         'limitador_smo2': limitador_smo2,
@@ -1973,6 +1980,105 @@ def _ajuste_double_linear(x, y, margem=0.15):
     }
 
 
+def _ajuste_triplo_linear(x, y, margem=0.12):
+    """
+    Ajusta um modelo de TRÊS rectas (dois pontos de quebra) — o análogo a
+    detectar LT1 (1ª quebra de inclinação) e LT2 (2ª quebra/achatamento) na
+    mesma série. Andri Feldmann (fórum de developers da Moxy, tópico "Moxy
+    to control intensity"): "you will find two distinctive changes in your
+    smo2 slope/rate. The first drop is LT1 and then the second is either a
+    second clear drop or a flattening/attenuation, this is LT2."
+
+    Generaliza _ajuste_double_linear (1 quebra) para 2 quebras: testa todos
+    os pares de pontos candidatos (i < j) como pontos de quebra, ajusta uma
+    recta em cada um dos 3 segmentos, e escolhe o par que minimiza a soma
+    dos quadrados dos resíduos (SSE) — grid search O(n²), aceitável porque
+    `x`/`y` já vêm sub-amostrados (dezenas de pontos, não milhares).
+
+    margem : fracção dos extremos a ignorar como candidatos, tal como em
+        _ajuste_double_linear (evita quebras sem significado fisiológico
+        mesmo junto ao início/fim da série).
+
+    Devolve dict com os dois breakpoints (bp1 < bp2 — LT1 e LT2), declives
+    dos 3 segmentos, R² e os índices usados, ou None se não for possível
+    ajustar (dados insuficientes para 3 segmentos com pontos suficientes).
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    n = len(x)
+    if n < 18:
+        return None
+
+    ini = max(4, int(n * margem))
+    fim = min(n - 4, int(n * (1 - margem)))
+    if fim - ini < 6:
+        return None
+
+    melhor = None
+    sse_total = np.sum((y - y.mean()) ** 2)
+
+    for i in range(ini, fim - 3):
+        x1, y1 = x[:i], y[:i]
+        if len(x1) < 3 or np.ptp(x1) < 1e-9:
+            continue
+        try:
+            c1 = np.polyfit(x1, y1, 1)
+        except Exception:
+            continue
+        sse1 = np.sum((y1 - np.polyval(c1, x1)) ** 2)
+
+        for j in range(i + 3, fim):
+            x2, y2 = x[i:j], y[i:j]
+            x3, y3 = x[j:], y[j:]
+            if len(x2) < 3 or len(x3) < 3:
+                continue
+            if np.ptp(x2) < 1e-9 or np.ptp(x3) < 1e-9:
+                continue
+            try:
+                c2 = np.polyfit(x2, y2, 1)
+                c3 = np.polyfit(x3, y3, 1)
+            except Exception:
+                continue
+            sse = (sse1 + np.sum((y2 - np.polyval(c2, x2)) ** 2)
+                        + np.sum((y3 - np.polyval(c3, x3)) ** 2))
+            if melhor is None or sse < melhor['sse']:
+                melhor = {'i': i, 'j': j, 'sse': sse, 'c1': c1, 'c2': c2, 'c3': c3}
+
+    if melhor is None:
+        return None
+
+    c1, c2, c3 = melhor['c1'], melhor['c2'], melhor['c3']
+
+    def _intersecao(ca, cb, x_candidato):
+        if abs(ca[0] - cb[0]) > 1e-9:
+            xi = (cb[1] - ca[1]) / (ca[0] - cb[0])
+            if x.min() <= xi <= x.max():
+                return float(xi)
+        return float(x_candidato)
+
+    bp1 = _intersecao(c1, c2, x[melhor['i']])
+    bp2 = _intersecao(c2, c3, x[melhor['j']])
+    if bp2 < bp1:  # segurança — por construção (i<j) já deveria vir ordenado
+        bp1, bp2 = bp2, bp1
+
+    r2 = 1 - melhor['sse'] / sse_total if sse_total > 0 else np.nan
+
+    return {
+        'breakpoint_lt1': bp1,
+        'breakpoint_lt2': bp2,
+        'idx_lt1': melhor['i'],
+        'idx_lt2': melhor['j'],
+        'slope_1': float(c1[0]),
+        'slope_2': float(c2[0]),
+        'slope_3': float(c3[0]),
+        'coef_1': c1.tolist(),
+        'coef_2': c2.tolist(),
+        'coef_3': c3.tolist(),
+        'r2': float(r2),
+        'n_pontos': n,
+    }
+
+
 def breakpoint_smo2_continuo(df, colunas, lap_stats=None, janela_media=10,
                              usar_apenas_trabalho=True, so_estado_estacionario=True,
                              janela_estavel_s=90, protocolo=None, sinal='smo2'):
@@ -2095,6 +2201,126 @@ def breakpoint_smo2_continuo(df, colunas, lap_stats=None, janela_media=10,
         'usou_apenas_trabalho': bool(usar_apenas_trabalho),
         'padrao': padrao,
         'coerente_recto_femoral': coerente,
+    })
+    return res
+
+
+def breakpoint_smo2_lt1_lt2(df, colunas, lap_stats=None, janela_media=10,
+                            usar_apenas_trabalho=True, so_estado_estacionario=True,
+                            janela_estavel_s=90, protocolo=None, sinal='smo2'):
+    """
+    Deteta DOIS breakpoints de SmO₂ (aproximação a LT1 e LT2), em vez de um
+    só — Andri Feldmann (fórum de developers da Moxy, "Moxy to control
+    intensity"): "you will find two distinctive changes in your smo2
+    slope/rate. The first drop is LT1 and then the second is either a
+    second clear drop or a flattening/attenuation, this is LT2."
+
+    Reutiliza exactamente o mesmo pré-processamento de breakpoint_smo2_continuo()
+    (média móvel, amostragem, filtro de trabalho/estado-estacionário conforme o
+    protocolo) — só a fase final do ajuste muda: em vez de _ajuste_double_linear
+    (1 quebra), usa _ajuste_triplo_linear (2 quebras).
+
+    LT1 é o breakpoint de MENOR intensidade (1ª mudança de declive — transição
+    moderado→pesado); LT2 é o de MAIOR intensidade (2ª mudança — transição
+    pesado→severo, tipicamente perto do que já calculamos como HRVT2/RCP via
+    DFA-α1). Ter os dois a partir do MESMO sinal (SmO₂) dá um segundo ponto de
+    vista, independente do DFA-α1, para cruzar com o HRVT1c existente.
+
+    RESSALVA IMPORTANTE (Jem Arnold, investigador de NIRS, fórum Moxy,
+    citando Caen et al. 2022): a margem de erro do breakpoint de NIRS entre
+    sessões pode ser grande (~50W numa medição de 170W nalguns indivíduos) —
+    trata isto como uma ESTIMATIVA aproximada, não um valor de precisão
+    laboratorial, sobretudo para prescrição fina de treino.
+
+    Parâmetros e devolução: mesma estrutura de breakpoint_smo2_continuo(),
+    mas com 'breakpoint_lt1'/'breakpoint_lt2' (e declives '_1'/'_2'/'_3') em
+    vez de um único 'breakpoint'. Devolve None nas mesmas condições (dados
+    insuficientes) — precisa de mais pontos do que o caso de 1 quebra, já
+    que agora há 3 segmentos em vez de 2.
+    """
+    if 'smo2' not in colunas and 'hhb' not in colunas:
+        return None
+
+    if protocolo in ('rampa', 'continuo'):
+        usar_apenas_trabalho = False
+        so_estado_estacionario = False
+
+    _chave = sinal if sinal in colunas else ('smo2' if 'smo2' in colunas else 'hhb')
+    col_smo2 = colunas[_chave]
+    nome_sinal = 'HHb' if _chave == 'hhb' else 'SmO₂'
+    col_int = colunas.get('power') or colunas.get('heart_rate')
+    if col_int is None:
+        return None
+    unidade = 'W' if col_int == colunas.get('power') else 'bpm'
+
+    d = df[['time_seconds', 'lap_number', col_smo2, col_int]].copy()
+    d.columns = ['t', 'lap', 'smo2', 'intensidade']
+    d['smo2'] = pd.to_numeric(d['smo2'], errors='coerce')
+    d['intensidade'] = pd.to_numeric(d['intensidade'], errors='coerce')
+
+    if usar_apenas_trabalho and lap_stats:
+        laps_ok = {l['lap_number'] for l in lap_stats if l.get('phase') == 'work'}
+        if laps_ok:
+            d = d[d['lap'].isin(laps_ok)]
+
+    if so_estado_estacionario and janela_estavel_s and janela_estavel_s > 0:
+        partes = []
+        for _, g in d.groupby('lap'):
+            if len(g) == 0:
+                continue
+            t_fim = g['t'].max()
+            sub = g[g['t'] >= t_fim - janela_estavel_s]
+            if len(sub) < 10:
+                sub = g.tail(max(10, len(g) // 2))
+            partes.append(sub)
+        if partes:
+            d = pd.concat(partes, ignore_index=True)
+
+    d = d.dropna(subset=['smo2', 'intensidade'])
+    if len(d) < 40:
+        return None
+
+    d = d.sort_values('t').reset_index(drop=True)
+    _mp = max(3, janela_media // 2)
+    d['smo2_ma'] = d['smo2'].rolling(janela_media, min_periods=_mp).mean()
+    d['int_ma'] = d['intensidade'].rolling(janela_media, min_periods=_mp).mean()
+    amostra = d.iloc[::janela_media].dropna(subset=['smo2_ma', 'int_ma'])
+    if len(amostra) < 18:  # precisa de mais pontos do que a versão de 1 quebra
+        return None
+
+    amostra = amostra.sort_values('int_ma').reset_index(drop=True)
+
+    res = _ajuste_triplo_linear(amostra['int_ma'].values, amostra['smo2_ma'].values)
+    if res is None:
+        return None
+
+    # Interpretação do padrão do 2º segmento->3º segmento (LT2), espelhando a
+    # lógica já usada em breakpoint_smo2_continuo para o recto femoral
+    s2, s3 = res['slope_2'], res['slope_3']
+    _acelerou = (s3 > s2) if _chave == 'hhb' else (s3 < s2)
+    if _acelerou:
+        padrao_lt2 = 'aceleração da desoxigenação'
+    elif abs(s3) < abs(s2) * 0.5:
+        padrao_lt2 = 'plateau (padrão típico de vasto lateral)'
+    else:
+        padrao_lt2 = 'sem mudança clara de declive'
+
+    res.update({
+        'unidade': unidade,
+        'pontos': amostra[['int_ma', 'smo2_ma', 't']].rename(
+            columns={'int_ma': 'intensidade', 'smo2_ma': 'smo2', 't': 'tempo_s'}),
+        'janela_media': janela_media,
+        'protocolo': protocolo,
+        'sinal': nome_sinal,
+        'chave_sinal': _chave,
+        'usou_estado_estacionario': bool(so_estado_estacionario),
+        'usou_apenas_trabalho': bool(usar_apenas_trabalho),
+        'padrao_lt2': padrao_lt2,
+        'aviso': (
+            'Estimativa aproximada — a margem de erro de breakpoints por NIRS '
+            'entre sessões pode ser grande (dezenas de W); usar como referência '
+            'de zona, não como valor de precisão laboratorial.'
+        ),
     })
     return res
 
