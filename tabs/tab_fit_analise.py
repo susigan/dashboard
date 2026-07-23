@@ -1974,6 +1974,46 @@ decoupling. Não há limiares a estimar.
                    "(2) a recuperação é inconsistente entre intervalos, (3) há deriva do custo "
                    "cardíaco. Dois ou mais sinais indicam fadiga elevada.")
 
+    # ── Limitador fisiológico exploratório (SmO2/THb) ────────────────────────
+    lim_smo2 = res.get('limitador_smo2')
+    if lim_smo2 is not None:
+        st.markdown("---")
+        st.markdown("### 🔍 Limitador fisiológico provável (exploratório)")
+        st.caption(
+            "Baseado no '5-1-5 Assessment' (Moxy) e nos artigos de Evan Peikon "
+            "(Emergent Performance Lab) — usa só SmO₂/THb, sem sensor de NO/CO₂. "
+            "Compara como o SmO₂ e o THb evoluem entre laps sucessivos de "
+            "intensidade crescente.")
+        if 'erro' in lim_smo2:
+            st.info(f"Não calculado: {lim_smo2['erro']}")
+        else:
+            _nomes_lim = {'muscular': '💪 Muscular / Utilização',
+                          'cardiaco': '❤️ Cardíaco / Delivery',
+                          'pulmonar': '🫁 Pulmonar',
+                          'inconclusivo': '❓ Inconclusivo'}
+            _prov = lim_smo2['limitador_provavel']
+            st.markdown(f"**Limitador mais provável: {_nomes_lim.get(_prov, _prov)}**")
+
+            _lc1, _lc2, _lc3 = st.columns(3)
+            _pt = lim_smo2['pontuacao']
+            _lc1.metric("💪 Muscular", _pt.get('muscular', 0))
+            _lc2.metric("❤️ Cardíaco", _pt.get('cardiaco', 0))
+            _lc3.metric("🫁 Pulmonar", _pt.get('pulmonar', 0))
+
+            if lim_smo2['sinais']:
+                st.markdown("**Sinais encontrados:**")
+                for s in lim_smo2['sinais']:
+                    st.caption(f"• {s}")
+            else:
+                st.caption("Nenhum sinal claro encontrado — dados demasiado estáveis ou "
+                           "sem tendência definida entre laps.")
+
+            st.warning(lim_smo2['aviso'])
+
+            with st.expander("Ver tendências brutas usadas na classificação"):
+                for _nome_t, (_cat, _var) in lim_smo2['tendencias'].items():
+                    st.caption(f"**{_nome_t}**: {_cat} ({_var:+.2f})")
+
     # ── Tempo até à falha ─────────────────────────────────────────────────────
     tf = res.get('tempo_falha')
     if tf is not None and len(tf) > 0:
