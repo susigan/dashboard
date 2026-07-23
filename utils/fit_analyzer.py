@@ -570,6 +570,12 @@ def estatisticas_por_lap(df, laps_info, colunas, janela_final_s=60):
                 vals_est = pd.to_numeric(d_est[col], errors='coerce').dropna()
                 if len(vals_est) > 0:
                     s[f'avg_{metrica}'] = float(vals_est.mean())
+                    # max/min também sobre o estado estacionário — útil quando o que
+                    # interessa é "onde estabilizou", não o pico/vale do lap inteiro
+                    # (que pode ser ruído de medição ou um transiente de início de lap).
+                    # Ver classificar_limitador_smo2().
+                    s[f'max_{metrica}_est'] = float(vals_est.max())
+                    s[f'min_{metrica}_est'] = float(vals_est.min())
                 # max/min sobre o lap inteiro
                 vals_all = pd.to_numeric(d[col], errors='coerce').dropna()
                 if len(vals_all) > 0:
@@ -1481,18 +1487,27 @@ def classificar_limitador_smo2(lap_stats, min_laps_trabalho=3):
                         f'precisos pelo menos {min_laps_trabalho} intensidades '
                         'crescentes para ver uma tendência'}
 
-    # Trabalho: extremos reais de cada lap (nunca médias)
-    min_work_smo2 = [l.get('min_smo2') for l in laps_trabalho]
-    max_work_smo2 = [l.get('max_smo2') for l in laps_trabalho]
-    max_work_thb  = [l.get('max_thb') for l in laps_trabalho]
-    min_work_thb  = [l.get('min_thb') for l in laps_trabalho]
+    # Trabalho: extremos do ESTADO ESTACIONÁRIO (últimos ~60s do lap, por
+    # defeito — ver janela_final_s em estatisticas_por_lap) em vez do lap
+    # inteiro. Isto evita que um pico/vale de ruído no início do lap (ainda
+    # em transição da fase anterior, cinética lenta ~30-60s) seja confundido
+    # com o valor "estabilizado" que realmente interessa para o limitador.
+    # Cai para o lap inteiro se o campo _est não existir (compatibilidade).
+    def _v(l, campo_est, campo_todo):
+        return l.get(campo_est, l.get(campo_todo))
+
+    min_work_smo2 = [_v(l, 'min_smo2_est', 'min_smo2') for l in laps_trabalho]
+    max_work_smo2 = [_v(l, 'max_smo2_est', 'max_smo2') for l in laps_trabalho]
+    max_work_thb  = [_v(l, 'max_thb_est', 'max_thb') for l in laps_trabalho]
+    min_work_thb  = [_v(l, 'min_thb_est', 'min_thb') for l in laps_trabalho]
 
     # Descanso: idem — "recupera acima do descanso anterior?" usa o MÁXIMO
-    # de SmO2 de cada lap de descanso, comparado entre si (não um valor fixo)
-    max_rest_smo2 = [l.get('max_smo2') for l in laps_descanso]
-    min_rest_smo2 = [l.get('min_smo2') for l in laps_descanso]
-    max_rest_thb  = [l.get('max_thb') for l in laps_descanso]
-    min_rest_thb  = [l.get('min_thb') for l in laps_descanso]
+    # de SmO2 do estado estacionário de cada lap de descanso, comparado entre
+    # si (não um valor fixo)
+    max_rest_smo2 = [_v(l, 'max_smo2_est', 'max_smo2') for l in laps_descanso]
+    min_rest_smo2 = [_v(l, 'min_smo2_est', 'min_smo2') for l in laps_descanso]
+    max_rest_thb  = [_v(l, 'max_thb_est', 'max_thb') for l in laps_descanso]
+    min_rest_thb  = [_v(l, 'min_thb_est', 'min_thb') for l in laps_descanso]
 
     if sum(v is not None for v in min_work_smo2) < min_laps_trabalho:
         return {'erro': 'dados de SmO2 insuficientes nos laps de trabalho '
