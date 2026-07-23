@@ -1451,10 +1451,22 @@ def classificar_limitador_smo2(lap_stats, min_laps_trabalho=3):
     protocolo de degraus/intervalos de intensidade crescente, usando só
     SmO2/THb já calculados por estatisticas_por_lap() — sem sensor de NO/CO2.
 
+    Segue a terminologia exacta do "5-1-5 Assessment" (Moxy): usa sempre o
+    MÁXIMO ou MÍNIMO real de cada lap (nunca a média) — "Minimum Work SmO2",
+    "Maximum Rest SmO2", "Maximum/Minimum Work THb", "Maximum/Minimum Rest
+    THb" — porque é a variação desses EXTREMOS entre laps sucessivos que
+    revela o limitador, não o nível médio do lap.
+
+    Para cada lap de TRABALHO, olha para: SmO2 mínimo (quão fundo desceu) e
+    SmO2 máximo (nível de partida); THb máximo (pico de vasodilatação) e
+    mínimo. Para cada lap de DESCANSO: SmO2 máximo (até onde recupera —
+    compara-se com o descanso ANTERIOR, não com o nível absoluto) e THb
+    máximo/mínimo. A tendência de cada uma destas séries, ao longo dos laps
+    sucessivos, é o que entra na classificação.
+
     Precisa de pelo menos `min_laps_trabalho` laps de trabalho (idealmente
     com descanso entre eles) para conseguir ver uma TENDÊNCIA entre laps
-    sucessivos — um único lap não chega, o que importa é como o SmO2/THb
-    evolui à medida que a intensidade sobe.
+    sucessivos — um único lap não chega.
 
     Devolve dict com 'limitador_provavel' ('muscular'|'cardiaco'|'pulmonar'|
     'inconclusivo'), 'pontuacao' (dict com os 3 scores), 'sinais' (lista de
@@ -1469,19 +1481,31 @@ def classificar_limitador_smo2(lap_stats, min_laps_trabalho=3):
                         f'precisos pelo menos {min_laps_trabalho} intensidades '
                         'crescentes para ver uma tendência'}
 
+    # Trabalho: extremos reais de cada lap (nunca médias)
     min_work_smo2 = [l.get('min_smo2') for l in laps_trabalho]
-    work_thb      = [l.get('avg_thb') for l in laps_trabalho]
+    max_work_smo2 = [l.get('max_smo2') for l in laps_trabalho]
+    max_work_thb  = [l.get('max_thb') for l in laps_trabalho]
+    min_work_thb  = [l.get('min_thb') for l in laps_trabalho]
+
+    # Descanso: idem — "recupera acima do descanso anterior?" usa o MÁXIMO
+    # de SmO2 de cada lap de descanso, comparado entre si (não um valor fixo)
     max_rest_smo2 = [l.get('max_smo2') for l in laps_descanso]
-    rest_thb      = [l.get('avg_thb') for l in laps_descanso]
+    min_rest_smo2 = [l.get('min_smo2') for l in laps_descanso]
+    max_rest_thb  = [l.get('max_thb') for l in laps_descanso]
+    min_rest_thb  = [l.get('min_thb') for l in laps_descanso]
 
     if sum(v is not None for v in min_work_smo2) < min_laps_trabalho:
         return {'erro': 'dados de SmO2 insuficientes nos laps de trabalho '
                         '(precisa da métrica smo2 no ficheiro)'}
 
     tend_min_work_smo2 = _classificar_tendencia(min_work_smo2)
-    tend_work_thb       = _classificar_tendencia(work_thb, limiar_ligeiro=0.1, limiar_claro=0.3)
-    tend_max_rest_smo2  = _classificar_tendencia(max_rest_smo2)
-    tend_rest_thb        = _classificar_tendencia(rest_thb, limiar_ligeiro=0.1, limiar_claro=0.3)
+    tend_max_work_smo2 = _classificar_tendencia(max_work_smo2)
+    tend_max_work_thb  = _classificar_tendencia(max_work_thb, limiar_ligeiro=0.1, limiar_claro=0.3)
+    tend_min_work_thb  = _classificar_tendencia(min_work_thb, limiar_ligeiro=0.1, limiar_claro=0.3)
+    tend_max_rest_smo2 = _classificar_tendencia(max_rest_smo2)
+    tend_min_rest_smo2 = _classificar_tendencia(min_rest_smo2)
+    tend_max_rest_thb  = _classificar_tendencia(max_rest_thb, limiar_ligeiro=0.1, limiar_claro=0.3)
+    tend_min_rest_thb  = _classificar_tendencia(min_rest_thb, limiar_ligeiro=0.1, limiar_claro=0.3)
 
     ultimo_min_smo2 = next((v for v in reversed(min_work_smo2) if v is not None), None)
 
@@ -1501,33 +1525,56 @@ def classificar_limitador_smo2(lap_stats, min_laps_trabalho=3):
             sinais.append(
                 f"SmO2 mínimo no último lap desceu para {ultimo_min_smo2:.0f}% — "
                 "sem sinal de limitação de utilização")
+    # Se o SmO2 mínimo de trabalho não desce entre laps (fica "preso" alto
+    # desde o início), é outro sinal direto de limitação de utilização
+    if tend_min_work_smo2[0] in ('estavel',) and ultimo_min_smo2 is not None and ultimo_min_smo2 > 55:
+        pontuacao['muscular'] += 1
+        sinais.append(
+            "SmO2 mínimo em trabalho não desce entre laps sucessivos, mesmo com "
+            "a intensidade a subir — o músculo não está a aumentar a extração")
 
-    # Cardíaco — SmO2 máximo em descanso e/ou THb a descer progressivamente
-    # entre laps sucessivos (vasoconstrição simpática, redistribuição de fluxo)
+    # Cardíaco — SmO2 máximo em DESCANSO a descer entre laps sucessivos (não
+    # recupera tão bem como no descanso anterior) e/ou THb (trabalho e/ou
+    # descanso) a descer — vasoconstrição simpática, redistribuição de fluxo
     if tend_max_rest_smo2[0] in ('clara_descida', 'ligeira_descida'):
         pts = 2 if tend_max_rest_smo2[0] == 'clara_descida' else 1
         pontuacao['cardiaco'] += pts
         sinais.append(
             f"SmO2 máximo em descanso desce entre laps sucessivos "
-            f"({tend_max_rest_smo2[1]:+.1f} pontos) — sugere vasoconstrição "
-            "simpática progressiva (sinal cardíaco/delivery)")
-    if tend_rest_thb[0] in ('clara_descida', 'ligeira_descida'):
-        pts = 2 if tend_rest_thb[0] == 'clara_descida' else 1
+            f"({tend_max_rest_smo2[1]:+.1f} pontos) — cada descanso recupera "
+            "menos do que o anterior; sugere vasoconstrição simpática "
+            "progressiva (sinal cardíaco/delivery)")
+    if tend_max_rest_thb[0] in ('clara_descida', 'ligeira_descida'):
+        pts = 2 if tend_max_rest_thb[0] == 'clara_descida' else 1
         pontuacao['cardiaco'] += pts
         sinais.append(
-            f"THb em descanso desce entre laps ({tend_rest_thb[1]:+.2f}) — "
-            "redução/redistribuição de fluxo sanguíneo (sinal cardíaco)")
+            f"THb máximo em descanso desce entre laps ({tend_max_rest_thb[1]:+.2f}) "
+            "— redução/redistribuição de fluxo sanguíneo (sinal cardíaco)")
+    if tend_max_work_thb[0] in ('clara_descida', 'ligeira_descida'):
+        pts = 1 if tend_max_work_thb[0] == 'clara_descida' else 0.5
+        pontuacao['cardiaco'] += pts
+        sinais.append(
+            f"THb máximo em trabalho também desce entre laps ({tend_max_work_thb[1]:+.2f}) "
+            "— reforça o sinal de redistribuição de fluxo (cardíaco)")
 
-    # Pulmonar — THb a SUBIR (CO2 acumulado, vasodilatação) enquanto o SmO2
-    # de trabalho ainda desce — corpo "paga" com vasodilatação, mas não chega
-    if (tend_work_thb[0] in ('clara_subida', 'ligeira_subida')
+    # Pulmonar — THb (trabalho e/ou descanso) a SUBIR (CO2 acumulado,
+    # vasodilatação) enquanto o SmO2 de trabalho ainda desce — o corpo "paga"
+    # com vasodilatação, mas não chega para acompanhar a extração
+    if (tend_max_work_thb[0] in ('clara_subida', 'ligeira_subida')
             and tend_min_work_smo2[0] in ('clara_descida', 'ligeira_descida')):
-        pts = 2 if tend_work_thb[0] == 'clara_subida' else 1
+        pts = 2 if tend_max_work_thb[0] == 'clara_subida' else 1
         pontuacao['pulmonar'] += pts
         sinais.append(
-            f"THb em trabalho sobe ({tend_work_thb[1]:+.2f}) enquanto o SmO2 "
-            f"mínimo desce ({tend_min_work_smo2[1]:+.1f} pontos) — sugere CO2 "
-            "acumulado/vasodilatação apesar da queda de SmO2 (sinal pulmonar)")
+            f"THb máximo em trabalho sobe ({tend_max_work_thb[1]:+.2f}) enquanto "
+            f"o SmO2 mínimo desce ({tend_min_work_smo2[1]:+.1f} pontos) — sugere "
+            "CO2 acumulado/vasodilatação apesar da queda de SmO2 (sinal pulmonar)")
+    if tend_max_rest_thb[0] in ('clara_subida', 'ligeira_subida'):
+        pts = 1 if tend_max_rest_thb[0] == 'clara_subida' else 0.5
+        pontuacao['pulmonar'] += pts
+        sinais.append(
+            f"THb máximo em descanso também sobe entre laps ({tend_max_rest_thb[1]:+.2f}) "
+            "— o corpo continua a conseguir vasodilatar mesmo em repouso, sem "
+            "precisar de rationar fluxo (reforça sinal pulmonar, não cardíaco)")
 
     limitador_provavel = (max(pontuacao, key=pontuacao.get)
                           if any(pontuacao.values()) else 'inconclusivo')
@@ -1537,10 +1584,14 @@ def classificar_limitador_smo2(lap_stats, min_laps_trabalho=3):
         'pontuacao': pontuacao,
         'sinais': sinais,
         'tendencias': {
-            'min_smo2_trabalho': tend_min_work_smo2,
-            'thb_trabalho': tend_work_thb,
-            'max_smo2_descanso': tend_max_rest_smo2,
-            'thb_descanso': tend_rest_thb,
+            'min_smo2_trabalho':  tend_min_work_smo2,
+            'max_smo2_trabalho':  tend_max_work_smo2,
+            'max_thb_trabalho':   tend_max_work_thb,
+            'min_thb_trabalho':   tend_min_work_thb,
+            'max_smo2_descanso':  tend_max_rest_smo2,
+            'min_smo2_descanso':  tend_min_rest_smo2,
+            'max_thb_descanso':   tend_max_rest_thb,
+            'min_thb_descanso':   tend_min_rest_thb,
         },
         'n_laps_trabalho': len(laps_trabalho),
         'n_laps_descanso': len(laps_descanso),
