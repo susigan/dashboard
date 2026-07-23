@@ -12,6 +12,238 @@ import re as _re
 import warnings
 warnings.filterwarnings('ignore')
 
+@st.cache_data(show_spinner="A ajustar modelos de Critical Power...", ttl=3600)
+def _computar_resultados_cp_modelos(modalidade, _all_mmp_pts, _all_mmp_pts_full,
+                                    _pmax_global, _mmp60_val):
+    """
+    Grid search de todos os modelos de CP (M1/M2/M3 + OmPD + hiperbolicos +
+    Power Law etc.) sobre todas as combinacoes de pontos MMP disponiveis.
+
+    Isto envolve dezenas a centenas de chamadas a optimizacao numerica
+    (scipy.optimize.minimize, dentro das funcoes fit_*) — e por isso a parte
+    mais pesada de toda a aba CP Model. Antes desta funcao existir, isto
+    corria de novo em TODO rerun do Streamlit, mesmo sem os dados de entrada
+    terem mudado (o que acontecia sempre que qualquer widget, em qualquer
+    aba do dashboard, era tocado). Agora so recalcula quando modalidade ou
+    os pontos MMP realmente mudam — o cache do Streamlit trata disso.
+
+    Parametros: apenas dados simples (str, listas de tuplos de floats,
+    float/None) para que o Streamlit consiga fazer o hash da chamada.
+
+    Devolve o dict _results (uma entrada por modelo).
+    """
+    # M1/M2/M3 são os modelos classicos usados para Row/Ski
+    _M_CLASSICOS = ('M1: P vs 1/t', 'M2: Work-Time', 'M3: Hiperbólico-t')
+
+    def _rank_m1(pts, **kw):
+        """M1 no Ranking: CP médio dos 3 weightings — igual ao teste manual.
+        SEE calculado com o weighting none (baseline)."""
+        t_obs = np.array([t for _,t in pts])
+        p_obs = np.array([p for p,_ in pts])
+        cp_vals, wp_vals = [], []
+        for mode in ["none","1/t","1/t²"]:
+            w = _cpm.make_w(t_obs, mode)
+            res = _cpm.fit_m1(pts, w)
+            if res[0] is not None and res[1] is not None:
+                cp_vals.append(res[0]); wp_vals.append(res[1])
+        if not cp_vals: return _cpm.fit_m1(pts, np.ones(len(pts)))
+        cp_mean = float(np.mean(cp_vals))
+        wp_mean = float(np.mean(wp_vals))
+        # pp calculado com CP médio
+        pp = [wp_mean/t + cp_mean for _,t in pts]
+        return cp_mean, wp_mean, None, pp, 0.0, 2
+
+    def _rank_m2(pts, **kw):
+        """M2 no Ranking: CP médio dos 3 weightings — igual ao teste manual."""
+        t_obs = np.array([t for _,t in pts])
+        p_obs = np.array([p for p,_ in pts])
+        cp_vals, wp_vals = [], []
+        for mode in ["none","1/t","1/t²"]:
+            w = _cpm.make_w(t_obs, mode)
+            res = _cpm.fit_m2(pts, w)
+            if res[0] is not None and res[1] is not None:
+                cp_vals.append(res[0]); wp_vals.append(res[1])
+        if not cp_vals: return _cpm.fit_m2(pts, np.ones(len(pts)))
+        cp_mean = float(np.mean(cp_vals))
+        wp_mean = float(np.mean(wp_vals))
+        pp = [cp_mean + wp_mean/t for _,t in pts]
+        return cp_mean, wp_mean, None, pp, 0.0, 2
+
+    def _rank_m3(pts, **kw):
+        """M3 no Ranking: CP médio dos 3 weightings — igual ao teste manual."""
+        t_obs = np.array([t for _,t in pts])
+        p_obs = np.array([p for p,_ in pts])
+        cp_vals, wp_vals = [], []
+        for mode in ["none","1/t","1/t²"]:
+            w = _cpm.make_w(t_obs, mode)
+            res = _cpm.fit_m3(pts, w)
+            if res[0] is not None and res[1] is not None and res[0] > 0 and res[1] > 0:
+                cp_vals.append(res[0]); wp_vals.append(res[1])
+        if not cp_vals: return _cpm.fit_m3(pts, np.ones(len(pts)))
+        cp_mean = float(np.mean(cp_vals))
+        wp_mean = float(np.mean(wp_vals))
+        pp = [wp_mean/t + cp_mean for _,t in pts]
+        return cp_mean, wp_mean, None, pp, 0.0, 2
+
+    # Cada modelo usa exactamente 3 pontos (papers)
+    _FIXED_N_PTS = 3
+
+    # Modelos clássicos para CP Row/Ski
+    _M_CLASSICOS = ('M1: P vs 1/t', 'M2: Work-Time', 'M3: Hiperbólico-t')
+
+    # Semáforos
+    def _flag_see(v):
+        if not isinstance(v, float): return '—'
+        return f"{'✅' if v<2 else '⚠️' if v<5 else '❌'} {v:.2f}%"
+    def _flag_cp_var(v):
+        if not isinstance(v, float): return '—'
+        return f"{'✅' if v<5 else '⚠️' if v<15 else '❌'} {v:.1f}%"
+    def _flag_cv(v):
+        if not isinstance(v, float): return '—'
+        return f"{'✅' if v<5 else '⚠️' if v<10 else '❌'} {v:.1f}%"
+
+    # ── Correr grid search para todos os modelos ──────────────────────────
+    _MODELS = {
+        # M1/M2/M3: usam _rank_m1/m2/m3 — 3 weightings, igual ao teste manual
+        'M1: P vs 1/t':   {'fn': _rank_m1,
+                            'n_pts': 3, 'k': 2, 'color': '#e74c3c',
+                            'needs_pmax': False,
+                            'desc': 'P = W′/t + CP. 3 weightings. Monod & Scherrer 1965.'},
+        'M2: Work-Time':  {'fn': _rank_m2,
+                            'n_pts': 3, 'k': 2, 'color': '#2980b9',
+                            'needs_pmax': False,
+                            'desc': 'W = CP·t + W′. 3 weightings. Morton 1986.'},
+        'M3: Hiperbólico-t':{'fn': _rank_m3,
+                             'n_pts': 3, 'k': 2, 'color': '#27ae60',
+                             'needs_pmax': False,
+                             'desc': 't = W′/(P-CP). SEE em espaço t. 3 weightings.'},
+        'OmPD':          {'fn': _cpm.fit_ompd,          'n_pts': 3, 'k': 2,
+                          'color': '#8e44ad', 'needs_pmax': True,
+                          'desc': '3 pts (incluindo ≤3min para Pmax). Puchowicz 2020.'},
+        '2P Hiperbólico':{'fn': _cpm.fit_2p_hyperbolic, 'n_pts': 3, 'k': 2,
+                          'color': '#1abc9c', 'needs_pmax': False,
+                          'desc': '3 pts entre 3-20min. Monod & Scherrer 1965.'},
+        '3P Hiperbólico':{'fn': _cpm.fit_3p_hyperbolic, 'n_pts': 3, 'k': 2,
+                          'color': '#f39c12', 'needs_pmax': True,
+                          'desc': '3 pts incluindo ≤3min. Morton 1996.'},
+        'Ward-Smith':    {'fn': _cpm.fit_ward_smith,    'n_pts': 3, 'k': 2,
+                          'color': '#e67e22', 'needs_pmax': True,
+                          'desc': '3 pts entre 3-20min (excluir <60s). Ward-Smith 1999.',
+                          'exclude_short': True},
+        'Om3CP':         {'fn': _cpm.fit_om3cp,         'n_pts': 3, 'k': 2,
+                          'color': '#16a085', 'needs_pmax': True,
+                          'desc': '3 pts incluindo ≤3min. Puchowicz variante.'},
+        'OmExp':         {'fn': _cpm.fit_omexp,         'n_pts': 3, 'k': 2,
+                          'color': '#d35400', 'needs_pmax': True,
+                          'desc': '3 pts. Variante OmPD com decaimento exponencial.'},
+        'Power Law':     {'fn': _cpm.fit_power_law,     'n_pts': 3, 'k': 2,
+                          'color': '#c0392b', 'needs_pmax': False,
+                          'desc': '3 pts entre 3-20min. Sem CP explícito.'},
+    }
+
+    # Grid search: exactamente N=3 pontos (C(n,3) combinações)
+    # Ward-Smith exclui pontos <60s
+    _results = {}
+    if _all_mmp_pts_full:
+        for _mn, _mcfg in _MODELS.items():
+            _px    = _pmax_global if _mcfg['needs_pmax'] else None
+            # M1/M2/M3 (clássicos): usam sempre _all_mmp_pts — Row/Ski restrito a
+            # MMP1+MMP5+MMP12; Bike/Run sem restrição (todos os 5 pontos), tal
+            # como já era antes desta correcção. A condição já não depende da
+            # modalidade aqui — é o próprio _all_mmp_pts que já foi construído
+            # por modalidade acima.
+            # Todos os outros modelos: usam _all_mmp_pts_full — Row/Ski exclui
+            # MMP1; Bike exclui MMP1+MMP3; Run sem restrição.
+            _pts_base = (_all_mmp_pts if _mn in _M_CLASSICOS else _all_mmp_pts_full)
+            _pts  = ([p for p in _pts_base if p[1] >= 60]
+                     if _mcfg.get('exclude_short') else _pts_base)
+            _n_pts = _mcfg['n_pts']
+            if len(_pts) < _n_pts: continue
+
+            from itertools import combinations as _comb
+            _best = {'see_pct': 999, 'result': None, 'combo': None,
+                     'cp_vals': [], 'see_vals': []}
+
+            for _cb in _comb(range(len(_pts)), _n_pts):
+                _combo_pts = [_pts[i] for i in _cb]
+                try:
+                    _res = (_mcfg['fn'](_combo_pts, pmax_ext=_px)
+                            if _mcfg['needs_pmax']
+                            else _mcfg['fn'](_combo_pts))
+                    if _res[0] is None: continue
+                    # Extrair pp conforme o tipo de modelo:
+                    # OmPD: (cp,wp,pmax,A,pp,r2,weff) → idx 4
+                    # M1/M2/M3: (cp,wp,None,pp,r2,k)  → idx 3
+                    # Outros: (cp,wp,pmax,pp)           → idx -1 (= idx 3)
+                    if _mn == 'OmPD':
+                        _pp_gs = _res[4] if len(_res) > 4 else None
+                    elif _mn in ('M1: P vs 1/t', 'M2: Work-Time', 'M3: Hiperbólico-t'):
+                        _pp_gs = _res[3] if len(_res) > 3 else None
+                    else:
+                        _pp_gs = _res[-1]
+                    if not isinstance(_pp_gs, (list, np.ndarray)) or len(_pp_gs) == 0: continue
+                    _p_obs = [p for p,_ in _combo_pts]
+                    _, _see = _cpm.calc_see(_p_obs, _pp_gs, k=_mcfg['k'])
+                    if _see is None: continue
+                    _best['cp_vals'].append(float(_res[0]))
+                    _best['see_vals'].append(float(_see))
+                    if _see < _best['see_pct']:
+                        _best.update({'see_pct': _see, 'result': _res,
+                                      'combo': _combo_pts, 'n_pts': _n_pts,
+                                      'cp': float(_res[0])})
+                except Exception:
+                    pass
+
+            if _best['result'] is not None:
+                # cp_var% = variação de CP entre combinações
+                _cp_v = _best['cp_vals']
+                _see_v = _best['see_vals']
+                _cp_mean  = float(np.mean(_cp_v)) if _cp_v else 0
+                # None quando só 1 fit — sem variação a medir (igual a N/A nos testes manuais)
+                _cp_range = ((max(_cp_v)-min(_cp_v))/_cp_mean*100
+                             if _cp_mean>0 and len(_cp_v)>1 else None)
+                _see_mean = float(np.mean(_see_v)) if _see_v else _best['see_pct']
+                _cv_pct   = (float(np.std(_cp_v)/_cp_mean*100)
+                             if _cp_mean>0 and len(_cp_v)>1 else None)
+
+                # Quando só há 1 combinação (ex: Row/Ski com C(3,3)=1),
+                # usar variação cross-modelos (M1/M2/M3) como proxy de estabilidade
+                if _cp_range is None or _cv_pct is None:
+                    _cp_classicos = [
+                        _results[m]['cp']
+                        for m in ('M1: P vs 1/t','M2: Work-Time','M3: Hiperbólico-t')
+                        if m in _results and _results[m].get('cp')
+                    ]
+                    if len(_cp_classicos) > 1:
+                        _cm = float(np.mean(_cp_classicos))
+                        if _cm > 0:
+                            _cp_range = (max(_cp_classicos)-min(_cp_classicos))/_cm*100
+                            _cv_pct   = float(np.std(_cp_classicos)/_cm*100)
+
+                # Validação MMP60: erro relativo se disponível
+                _mmp60_err = None
+                if _mmp60_val and _best['result'][0]:
+                    _cp_best = _best['result'][0]
+                    _wp_best = _best['result'][1] if len(_best['result'])>1 else 0
+                    _pred60  = (_wp_best/3600 + _cp_best) if isinstance(_wp_best, float) and _wp_best > 0 else None
+                    if _pred60:
+                        _mmp60_err = abs(_pred60 - _mmp60_val) / _mmp60_val * 100
+
+                # Score composto (igual ao testes manuais)
+                _sc = (0.40*((_cp_range or 0)/30) +
+                       0.30*(_see_mean/20) +
+                       0.20*((_cv_pct or 0)/20) +
+                       0.10*((_mmp60_err or 0)/20))
+                _best['cp_var_pct'] = round(_cp_range, 1) if _cp_range is not None else None
+                _best['cv_pct']     = round(_cv_pct, 1)   if _cv_pct   is not None else None
+                _best['see_mean']   = round(_see_mean, 2)
+                _best['score']      = round(_sc*100, 1)
+                _best['mmp60_err']  = round(_mmp60_err, 1) if _mmp60_err else None
+                _results[_mn]       = _best
+
+    return _results
+
+
 def tab_cp_model(ac_full=None):
     """CP Model Comparison v4 — weighted fitting automático, Veloclinic correcto."""
     import numpy as np
@@ -272,57 +504,6 @@ def tab_cp_model(ac_full=None):
                 if not _px.empty:
                     _pmax_global = float(_px['p_max'].iloc[0])
 
-    # Wrappers para o Ranking — testam os 3 weightings e retornam o melhor
-    def _rank_m1(pts, **kw):
-        """M1 no Ranking: CP médio dos 3 weightings — igual ao teste manual.
-        SEE calculado com o weighting none (baseline)."""
-        t_obs = np.array([t for _,t in pts])
-        p_obs = np.array([p for p,_ in pts])
-        cp_vals, wp_vals = [], []
-        for mode in ["none","1/t","1/t²"]:
-            w = make_w(t_obs, mode)
-            res = fit_m1(pts, w)
-            if res[0] is not None and res[1] is not None:
-                cp_vals.append(res[0]); wp_vals.append(res[1])
-        if not cp_vals: return fit_m1(pts, np.ones(len(pts)))
-        cp_mean = float(np.mean(cp_vals))
-        wp_mean = float(np.mean(wp_vals))
-        # pp calculado com CP médio
-        pp = [wp_mean/t + cp_mean for _,t in pts]
-        return cp_mean, wp_mean, None, pp, 0.0, 2
-
-    def _rank_m2(pts, **kw):
-        """M2 no Ranking: CP médio dos 3 weightings — igual ao teste manual."""
-        t_obs = np.array([t for _,t in pts])
-        p_obs = np.array([p for p,_ in pts])
-        cp_vals, wp_vals = [], []
-        for mode in ["none","1/t","1/t²"]:
-            w = make_w(t_obs, mode)
-            res = fit_m2(pts, w)
-            if res[0] is not None and res[1] is not None:
-                cp_vals.append(res[0]); wp_vals.append(res[1])
-        if not cp_vals: return fit_m2(pts, np.ones(len(pts)))
-        cp_mean = float(np.mean(cp_vals))
-        wp_mean = float(np.mean(wp_vals))
-        pp = [cp_mean + wp_mean/t for _,t in pts]
-        return cp_mean, wp_mean, None, pp, 0.0, 2
-
-    def _rank_m3(pts, **kw):
-        """M3 no Ranking: CP médio dos 3 weightings — igual ao teste manual."""
-        t_obs = np.array([t for _,t in pts])
-        p_obs = np.array([p for p,_ in pts])
-        cp_vals, wp_vals = [], []
-        for mode in ["none","1/t","1/t²"]:
-            w = make_w(t_obs, mode)
-            res = fit_m3(pts, w)
-            if res[0] is not None and res[1] is not None and res[0] > 0 and res[1] > 0:
-                cp_vals.append(res[0]); wp_vals.append(res[1])
-        if not cp_vals: return fit_m3(pts, np.ones(len(pts)))
-        cp_mean = float(np.mean(cp_vals))
-        wp_mean = float(np.mean(wp_vals))
-        pp = [wp_mean/t + cp_mean for _,t in pts]
-        return cp_mean, wp_mean, None, pp, 0.0, 2
-
     # Cada modelo usa exactamente 3 pontos (papers)
     _FIXED_N_PTS = 3
 
@@ -340,144 +521,11 @@ def tab_cp_model(ac_full=None):
         if not isinstance(v, float): return '—'
         return f"{'✅' if v<5 else '⚠️' if v<10 else '❌'} {v:.1f}%"
 
-    # ── Correr grid search para todos os modelos ──────────────────────────
-    _MODELS = {
-        # M1/M2/M3: usam _rank_m1/m2/m3 — 3 weightings, igual ao teste manual
-        'M1: P vs 1/t':   {'fn': _rank_m1,
-                            'n_pts': 3, 'k': 2, 'color': '#e74c3c',
-                            'needs_pmax': False,
-                            'desc': 'P = W′/t + CP. 3 weightings. Monod & Scherrer 1965.'},
-        'M2: Work-Time':  {'fn': _rank_m2,
-                            'n_pts': 3, 'k': 2, 'color': '#2980b9',
-                            'needs_pmax': False,
-                            'desc': 'W = CP·t + W′. 3 weightings. Morton 1986.'},
-        'M3: Hiperbólico-t':{'fn': _rank_m3,
-                             'n_pts': 3, 'k': 2, 'color': '#27ae60',
-                             'needs_pmax': False,
-                             'desc': 't = W′/(P-CP). SEE em espaço t. 3 weightings.'},
-        'OmPD':          {'fn': fit_ompd,          'n_pts': 3, 'k': 2,
-                          'color': '#8e44ad', 'needs_pmax': True,
-                          'desc': '3 pts (incluindo ≤3min para Pmax). Puchowicz 2020.'},
-        '2P Hiperbólico':{'fn': fit_2p_hyperbolic, 'n_pts': 3, 'k': 2,
-                          'color': '#1abc9c', 'needs_pmax': False,
-                          'desc': '3 pts entre 3-20min. Monod & Scherrer 1965.'},
-        '3P Hiperbólico':{'fn': fit_3p_hyperbolic, 'n_pts': 3, 'k': 2,
-                          'color': '#f39c12', 'needs_pmax': True,
-                          'desc': '3 pts incluindo ≤3min. Morton 1996.'},
-        'Ward-Smith':    {'fn': fit_ward_smith,    'n_pts': 3, 'k': 2,
-                          'color': '#e67e22', 'needs_pmax': True,
-                          'desc': '3 pts entre 3-20min (excluir <60s). Ward-Smith 1999.',
-                          'exclude_short': True},
-        'Om3CP':         {'fn': fit_om3cp,         'n_pts': 3, 'k': 2,
-                          'color': '#16a085', 'needs_pmax': True,
-                          'desc': '3 pts incluindo ≤3min. Puchowicz variante.'},
-        'OmExp':         {'fn': fit_omexp,         'n_pts': 3, 'k': 2,
-                          'color': '#d35400', 'needs_pmax': True,
-                          'desc': '3 pts. Variante OmPD com decaimento exponencial.'},
-        'Power Law':     {'fn': fit_power_law,     'n_pts': 3, 'k': 2,
-                          'color': '#c0392b', 'needs_pmax': False,
-                          'desc': '3 pts entre 3-20min. Sem CP explícito.'},
-    }
-
-    # Grid search: exactamente N=3 pontos (C(n,3) combinações)
-    # Ward-Smith exclui pontos <60s
-    _results = {}
-    if _all_mmp_pts_full:
-        for _mn, _mcfg in _MODELS.items():
-            _px    = _pmax_global if _mcfg['needs_pmax'] else None
-            # M1/M2/M3 (clássicos): usam sempre _all_mmp_pts — Row/Ski restrito a
-            # MMP1+MMP5+MMP12; Bike/Run sem restrição (todos os 5 pontos), tal
-            # como já era antes desta correcção. A condição já não depende da
-            # modalidade aqui — é o próprio _all_mmp_pts que já foi construído
-            # por modalidade acima.
-            # Todos os outros modelos: usam _all_mmp_pts_full — Row/Ski exclui
-            # MMP1; Bike exclui MMP1+MMP3; Run sem restrição.
-            _pts_base = (_all_mmp_pts if _mn in _M_CLASSICOS else _all_mmp_pts_full)
-            _pts  = ([p for p in _pts_base if p[1] >= 60]
-                     if _mcfg.get('exclude_short') else _pts_base)
-            _n_pts = _mcfg['n_pts']
-            if len(_pts) < _n_pts: continue
-
-            from itertools import combinations as _comb
-            _best = {'see_pct': 999, 'result': None, 'combo': None,
-                     'cp_vals': [], 'see_vals': []}
-
-            for _cb in _comb(range(len(_pts)), _n_pts):
-                _combo_pts = [_pts[i] for i in _cb]
-                try:
-                    _res = (_mcfg['fn'](_combo_pts, pmax_ext=_px)
-                            if _mcfg['needs_pmax']
-                            else _mcfg['fn'](_combo_pts))
-                    if _res[0] is None: continue
-                    # Extrair pp conforme o tipo de modelo:
-                    # OmPD: (cp,wp,pmax,A,pp,r2,weff) → idx 4
-                    # M1/M2/M3: (cp,wp,None,pp,r2,k)  → idx 3
-                    # Outros: (cp,wp,pmax,pp)           → idx -1 (= idx 3)
-                    if _mn == 'OmPD':
-                        _pp_gs = _res[4] if len(_res) > 4 else None
-                    elif _mn in ('M1: P vs 1/t', 'M2: Work-Time', 'M3: Hiperbólico-t'):
-                        _pp_gs = _res[3] if len(_res) > 3 else None
-                    else:
-                        _pp_gs = _res[-1]
-                    if not isinstance(_pp_gs, (list, np.ndarray)) or len(_pp_gs) == 0: continue
-                    _p_obs = [p for p,_ in _combo_pts]
-                    _, _see = calc_see(_p_obs, _pp_gs, k=_mcfg['k'])
-                    if _see is None: continue
-                    _best['cp_vals'].append(float(_res[0]))
-                    _best['see_vals'].append(float(_see))
-                    if _see < _best['see_pct']:
-                        _best.update({'see_pct': _see, 'result': _res,
-                                      'combo': _combo_pts, 'n_pts': _n_pts,
-                                      'cp': float(_res[0])})
-                except Exception:
-                    pass
-
-            if _best['result'] is not None:
-                # cp_var% = variação de CP entre combinações
-                _cp_v = _best['cp_vals']
-                _see_v = _best['see_vals']
-                _cp_mean  = float(np.mean(_cp_v)) if _cp_v else 0
-                # None quando só 1 fit — sem variação a medir (igual a N/A nos testes manuais)
-                _cp_range = ((max(_cp_v)-min(_cp_v))/_cp_mean*100
-                             if _cp_mean>0 and len(_cp_v)>1 else None)
-                _see_mean = float(np.mean(_see_v)) if _see_v else _best['see_pct']
-                _cv_pct   = (float(np.std(_cp_v)/_cp_mean*100)
-                             if _cp_mean>0 and len(_cp_v)>1 else None)
-
-                # Quando só há 1 combinação (ex: Row/Ski com C(3,3)=1),
-                # usar variação cross-modelos (M1/M2/M3) como proxy de estabilidade
-                if _cp_range is None or _cv_pct is None:
-                    _cp_classicos = [
-                        _results[m]['cp']
-                        for m in ('M1: P vs 1/t','M2: Work-Time','M3: Hiperbólico-t')
-                        if m in _results and _results[m].get('cp')
-                    ]
-                    if len(_cp_classicos) > 1:
-                        _cm = float(np.mean(_cp_classicos))
-                        if _cm > 0:
-                            _cp_range = (max(_cp_classicos)-min(_cp_classicos))/_cm*100
-                            _cv_pct   = float(np.std(_cp_classicos)/_cm*100)
-
-                # Validação MMP60: erro relativo se disponível
-                _mmp60_err = None
-                if _mmp60_val and _best['result'][0]:
-                    _cp_best = _best['result'][0]
-                    _wp_best = _best['result'][1] if len(_best['result'])>1 else 0
-                    _pred60  = (_wp_best/3600 + _cp_best) if isinstance(_wp_best, float) and _wp_best > 0 else None
-                    if _pred60:
-                        _mmp60_err = abs(_pred60 - _mmp60_val) / _mmp60_val * 100
-
-                # Score composto (igual ao testes manuais)
-                _sc = (0.40*((_cp_range or 0)/30) +
-                       0.30*(_see_mean/20) +
-                       0.20*((_cv_pct or 0)/20) +
-                       0.10*((_mmp60_err or 0)/20))
-                _best['cp_var_pct'] = round(_cp_range, 1) if _cp_range is not None else None
-                _best['cv_pct']     = round(_cv_pct, 1)   if _cv_pct   is not None else None
-                _best['see_mean']   = round(_see_mean, 2)
-                _best['score']      = round(_sc*100, 1)
-                _best['mmp60_err']  = round(_mmp60_err, 1) if _mmp60_err else None
-                _results[_mn]       = _best
+    # Grid search de todos os modelos — cacheado (ver _computar_resultados_cp_modelos
+    # acima). Só recalcula quando a modalidade ou os pontos MMP mudam de facto,
+    # em vez de recorrer em todo e qualquer rerun do Streamlit.
+    _results = _computar_resultados_cp_modelos(
+        modalidade, _all_mmp_pts, _all_mmp_pts_full, _pmax_global, _mmp60_val)
 
     # ════════════════════════════════════════════════════════════════════════
     # TAB 1 — RANKING SEE%
