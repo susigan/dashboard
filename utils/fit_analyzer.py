@@ -1478,7 +1478,8 @@ def _forma_thb_inicio_descanso(df, colunas, t_ini, t_fim, segundos=15):
     return 'subida_limpa'
 
 
-def classificar_limitador_smo2(lap_stats, min_laps_trabalho=3, df=None, colunas=None):
+def classificar_limitador_smo2(lap_stats, min_laps_trabalho=3, df=None, colunas=None,
+                               atleta_treinado=True):
     """
     Classificação exploratória do limitador fisiológico dominante num
     protocolo de degraus/intervalos de intensidade crescente, usando só
@@ -1509,6 +1510,16 @@ def classificar_limitador_smo2(lap_stats, min_laps_trabalho=3, df=None, colunas=
     df, colunas (opcionais): se fornecidos, verifica também a FORMA do THb
     no início de cada lap de descanso (subida limpa vs possível oclusão) —
     informativo, não entra no score.
+
+    atleta_treinado (default True — perfil do R, anos de treino de endurance):
+    calibra a confiança do sinal muscular. Andri Feldmann (fórum Moxy):
+    atletas NÃO treinados tendem a ter o SmO2 a DERIVAR PARA CIMA com a
+    fadiga (menos capacidade de extrair); atletas TREINADOS mostram o
+    oposto — o SmO2 deriva para BAIXO com a fadiga. Por isso, "SmO2 não
+    desceu apesar da intensidade a subir" é um sinal mais fiável e direto de
+    limitação de utilização num atleta treinado (o principal confundidor —
+    ser só o efeito normal da fadiga num atleta pouco treinado — não se
+    aplica). Passa False só se estiveres a analisar um atleta iniciante.
 
     Precisa de pelo menos `min_laps_trabalho` laps de trabalho (idealmente
     com descanso entre eles) para conseguir ver uma TENDÊNCIA entre laps
@@ -1580,15 +1591,29 @@ def classificar_limitador_smo2(lap_stats, min_laps_trabalho=3, df=None, colunas=
     # o SmO2 mínimo desceu do 1º ao último lap de trabalho, face ao ponto de
     # partida. Substitui o corte absoluto (">60%") que o fórum confirma
     # variar demasiado com a posição do sensor.
+    #
+    # Calibração para ATLETA TREINADO (Andri Feldmann, perfil "andrifeldmann",
+    # fórum Moxy): em atletas NÃO treinados, a fadiga muscular tende a fazer o
+    # SmO2 DERIVAR PARA CIMA (menos capacidade de extrair, mesmo com a
+    # intensidade a subir) — o que tornaria "SmO2 não desceu" um sinal
+    # ambíguo (pode ser limitação de utilização OU só o efeito normal da
+    # fadiga num atleta pouco treinado). Em atletas TREINADOS acontece o
+    # oposto: a fadiga faz o SmO2 derivar para BAIXO (ficam menos eficientes,
+    # a exigência central aumenta). Como o R tem anos de treino de endurance,
+    # esse confundidor não se aplica aqui — "SmO2 não desceu apesar da
+    # intensidade/fadiga a subir" é um sinal mais limpo e direto de limitação
+    # de utilização, sem a ambiguidade que teria num atleta não treinado.
     if primeiro_min_smo2 and ultimo_min_smo2 is not None and primeiro_min_smo2 > 0:
         queda_relativa = (primeiro_min_smo2 - ultimo_min_smo2) / primeiro_min_smo2
         if queda_relativa < 0.15:
-            pontuacao['muscular'] += 3
+            pontuacao['muscular'] += 3.5 if atleta_treinado else 2.5
             sinais.append(
                 f"SmO2 mínimo em trabalho quase não desceu entre o 1º "
                 f"({primeiro_min_smo2:.0f}%) e o último lap ({ultimo_min_smo2:.0f}%) — "
                 f"queda de só {queda_relativa*100:.0f}% apesar da intensidade a subir — "
-                "sinal de limitação de utilização/capacidade oxidativa muscular")
+                "sinal de limitação de utilização/capacidade oxidativa muscular"
+                + (" (num atleta treinado, este sinal é mais fiável — a fadiga "
+                   "normalmente fá-lo-ia descer, não ficar estável)" if atleta_treinado else ""))
         elif queda_relativa > 0.5:
             sinais.append(
                 f"SmO2 mínimo desceu {queda_relativa*100:.0f}% do 1º ao último lap "
