@@ -2010,6 +2010,14 @@ decoupling. Não há limiares a estimar.
 
             st.warning(lim_smo2['aviso'])
 
+            _ctx = lim_smo2.get('contexto', {})
+            if _ctx.get('nota_fc') or _ctx.get('nota_thb_forma'):
+                st.markdown("**Contexto adicional (informativo — não entra na pontuação):**")
+                if _ctx.get('nota_fc'):
+                    st.caption(f"❤️ {_ctx['nota_fc']}")
+                if _ctx.get('nota_thb_forma'):
+                    st.caption(f"🩸 {_ctx['nota_thb_forma']}")
+
             with st.expander("Ver tendências brutas usadas na classificação"):
                 for _nome_t, (_cat, _var) in lim_smo2['tendencias'].items():
                     st.caption(f"**{_nome_t}**: {_cat} ({_var:+.2f})")
