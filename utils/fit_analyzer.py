@@ -1521,6 +1521,16 @@ def classificar_limitador_smo2(lap_stats, min_laps_trabalho=3, df=None, colunas=
     ser só o efeito normal da fadiga num atleta pouco treinado — não se
     aplica). Passa False só se estiveres a analisar um atleta iniciante.
 
+    RESSALVA (Evan Peikon, NNOXX): esta calibração por "treinado/não-
+    treinado" é uma simplificação de uma variável só. Segundo o Peikon, o
+    que realmente determina se o SmO2 sobe ou desce com a fadiga é se há
+    SUBSTITUIÇÃO DE RECRUTAMENTO MUSCULAR possível naquele movimento — ele
+    próprio observa os dois padrões dependendo da modalidade (desce a
+    pedalar, sobe a escalar, mesma pessoa). Sem um 2º sensor num músculo
+    não-primário não há forma de confirmar se houve essa substituição —
+    "atleta_treinado" fica como aproximação razoável, não uma explicação
+    completa.
+
     Precisa de pelo menos `min_laps_trabalho` laps de trabalho (idealmente
     com descanso entre eles) para conseguir ver uma TENDÊNCIA entre laps
     sucessivos — um único lap não chega. As tendências SÃO SEMPRE uma
@@ -1577,8 +1587,15 @@ def classificar_limitador_smo2(lap_stats, min_laps_trabalho=3, df=None, colunas=
     tend_min_rest_smo2 = _classificar_tendencia(min_rest_smo2)
     tend_max_rest_thb  = _classificar_tendencia(max_rest_thb, limiar_ligeiro=0.1, limiar_claro=0.3)
     tend_min_rest_thb  = _classificar_tendencia(min_rest_thb, limiar_ligeiro=0.1, limiar_claro=0.3)
-    tend_hr_trabalho   = (_classificar_tendencia(avg_work_hr, limiar_ligeiro=3, limiar_claro=10)
-                         if sum(v is not None for v in avg_work_hr) >= min_laps_trabalho
+    # FC: usa só os ÚLTIMOS laps (perto da falha) — Peikon (NNOXX) descreve o
+    # padrão como "FC faz patamar ACIMA de ~85% do esforço OU antes da
+    # falha", ou seja, é um comportamento de FASE FINAL. Uma reta ajustada à
+    # sessão inteira esconde um patamar tardio que vem depois de uma subida
+    # inicial normal (mesmo problema que já vimos com o THb no caso do
+    # fórum Moxy "5-1-5 decreasing peak SmO2").
+    _n_final_hr = min(3, len(avg_work_hr))
+    tend_hr_trabalho   = (_classificar_tendencia(avg_work_hr[-_n_final_hr:], limiar_ligeiro=3, limiar_claro=10)
+                         if sum(v is not None for v in avg_work_hr[-_n_final_hr:]) >= min(3, min_laps_trabalho)
                          else ('dados_insuficientes', 0.0))
 
     ultimo_min_smo2  = next((v for v in reversed(min_work_smo2) if v is not None), None)
@@ -1664,21 +1681,50 @@ def classificar_limitador_smo2(lap_stats, min_laps_trabalho=3, df=None, colunas=
             "— reforço adicional, fraco (o corpo continua a vasodilatar mesmo em "
             "repouso, sem parecer racionar fluxo)")
 
+    # FC em patamar vs a continuar a subir — distingue Cardíaco de Respiratório
+    # (Evan Peikon, NNOXX, "Identifying Physiological Limitations"): QUANDO o
+    # SmO2 de trabalho já está a descer entre laps (limitação de entrega de
+    # O2 already presente), a FC continuar a SUBIR até à falha aponta para
+    # respiratório (o coração não é o travão — continua a tentar compensar);
+    # a FC fazer PATAMAR aponta para cardíaco (débito cardíaco já no limite).
+    # Só entra no score quando o SmO2 já mostra o padrão de "supply limitado";
+    # sozinha, a FC não distingue nada (ver nota_fc no contexto).
+    if tend_min_work_smo2[0] in ('clara_descida', 'ligeira_descida'):
+        if tend_hr_trabalho[0] == 'estavel':
+            pontuacao['cardiaco'] += 1.5
+            sinais.append(
+                "FC faz patamar entre laps sucessivos enquanto o SmO2 mínimo "
+                "continua a descer — sugere débito cardíaco já perto do limite "
+                "(sinal cardíaco, Peikon/NNOXX)")
+        elif tend_hr_trabalho[0] in ('clara_subida', 'ligeira_subida'):
+            pontuacao['pulmonar'] += 1
+            sinais.append(
+                "FC continua a subir entre laps sucessivos enquanto o SmO2 "
+                "mínimo desce — o coração não parece ser o travão aqui, "
+                "reforça um sinal respiratório em vez de cardíaco (Peikon/NNOXX)")
+
     limitador_provavel = (max(pontuacao, key=pontuacao.get)
                           if any(pontuacao.values()) else 'inconclusivo')
 
     # Contexto informativo — NUNCA pontuado, só para dar mais pistas ao
-    # utilizador (FC pode ser SV limitado OU utilização — ambíguo mesmo para
-    # o Feldmann; forma do THb no descanso pode distinguir vasodilatação
-    # genuína de artefacto mecânico de oclusão/postura)
+    # utilizador. NOTA sobre o sinal muscular/utilização: o critério de "SmO2
+    # não desceu" pressupõe implicitamente que a fadiga faria o SmO2 DESCER
+    # neste atleta — mas segundo o próprio Peikon (NNOXX), isto depende de
+    # haver ou não substituição de recrutamento muscular possível naquele
+    # movimento (ele próprio vê os dois padrões, dependendo da modalidade:
+    # desce a pedalar, sobe a escalar). "atleta_treinado" é uma simplificação
+    # de uma só variável para algo que na realidade depende também do
+    # movimento/músculo monitorizado — sem 2º sensor não dá para confirmar
+    # se houve substituição de recrutamento.
     contexto = {'tendencia_fc_trabalho': tend_hr_trabalho}
-    if tend_hr_trabalho[0] not in ('dados_insuficientes',):
-        if tend_hr_trabalho[0] == 'estavel':
-            contexto['nota_fc'] = (
-                "FC pouco variou entre laps de trabalho apesar da intensidade a "
-                "subir — pode indicar SV já perto do limite (cardíaco) OU uma "
-                "limitação de utilização local (visto em corredores a fazer arm-erg "
-                "sem quase subir a FC) — ambíguo por si só, ver conjunto dos sinais.")
+    if tend_hr_trabalho[0] == 'estavel' and tend_min_work_smo2[0] not in (
+            'clara_descida', 'ligeira_descida'):
+        contexto['nota_fc'] = (
+            "FC pouco variou entre laps de trabalho, mas o SmO2 também não "
+            "mostra um padrão claro de queda — isoladamente, FC estável pode "
+            "ser SV já no limite (cardíaco) OU uma limitação de utilização "
+            "local (visto em corredores a fazer arm-erg sem quase subir a "
+            "FC); ambíguo sem mais contexto.")
 
     if df is not None and colunas is not None and laps_descanso:
         formas = []
