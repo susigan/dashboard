@@ -248,6 +248,45 @@ def _grafico_double_linear(bp):
     return fig
 
 
+def _grafico_triplo_linear(bp):
+    """SmO2 vs intensidade com as três rectas do ajuste (LT1 + LT2)."""
+    p = bp['pontos']
+    u = bp['unidade']
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=p['intensidade'], y=p['smo2'], mode='markers',
+        marker=dict(size=6, color='rgba(0,114,178,0.55)'),
+        name='SmO₂ (estado estacionário)',
+        hovertemplate='%{x:.0f}' + u + '<br>SmO₂ %{y:.1f}%<extra></extra>'))
+
+    x = p['intensidade'].values
+    lt1, lt2 = bp['breakpoint_lt1'], bp['breakpoint_lt2']
+    c1, c2, c3 = bp['coef_1'], bp['coef_2'], bp['coef_3']
+    x1 = np.linspace(x.min(), lt1, 20)
+    x2 = np.linspace(lt1, lt2, 20)
+    x3 = np.linspace(lt2, x.max(), 20)
+    fig.add_trace(go.Scatter(x=x1, y=np.polyval(c1, x1), mode='lines',
+        line=dict(color='#27ae60', width=2.5), name='Antes do LT1 (moderado)'))
+    fig.add_trace(go.Scatter(x=x2, y=np.polyval(c2, x2), mode='lines',
+        line=dict(color='#f39c12', width=2.5), name='Entre LT1-LT2 (pesado)'))
+    fig.add_trace(go.Scatter(x=x3, y=np.polyval(c3, x3), mode='lines',
+        line=dict(color='#e74c3c', width=2.5), name='Depois do LT2 (severo)'))
+    fig.add_vline(x=lt1, line_dash='dash', line_color='#333', line_width=2,
+                  annotation_text=f"LT1 ≈ {lt1:.0f}{u}", annotation_position='top')
+    fig.add_vline(x=lt2, line_dash='dash', line_color='#333', line_width=2,
+                  annotation_text=f"LT2 ≈ {lt2:.0f}{u}", annotation_position='bottom')
+
+    fig.update_layout(
+        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+        height=380, margin=dict(t=55, b=50, l=55, r=25), font=dict(size=11),
+        xaxis_title=f'Intensidade ({u})', yaxis_title='SmO₂ (%)',
+        legend=dict(orientation='h', y=-0.18, font=dict(size=10)),
+        title=dict(text='LT1 + LT2 via SmO₂ — ajuste de 3 segmentos', font=dict(size=13)))
+    fig.update_xaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+    fig.update_yaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+    return fig
+
+
 def _grafico_dfa1(ld):
     """DFA-α1 vs intensidade com as linhas de referência 0.75 / 0.70 / 0.50."""
     p = ld['pontos']
@@ -483,6 +522,124 @@ def _grafico_series(df, colunas, lap_stats, metricas_sel):
     fig.update_xaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
     fig.update_yaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
     fig.update_xaxes(title_text='Tempo (min)', row=len(metricas_sel), col=1)
+    return fig
+
+
+def _grafico_limitador_bruto(df, colunas, lap_stats):
+    """
+    Traço bruto de SmO2 (eixo esquerdo) + THb (eixo direito) ao longo do
+    tempo, com sombreado de trabalho/descanso — o mesmo estilo de gráfico
+    usado nos casos de estudo do fórum Moxy/NNOXX (SmO2 + THb + fase),
+    para o utilizador ver visualmente o que gerou a classificação.
+    """
+    if 'smo2' not in colunas or colunas['smo2'] not in df.columns:
+        return None
+
+    fig = make_subplots(specs=[[{'secondary_y': True}]])
+    tmin = df['time_seconds'].min()
+    t_min_rel = (df['time_seconds'] - tmin) / 60.0
+
+    smo2 = pd.to_numeric(df[colunas['smo2']], errors='coerce')
+    fig.add_trace(go.Scatter(
+        x=t_min_rel, y=smo2, mode='lines', name='SmO₂ (%)',
+        line=dict(color=_CORES_METRICA['smo2'], width=1.6),
+        hovertemplate='SmO₂: %{y:.1f}%<extra></extra>'), secondary_y=False)
+
+    if 'thb' in colunas and colunas['thb'] in df.columns:
+        thb = pd.to_numeric(df[colunas['thb']], errors='coerce')
+        fig.add_trace(go.Scatter(
+            x=t_min_rel, y=thb, mode='lines', name='THb',
+            line=dict(color=_CORES_METRICA['thb'], width=1.4),
+            hovertemplate='THb: %{y:.2f}<extra></extra>'), secondary_y=True)
+        _t = thb.dropna()
+        if len(_t) > 0:
+            _lo, _hi = float(_t.min()), float(_t.max())
+            _amp = max(_hi - _lo, 1e-6)
+            fig.update_yaxes(range=[_lo - _amp * 0.15, _hi + _amp * 0.15],
+                             secondary_y=True)
+
+    # Sombrear trabalho (vermelho) / descanso (azul) — mesmo padrão do
+    # _grafico_series, para reconhecimento visual consistente
+    for l in lap_stats:
+        fase = l.get('phase')
+        if fase not in ('work', 'recovery'):
+            continue
+        d = df[df['lap_number'] == l['lap_number']]
+        if len(d) == 0:
+            continue
+        x0 = (d['time_seconds'].iloc[0] - tmin) / 60.0
+        x1 = (d['time_seconds'].iloc[-1] - tmin) / 60.0
+        cor = 'rgba(214,39,40,0.09)' if fase == 'work' else 'rgba(52,152,219,0.07)'
+        fig.add_vrect(x0=x0, x1=x1, fillcolor=cor, line_width=0, layer='below')
+
+    fig.update_layout(
+        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+        height=320, hovermode='x unified',
+        margin=dict(t=30, b=45, l=55, r=55),
+        legend=dict(orientation='h', y=1.08),
+        font=dict(size=11))
+    fig.update_xaxes(title_text='Tempo (min)', showgrid=True,
+                     gridcolor='rgba(128,128,128,0.2)')
+    fig.update_yaxes(title_text='SmO₂ (%)', showgrid=True,
+                     gridcolor='rgba(128,128,128,0.2)', secondary_y=False)
+    fig.update_yaxes(title_text='THb', showgrid=False, secondary_y=True)
+    return fig
+
+
+def _grafico_limitador_tendencias(lap_stats):
+    """
+    As 4 séries que o classificador de limitador realmente pontua, por lap
+    sucessivo — para o utilizador confirmar visualmente a tendência (ou não)
+    por trás do resultado, em vez de confiar só no texto.
+    """
+    laps_trabalho = [l for l in lap_stats if l.get('phase') == 'work']
+    laps_descanso = [l for l in lap_stats if l.get('phase') == 'recovery']
+    if len(laps_trabalho) < 2:
+        return None
+
+    def _v(l, est, todo):
+        return l.get(est, l.get(todo))
+
+    n_trab = list(range(1, len(laps_trabalho) + 1))
+    n_desc = list(range(1, len(laps_descanso) + 1))
+    min_smo2_trab = [_v(l, 'min_smo2_est', 'min_smo2') for l in laps_trabalho]
+    max_smo2_desc = [_v(l, 'max_smo2_est', 'max_smo2') for l in laps_descanso]
+    max_thb_trab  = [_v(l, 'max_thb_est', 'max_thb') for l in laps_trabalho]
+    max_thb_desc  = [_v(l, 'max_thb_est', 'max_thb') for l in laps_descanso]
+
+    fig = make_subplots(rows=1, cols=2, subplot_titles=(
+        'SmO₂ — mínimo em trabalho / máximo em descanso',
+        'THb — máximo em trabalho / máximo em descanso'))
+
+    fig.add_trace(go.Scatter(
+        x=n_trab, y=min_smo2_trab, mode='lines+markers', name='SmO₂ mín. (trabalho)',
+        line=dict(color=_CORES_METRICA['smo2'], width=2), marker=dict(size=8),
+        hovertemplate='Lap trabalho %{x}<br>SmO₂ mín: %{y:.1f}%<extra></extra>'),
+        row=1, col=1)
+    fig.add_trace(go.Scatter(
+        x=n_desc, y=max_smo2_desc, mode='lines+markers', name='SmO₂ máx. (descanso)',
+        line=dict(color=_CORES_METRICA['smo2'], width=2, dash='dot'), marker=dict(size=8, symbol='diamond'),
+        hovertemplate='Lap descanso %{x}<br>SmO₂ máx: %{y:.1f}%<extra></extra>'),
+        row=1, col=1)
+
+    fig.add_trace(go.Scatter(
+        x=n_trab, y=max_thb_trab, mode='lines+markers', name='THb máx. (trabalho)',
+        line=dict(color=_CORES_METRICA['thb'], width=2), marker=dict(size=8),
+        hovertemplate='Lap trabalho %{x}<br>THb máx: %{y:.2f}<extra></extra>'),
+        row=1, col=2)
+    fig.add_trace(go.Scatter(
+        x=n_desc, y=max_thb_desc, mode='lines+markers', name='THb máx. (descanso)',
+        line=dict(color=_CORES_METRICA['thb'], width=2, dash='dot'), marker=dict(size=8, symbol='diamond'),
+        hovertemplate='Lap descanso %{x}<br>THb máx: %{y:.2f}<extra></extra>'),
+        row=1, col=2)
+
+    fig.update_layout(
+        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+        height=320, margin=dict(t=40, b=45, l=50, r=20),
+        legend=dict(orientation='h', y=-0.2), font=dict(size=11))
+    fig.update_xaxes(title_text='Nº do lap (sucessivo)', showgrid=True,
+                     gridcolor='rgba(128,128,128,0.2)')
+    fig.update_yaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
     return fig
 
 
@@ -1567,6 +1724,35 @@ decoupling. Não há limiares a estimar.
                    "metabólica (MRT) em rampas rápidas; em degraus longos como estes o "
                    "efeito é menor (~2-10 W).")
 
+        # ── LT1 + LT2 via SmO₂ (2 breakpoints no mesmo sinal) ────────────────
+        _bp2 = res.get('bp_lt1_lt2')
+        if _bp2:
+            st.markdown("---")
+            st.markdown("#### 📐 LT1 + LT2 via SmO₂ (2 breakpoints)")
+            st.caption(
+                "Andri Feldmann (fórum de developers da Moxy): \"vais encontrar duas "
+                "mudanças distintas na inclinação/taxa do SmO₂. A primeira queda é o "
+                "LT1; a segunda é uma segunda queda clara ou um achatamento — isso é "
+                "o LT2.\" Dá um segundo ponto de vista sobre o LT2 (independente do "
+                "DFA-α1/HRVT2), e uma primeira estimativa de LT1 a partir do SmO₂.")
+            _l1c1, _l1c2 = st.columns(2)
+            _l1c1.metric("LT1 (moderado→pesado)",
+                        f"{_bp2['breakpoint_lt1']:.0f} {_bp2['unidade']}")
+            _l1c2.metric("LT2 (pesado→severo)",
+                        f"{_bp2['breakpoint_lt2']:.0f} {_bp2['unidade']}")
+            st.caption(f"Declives: moderado {_bp2['slope_1']:.3f} → pesado "
+                      f"{_bp2['slope_2']:.3f} → severo {_bp2['slope_3']:.3f} "
+                      f"%/{_bp2['unidade']} · R² = {_bp2['r2']:.2f} · "
+                      f"padrão no LT2: {_bp2['padrao_lt2']}")
+            if _bp2['r2'] < 0.8:
+                st.warning("R² baixo — o modelo de 3 segmentos não descreve bem estes "
+                          "dados. Interpreta com reserva (precisa de mais pontos/gama "
+                          "de intensidade do que o ajuste de 1 breakpoint).")
+            st.plotly_chart(_grafico_triplo_linear(_bp2), use_container_width=True,
+                            config={'displayModeBar': False},
+                            key=f'g_triplo_{_fid}')
+            st.warning(_bp2['aviso'])
+
         # ── HRVT2 pelo DFA-α1 recalculado + Combo (Murias 2023) ──────────────
         _h2 = res.get('hrvt2')
         _cb = res.get('combo')
@@ -2000,6 +2186,15 @@ decoupling. Não há limiares a estimar.
             _lc2.metric("❤️ Cardíaco", _pt.get('cardiaco', 0))
             _lc3.metric("🫁 Pulmonar", _pt.get('pulmonar', 0))
 
+            _fig_bruto = _grafico_limitador_bruto(res['df'], colunas, lap_stats)
+            if _fig_bruto is not None:
+                st.plotly_chart(_fig_bruto, use_container_width=True,
+                                config={'displayModeBar': False},
+                                key=f'g_limitador_bruto_{ficheiro.name}')
+                st.caption("Traço bruto de SmO₂/THb com trabalho (vermelho) e "
+                          "descanso (azul) sombreados — o mesmo estilo de "
+                          "gráfico usado nos casos de estudo Moxy/NNOXX.")
+
             if lim_smo2['sinais']:
                 st.markdown("**Sinais encontrados:**")
                 for s in lim_smo2['sinais']:
@@ -2018,7 +2213,12 @@ decoupling. Não há limiares a estimar.
                 if _ctx.get('nota_thb_forma'):
                     st.caption(f"🩸 {_ctx['nota_thb_forma']}")
 
-            with st.expander("Ver tendências brutas usadas na classificação"):
+            with st.expander("Ver tendências usadas na classificação"):
+                _fig_tend = _grafico_limitador_tendencias(lap_stats)
+                if _fig_tend is not None:
+                    st.plotly_chart(_fig_tend, use_container_width=True,
+                                    config={'displayModeBar': False},
+                                    key=f'g_limitador_tend_{ficheiro.name}')
                 for _nome_t, (_cat, _var) in lim_smo2['tendencias'].items():
                     st.caption(f"**{_nome_t}**: {_cat} ({_var:+.2f})")
 
