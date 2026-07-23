@@ -538,30 +538,29 @@ def tab_cp_model(ac_full=None):
             "para cada modelo (menor SEE%). SEE% < 2% = excelente | < 5% = bom."
         )
 
-        # Para Row/Ski: ranking mostra apenas M1/M2/M3
-        _results_rank = (
-            {k: v for k, v in _results.items() if k in _M_CLASSICOS}
-            if modalidade in ('Row', 'Ski') else _results
-        )
+        # A tabela de Ranking continua a mostrar TODOS os modelos, para todas
+        # as modalidades — Power Law, OmPD, etc. continuam visíveis para
+        # comparação. Só a ESCOLHA do "melhor" (mais abaixo) fica restrita a
+        # M1/M2/M3: o Power Law não tem assíntota física nenhuma (a potência
+        # tende para zero com a duração, nunca estabiliza — ver "Modelling
+        # human endurance: power laws vs critical power", Drake et al.), e
+        # ajustado com 2 parâmetros a apenas 3 pontos ganha quase sempre por
+        # artefacto estatístico (SEE%≈0%), não por ser fisiologicamente melhor.
+        _results_rank = _results
+        _candidatos_melhor = {k: v for k, v in _results.items() if k in _M_CLASSICOS}
 
         if not _all_mmp_pts:
             st.warning("Sem pontos MMP disponíveis.")
             st.stop()
 
-        if modalidade in ('Row', 'Ski'):
-            st.info(
-                f"ℹ️ **{modalidade} — M1/M2/M3 usam:** " +
-                " · ".join([f"{int(t//60)}min={p:.0f}W" for p,t in _all_mmp_pts]) +
-                " | **Outros modelos:** " +
-                " · ".join([f"{int(t//60)}min={p:.0f}W" for p,t in _all_mmp_pts_full]) +
-                (f" | **Pmax:** {_pmax_global:.0f}W" if _pmax_global else "") +
-                " | MMP60 excluído. Ranking mostra apenas M1/M2/M3."
-            )
-        else:
-            st.info(f"**Pontos disponíveis ({modalidade}):** " +
-                    " · ".join([f"{int(t//60)}min={p:.0f}W" for p, t in _all_mmp_pts]) +
-                    (f" | **Pmax:** {_pmax_global:.0f}W" if _pmax_global
-                     else " | ⚠️ Pmax não encontrado"))
+        st.info(
+            f"ℹ️ **{modalidade} — M1/M2/M3 (elegíveis a 'melhor') usam:** " +
+            " · ".join([f"{int(t//60)}min={p:.0f}W" for p,t in _all_mmp_pts]) +
+            " | **Outros modelos (informativos, não competem por 'melhor'):** " +
+            " · ".join([f"{int(t//60)}min={p:.0f}W" for p,t in _all_mmp_pts_full]) +
+            (f" | **Pmax:** {_pmax_global:.0f}W" if _pmax_global else "") +
+            " | MMP60 excluído. Ranking mostra apenas M1/M2/M3."
+        )
 
         if not _results:
             st.error("Nenhum modelo convergiu com os dados disponíveis.")
@@ -570,7 +569,8 @@ def tab_cp_model(ac_full=None):
                 "**SEE%** = erro padrão (menor = melhor). "
                 "**CP var%** = variação CP entre combinações (ou entre M1/M2/M3). "
                 "**CV%** = desvio-padrão/média. "
-                "Row/Ski: apenas M1/M2/M3 mostrados, ordenados por SEE% melhor."
+                "Todos os modelos aparecem aqui para comparação, mas só M1/M2/M3 "
+                "são elegíveis a 'melhor' — ver nota abaixo sobre o Power Law."
             )
 
             _rank_rows = []
@@ -589,7 +589,7 @@ def tab_cp_model(ac_full=None):
                 _m60_err = _gr.get('mmp60_err')
 
                 _rank_rows.append({
-                    'Modelo':       _mn,
+                    'Modelo':       ('⭐ ' if _mn in _M_CLASSICOS else '') + _mn,
                     'CP (W)':       f"{_cp_v:.0f}" if _cp_v else "—",
                     "W′ (J)":       f"{_wp_v:.0f}" if isinstance(_wp_v, float) and _wp_v > 100 else "—",
                     'SEE% melhor':  _flag_see(_see_b),
@@ -607,11 +607,16 @@ def tab_cp_model(ac_full=None):
                 "✅ Excelente | ⚠️ Aceitável | ❌ Problemático — "
                 f"3 pontos por modelo | MMP60 excluído do fitting "
                 + (f"(validação: 60min={_mmp60_val:.0f}W)" if _mmp60_val else "(MMP60 não disponível)")
-                + (f" | **Row/Ski: CP seleccionado apenas entre M1, M2, M3**" if modalidade in ('Row','Ski') else "")
+                + " | ⭐ = elegível a 'melhor' (M1/M2/M3). "
+                  "O Power Law não tem assíntota física (a potência tende para zero "
+                  "com a duração, nunca estabiliza — Drake et al. 2022/2023) e, ajustado "
+                  "com 2 parâmetros a 3 pontos, ganha quase sempre por artefacto "
+                  "estatístico (SEE%≈0%) — por isso nunca compete pelo 'melhor', mesmo "
+                  "aparecendo aqui para comparação."
             )
 
             # Melhor modelo — menor SEE% entre os mostrados
-            _best_mn  = sorted(_results_rank.items(), key=lambda x: x[1]['see_pct'])[0]
+            _best_mn  = sorted(_candidatos_melhor.items(), key=lambda x: x[1]['see_pct'])[0]
             _best_lbl, _best_gr = _best_mn
             _best_res = _best_gr['result']
             _best_cp  = _best_gr.get('cp')
@@ -621,8 +626,8 @@ def tab_cp_model(ac_full=None):
             _best_cp_res   = _best_res
             _best_cp_lbl   = _best_lbl
             _best_cp_gr    = _best_gr
-            _res_classicos = _results_rank
-            _M_CP_FILTER   = modalidade in ('Row', 'Ski')
+            _res_classicos = _candidatos_melhor
+            _M_CP_FILTER   = True   # "melhor" sempre restrito a M1/M2/M3, em todas as modalidades
 
             # Guardar no session_state
             if _best_cp:
