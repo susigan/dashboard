@@ -1321,6 +1321,12 @@ def analisar_completo(prep, metodo_detrend='local', comparar_detrend=False, lam_
                       if _tipo in ('degraus', 'intervalos') and len(dfa1_serie) >= 10
                       else None)
 
+    # Classificação exploratória do limitador fisiológico (SmO2/THb) — só faz
+    # sentido em protocolos de degraus/intervalos, onde há laps sucessivos de
+    # intensidade crescente com descanso entre eles para ver uma tendência.
+    limitador_smo2 = (classificar_limitador_smo2(lap_stats)
+                      if _tipo in ('degraus', 'intervalos') else None)
+
     # Relação potência↔FC desta sessão, para reportar os limiares nas duas
     # unidades. A FC é mais estável entre protocolos do que a potência
     # (Physiological Reports 2023), por isso convém ter ambas.
@@ -1350,6 +1356,7 @@ def analisar_completo(prep, metodo_detrend='local', comparar_detrend=False, lam_
         'bp_hhb': bp_hhb,
         'limiar_dfa1': lim_dfa1,
         'limiar_dfa1_recalculado': lim_dfa1_recalc,
+        'limitador_smo2': limitador_smo2,
         'estabilidade_smo2': estab_smo2,
         'mlss_intervalos': mlss_longos,
         'decoupling': decoupling,
