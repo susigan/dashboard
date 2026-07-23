@@ -1330,7 +1330,7 @@ def analisar_completo(prep, metodo_detrend='local', comparar_detrend=False, lam_
     # Classificação exploratória do limitador fisiológico (SmO2/THb) — só faz
     # sentido em protocolos de degraus/intervalos, onde há laps sucessivos de
     # intensidade crescente com descanso entre eles para ver uma tendência.
-    limitador_smo2 = (classificar_limitador_smo2(lap_stats)
+    limitador_smo2 = (classificar_limitador_smo2(lap_stats, df=df, colunas=colunas)
                       if _tipo in ('degraus', 'intervalos') else None)
 
     # Relação potência↔FC desta sessão, para reportar os limiares nas duas
@@ -1451,33 +1451,77 @@ def _classificar_tendencia(valores, limiar_ligeiro=2.0, limiar_claro=6.0):
         return 'estavel', variacao_total
 
 
-def classificar_limitador_smo2(lap_stats, min_laps_trabalho=3):
+def _forma_thb_inicio_descanso(df, colunas, t_ini, t_fim, segundos=15):
+    """
+    Olha à FORMA do THb nos primeiros `segundos` de um lap de descanso —
+    não só à direção. Feldmann (fórum Moxy): vasodilatação genuína faz o THb
+    subir de forma limpa; uma saída de oclusão venosa faz o THb DESCER
+    primeiro (a pressão mecânica ainda a libertar-se) e só depois subir. A
+    segunda forma é sobretudo um artefacto mecânico/postural, não um sinal
+    fisiológico do limitador.
+
+    Devolve 'subida_limpa', 'possivel_oclusao', ou 'indeterminado' (dados
+    insuficientes ou sem coluna de THb). Best-effort/heurístico — reportado
+    como contexto informativo, nunca pontuado no scoring.
+    """
+    col = colunas.get('thb')
+    if not col or col not in df.columns or 'time_seconds' not in df.columns:
+        return 'indeterminado'
+    janela = df[(df['time_seconds'] >= t_ini) & (df['time_seconds'] <= min(t_ini + segundos, t_fim))]
+    vals = pd.to_numeric(janela[col], errors='coerce').dropna().values
+    if len(vals) < 6:
+        return 'indeterminado'
+    metade = max(3, len(vals) // 2)
+    v_ini, v_min_inicio, v_fim = vals[0], vals[:metade].min(), vals[-1]
+    if v_min_inicio < v_ini - 0.02 and v_fim > v_min_inicio + 0.02:
+        return 'possivel_oclusao'
+    return 'subida_limpa'
+
+
+def classificar_limitador_smo2(lap_stats, min_laps_trabalho=3, df=None, colunas=None):
     """
     Classificação exploratória do limitador fisiológico dominante num
     protocolo de degraus/intervalos de intensidade crescente, usando só
     SmO2/THb já calculados por estatisticas_por_lap() — sem sensor de NO/CO2.
 
-    Segue a terminologia exacta do "5-1-5 Assessment" (Moxy): usa sempre o
-    MÁXIMO ou MÍNIMO real de cada lap (nunca a média) — "Minimum Work SmO2",
-    "Maximum Rest SmO2", "Maximum/Minimum Work THb", "Maximum/Minimum Rest
-    THb" — porque é a variação desses EXTREMOS entre laps sucessivos que
-    revela o limitador, não o nível médio do lap.
+    IMPORTANTE (revisto após ler discussões do fórum de desenvolvimento da
+    Moxy, incl. Andri Feldmann e o investigador de NIRS Jem Arnold): o SmO2
+    é consideravelmente mais fiável do que o THb para interpretação
+    individual — o THb varia pouco em magnitude face à sua própria baseline
+    (~±0.1 numa baseline de 11-13) e não é comparável de forma fiável entre
+    sessões. Por isso os sinais baseados em THb aqui pesam MENOS no score do
+    que os baseados em SmO2, e a forma da curva do THb (não só a direção) é
+    usada como contexto adicional, nunca como prova isolada. Um investigador
+    de NIRS envolvido nesse fórum foi explícito: "não teria confiança para
+    afirmar que esta apresentação está exclusiva, predominante, ou mais
+    provavelmente relacionada com uma limitação X" — mantemos essa cautela.
 
-    Para cada lap de TRABALHO, olha para: SmO2 mínimo (quão fundo desceu) e
-    SmO2 máximo (nível de partida); THb máximo (pico de vasodilatação) e
-    mínimo. Para cada lap de DESCANSO: SmO2 máximo (até onde recupera —
-    compara-se com o descanso ANTERIOR, não com o nível absoluto) e THb
-    máximo/mínimo. A tendência de cada uma destas séries, ao longo dos laps
-    sucessivos, é o que entra na classificação.
+    Segue a terminologia do "5-1-5 Assessment" (Moxy): usa sempre o MÁXIMO ou
+    MÍNIMO real de cada lap (nunca a média), sobre o estado estacionário
+    (últimos ~60s, não o lap inteiro — ver estatisticas_por_lap).
+
+    O sinal de utilização/muscular usa agora um critério RELATIVO à própria
+    sessão (quanto desceu o SmO2 mínimo do 1º ao último lap de trabalho),
+    não um corte absoluto (ex. ">60%") — confirmado no fórum que esses
+    cortes variam muito com a posição do sensor, mesmo a poucos cm de
+    distância no mesmo músculo (Andri Feldmann).
+
+    df, colunas (opcionais): se fornecidos, verifica também a FORMA do THb
+    no início de cada lap de descanso (subida limpa vs possível oclusão) —
+    informativo, não entra no score.
 
     Precisa de pelo menos `min_laps_trabalho` laps de trabalho (idealmente
     com descanso entre eles) para conseguir ver uma TENDÊNCIA entre laps
-    sucessivos — um único lap não chega.
+    sucessivos — um único lap não chega. As tendências SÃO SEMPRE uma
+    comparação entre laps sucessivos (não um valor isolado) — todas as 8
+    séries abaixo (min/max SmO2 e THb, em trabalho e descanso) são
+    comparadas lap-a-lap via regressão linear (_classificar_tendencia).
 
     Devolve dict com 'limitador_provavel' ('muscular'|'cardiaco'|'pulmonar'|
     'inconclusivo'), 'pontuacao' (dict com os 3 scores), 'sinais' (lista de
     strings explicando cada sinal encontrado), 'tendencias' (dados brutos),
-    e um 'aviso' que deve ser sempre mostrado junto ao resultado.
+    'contexto' (FC e forma do THb, informativo, não pontuado), e um 'aviso'
+    que deve ser sempre mostrado junto ao resultado.
     """
     laps_trabalho = [l for l in lap_stats if l.get('phase') == 'work']
     laps_descanso = [l for l in lap_stats if l.get('phase') == 'recovery']
@@ -1500,6 +1544,7 @@ def classificar_limitador_smo2(lap_stats, min_laps_trabalho=3):
     max_work_smo2 = [_v(l, 'max_smo2_est', 'max_smo2') for l in laps_trabalho]
     max_work_thb  = [_v(l, 'max_thb_est', 'max_thb') for l in laps_trabalho]
     min_work_thb  = [_v(l, 'min_thb_est', 'min_thb') for l in laps_trabalho]
+    avg_work_hr   = [l.get('avg_heart_rate') for l in laps_trabalho]
 
     # Descanso: idem — "recupera acima do descanso anterior?" usa o MÁXIMO
     # de SmO2 do estado estacionário de cada lap de descanso, comparado entre
@@ -1521,36 +1566,39 @@ def classificar_limitador_smo2(lap_stats, min_laps_trabalho=3):
     tend_min_rest_smo2 = _classificar_tendencia(min_rest_smo2)
     tend_max_rest_thb  = _classificar_tendencia(max_rest_thb, limiar_ligeiro=0.1, limiar_claro=0.3)
     tend_min_rest_thb  = _classificar_tendencia(min_rest_thb, limiar_ligeiro=0.1, limiar_claro=0.3)
+    tend_hr_trabalho   = (_classificar_tendencia(avg_work_hr, limiar_ligeiro=3, limiar_claro=10)
+                         if sum(v is not None for v in avg_work_hr) >= min_laps_trabalho
+                         else ('dados_insuficientes', 0.0))
 
-    ultimo_min_smo2 = next((v for v in reversed(min_work_smo2) if v is not None), None)
+    ultimo_min_smo2  = next((v for v in reversed(min_work_smo2) if v is not None), None)
+    primeiro_min_smo2 = next((v for v in min_work_smo2 if v is not None), None)
 
     sinais = []
     pontuacao = {'muscular': 0, 'cardiaco': 0, 'pulmonar': 0}
 
-    # Muscular/Utilização — SmO2 mínimo em trabalho continua ALTO mesmo em
-    # intensidade elevada (o músculo não consegue extrair o O2 entregue)
-    if ultimo_min_smo2 is not None:
-        if ultimo_min_smo2 > 60:
+    # Muscular/Utilização — critério RELATIVO à própria sessão: quão pouco
+    # o SmO2 mínimo desceu do 1º ao último lap de trabalho, face ao ponto de
+    # partida. Substitui o corte absoluto (">60%") que o fórum confirma
+    # variar demasiado com a posição do sensor.
+    if primeiro_min_smo2 and ultimo_min_smo2 is not None and primeiro_min_smo2 > 0:
+        queda_relativa = (primeiro_min_smo2 - ultimo_min_smo2) / primeiro_min_smo2
+        if queda_relativa < 0.15:
             pontuacao['muscular'] += 3
             sinais.append(
-                f"SmO2 mínimo no último lap de trabalho continua alto "
-                f"({ultimo_min_smo2:.0f}%) mesmo em intensidade elevada — sinal de "
-                "limitação de utilização/capacidade oxidativa muscular")
-        elif ultimo_min_smo2 < 20:
+                f"SmO2 mínimo em trabalho quase não desceu entre o 1º "
+                f"({primeiro_min_smo2:.0f}%) e o último lap ({ultimo_min_smo2:.0f}%) — "
+                f"queda de só {queda_relativa*100:.0f}% apesar da intensidade a subir — "
+                "sinal de limitação de utilização/capacidade oxidativa muscular")
+        elif queda_relativa > 0.5:
             sinais.append(
-                f"SmO2 mínimo no último lap desceu para {ultimo_min_smo2:.0f}% — "
-                "sem sinal de limitação de utilização")
-    # Se o SmO2 mínimo de trabalho não desce entre laps (fica "preso" alto
-    # desde o início), é outro sinal direto de limitação de utilização
-    if tend_min_work_smo2[0] in ('estavel',) and ultimo_min_smo2 is not None and ultimo_min_smo2 > 55:
-        pontuacao['muscular'] += 1
-        sinais.append(
-            "SmO2 mínimo em trabalho não desce entre laps sucessivos, mesmo com "
-            "a intensidade a subir — o músculo não está a aumentar a extração")
+                f"SmO2 mínimo desceu {queda_relativa*100:.0f}% do 1º ao último lap "
+                f"({primeiro_min_smo2:.0f}%→{ultimo_min_smo2:.0f}%) — boa capacidade de "
+                "extração, sem sinal de limitação de utilização")
 
-    # Cardíaco — SmO2 máximo em DESCANSO a descer entre laps sucessivos (não
-    # recupera tão bem como no descanso anterior) e/ou THb (trabalho e/ou
-    # descanso) a descer — vasoconstrição simpática, redistribuição de fluxo
+    # Cardíaco — sinal PRINCIPAL vem do SmO2 (mais fiável): SmO2 máximo em
+    # DESCANSO a descer entre laps sucessivos (recupera cada vez menos).
+    # THb reforça mas conta MENOS (menos fiável para leitura individual —
+    # ver aviso).
     if tend_max_rest_smo2[0] in ('clara_descida', 'ligeira_descida'):
         pts = 2 if tend_max_rest_smo2[0] == 'clara_descida' else 1
         pontuacao['cardiaco'] += pts
@@ -1560,21 +1608,21 @@ def classificar_limitador_smo2(lap_stats, min_laps_trabalho=3):
             "menos do que o anterior; sugere vasoconstrição simpática "
             "progressiva (sinal cardíaco/delivery)")
     if tend_max_rest_thb[0] in ('clara_descida', 'ligeira_descida'):
-        pts = 2 if tend_max_rest_thb[0] == 'clara_descida' else 1
+        pts = 1 if tend_max_rest_thb[0] == 'clara_descida' else 0.5
         pontuacao['cardiaco'] += pts
         sinais.append(
-            f"THb máximo em descanso desce entre laps ({tend_max_rest_thb[1]:+.2f}) "
-            "— redução/redistribuição de fluxo sanguíneo (sinal cardíaco)")
+            f"THb máximo em descanso também desce entre laps ({tend_max_rest_thb[1]:+.2f}) "
+            "— reforça (com cautela — THb é menos fiável individualmente) o sinal "
+            "de redistribuição de fluxo (cardíaco)")
     if tend_max_work_thb[0] in ('clara_descida', 'ligeira_descida'):
-        pts = 1 if tend_max_work_thb[0] == 'clara_descida' else 0.5
+        pts = 0.5 if tend_max_work_thb[0] == 'clara_descida' else 0.25
         pontuacao['cardiaco'] += pts
         sinais.append(
             f"THb máximo em trabalho também desce entre laps ({tend_max_work_thb[1]:+.2f}) "
-            "— reforça o sinal de redistribuição de fluxo (cardíaco)")
+            "— reforço adicional, fraco, do sinal cardíaco")
 
-    # Pulmonar — THb (trabalho e/ou descanso) a SUBIR (CO2 acumulado,
-    # vasodilatação) enquanto o SmO2 de trabalho ainda desce — o corpo "paga"
-    # com vasodilatação, mas não chega para acompanhar a extração
+    # Pulmonar — precisa da COMBINAÇÃO SmO2+THb (mais robusto do que THb
+    # isolado): THb a subir enquanto o SmO2 de trabalho ainda desce.
     if (tend_max_work_thb[0] in ('clara_subida', 'ligeira_subida')
             and tend_min_work_smo2[0] in ('clara_descida', 'ligeira_descida')):
         pts = 2 if tend_max_work_thb[0] == 'clara_subida' else 1
@@ -1584,20 +1632,51 @@ def classificar_limitador_smo2(lap_stats, min_laps_trabalho=3):
             f"o SmO2 mínimo desce ({tend_min_work_smo2[1]:+.1f} pontos) — sugere "
             "CO2 acumulado/vasodilatação apesar da queda de SmO2 (sinal pulmonar)")
     if tend_max_rest_thb[0] in ('clara_subida', 'ligeira_subida'):
-        pts = 1 if tend_max_rest_thb[0] == 'clara_subida' else 0.5
+        pts = 0.5 if tend_max_rest_thb[0] == 'clara_subida' else 0.25
         pontuacao['pulmonar'] += pts
         sinais.append(
             f"THb máximo em descanso também sobe entre laps ({tend_max_rest_thb[1]:+.2f}) "
-            "— o corpo continua a conseguir vasodilatar mesmo em repouso, sem "
-            "precisar de rationar fluxo (reforça sinal pulmonar, não cardíaco)")
+            "— reforço adicional, fraco (o corpo continua a vasodilatar mesmo em "
+            "repouso, sem parecer racionar fluxo)")
 
     limitador_provavel = (max(pontuacao, key=pontuacao.get)
                           if any(pontuacao.values()) else 'inconclusivo')
+
+    # Contexto informativo — NUNCA pontuado, só para dar mais pistas ao
+    # utilizador (FC pode ser SV limitado OU utilização — ambíguo mesmo para
+    # o Feldmann; forma do THb no descanso pode distinguir vasodilatação
+    # genuína de artefacto mecânico de oclusão/postura)
+    contexto = {'tendencia_fc_trabalho': tend_hr_trabalho}
+    if tend_hr_trabalho[0] not in ('dados_insuficientes',):
+        if tend_hr_trabalho[0] == 'estavel':
+            contexto['nota_fc'] = (
+                "FC pouco variou entre laps de trabalho apesar da intensidade a "
+                "subir — pode indicar SV já perto do limite (cardíaco) OU uma "
+                "limitação de utilização local (visto em corredores a fazer arm-erg "
+                "sem quase subir a FC) — ambíguo por si só, ver conjunto dos sinais.")
+
+    if df is not None and colunas is not None and laps_descanso:
+        formas = []
+        for l in laps_descanso:
+            if '_t_ini' in l and '_t_fim' in l:
+                formas.append(_forma_thb_inicio_descanso(df, colunas, l['_t_ini'], l['_t_fim']))
+        formas_validas = [f for f in formas if f != 'indeterminado']
+        if formas_validas:
+            n_oclusao = formas_validas.count('possivel_oclusao')
+            contexto['forma_thb_descanso'] = formas_validas
+            if n_oclusao >= max(2, len(formas_validas) // 2):
+                contexto['nota_thb_forma'] = (
+                    f"Em {n_oclusao}/{len(formas_validas)} laps de descanso o THb desceu "
+                    "antes de subir — pode ser saída de oclusão venosa (artefacto "
+                    "mecânico/postural, ex. posição da perna), não necessariamente um "
+                    "sinal fisiológico do limitador. Vale a pena rever a posição do "
+                    "sensor/perna nos descansos.")
 
     return {
         'limitador_provavel': limitador_provavel,
         'pontuacao': pontuacao,
         'sinais': sinais,
+        'contexto': contexto,
         'tendencias': {
             'min_smo2_trabalho':  tend_min_work_smo2,
             'max_smo2_trabalho':  tend_max_work_smo2,
@@ -1612,12 +1691,18 @@ def classificar_limitador_smo2(lap_stats, min_laps_trabalho=3):
         'n_laps_descanso': len(laps_descanso),
         'aviso': (
             "Classificação EXPLORATÓRIA de treino — identifica qual sistema "
-            "fisiológico está a limitar a performance NESTE esforço, para "
-            "orientar a prescrição. NÃO é um diagnóstico médico de doença "
-            "cardíaca, respiratória ou muscular. Baseado só em SmO2/THb (sem "
-            "sensor de NO/CO2) — não distingue uma limitação de 'extração' "
-            "(hipocapnia por respiração superficial/rápida) das restantes; "
-            "esse sinal, a existir, fica combinado no resultado muscular/pulmonar."
+            "fisiológico PODE estar a limitar a performance NESTE esforço, para "
+            "ajudar a orientar a prescrição. NÃO é um diagnóstico médico de "
+            "doença cardíaca, respiratória ou muscular, nem uma conclusão "
+            "definitiva — mesmo investigadores de NIRS envolvidos neste tipo de "
+            "análise são explícitos: observar um padrão não dá confiança para "
+            "afirmar que ele é exclusiva ou predominantemente devido a um "
+            "limitador específico. Os sinais de THb pesam menos no resultado do "
+            "que os de SmO2, por serem menos fiáveis para leitura individual. "
+            "Baseado só em SmO2/THb (sem sensor de NO/CO2) — não distingue uma "
+            "limitação de 'extração' (hipocapnia por respiração superficial/"
+            "rápida) das restantes; esse sinal, a existir, fica combinado no "
+            "resultado muscular/pulmonar."
         ),
     }
 
