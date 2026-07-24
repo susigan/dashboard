@@ -2206,12 +2206,14 @@ decoupling. Não há limiares a estimar.
             st.warning(lim_smo2['aviso'])
 
             _ctx = lim_smo2.get('contexto', {})
-            if _ctx.get('nota_fc') or _ctx.get('nota_thb_forma'):
+            if _ctx.get('nota_fc') or _ctx.get('nota_thb_forma') or _ctx.get('nota_consistencia_min_smo2'):
                 st.markdown("**Contexto adicional (informativo — não entra na pontuação):**")
                 if _ctx.get('nota_fc'):
                     st.caption(f"❤️ {_ctx['nota_fc']}")
                 if _ctx.get('nota_thb_forma'):
                     st.caption(f"🩸 {_ctx['nota_thb_forma']}")
+                if _ctx.get('nota_consistencia_min_smo2'):
+                    st.caption(f"🔍 {_ctx['nota_consistencia_min_smo2']}")
 
             with st.expander("Ver tendências usadas na classificação"):
                 _fig_tend = _grafico_limitador_tendencias(lap_stats)
