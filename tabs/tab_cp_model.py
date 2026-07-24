@@ -12,6 +12,117 @@ import re as _re
 import warnings
 warnings.filterwarnings('ignore')
 
+# ── Modelos de CP (nível de módulo) ────────────────────────────────────────
+# _MODELS e os wrappers _rank_m1/m2/m3 precisam de estar acessíveis tanto por
+# _computar_resultados_cp_modelos() (cacheada) como por _show_model_tab()
+# (dentro de tab_cp_model(), mostra o detalhe de grid search por modelo).
+def _rank_m1(pts, **kw):
+    """M1 no Ranking: CP médio dos 3 weightings — igual ao teste manual.
+    SEE calculado com o weighting none (baseline)."""
+    t_obs = np.array([t for _,t in pts])
+    p_obs = np.array([p for p,_ in pts])
+    cp_vals, wp_vals = [], []
+    for mode in ["none","1/t","1/t²"]:
+        w = _cpm.make_w(t_obs, mode)
+        res = _cpm.fit_m1(pts, w)
+        if res[0] is not None and res[1] is not None:
+            cp_vals.append(res[0]); wp_vals.append(res[1])
+    if not cp_vals: return _cpm.fit_m1(pts, np.ones(len(pts)))
+    cp_mean = float(np.mean(cp_vals))
+    wp_mean = float(np.mean(wp_vals))
+    # pp calculado com CP médio
+    pp = [wp_mean/t + cp_mean for _,t in pts]
+    return cp_mean, wp_mean, None, pp, 0.0, 2
+
+def _rank_m2(pts, **kw):
+    """M2 no Ranking: CP médio dos 3 weightings — igual ao teste manual."""
+    t_obs = np.array([t for _,t in pts])
+    p_obs = np.array([p for p,_ in pts])
+    cp_vals, wp_vals = [], []
+    for mode in ["none","1/t","1/t²"]:
+        w = _cpm.make_w(t_obs, mode)
+        res = _cpm.fit_m2(pts, w)
+        if res[0] is not None and res[1] is not None:
+            cp_vals.append(res[0]); wp_vals.append(res[1])
+    if not cp_vals: return _cpm.fit_m2(pts, np.ones(len(pts)))
+    cp_mean = float(np.mean(cp_vals))
+    wp_mean = float(np.mean(wp_vals))
+    pp = [cp_mean + wp_mean/t for _,t in pts]
+    return cp_mean, wp_mean, None, pp, 0.0, 2
+
+def _rank_m3(pts, **kw):
+    """M3 no Ranking: CP médio dos 3 weightings — igual ao teste manual."""
+    t_obs = np.array([t for _,t in pts])
+    p_obs = np.array([p for p,_ in pts])
+    cp_vals, wp_vals = [], []
+    for mode in ["none","1/t","1/t²"]:
+        w = _cpm.make_w(t_obs, mode)
+        res = _cpm.fit_m3(pts, w)
+        if res[0] is not None and res[1] is not None and res[0] > 0 and res[1] > 0:
+            cp_vals.append(res[0]); wp_vals.append(res[1])
+    if not cp_vals: return _cpm.fit_m3(pts, np.ones(len(pts)))
+    cp_mean = float(np.mean(cp_vals))
+    wp_mean = float(np.mean(wp_vals))
+    pp = [wp_mean/t + cp_mean for _,t in pts]
+    return cp_mean, wp_mean, None, pp, 0.0, 2
+
+# Cada modelo usa exactamente 3 pontos (papers)
+_FIXED_N_PTS = 3
+
+# Modelos clássicos para CP Row/Ski
+_M_CLASSICOS = ('M1: P vs 1/t', 'M2: Work-Time', 'M3: Hiperbólico-t')
+
+# Semáforos
+def _flag_see(v):
+    if not isinstance(v, float): return '—'
+    return f"{'✅' if v<2 else '⚠️' if v<5 else '❌'} {v:.2f}%"
+def _flag_cp_var(v):
+    if not isinstance(v, float): return '—'
+    return f"{'✅' if v<5 else '⚠️' if v<15 else '❌'} {v:.1f}%"
+def _flag_cv(v):
+    if not isinstance(v, float): return '—'
+    return f"{'✅' if v<5 else '⚠️' if v<10 else '❌'} {v:.1f}%"
+
+# ── Correr grid search para todos os modelos ──────────────────────────
+_MODELS = {
+    # M1/M2/M3: usam _rank_m1/m2/m3 — 3 weightings, igual ao teste manual
+    'M1: P vs 1/t':   {'fn': _rank_m1,
+                        'n_pts': 3, 'k': 2, 'color': '#e74c3c',
+                        'needs_pmax': False,
+                        'desc': 'P = W′/t + CP. 3 weightings. Monod & Scherrer 1965.'},
+    'M2: Work-Time':  {'fn': _rank_m2,
+                        'n_pts': 3, 'k': 2, 'color': '#2980b9',
+                        'needs_pmax': False,
+                        'desc': 'W = CP·t + W′. 3 weightings. Morton 1986.'},
+    'M3: Hiperbólico-t':{'fn': _rank_m3,
+                         'n_pts': 3, 'k': 2, 'color': '#27ae60',
+                         'needs_pmax': False,
+                         'desc': 't = W′/(P-CP). SEE em espaço t. 3 weightings.'},
+    'OmPD':          {'fn': _cpm.fit_ompd,          'n_pts': 3, 'k': 2,
+                      'color': '#8e44ad', 'needs_pmax': True,
+                      'desc': '3 pts (incluindo ≤3min para Pmax). Puchowicz 2020.'},
+    '2P Hiperbólico':{'fn': _cpm.fit_2p_hyperbolic, 'n_pts': 3, 'k': 2,
+                      'color': '#1abc9c', 'needs_pmax': False,
+                      'desc': '3 pts entre 3-20min. Monod & Scherrer 1965.'},
+    '3P Hiperbólico':{'fn': _cpm.fit_3p_hyperbolic, 'n_pts': 3, 'k': 2,
+                      'color': '#f39c12', 'needs_pmax': True,
+                      'desc': '3 pts incluindo ≤3min. Morton 1996.'},
+    'Ward-Smith':    {'fn': _cpm.fit_ward_smith,    'n_pts': 3, 'k': 2,
+                      'color': '#e67e22', 'needs_pmax': True,
+                      'desc': '3 pts entre 3-20min (excluir <60s). Ward-Smith 1999.',
+                      'exclude_short': True},
+    'Om3CP':         {'fn': _cpm.fit_om3cp,         'n_pts': 3, 'k': 2,
+                      'color': '#16a085', 'needs_pmax': True,
+                      'desc': '3 pts incluindo ≤3min. Puchowicz variante.'},
+    'OmExp':         {'fn': _cpm.fit_omexp,         'n_pts': 3, 'k': 2,
+                      'color': '#d35400', 'needs_pmax': True,
+                      'desc': '3 pts. Variante OmPD com decaimento exponencial.'},
+    'Power Law':     {'fn': _cpm.fit_power_law,     'n_pts': 3, 'k': 2,
+                      'color': '#c0392b', 'needs_pmax': False,
+                      'desc': '3 pts entre 3-20min. Sem CP explícito.'},
+}
+
+
 @st.cache_data(show_spinner="A ajustar modelos de Critical Power...", ttl=3600)
 def _computar_resultados_cp_modelos(modalidade, _all_mmp_pts, _all_mmp_pts_full,
                                     _pmax_global, _mmp60_val):
@@ -35,111 +146,9 @@ def _computar_resultados_cp_modelos(modalidade, _all_mmp_pts, _all_mmp_pts_full,
     # M1/M2/M3 são os modelos classicos usados para Row/Ski
     _M_CLASSICOS = ('M1: P vs 1/t', 'M2: Work-Time', 'M3: Hiperbólico-t')
 
-    def _rank_m1(pts, **kw):
-        """M1 no Ranking: CP médio dos 3 weightings — igual ao teste manual.
-        SEE calculado com o weighting none (baseline)."""
-        t_obs = np.array([t for _,t in pts])
-        p_obs = np.array([p for p,_ in pts])
-        cp_vals, wp_vals = [], []
-        for mode in ["none","1/t","1/t²"]:
-            w = _cpm.make_w(t_obs, mode)
-            res = _cpm.fit_m1(pts, w)
-            if res[0] is not None and res[1] is not None:
-                cp_vals.append(res[0]); wp_vals.append(res[1])
-        if not cp_vals: return _cpm.fit_m1(pts, np.ones(len(pts)))
-        cp_mean = float(np.mean(cp_vals))
-        wp_mean = float(np.mean(wp_vals))
-        # pp calculado com CP médio
-        pp = [wp_mean/t + cp_mean for _,t in pts]
-        return cp_mean, wp_mean, None, pp, 0.0, 2
+    # _rank_m1/m2/m3 e _MODELS agora são de nível de módulo (ver topo do
+    # ficheiro) — acessíveis tanto por esta função como por _show_model_tab().
 
-    def _rank_m2(pts, **kw):
-        """M2 no Ranking: CP médio dos 3 weightings — igual ao teste manual."""
-        t_obs = np.array([t for _,t in pts])
-        p_obs = np.array([p for p,_ in pts])
-        cp_vals, wp_vals = [], []
-        for mode in ["none","1/t","1/t²"]:
-            w = _cpm.make_w(t_obs, mode)
-            res = _cpm.fit_m2(pts, w)
-            if res[0] is not None and res[1] is not None:
-                cp_vals.append(res[0]); wp_vals.append(res[1])
-        if not cp_vals: return _cpm.fit_m2(pts, np.ones(len(pts)))
-        cp_mean = float(np.mean(cp_vals))
-        wp_mean = float(np.mean(wp_vals))
-        pp = [cp_mean + wp_mean/t for _,t in pts]
-        return cp_mean, wp_mean, None, pp, 0.0, 2
-
-    def _rank_m3(pts, **kw):
-        """M3 no Ranking: CP médio dos 3 weightings — igual ao teste manual."""
-        t_obs = np.array([t for _,t in pts])
-        p_obs = np.array([p for p,_ in pts])
-        cp_vals, wp_vals = [], []
-        for mode in ["none","1/t","1/t²"]:
-            w = _cpm.make_w(t_obs, mode)
-            res = _cpm.fit_m3(pts, w)
-            if res[0] is not None and res[1] is not None and res[0] > 0 and res[1] > 0:
-                cp_vals.append(res[0]); wp_vals.append(res[1])
-        if not cp_vals: return _cpm.fit_m3(pts, np.ones(len(pts)))
-        cp_mean = float(np.mean(cp_vals))
-        wp_mean = float(np.mean(wp_vals))
-        pp = [wp_mean/t + cp_mean for _,t in pts]
-        return cp_mean, wp_mean, None, pp, 0.0, 2
-
-    # Cada modelo usa exactamente 3 pontos (papers)
-    _FIXED_N_PTS = 3
-
-    # Modelos clássicos para CP Row/Ski
-    _M_CLASSICOS = ('M1: P vs 1/t', 'M2: Work-Time', 'M3: Hiperbólico-t')
-
-    # Semáforos
-    def _flag_see(v):
-        if not isinstance(v, float): return '—'
-        return f"{'✅' if v<2 else '⚠️' if v<5 else '❌'} {v:.2f}%"
-    def _flag_cp_var(v):
-        if not isinstance(v, float): return '—'
-        return f"{'✅' if v<5 else '⚠️' if v<15 else '❌'} {v:.1f}%"
-    def _flag_cv(v):
-        if not isinstance(v, float): return '—'
-        return f"{'✅' if v<5 else '⚠️' if v<10 else '❌'} {v:.1f}%"
-
-    # ── Correr grid search para todos os modelos ──────────────────────────
-    _MODELS = {
-        # M1/M2/M3: usam _rank_m1/m2/m3 — 3 weightings, igual ao teste manual
-        'M1: P vs 1/t':   {'fn': _rank_m1,
-                            'n_pts': 3, 'k': 2, 'color': '#e74c3c',
-                            'needs_pmax': False,
-                            'desc': 'P = W′/t + CP. 3 weightings. Monod & Scherrer 1965.'},
-        'M2: Work-Time':  {'fn': _rank_m2,
-                            'n_pts': 3, 'k': 2, 'color': '#2980b9',
-                            'needs_pmax': False,
-                            'desc': 'W = CP·t + W′. 3 weightings. Morton 1986.'},
-        'M3: Hiperbólico-t':{'fn': _rank_m3,
-                             'n_pts': 3, 'k': 2, 'color': '#27ae60',
-                             'needs_pmax': False,
-                             'desc': 't = W′/(P-CP). SEE em espaço t. 3 weightings.'},
-        'OmPD':          {'fn': _cpm.fit_ompd,          'n_pts': 3, 'k': 2,
-                          'color': '#8e44ad', 'needs_pmax': True,
-                          'desc': '3 pts (incluindo ≤3min para Pmax). Puchowicz 2020.'},
-        '2P Hiperbólico':{'fn': _cpm.fit_2p_hyperbolic, 'n_pts': 3, 'k': 2,
-                          'color': '#1abc9c', 'needs_pmax': False,
-                          'desc': '3 pts entre 3-20min. Monod & Scherrer 1965.'},
-        '3P Hiperbólico':{'fn': _cpm.fit_3p_hyperbolic, 'n_pts': 3, 'k': 2,
-                          'color': '#f39c12', 'needs_pmax': True,
-                          'desc': '3 pts incluindo ≤3min. Morton 1996.'},
-        'Ward-Smith':    {'fn': _cpm.fit_ward_smith,    'n_pts': 3, 'k': 2,
-                          'color': '#e67e22', 'needs_pmax': True,
-                          'desc': '3 pts entre 3-20min (excluir <60s). Ward-Smith 1999.',
-                          'exclude_short': True},
-        'Om3CP':         {'fn': _cpm.fit_om3cp,         'n_pts': 3, 'k': 2,
-                          'color': '#16a085', 'needs_pmax': True,
-                          'desc': '3 pts incluindo ≤3min. Puchowicz variante.'},
-        'OmExp':         {'fn': _cpm.fit_omexp,         'n_pts': 3, 'k': 2,
-                          'color': '#d35400', 'needs_pmax': True,
-                          'desc': '3 pts. Variante OmPD com decaimento exponencial.'},
-        'Power Law':     {'fn': _cpm.fit_power_law,     'n_pts': 3, 'k': 2,
-                          'color': '#c0392b', 'needs_pmax': False,
-                          'desc': '3 pts entre 3-20min. Sem CP explícito.'},
-    }
 
     # Grid search: exactamente N=3 pontos (C(n,3) combinações)
     # Ward-Smith exclui pontos <60s
