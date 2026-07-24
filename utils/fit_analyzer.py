@@ -983,13 +983,28 @@ def _limiares_smo2_laps(lap_stats, colunas):
 # 7. DECOUPLING FC/POTÊNCIA
 # ══════════════════════════════════════════════════════════════════════════════
 
-def calcular_decoupling(lap_stats):
+def calcular_decoupling(lap_stats, protocolo=None):
     """
     Decoupling = variação do rácio FC/potência ao longo dos laps de trabalho,
     normalizada ao primeiro lap. Valores positivos = deriva cardiovascular.
 
+    IMPORTANTE: só é válido quando a potência é aproximadamente CONSTANTE
+    entre os laps comparados — o conceito original (TrainingPeaks/Friel)
+    pergunta "para a MESMA carga, a FC deriva para cima com o tempo?". A
+    relação FC-Potência tem um intercepto positivo (uma FC de base que não
+    escala com a potência), por isso o rácio FC/Potência desce SEMPRE que a
+    potência sobe — mesmo com deriva cardiovascular real ZERO. Num protocolo
+    de DEGRAUS (potência a subir deliberadamente a cada lap), aplicar este
+    cálculo dá um "decoupling" negativo dominado pela forma da curva
+    FC-Potência, não pela fadiga — por isso não é calculado para 'degraus'.
+    Para 'intervalos' (intensidade repetida, aproximadamente constante entre
+    os laps de trabalho) o cálculo continua válido.
+
     Devolve DataFrame ou None.
     """
+    if protocolo == 'degraus':
+        return None
+
     work = [l for l in lap_stats
             if l.get('phase') == 'work' and 'avg_power' in l and 'avg_heart_rate' in l
             and l['avg_power'] > 0]
@@ -1269,7 +1284,7 @@ def analisar_completo(prep, metodo_detrend='local', comparar_detrend=False, lam_
     # que os breakpoints por rampa, pelo erro >10 W destes)
     mlss_longos = (mlss_intervalos_longos(df, colunas, lap_stats)
                    if _tipo in ('degraus', 'intervalos') else None)
-    decoupling = calcular_decoupling(lap_stats)
+    decoupling = calcular_decoupling(lap_stats, protocolo=_tipo)
     fadiga = classificar_fadiga(restauracao, decoupling)
     falha = tempo_ate_falha(lap_stats)
 
