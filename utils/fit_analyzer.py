@@ -1576,11 +1576,16 @@ def classificar_limitador_smo2(lap_stats, min_laps_trabalho=3, df=None, colunas=
 
     # Descanso: idem — "recupera acima do descanso anterior?" usa o MÁXIMO
     # de SmO2 do estado estacionário de cada lap de descanso, comparado entre
-    # si (não um valor fixo)
+    # si (não um valor fixo). O MÍNIMO de descanso é diferente: o ponto mais
+    # baixo acontece logo no INÍCIO do descanso (atraso cinético da transição
+    # trabalho→descanso, ~30-60s), não no fim — por isso usa-se o lap
+    # INTEIRO aqui, nunca a janela de estado estacionário (que são os
+    # ÚLTIMOS segundos e excluiria exactamente o ponto que se quer medir,
+    # sobretudo em descansos mais longos que a própria janela).
     max_rest_smo2 = [_v(l, 'max_smo2_est', 'max_smo2') for l in laps_descanso]
-    min_rest_smo2 = [_v(l, 'min_smo2_est', 'min_smo2') for l in laps_descanso]
+    min_rest_smo2 = [l.get('min_smo2') for l in laps_descanso]
     max_rest_thb  = [_v(l, 'max_thb_est', 'max_thb') for l in laps_descanso]
-    min_rest_thb  = [_v(l, 'min_thb_est', 'min_thb') for l in laps_descanso]
+    min_rest_thb  = [l.get('min_thb') for l in laps_descanso]
 
     if sum(v is not None for v in min_work_smo2) < min_laps_trabalho:
         return {'erro': 'dados de SmO2 insuficientes nos laps de trabalho '
@@ -1643,6 +1648,29 @@ def classificar_limitador_smo2(lap_stats, min_laps_trabalho=3, df=None, colunas=
                 f"SmO2 mínimo desceu {queda_relativa*100:.0f}% do 1º ao último lap "
                 f"({primeiro_min_smo2:.0f}%→{ultimo_min_smo2:.0f}%) — boa capacidade de "
                 "extração, sem sinal de limitação de utilização")
+
+    # Verificação de consistência (NÃO pontuada) — o mínimo de SmO2 no
+    # descanso é fisiologicamente quase a continuação cinética do mínimo em
+    # trabalho (o fundo do descanso é a "cauda" do mergulho, atrasada pelo
+    # tempo de resposta ~30-60s). Por isso NÃO entra como sinal independente
+    # (contaria a mesma evidência duas vezes) — mas se as duas tendências
+    # DISCORDAREM claramente, é mais provável ser um problema de corte de
+    # laps/qualidade de dados do que um achado fisiológico novo.
+    _nota_consistencia_min = None
+    _desce = ('clara_descida', 'ligeira_descida')
+    if tend_min_work_smo2[0] in _desce and tend_min_rest_smo2[0] not in _desce:
+        _nota_consistencia_min = (
+            "O SmO2 mínimo em trabalho desce claramente, mas o SmO2 mínimo no "
+            "início do descanso NÃO acompanha essa queda — vale a pena "
+            "verificar o corte dos laps de descanso (o fórum Moxy avisa que a "
+            "posição da perna/sensor pode distorcer isto) antes de confiar "
+            "totalmente no sinal muscular acima.")
+    elif tend_min_work_smo2[0] not in _desce and tend_min_rest_smo2[0] in _desce:
+        _nota_consistencia_min = (
+            "O SmO2 mínimo no início do descanso desce claramente, mas o "
+            "mínimo em trabalho não — inconsistência entre os dois sinais que "
+            "deveriam, em teoria, andar juntos; vale a pena rever os cortes "
+            "dos laps antes de confiar no sinal muscular acima.")
 
     # Cardíaco — sinal PRINCIPAL vem do SmO2 (mais fiável): SmO2 máximo em
     # DESCANSO a descer entre laps sucessivos (recupera cada vez menos).
@@ -1724,6 +1752,8 @@ def classificar_limitador_smo2(lap_stats, min_laps_trabalho=3, df=None, colunas=
     # movimento/músculo monitorizado — sem 2º sensor não dá para confirmar
     # se houve substituição de recrutamento.
     contexto = {'tendencia_fc_trabalho': tend_hr_trabalho}
+    if _nota_consistencia_min:
+        contexto['nota_consistencia_min_smo2'] = _nota_consistencia_min
     if tend_hr_trabalho[0] == 'estavel' and tend_min_work_smo2[0] not in (
             'clara_descida', 'ligeira_descida'):
         contexto['nota_fc'] = (
