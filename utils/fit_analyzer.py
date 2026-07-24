@@ -2274,6 +2274,16 @@ def breakpoint_smo2_lt1_lt2(df, colunas, lap_stats=None, janela_media=10,
     if protocolo in ('rampa', 'continuo'):
         usar_apenas_trabalho = False
         so_estado_estacionario = False
+    elif protocolo in ('degraus', 'intervalos') and lap_stats:
+        # Um ajuste de 3 segmentos (2 quebras) precisa de mais laps do que o
+        # de 1 quebra — com poucos degraus, o 3º segmento fica preso a
+        # pontos a mais de um só lap (tipicamente o último), o que dá um
+        # ajuste instável (às vezes até com o sinal do declive trocado).
+        # Ver caso real: 5 laps de trabalho deu LT2 quase no topo da gama
+        # testada, com declive positivo no 3º segmento (implausível).
+        _n_laps_trabalho = len({l['lap_number'] for l in lap_stats if l.get('phase') == 'work'})
+        if _n_laps_trabalho < 6:
+            return None
 
     _chave = sinal if sinal in colunas else ('smo2' if 'smo2' in colunas else 'hhb')
     col_smo2 = colunas[_chave]
@@ -2324,11 +2334,43 @@ def breakpoint_smo2_lt1_lt2(df, colunas, lap_stats=None, janela_media=10,
     if res is None:
         return None
 
+    # Verificação de plausibilidade do LT2 — se o 3º segmento (>LT2) tiver
+    # poucos pontos (LT2 caiu perto do topo da gama testada) o ajuste dessa
+    # recta fica instável/dominado por ruído, e pode sair um declive com o
+    # SINAL ERRADO (SmO2 a "subir" na zona severa, fisiologicamente
+    # impossível). Nesse caso o LT2 fica marcado como pouco fiável em vez de
+    # ser apresentado como um resultado normal.
+    n_seg3 = res['n_pontos'] - res['idx_lt2']
+    _int_min, _int_max = amostra['int_ma'].min(), amostra['int_ma'].max()
+    _gama = max(_int_max - _int_min, 1e-6)
+    _lt2_perto_do_topo = (_int_max - res['breakpoint_lt2']) / _gama < 0.08
+    _sinal_errado = (res['slope_3'] > 0) if _chave != 'hhb' else (res['slope_3'] < 0)
+
+    fiavel_lt2 = True
+    motivo_lt2 = None
+    if n_seg3 < 5:
+        fiavel_lt2 = False
+        motivo_lt2 = (f"só {n_seg3} pontos acima do LT2 — precisa de mais dados na "
+                      "zona severa (mais um degrau/intervalo mais intenso) para confirmar.")
+    elif _sinal_errado:
+        fiavel_lt2 = False
+        motivo_lt2 = (f"o declive depois do LT2 tem o sinal errado (SmO2 a "
+                      f"'{'subir' if _chave != 'hhb' else 'descer'}' na zona severa, o que não "
+                      "faz sentido fisiológico) — sinal de ajuste instável, normalmente "
+                      "porque o LT2 caiu perto do fim dos dados testados.")
+    elif _lt2_perto_do_topo:
+        fiavel_lt2 = False
+        motivo_lt2 = (f"LT2 ({res['breakpoint_lt2']:.0f}{unidade}) caiu a menos de 8% do "
+                      "topo da intensidade testada — o 3º segmento tem pouca margem para "
+                      "se confirmar; testa uma intensidade mais alta para validar.")
+
     # Interpretação do padrão do 2º segmento->3º segmento (LT2), espelhando a
     # lógica já usada em breakpoint_smo2_continuo para o recto femoral
     s2, s3 = res['slope_2'], res['slope_3']
     _acelerou = (s3 > s2) if _chave == 'hhb' else (s3 < s2)
-    if _acelerou:
+    if not fiavel_lt2:
+        padrao_lt2 = 'não fiável'
+    elif _acelerou:
         padrao_lt2 = 'aceleração da desoxigenação'
     elif abs(s3) < abs(s2) * 0.5:
         padrao_lt2 = 'plateau (padrão típico de vasto lateral)'
@@ -2336,6 +2378,8 @@ def breakpoint_smo2_lt1_lt2(df, colunas, lap_stats=None, janela_media=10,
         padrao_lt2 = 'sem mudança clara de declive'
 
     res.update({
+        'fiavel_lt2': fiavel_lt2,
+        'motivo_lt2': motivo_lt2,
         'unidade': unidade,
         'pontos': amostra[['int_ma', 'smo2_ma', 't']].rename(
             columns={'int_ma': 'intensidade', 'smo2_ma': 'smo2', 't': 'tempo_s'}),
