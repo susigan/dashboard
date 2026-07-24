@@ -1920,10 +1920,14 @@ decoupling. Não há limiares a estimar.
             else:
                 _s1, _s2, _s3 = st.columns(3)
                 _s1.metric("HRVT2 previsto", f"{_sub['fc']:.0f} bpm")
-                _s2.metric("FC máxima medida", f"{_sub['fc_max_medida']:.0f} bpm")
+                _s2.metric("FC máxima (janela submáxima)", f"{_sub['fc_max_medida']:.0f} bpm")
                 _s3.metric("Extrapolação", f"{_sub['extrapolacao_bpm']:+.0f} bpm")
                 st.caption(f"Ajuste sobre {_sub['n_pontos']} janelas · "
-                           f"R²={_sub['r2']:.2f} · ondulação {_sub['ondulacao_pct']:.0f}%")
+                           f"R²={_sub['r2']:.2f} · ondulação {_sub['ondulacao_pct']:.0f}% · "
+                           "nota: esta FC máxima é só dentro da janela submáxima (α1 "
+                           "0.75-1.5) usada para a recta — pode ser menor do que a FC "
+                           "máxima medida na sessão inteira, referida no aviso de "
+                           "plausibilidade abaixo.")
                 if _sub['fiavel']:
                     st.success("✅ Previsão fiável — a recta é inequívoca e a "
                                "extrapolação é curta.")
@@ -2143,6 +2147,16 @@ decoupling. Não há limiares a estimar.
                    "ao longo da sessão. Acima de 5% indica deriva cardiovascular relevante.")
         st.plotly_chart(_grafico_decoupling(dec), use_container_width=True,
                         config={'displayModeBar': False}, key=f'g_dec_{_fid}')
+    elif res.get('protocolo', {}).get('tipo') == 'degraus':
+        st.markdown("---")
+        st.markdown("### 💓 Decoupling FC/potência")
+        st.caption(
+            "Não calculado para protocolos de degraus: a potência sobe deliberadamente "
+            "a cada lap, e a relação FC-Potência tem um intercepto (uma FC de base que "
+            "não escala com a potência) — por isso o rácio FC/Potência desce sempre com "
+            "a potência a subir, mesmo sem nenhuma deriva cardiovascular real. Este "
+            "cálculo só é válido quando a potência é aproximadamente constante entre os "
+            "laps comparados (ex.: intervalos repetidos à mesma intensidade).")
 
     # ── Fadiga ────────────────────────────────────────────────────────────────
     fad = res['fadiga']
