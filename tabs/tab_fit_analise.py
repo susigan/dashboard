@@ -1739,11 +1739,14 @@ decoupling. Não há limiares a estimar.
             _l1c1.metric("LT1 (moderado→pesado)",
                         f"{_bp2['breakpoint_lt1']:.0f} {_bp2['unidade']}")
             _l1c2.metric("LT2 (pesado→severo)",
-                        f"{_bp2['breakpoint_lt2']:.0f} {_bp2['unidade']}")
+                        f"{_bp2['breakpoint_lt2']:.0f} {_bp2['unidade']}"
+                        + ("" if _bp2['fiavel_lt2'] else " ⚠️"))
             st.caption(f"Declives: moderado {_bp2['slope_1']:.3f} → pesado "
                       f"{_bp2['slope_2']:.3f} → severo {_bp2['slope_3']:.3f} "
                       f"%/{_bp2['unidade']} · R² = {_bp2['r2']:.2f} · "
                       f"padrão no LT2: {_bp2['padrao_lt2']}")
+            if not _bp2['fiavel_lt2']:
+                st.warning(f"LT2 pouco fiável: {_bp2['motivo_lt2']}")
             if _bp2['r2'] < 0.8:
                 st.warning("R² baixo — o modelo de 3 segmentos não descreve bem estes "
                           "dados. Interpreta com reserva (precisa de mais pontos/gama "
@@ -1752,6 +1755,15 @@ decoupling. Não há limiares a estimar.
                             config={'displayModeBar': False},
                             key=f'g_triplo_{_fid}')
             st.warning(_bp2['aviso'])
+        elif res.get('protocolo') in ('degraus', 'intervalos'):
+            st.markdown("---")
+            st.markdown("#### 📐 LT1 + LT2 via SmO₂ (2 breakpoints)")
+            st.caption(
+                "Não calculado: dividir em 3 segmentos (2 quebras) precisa de mais "
+                "degraus do que 1 quebra — com poucos, o último segmento fica preso a "
+                "pontos de um só lap, o que dá um ajuste instável (às vezes até com o "
+                "declive ao contrário). Repete com pelo menos 6 laps de trabalho para "
+                "veres esta secção.")
 
         # ── HRVT2 pelo DFA-α1 recalculado + Combo (Murias 2023) ──────────────
         _h2 = res.get('hrvt2')
