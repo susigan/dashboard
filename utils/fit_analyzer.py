@@ -2579,18 +2579,33 @@ def limiar_dfa1_recalculado(dfa1_serie, lap_stats, colunas, alvos=(0.75, 0.70, 0
         if abs(coef[0]) > 1e-12:
             xi = (alvo - coef[1]) / coef[0]
             dentro = x.min() - 0.1 * np.ptp(x) <= xi <= x.max() + 0.1 * np.ptp(x)
-            _fisio_ok = True
             if intensidade == 'avg_heart_rate':
                 _fisio_ok, _ = _checar_fc_plausivel(xi, fc_max_sessao=float(x.max()))
+            else:
+                # Potência: sem sensor de "potência máxima humana" para comparar,
+                # mas extrapolar muito além do que foi testado é tão pouco fiável
+                # quanto no caso da FC — usa-se um teto relativo à própria sessão
+                # (não deveria passar muito de 50% acima do degrau mais duro
+                # testado). Sem este teto, um ajuste ruidoso (R² baixo) podia
+                # devolver valores fisicamente impossíveis (ex.: milhares de W)
+                # sinalizados só com "extrapolado", sem nenhum alerta mais forte.
+                _fisio_ok = 0 < xi <= x.max() * 1.5
             limiares[alvo] = {'intensidade': float(xi), 'extrapolado': not dentro,
                               'fisiologicamente_plausivel': _fisio_ok}
         else:
             limiares[alvo] = None
 
+    # Quando o ajuste linear é essencialmente ruído (R² muito baixo), NENHUM
+    # dos limiares acima merece confiança, estejam ou não "dentro" do
+    # intervalo testado — um R²≈0 significa que a recta não descreve nada
+    # dos dados, extrapolado ou não.
+    r2_muito_baixo = (not np.isnan(r2)) and r2 < 0.3
+
     return {
         'limiares': limiares,
         'coef': coef.tolist(),
         'r2': float(r2),
+        'r2_muito_baixo': bool(r2_muito_baixo),
         'unidade': unidade,
         'pontos': agg,
         'n_usados': len(agg),
