@@ -1612,19 +1612,34 @@ decoupling. Não há limiares a estimar.
                         _r075 = _ldfa_rec['limiares'].get(0.75)
                         _r070 = _ldfa_rec['limiares'].get(0.70)
                         _r050 = _ldfa_rec['limiares'].get(0.50)
+
+                        def _fmt_r(_r):
+                            if not _r:
+                                return "—"
+                            _avisos = []
+                            if _r['extrapolado']:
+                                _avisos.append("extrapolado")
+                            if not _r.get('fisiologicamente_plausivel', True):
+                                _avisos.append("valor implausível")
+                            _sufixo = f" ⚠️ {', '.join(_avisos)}" if _avisos else ""
+                            return f"{_r['intensidade']:.0f} {_ur}{_sufixo}"
+
+                        if _ldfa_rec.get('r2_muito_baixo'):
+                            st.error(
+                                f"R² = {_ldfa_rec['r2']:.2f} — o ajuste linear é "
+                                "essencialmente ruído (não descreve nenhuma relação real "
+                                "entre intensidade e DFA-α1 nesta sessão). Os valores "
+                                "abaixo NÃO devem ser usados, estejam ou não marcados "
+                                "como extrapolados — um R² tão baixo já os invalida por "
+                                "si só.")
+
                         if _r070:
-                            _avisos_r = []
-                            if _r070['extrapolado']:
-                                _avisos_r.append("extrapolado")
-                            if not _r070.get('fisiologicamente_plausivel', True):
-                                _avisos_r.append("valor implausível")
-                            _ex_r = f" ⚠️ {', '.join(_avisos_r)}" if _avisos_r else ""
                             st.metric("Limite de zona 1 (α1 = 0.70) — recalculado",
-                                      f"{_r070['intensidade']:.0f} {_ur}{_ex_r}")
+                                      _fmt_r(_r070))
                         if _r075:
-                            st.caption(f"α1 = 0.75 (≈VT1): {_r075['intensidade']:.0f} {_ur}")
+                            st.caption(f"α1 = 0.75 (≈VT1): {_fmt_r(_r075)}")
                         if _r050:
-                            st.caption(f"α1 = 0.50: {_r050['intensidade']:.0f} {_ur}")
+                            st.caption(f"α1 = 0.50: {_fmt_r(_r050)}")
                         st.caption(f"Ajuste sobre {_ldfa_rec['n_usados']} laps · "
                                    f"R² = {_ldfa_rec['r2']:.2f}")
                         _pts_r = _ldfa_rec.get('pontos')
@@ -2164,11 +2179,14 @@ decoupling. Não há limiares a estimar.
         st.markdown("---")
         st.markdown("### 🔋 Indicadores de fadiga")
         cor = fad.get('veredicto_cor', '#888')
+        _n_sinais_possiveis = sum(k in fad for k in
+                                  ('tendencia_fc', 'consistencia', 'deriva_cardiovascular'))
         st.markdown(
             f"<div style='padding:14px 18px;border-radius:8px;"
             f"background:{cor}1A;border-left:5px solid {cor}'>"
             f"<b style='color:{cor};font-size:16px'>Fadiga: {fad['veredicto']}</b> "
-            f"<span style='font-size:13px'>({fad['n_alertas']}/3 sinais de alerta)</span></div>",
+            f"<span style='font-size:13px'>({fad['n_alertas']}/{_n_sinais_possiveis} "
+            f"sinais de alerta)</span></div>",
             unsafe_allow_html=True)
 
         fc = st.columns(3)
@@ -2182,9 +2200,14 @@ decoupling. Não há limiares a estimar.
             fc[2].metric("Deriva cardiovascular", fad['deriva_cardiovascular'],
                          f"{fad.get('decoupling_final_pct', 0):+.1f}%")
 
-        st.caption("Os três sinais: (1) o tempo de recuperação da FC aumenta ao longo da sessão, "
-                   "(2) a recuperação é inconsistente entre intervalos, (3) há deriva do custo "
-                   "cardíaco. Dois ou mais sinais indicam fadiga elevada.")
+        st.caption(f"Sinais avaliados nesta sessão ({_n_sinais_possiveis}): "
+                   "(1) o tempo de recuperação da FC aumenta ao longo da sessão, "
+                   "(2) a recuperação é inconsistente entre intervalos"
+                   + (", (3) há deriva do custo cardíaco." if 'deriva_cardiovascular' in fad
+                      else ". A deriva do custo cardíaco não é avaliada em protocolos de "
+                           "degraus — ver nota na secção de Decoupling acima.")
+                   + f" {fad['n_alertas']} ou mais sinais (de {_n_sinais_possiveis}) "
+                     "indicam fadiga elevada.")
 
     # ── Limitador fisiológico exploratório (SmO2/THb) ────────────────────────
     lim_smo2 = res.get('limitador_smo2')
