@@ -2380,9 +2380,14 @@ decoupling. Não há limiares a estimar.
                 _mp = _linha['muda_por_ano']
                 _row['Muda por ano?'] = ("⚠️ Sim" if _mp is True
                                          else ("Não" if _mp is False else "—"))
-                if _linha['esta_sessao']:
-                    _v, _u, _fonte = _linha['esta_sessao']
-                    _row['Esta sessão'] = f"{_v:.0f} {_u}"
+                _es = _linha['esta_sessao']
+                if _es and (_es.get('w') is not None or _es.get('bpm') is not None):
+                    _partes = []
+                    if _es.get('w') is not None:
+                        _partes.append(f"{_es['w']:.0f} W")
+                    if _es.get('bpm') is not None:
+                        _partes.append(f"{_es['bpm']:.0f} bpm")
+                    _row['Esta sessão'] = " / ".join(_partes)
                 else:
                     _row['Esta sessão'] = "—"
                 _linhas_tabela.append(_row)
@@ -2391,6 +2396,10 @@ decoupling. Não há limiares a estimar.
                         use_container_width=True)
             st.caption(
                 "Cada célula: mediana [Q25-Q75] (n=nº de sessões), limpo por IQR×1.5. "
+                "'Esta sessão' mostra Watts e bpm quando possível — a unidade nativa "
+                "do método (breakpoint SmO₂ = Watts; HRVT1c/HRVT2-DFA-α1 = bpm) mais a "
+                "outra, convertida pela relação potência↔FC desta sessão (só quando o "
+                "ajuste é razoável, R²≥0.5). "
                 "'Muda por ano?': sinaliza quando a mediana varia mais de 10% (ou "
                 "mais de 5bpm/10W, o que for maior) entre o ano mais alto e o mais "
                 "baixo — vale a pena investigar se é evolução real ou mudança de "
