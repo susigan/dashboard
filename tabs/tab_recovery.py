@@ -442,178 +442,375 @@ sobe) = cautela — investigar antes de carregar.
     # ════════════════════════════════════════════════════════════════════════
     # HRV-GUIDED TRAINING
     # ════════════════════════════════════════════════════════════════════════
-    st.subheader("🏋️ HRV-Guided Training (LnrMSSD)")
+    st.subheader("🏋️ HRV-Guided Training (corrected to paper rules)")
+    
     if len(dw) >= 14 and dw['hrv'].notna().sum() >= 14:
-        df_hg = dw.copy().sort_values('Data'); df_hg['Data'] = pd.to_datetime(df_hg['Data'])
+        # --------------------------------------------------------------------
+        # Base dataframe and LnRMSSD conversion
+        # --------------------------------------------------------------------
+        df_hg = dw.copy().sort_values('Data')
+        df_hg['Data'] = pd.to_datetime(df_hg['Data'])
         df_hg = df_hg.set_index('Data')
+    
         date_range_hg = pd.date_range(df_hg.index.min(), df_hg.index.max(), freq='D')
-        df_hg = df_hg.reindex(date_range_hg); df_hg.index.name = 'Data'; df_hg = df_hg.reset_index()
-        df_hg['LnrMSSD'] = np.where(df_hg['hrv'].notna() & (df_hg['hrv'] > 0), np.log(df_hg['hrv']), np.nan)
-        df_hg['sem_medicao'] = df_hg['LnrMSSD'].isna()
-
+        df_hg = df_hg.reindex(date_range_hg)
+        df_hg.index.name = 'Data'
+        df_hg = df_hg.reset_index()
+    
+        # HRV values must be positive for log transformation; missing/invalid become NaN
+        df_hg['RMSSD'] = df_hg['hrv'].where(df_hg['hrv'] > 0)
+        df_hg['LnrMSSD'] = np.log(df_hg['RMSSD'])
+        df_hg['sem_medicao'] = df_hg['LnrMSSD'].isna() & df_hg['RMSSD'].isna()
+    
         hg_c1, hg_c2 = st.columns(2)
-        dias_fam = hg_c1.slider("Dias baseline rolling", 7, 28, 14, key="hg_baseline")
         n_hg = hg_c2.slider("Dias a mostrar", 14, min(len(df_hg), 180), min(60, len(df_hg)), key="hg_dias")
-
-        _mp = max(5, dias_fam // 2)
-        df_hg['bm'] = df_hg['LnrMSSD'].rolling(dias_fam, min_periods=_mp).mean()
-        df_hg['bs'] = df_hg['LnrMSSD'].rolling(dias_fam, min_periods=_mp).std()
-        df_hg['linf'] = df_hg['bm'] - 0.5 * df_hg['bs']; df_hg['lsup'] = df_hg['bm'] + 0.5 * df_hg['bs']
-        df_hg['desvio_dp'] = (df_hg['LnrMSSD'] - df_hg['bm']) / df_hg['bs'].replace(0, np.nan)
-
-        def _classif_hg(r):
-            if r['sem_medicao']: return 'Sem medição ⭐'
-            if pd.isna(r['bm']): return 'Sem dados'
-            if r['linf'] <= r['LnrMSSD'] <= r['lsup']: return 'HIIT'
-            return 'Recuperação'
-
-        df_hg['intens'] = df_hg.apply(_classif_hg, axis=1)
-        df_analysis = df_hg.copy()
-
-        df_hg_raw = dw.copy().sort_values('Data'); df_hg_raw['Data'] = pd.to_datetime(df_hg_raw['Data'])
-        df_hg_raw['RMSSD'] = df_hg_raw['hrv'].where(df_hg_raw['hrv'] > 0)
-        df_hg_raw = df_hg_raw.set_index('Data')
-        _dr_raw = pd.date_range(df_hg_raw.index.min(), df_hg_raw.index.max(), freq='D')
-        df_hg_raw = df_hg_raw.reindex(_dr_raw); df_hg_raw.index.name = 'Data'; df_hg_raw = df_hg_raw.reset_index()
-        _mp_raw = max(5, dias_fam // 2)
-        df_hg_raw['bm_raw'] = df_hg_raw['RMSSD'].rolling(dias_fam, min_periods=_mp_raw).mean()
-        df_hg_raw['bs_raw'] = df_hg_raw['RMSSD'].rolling(dias_fam, min_periods=_mp_raw).std()
-        df_hg_raw['desvio_dp_raw'] = (df_hg_raw['RMSSD'] - df_hg_raw['bm_raw']) / df_hg_raw['bs_raw'].replace(0, np.nan)
-        df_hg_raw['intens_raw'] = df_hg_raw.apply(lambda r: ('Sem medição ⭐' if pd.isna(r['RMSSD']) else 'HIIT' if pd.notna(r['bm_raw']) and (r['bm_raw'] - 0.5*r['bs_raw']) <= r['RMSSD'] <= (r['bm_raw'] + 0.5*r['bs_raw']) else ('Recuperação' if pd.notna(r['bm_raw']) else 'Sem dados')), axis=1)
-
-        # ════════════════════════════════════════════════════════════════════
-        # MÁQUINA DE ESTADOS — Javaloyes (LnRMSSD 7d) + Kiviniemi (HF power 10d)
-        # Substitui a classificação estática. df_hg['intens'] mantém-se calculado
-        # acima (usado pelas Análises 1/slope/correlações downstream).
-        # ════════════════════════════════════════════════════════════════════
-        # Baseline SWC (Javaloyes): últimos 28 dias reais, mean ± 0.5·SD
-        _ln_real_h = df_hg[~df_hg['sem_medicao']]['LnrMSSD'].dropna()
-        _lnb_h = _ln_real_h.tail(28) if len(_ln_real_h) >= 7 else _ln_real_h
-        _swc_m_h = float(_lnb_h.mean()); _swc_s_h = float(_lnb_h.std())
-        _swc_sup_h = _swc_m_h + 0.5 * _swc_s_h
-        _swc_inf_h = _swc_m_h - 0.5 * _swc_s_h
-        df_hg['ln7'] = df_hg['LnrMSSD'].rolling(7, min_periods=4).mean()
-
+    
+        # ====================================================================
+        # JAVALOYES (2020)
+        # --------------------------------------------------------------------
+        # Full-text rule recovered from the paper:
+        # - LnRMSSD 7-day rolling average is used for training prescription
+        # - SWC in baseline period = mean ± 0.5 SD
+        # - High intensity when LnRMSSD 7-day average is inside the SWC band
+        # - Low/recovery when outside the band
+        # - No more than 2 consecutive high-intensity sessions
+        # - No more than 2 consecutive days of rest
+        # - SWC updated after the first 4 weeks using the previous 4 weeks
+        # ====================================================================
+    
+        _ln_real = df_hg.loc[~df_hg['LnrMSSD'].isna(), 'LnrMSSD'].dropna()
+    
+        # Paper baseline period is 2 weeks (BW). Use the earliest 14 valid values.
+        _bw = _ln_real.head(min(14, len(_ln_real)))
+        if len(_bw) >= 2:
+            _swc_m = float(_bw.mean())
+            _swc_s = float(_bw.std(ddof=1)) if len(_bw) > 1 else 0.0
+        else:
+            _swc_m = float(_ln_real.mean()) if len(_ln_real) else np.nan
+            _swc_s = float(_ln_real.std(ddof=1)) if len(_ln_real) > 1 else np.nan
+    
+        _swc_inf = _swc_m - 0.5 * _swc_s if pd.notna(_swc_m) and pd.notna(_swc_s) else np.nan
+        _swc_sup = _swc_m + 0.5 * _swc_s if pd.notna(_swc_m) and pd.notna(_swc_s) else np.nan
+    
+        # 7-day rolling average for training prescription
+        df_hg['ln7'] = df_hg['LnrMSSD'].rolling(window=7, min_periods=7).mean()
+    
+        # Optional SWC update after first 4 weeks of TW using previous 4 weeks
+        df_hg['swc_inf_jav'] = _swc_inf
+        df_hg['swc_sup_jav'] = _swc_sup
+        if len(_ln_real) >= 42:
+            for i in range(len(df_hg)):
+                current_date = df_hg.loc[i, 'Data']
+                past_vals = df_hg.loc[(df_hg['Data'] < current_date) & df_hg['LnrMSSD'].notna(), 'LnrMSSD']
+                if len(past_vals) >= 28:
+                    last4w = past_vals.tail(28)
+                    m = float(last4w.mean())
+                    s = float(last4w.std(ddof=1)) if len(last4w) > 1 else 0.0
+                    df_hg.loc[i, 'swc_inf_jav'] = m - 0.5 * s
+                    df_hg.loc[i, 'swc_sup_jav'] = m + 0.5 * s
+    
         _LBL = {'HIGH': '🟢 HIGH', 'LOW': '🔵 LOW', 'REST': '🔴 REST'}
         _COR = {'HIGH': '#27ae60', 'LOW': '#3498db', 'REST': '#e74c3c'}
-
-        # Máquina de estados fiel à Fig.1 (Kiviniemi/Javaloyes), sinal pela banda
-        def _state_machine(vals, sig_fn, max_high=2, max_train_days=None):
-            # max_high: teto de HIGH consecutivos (Javaloyes=2; Kiviniemi=None)
-            # max_train_days: teto de dias de treino consecutivos (High OU Low)
-            #                 → força REST (Kiviniemi=9; Javaloyes=None)
-            pres = []; sig = []; estado = 'START'; ch = 0; cr = 0; ct = 0
-            prev = np.nan; prev2 = np.nan
+    
+        def _sig_jav(i, v, prev, prev2):
+            if pd.isna(v):
+                return '·'
+            lo = df_hg.loc[i, 'swc_inf_jav']
+            hi = df_hg.loc[i, 'swc_sup_jav']
+            if pd.isna(lo) or pd.isna(hi):
+                return '·'
+            return 'HRV+' if (lo <= v <= hi) else 'HRV−'
+    
+        def _pres_jav_rule(vals, sig_fn):
+            pres = []
+            sig = []
+            estado = 'START'
+            ch = 0  # consecutive HIGH sessions
+            cr = 0  # consecutive REST days
+            prev = np.nan
+            prev2 = np.nan
+    
             for i, v in enumerate(vals):
                 s = sig_fn(i, v, prev, prev2)
+                sig.append(s)
+    
                 if pd.isna(v) or s == '·':
-                    p = 'LOW'; estado = 'LOW'; ch = 0; cr = 0; ct = 0
-                elif estado == 'START':
-                    p = 'LOW'; estado = 'LOW'; ch = 0; cr = 0; ct = 1
-                # Regra dos N dias (Kiviniemi): Rest forçado após max_train_days
-                # de treino consecutivo (High ou Low), independente do sinal.
-                elif max_train_days is not None and ct >= max_train_days:
-                    p = 'REST'; estado = 'REST'; cr = 1; ch = 0; ct = 0
-                elif estado == 'HIGH':
-                    if s.endswith('+'):
-                        if max_high is not None and ch >= max_high:
-                            p = 'LOW'; estado = 'LOW'; ch = 0; ct += 1
-                        else:
-                            p = 'HIGH'; estado = 'HIGH'; ch += 1; ct += 1
-                    else:
-                        p = 'LOW'; estado = 'LOW'; ch = 0; ct += 1
-                    cr = 0
-                elif estado == 'LOW':
-                    if s.endswith('+'):
-                        p = 'HIGH'; estado = 'HIGH'; ch = 1; cr = 0; ct += 1
-                    else:
-                        p = 'REST'; estado = 'REST'; cr = 1; ct = 0
-                elif estado == 'REST':
-                    if cr >= 2: p = 'LOW'; estado = 'LOW'; cr = 0; ct = 1
-                    elif s.endswith('+'): p = 'LOW'; estado = 'LOW'; cr = 0; ct = 1
-                    else: p = 'REST'; estado = 'REST'; cr += 1; ct = 0
+                    p = 'LOW'
+                    estado = 'LOW'
                     ch = 0
+                    cr = 0
+                elif estado == 'START':
+                    p = 'LOW'
+                    estado = 'LOW'
+                    ch = 0
+                    cr = 0
+                elif estado == 'HIGH':
+                    if s == 'HRV+':
+                        if ch >= 2:
+                            p = 'LOW'
+                            estado = 'LOW'
+                            ch = 0
+                            cr = 0
+                        else:
+                            p = 'HIGH'
+                            estado = 'HIGH'
+                            ch += 1
+                            cr = 0
+                    else:
+                        p = 'LOW'
+                        estado = 'LOW'
+                        ch = 0
+                        cr = 0
+                elif estado == 'LOW':
+                    if s == 'HRV+':
+                        p = 'HIGH'
+                        estado = 'HIGH'
+                        ch = 1
+                        cr = 0
+                    else:
+                        # keep recovery/low intensity when outside SWC
+                        p = 'LOW'
+                        estado = 'LOW'
+                        ch = 0
+                        cr = 0
+                elif estado == 'REST':
+                    if cr >= 2:
+                        p = 'LOW'
+                        estado = 'LOW'
+                        cr = 0
+                        ch = 0
+                    elif s == 'HRV+':
+                        p = 'LOW'
+                        estado = 'LOW'
+                        cr = 0
+                        ch = 0
+                    else:
+                        p = 'REST'
+                        estado = 'REST'
+                        cr += 1
+                        ch = 0
                 else:
-                    p = 'LOW'; estado = 'LOW'; ct = 1
-                pres.append(p); sig.append(s)
-                if pd.notna(v): prev2 = prev; prev = v
+                    p = 'LOW'
+                    estado = 'LOW'
+                    ch = 0
+                    cr = 0
+    
+                pres.append(p)
+                if pd.notna(v):
+                    prev2 = prev
+                    prev = v
+    
             return pres, sig
-
-        # Javaloyes: sinal pela banda (ln7 dentro/acima vs abaixo)
-        # Teto de 2 HIGH consecutivos (fiel a "only 2 consecutive high-intensity")
-        def _sig_jav(i, v, p, p2):
-            if pd.isna(v): return '·'
-            return 'HRV+' if v >= _swc_inf_h else 'HRV−'
-        _pj_h, _sj_h = _state_machine(df_hg['ln7'].tolist(), _sig_jav,
-                                      max_high=2, max_train_days=None)
-        df_hg['prescricao'] = _pj_h; df_hg['hrv_sinal'] = _sj_h
-
-        # Kiviniemi: HF power, referência 10d (mean − 1·SD) + tendência 2 dias
-        _tem_hf_h = ('hf_power' in df_hg.columns and
-                     df_hg['hf_power'].notna().sum() >= 5)
-        if _tem_hf_h:
-            _hf_h = pd.to_numeric(df_hg['hf_power'], errors='coerce').replace(0, np.nan)
-            _med_h = _hf_h.median()
-            df_hg['hf_metric'] = (np.log(_hf_h.where(_hf_h > 0))
-                                  if _med_h > 10 else _hf_h)
-            df_hg['hf_mean10'] = df_hg['hf_metric'].rolling(10, min_periods=5).mean()
-            df_hg['hf_sd10'] = df_hg['hf_metric'].rolling(10, min_periods=5).std()
-            df_hg['hf_ref'] = df_hg['hf_mean10'] - 1.0 * df_hg['hf_sd10']
-            _refs_h = df_hg['hf_ref'].tolist()
-            def _sig_kiv(i, v, p, p2):
-                ref = _refs_h[i]
-                if pd.isna(v) or pd.isna(ref): return '·'
-                below = v < ref
-                trend = (pd.notna(p) and pd.notna(p2)
-                         and (p2 - p) > 0.1 and (p - v) > 0.1)
-                return 'HF−' if (below or trend) else 'HF+'
-            # Kiviniemi: SEM teto de 2 HIGH (mantém High enquanto HRV+);
-            # Rest forçado após 9 dias de treino consecutivo (regra do paper).
-            _pk_h, _sk_h = _state_machine(df_hg['hf_metric'].tolist(), _sig_kiv,
-                                          max_high=None, max_train_days=9)
-            df_hg['prescricao_k'] = _pk_h; df_hg['hf_sinal'] = _sk_h
-
+    
+        _pj_h, _sj_h = _pres_jav_rule(df_hg['ln7'].tolist(), _sig_jav)
+        df_hg['prescricao'] = _pj_h
+        df_hg['hrv_sinal'] = _sj_h
+    
+        # ====================================================================
+        # KIVINIEMI (2007)
+        # --------------------------------------------------------------------
+        # Full-text rule recovered from the paper:
+        # - Morning HF power measured daily
+        # - Baseline: 10 daily HRV measurements before guidance starts
+        # - Reference = 10-day mean HF power - 1 SD
+        # - High intensity if increased or unchanged HF power
+        # - Low intensity if significantly decreased HF power
+        # - Significant decrease also if decreasing trend > 0.1 ln ms^2 for 2 days
+        # - After a decrease: low intensity; if HF decreases again after that, rest
+        # - No more than 9 successive training days
+        # - No more than 2 successive rest days
+        # ====================================================================
+    
+        _tem_hf = 'hf_power' in df_hg.columns and df_hg['hf_power'].notna().sum() >= 5
+        if _tem_hf:
+            _hf = pd.to_numeric(df_hg['hf_power'], errors='coerce')
+    
+            # The paper works with HF power in ln ms^2; if your column is already
+            # log-scaled, replace this line by: df_hg['hf_metric'] = _hf
+            df_hg['hf_metric'] = np.where(_hf > 0, np.log(_hf), np.nan)
+    
+            _hf_vals = df_hg['hf_metric'].tolist()
+            _ref_list = []
+            for i in range(len(df_hg)):
+                if i < 10:
+                    ref = np.nan
+                else:
+                    window = pd.Series(_hf_vals[max(0, i - 10):i]).dropna()
+                    if len(window) >= 5:
+                        ref = float(window.mean() - window.std(ddof=1)) if len(window) > 1 else float(window.mean())
+                    else:
+                        ref = np.nan
+                _ref_list.append(ref)
+            df_hg['hf_ref'] = _ref_list
+    
+            def _sig_kiv(i, v, prev, prev2):
+                ref = df_hg.loc[i, 'hf_ref']
+                if pd.isna(v) or pd.isna(ref):
+                    return '·'
+                dec_trend = False
+                if pd.notna(prev) and pd.notna(prev2):
+                    dec_trend = ((prev2 - prev) > 0.1) and ((prev - v) > 0.1)
+                return 'HF−' if (v < ref or dec_trend) else 'HF+'
+    
+            def _pres_kiv_rule(vals, sig_fn):
+                pres = []
+                sig = []
+                estado = 'START'
+                ch = 0  # consecutive HIGH sessions
+                cr = 0  # consecutive REST days
+                ct = 0  # consecutive training days (HIGH or LOW)
+                prev = np.nan
+                prev2 = np.nan
+    
+                for i, v in enumerate(vals):
+                    s = sig_fn(i, v, prev, prev2)
+                    sig.append(s)
+    
+                    if pd.isna(v) or s == '·':
+                        p = 'LOW'
+                        estado = 'LOW'
+                        ch = 0
+                        cr = 0
+                        ct += 1
+                    elif ct >= 9:
+                        p = 'REST'
+                        estado = 'REST'
+                        ch = 0
+                        cr = 1
+                        ct = 0
+                    elif estado == 'START':
+                        p = 'LOW'
+                        estado = 'LOW'
+                        ch = 0
+                        cr = 0
+                        ct = 1
+                    elif estado == 'HIGH':
+                        if s == 'HF+':
+                            if ch >= 2:
+                                p = 'LOW'
+                                estado = 'LOW'
+                                ch = 0
+                                ct += 1
+                                cr = 0
+                            else:
+                                p = 'HIGH'
+                                estado = 'HIGH'
+                                ch += 1
+                                ct += 1
+                                cr = 0
+                        else:
+                            p = 'LOW'
+                            estado = 'LOW'
+                            ch = 0
+                            ct += 1
+                            cr = 0
+                    elif estado == 'LOW':
+                        if s == 'HF+':
+                            p = 'HIGH'
+                            estado = 'HIGH'
+                            ch = 1
+                            ct += 1
+                            cr = 0
+                        else:
+                            p = 'REST'
+                            estado = 'REST'
+                            ch = 0
+                            ct = 0
+                            cr = 1
+                    elif estado == 'REST':
+                        if cr >= 2:
+                            p = 'LOW'
+                            estado = 'LOW'
+                            cr = 0
+                            ch = 0
+                            ct = 1
+                        elif s == 'HF+':
+                            p = 'LOW'
+                            estado = 'LOW'
+                            cr = 0
+                            ch = 0
+                            ct = 1
+                        else:
+                            p = 'REST'
+                            estado = 'REST'
+                            cr += 1
+                            ch = 0
+                            ct = 0
+                    else:
+                        p = 'LOW'
+                        estado = 'LOW'
+                        ch = 0
+                        cr = 0
+                        ct = 1
+    
+                    pres.append(p)
+                    if pd.notna(v):
+                        prev2 = prev
+                        prev = v
+    
+                return pres, sig
+    
+            _pk_h, _sk_h = _pres_kiv_rule(df_hg['hf_metric'].tolist(), _sig_kiv)
+            df_hg['prescricao_k'] = _pk_h
+            df_hg['hf_sinal'] = _sk_h
+    
+        # --------------------------------------------------------------------
+        # Display range
+        # --------------------------------------------------------------------
         _df_p = df_hg.tail(n_hg).copy()
-
-        # ── GRÁFICO 1: Javaloyes (máquina de estados) ────────────────────────
+    
+        # --------------------------------------------------------------------
+        # Chart 1: Javaloyes
+        # --------------------------------------------------------------------
         _fig_hg = go.Figure()
-        _fig_hg.add_hrect(y0=_swc_inf_h, y1=_swc_sup_h, fillcolor='rgba(39,174,96,0.08)',
-                          line_width=0, annotation_text="Banda SWC (±0.5·SD)",
-                          annotation_position="right", annotation_font_size=9,
-                          annotation_font_color='#27ae60')
-        _fig_hg.add_hline(y=_swc_sup_h, line_dash='dash', line_color='rgba(39,174,96,0.5)', line_width=1)
-        _fig_hg.add_hline(y=_swc_inf_h, line_dash='dash', line_color='rgba(231,76,60,0.5)', line_width=1)
-        _fig_hg.add_trace(go.Scatter(x=_df_p['Data'], y=_df_p['ln7'], mode='lines',
-                          line=dict(color='rgba(44,62,80,0.30)', width=1.5),
-                          showlegend=False, hoverinfo='skip'))
+        _fig_hg.add_hrect(
+            y0=_swc_inf, y1=_swc_sup,
+            fillcolor='rgba(39,174,96,0.08)', line_width=0,
+            annotation_text='Banda SWC (mean ± 0.5·SD)',
+            annotation_position='right', annotation_font_size=9,
+            annotation_font_color='#27ae60'
+        )
+        _fig_hg.add_hline(y=_swc_sup, line_dash='dash', line_color='rgba(39,174,96,0.5)', line_width=1)
+        _fig_hg.add_hline(y=_swc_inf, line_dash='dash', line_color='rgba(231,76,60,0.5)', line_width=1)
+    
+        _fig_hg.add_trace(go.Scatter(
+            x=_df_p['Data'], y=_df_p['ln7'], mode='lines',
+            line=dict(color='rgba(44,62,80,0.30)', width=1.5),
+            showlegend=False, hoverinfo='skip'
+        ))
         for _pg, _cg in _COR.items():
             _sg = _df_p[_df_p['prescricao'] == _pg]
             if len(_sg) > 0:
-                _fig_hg.add_trace(go.Scatter(x=_sg['Data'], y=_sg['ln7'], mode='markers',
-                    name=_LBL[_pg], marker=dict(color=_cg, size=9, line=dict(width=1.3, color='white')),
+                _fig_hg.add_trace(go.Scatter(
+                    x=_sg['Data'], y=_sg['ln7'], mode='markers',
+                    name=_LBL[_pg],
+                    marker=dict(color=_cg, size=9, line=dict(width=1.3, color='white')),
                     customdata=_sg['hrv_sinal'],
-                    hovertemplate='%{x|%d/%m}<br>LnRMSSD₇: %{y:.3f}<br>%{customdata}<extra></extra>'))
-        _fig_hg.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                    hovertemplate='%{x|%d/%m}<br>LnRMSSD₇: %{y:.3f}<br>%{customdata}<extra></extra>'
+                ))
+    
+        _fig_hg.update_layout(
+            paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
             font=dict(size=11), height=340, hovermode='x unified',
             margin=dict(t=50, b=50, l=60, r=130),
             legend=dict(orientation='h', y=-0.20, font=dict(size=10)),
             title=dict(text='Javaloyes — LnRMSSD₇ vs banda SWC (máquina de estados)', font=dict(size=13)),
             xaxis=dict(showgrid=True, gridcolor='rgba(128,128,128,0.2)'),
-            yaxis=dict(title='LnRMSSD₇', showgrid=True, gridcolor='rgba(128,128,128,0.2)'))
-        st.plotly_chart(_fig_hg, use_container_width=True, config={'displayModeBar': False, 'responsive': True}, key="rec_hg_chart")
-
-        # ── GRÁFICO 2: Kiviniemi — réplica da Fig.2 do estudo ────────────────
-        # Painel (a): HF power (barras) + referência 10d (linha espessa)
-        # Painel (b): prescrição no eixo Y = High / Low / Rest (como Fig.2b/2d)
-        if _tem_hf_h:
+            yaxis=dict(title='LnRMSSD₇', showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+        )
+        st.plotly_chart(_fig_hg, use_container_width=True, config={'displayModeBar': False, 'responsive': True}, key='corr_hg_chart')
+    
+        # --------------------------------------------------------------------
+        # Chart 2: Kiviniemi
+        # --------------------------------------------------------------------
+        if _tem_hf:
             from plotly.subplots import make_subplots as _msp_k
-            _fig_k = _msp_k(rows=2, cols=1, shared_xaxes=True,
-                            row_heights=[0.60, 0.40], vertical_spacing=0.08,
-                            subplot_titles=[
-                                'HF ln power vs referência 10d (mean − 1·SD)',
-                                'Exercise prescription'])
-
-            # ── Painel (a): HF power em BARRAS, coloridas pela prescrição ─────
+            _fig_k = _msp_k(
+                rows=2, cols=1, shared_xaxes=True,
+                row_heights=[0.60, 0.40], vertical_spacing=0.08,
+                subplot_titles=['HF power vs referência 10d (mean − 1·SD)', 'Exercise prescription']
+            )
+    
             for _pg, _cg in _COR.items():
                 _sk2 = _df_p[_df_p['prescricao_k'] == _pg]
                 if len(_sk2) > 0:
@@ -621,79 +818,82 @@ sobe) = cautela — investigar antes de carregar.
                         x=_sk2['Data'], y=_sk2['hf_metric'],
                         name=_LBL[_pg], marker=dict(color=_cg, line=dict(width=0)),
                         customdata=_sk2['hf_sinal'],
-                        hovertemplate='%{x|%d/%m}<br>HF: %{y:.4f}<br>%{customdata}<extra></extra>'),
-                        row=1, col=1)
-            # Referência 10d — linha ESPESSA (não pontilhada fina)
+                        hovertemplate='%{x|%d/%m}<br>HF: %{y:.4f}<br>%{customdata}<extra></extra>'
+                    ), row=1, col=1)
+    
             _fig_k.add_trace(go.Scatter(
                 x=_df_p['Data'], y=_df_p['hf_ref'], mode='lines',
                 line=dict(color='#c0392b', width=3),
                 name='Ref 10d (mean−1SD)',
-                hovertemplate='Ref: %{y:.4f}<extra></extra>'),
-                row=1, col=1)
-
-            # ── Painel (b): prescrição no eixo Y (High=2, Low=1, Rest=0) ──────
+                hovertemplate='Ref: %{y:.4f}<extra></extra>'
+            ), row=1, col=1)
+    
             _pres_num = {'REST': 0, 'LOW': 1, 'HIGH': 2}
             _dfp_k = _df_p.copy()
             _dfp_k['_pres_y'] = _dfp_k['prescricao_k'].map(_pres_num)
-            # linha em degraus ligando as prescrições
             _fig_k.add_trace(go.Scatter(
                 x=_dfp_k['Data'], y=_dfp_k['_pres_y'], mode='lines',
                 line=dict(color='rgba(120,120,120,0.5)', width=1.5, shape='hv'),
-                showlegend=False, hoverinfo='skip'), row=2, col=1)
-            # marcadores coloridos por estado
+                showlegend=False, hoverinfo='skip'
+            ), row=2, col=1)
             for _pg, _cg in _COR.items():
                 _sk3 = _dfp_k[_dfp_k['prescricao_k'] == _pg]
                 if len(_sk3) > 0:
                     _fig_k.add_trace(go.Scatter(
                         x=_sk3['Data'], y=_sk3['_pres_y'], mode='markers',
-                        name=_LBL[_pg], marker=dict(color=_cg, size=11,
-                        symbol='square', line=dict(width=1.3, color='white')),
+                        name=_LBL[_pg],
+                        marker=dict(color=_cg, size=11, symbol='square', line=dict(width=1.3, color='white')),
                         showlegend=False,
-                        hovertemplate='%{x|%d/%m}<br>' + _pg + '<extra></extra>'),
-                        row=2, col=1)
-
-            _fig_k.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                        hovertemplate='%{x|%d/%m}<br>' + _pg + '<extra></extra>'
+                    ), row=2, col=1)
+    
+            _fig_k.update_layout(
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
                 font=dict(size=11), height=480, hovermode='x unified',
                 margin=dict(t=50, b=50, l=60, r=130), bargap=0.15,
                 legend=dict(orientation='h', y=-0.16, font=dict(size=10)),
-                title=dict(text='Kiviniemi (2007) — réplica Fig.2', font=dict(size=13)))
+                title=dict(text='Kiviniemi (2007) — réplica Fig.2', font=dict(size=13))
+            )
             _fig_k.update_xaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
-            _fig_k.update_yaxes(title_text='HF ln power', row=1, col=1,
+            _fig_k.update_yaxes(title_text='HF power', row=1, col=1,
                                 showgrid=True, gridcolor='rgba(128,128,128,0.2)')
-            # Eixo Y do painel (b): rótulos High/Low/Rest
             _fig_k.update_yaxes(
                 row=2, col=1, tickmode='array', tickvals=[0, 1, 2],
                 ticktext=['🔴 Rest', '🔵 Low', '🟢 High'],
-                range=[-0.5, 2.5], showgrid=True, gridcolor='rgba(128,128,128,0.2)')
-            st.plotly_chart(_fig_k, use_container_width=True, config={'displayModeBar': False, 'responsive': True}, key="rec_kiv_chart")
+                range=[-0.5, 2.5], showgrid=True, gridcolor='rgba(128,128,128,0.2)'
+            )
+            st.plotly_chart(_fig_k, use_container_width=True, config={'displayModeBar': False, 'responsive': True}, key='corr_kiv_chart')
         else:
-            st.info("Gráfico Kiviniemi indisponível: sem dados suficientes de HF Power.")
-
-        # ── TABELA DE COMPARAÇÃO (data · ln7 · Javaloyes · HF · Kiviniemi · =) ─
+            st.info('Gráfico Kiviniemi indisponível: sem dados suficientes de HF Power.')
+    
+        # --------------------------------------------------------------------
+        # Comparison table
+        # --------------------------------------------------------------------
         _cmp_rows = []
         for _, r in _df_p.iterrows():
-            _jav = _LBL.get(r.get('prescricao'), '—')
-            _kiv = _LBL.get(r.get('prescricao_k'), '—') if _tem_hf_h else '—'
-            _eq = '✓' if (_tem_hf_h and r.get('prescricao') == r.get('prescricao_k')) else ('✗' if _tem_hf_h else '—')
+            _jav_state = _LBL.get(r.get('prescricao'), '—')
+            _kiv_state = _LBL.get(r.get('prescricao_k'), '—') if _tem_hf else '—'
+            _eq = '✓' if (_tem_hf and r.get('prescricao') == r.get('prescricao_k')) else ('✗' if _tem_hf else '—')
             _cmp_rows.append({
                 'Data': r['Data'].strftime('%d/%m'),
                 'LnRMSSD₇': f"{r['ln7']:.3f}" if pd.notna(r.get('ln7')) else '—',
-                'Javaloyes': _jav,
-                'HF métrica': f"{r['hf_metric']:.3f}" if (_tem_hf_h and pd.notna(r.get('hf_metric'))) else '—',
-                'Kiviniemi': _kiv,
+                'Javaloyes': _jav_state,
+                'HF métrica': f"{r['hf_metric']:.3f}" if (_tem_hf and pd.notna(r.get('hf_metric'))) else '—',
+                'Kiviniemi': _kiv_state,
                 '=?': _eq,
             })
+    
         if _cmp_rows:
             st.dataframe(pd.DataFrame(_cmp_rows), hide_index=True, use_container_width=True)
-            if _tem_hf_h:
+            if _tem_hf:
                 _cval = df_hg[df_hg['ln7'].notna() & df_hg['hf_metric'].notna()]
                 if len(_cval) > 0:
                     _cc = int((_cval['prescricao'] == _cval['prescricao_k']).sum())
                     st.caption(
-                        f"**Javaloyes:** LnRMSSD 7d, banda mean±0.5·SD [{_swc_inf_h:.3f}, {_swc_sup_h:.3f}]. "
-                        f"**Kiviniemi:** HF power, ref 10d mean−1·SD. Concordância: "
-                        f"{_cc}/{len(_cval)} dias ({_cc/len(_cval)*100:.0f}%). "
-                        "Ambos: máquina de estados START→LOW; HIGH↔LOW; LOW+sinal− → REST; máx 2 HIGH/2 REST.")
+                        f"**Javaloyes:** LnRMSSD 7d, banda mean±0.5·SD [{_swc_inf:.3f}, {_swc_sup:.3f}]. "
+                        f"**Kiviniemi:** HF power, ref 10d mean−1·SD. Concordância: {_cc}/{len(_cval)} dias ({_cc/len(_cval)*100:.0f}%). "
+                        "Ambos: máquina de estados START→LOW; HIGH↔LOW; LOW+sinal−→REST; máx 2 HIGH/2 REST."
+                    )
 
 
         # ════════════════════════════════════════════════════════════════════════
