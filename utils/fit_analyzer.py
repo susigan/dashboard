@@ -4695,15 +4695,27 @@ def _extrair_equivalentes_sessao(res):
 
     bp1 = res.get('bp_continuo')
     if bp1:
-        equiv['HRVTMSS'] = _completar(bp1['breakpoint'], bp1['unidade'],
-                                      'Breakpoint SmO₂/MLSS (esta sessão)')
+        _mlss_equiv = _completar(bp1['breakpoint'], bp1['unidade'],
+                                 'Breakpoint SmO₂/MLSS (esta sessão)')
+        equiv['HRVTMSS'] = _mlss_equiv
+        # PBP = "Power at Breaking Point" — é literalmente o que o breakpoint
+        # SmO₂ contínuo calcula (em Watts nativamente), por isso mapeia para
+        # a mesma fonte.
+        equiv['PBP'] = _mlss_equiv
 
     # HRVT1c e HRVT2-DFA-α1 são calculados directamente sobre a FC (mais
     # directo do que converter um breakpoint em Watts) — sobrescrevem o
     # fallback acima quando disponíveis e fiáveis.
     h1c = res.get('hrvt1c')
     if isinstance(h1c, dict) and 'erro' not in h1c and h1c.get('fc'):
-        equiv['HRVT1'] = _completar(h1c['fc'], 'bpm', 'HRVT1c (esta sessão)')
+        _aet_equiv = _completar(h1c['fc'], 'bpm', 'HRVT1c (esta sessão)')
+        equiv['HRVT1'] = _aet_equiv
+        # AeTHR (bpm) e Aet (W) são o mesmo limiar aeróbio que o HRVT1 — a
+        # nossa análise só produz UMA estimativa deste limiar por sessão
+        # (não distingue métodos diferentes como a sheet pode fazer), por
+        # isso usa-se a mesma fonte para as três colunas.
+        equiv['AeTHR'] = _aet_equiv
+        equiv['Aet'] = _aet_equiv
 
     h2 = res.get('hrvt2')
     if isinstance(h2, dict) and h2.get('fiavel') and h2.get('fc'):
