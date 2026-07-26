@@ -452,9 +452,12 @@ sobe) = cautela — investigar antes de carregar.
         df_hg['LnrMSSD'] = np.where(df_hg['hrv'].notna() & (df_hg['hrv'] > 0), np.log(df_hg['hrv']), np.nan)
         df_hg['sem_medicao'] = df_hg['LnrMSSD'].isna()
 
-        hg_c1, hg_c2 = st.columns(2)
-        dias_fam = hg_c1.slider("Dias baseline rolling", 7, 28, 14, key="hg_baseline")
-        n_hg = hg_c2.slider("Dias a mostrar", 14, min(len(df_hg), 180), min(60, len(df_hg)), key="hg_dias")
+        # Sem sliders — valores fixos, para que nada no ecrã possa alterar os
+        # cálculos por engano. Baseline de 2 meses (~60 dias), sempre
+        # anteriores à semana avaliada (ver modo_baseline='semanal_lag'
+        # abaixo); mostra sempre os últimos 60 dias.
+        dias_fam = 60
+        n_hg = min(60, len(df_hg))
 
         _mp = max(5, dias_fam // 2)
         df_hg['bm'] = df_hg['LnrMSSD'].rolling(dias_fam, min_periods=_mp).mean()
@@ -508,7 +511,7 @@ sobe) = cautela — investigar antes de carregar.
         # mas se quiseres ver a banda a variar ao longo do tempo no gráfico
         # é preciso adaptar o `add_hrect`/`add_hline` para uma forma em
         # degraus (como já fizemos no painel Kiviniemi).
-        _jav_res = calcular_javaloyes(dw, bw_dias=14, modo_baseline='semanal_lag')
+        _jav_res = calcular_javaloyes(dw, bw_dias=dias_fam, modo_baseline='semanal_lag')
         _jav_res_map = _jav_res.set_index('Data')[['ln7', 'prescricao', 'hrv_sinal', 'swc_inf', 'swc_sup']]
         df_hg = df_hg.set_index('Data').drop(columns=['ln7'], errors='ignore').join(_jav_res_map).reset_index()
         _swc_inf_h = float(_jav_res['swc_inf'].dropna().iloc[-1]) if _jav_res['swc_inf'].notna().any() else np.nan
