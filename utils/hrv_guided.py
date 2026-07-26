@@ -57,18 +57,14 @@ def calcular_modelo_beta(wc_src, da_src=None, modo='hrv', dw_fallback=None):
     z_hrv = _zc(src['LnrMSSD'])
 
     if modo == 'multi':
-        # Sono: qualidade 1-5 → reescala ×2 (1-10), z-score direto
         if 'sleep_quality' in src.columns and src['sleep_quality'].notna().sum() >= 7:
             z_sono = _zc(pd.to_numeric(src['sleep_quality'], errors='coerce') * 2.0)
         else:
             z_sono = pd.Series(np.nan, index=src.index)
-        # FC: RHR z-score, INVERTIDO (RHR alto = pior)
         if 'rhr' in src.columns and src['rhr'].notna().sum() >= 7:
             z_fc = -_zc(pd.to_numeric(src['rhr'], errors='coerce'))
         else:
             z_fc = pd.Series(np.nan, index=src.index)
-        # Carga: kJ (z1+z2+z3 ou icu_joules/1000) + km (distance/1000) + TSS,
-        # 7d acumulado, z-score de cada, média, INVERTIDO
         z_carga = pd.Series(np.nan, index=src.index)
         if da_src is not None and len(da_src) > 0:
             _da = da_src.copy()
@@ -107,7 +103,6 @@ def calcular_modelo_beta(wc_src, da_src=None, modo='hrv', dw_fallback=None):
 
     src['z28'] = z28
     src['beta'] = src['z28'].apply(lambda z: round(float(_sst.norm.cdf(z) * 100), 1) if pd.notna(z) else np.nan)
-    # Agudo/Crónico em PONTOS do β
     _bser = src['beta']
     _bm3  = _bser.rolling(3, min_periods=2).mean()
     _bm7  = _bser.rolling(7, min_periods=4).mean()
@@ -201,14 +196,36 @@ def state_machine(vals, sig_fn, max_high=2, max_train_days=None):
 
 # ── JAVALOYES (LnRMSSD 7d, banda SWC ±0.5·SD) ──────────────────────────────────
 
-def calcular_javaloyes(wc_src, baseline_win=28):
+def calcular_javaloyes(wc_src, bw_dias=14, tw_dias=28, modo_baseline='periodico'):
     """
     Prescrição Javaloyes (máquina de estados HIGH/LOW/REST).
       • LnRMSSD, rolling 7d.
-      • Banda SWC = mean ± 0.5·SD (baseline dos últimos `baseline_win` dias reais).
-      • Sinal pela banda: HRV+ = ln7 dentro/acima ; HRV− = abaixo do limite inf.
+      • Banda SWC = mean ± 0.5·SD.
+      • Sinal pela banda: HRV+ = ln7 DENTRO da banda completa (piso E teto);
+        HRV− = fora da banda (abaixo OU acima) — corrigido: antes só
+        verificava o piso, o paper usa a banda inteira ("high-intensity
+        training was ceased until HRV returned inside the smallest
+        worthwhile change").
       • Teto de 2 HIGH consecutivos (fiel ao paper).
-    Devolve DataFrame com Data, LnrMSSD, ln7, prescricao, hrv_sinal, swc_inf, swc_sup.
+
+    modo_baseline:
+      'periodico' (novo, default) — fiel ao desenho do estudo: Baseline
+        Window (BW) de `bw_dias` (14 no artigo) define a SWC, mantida fixa
+        durante a Training Window (TW) de `tw_dias` (28 no artigo — "4
+        semanas"), só depois recalculada com um novo BW. NÃO é uma janela
+        móvel dia-a-dia. RESSALVA: o artigo descreve explicitamente só UMA
+        actualização (após as primeiras 4 semanas de TW); não deixa claro
+        se o ciclo BW→TW se repete indefinidamente depois disso. Como o
+        ATHELTICA acumula meses/anos de dados (não é um estudo de duração
+        fixa), assumimos que sim — o ciclo repete-se a cada (bw_dias+tw_dias)
+        dias a partir do primeiro dia com HRV real. Se preferires a
+        aproximação anterior (janela móvel contínua), usa modo_baseline='rolling'.
+      'rolling' (comportamento anterior) — SWC recalculada todos os dias a
+        partir dos últimos `bw_dias+tw_dias` dias reais (janela móvel
+        contínua) — mais simples, mas não é o desenho exacto do artigo.
+
+    Devolve DataFrame com Data, LnrMSSD, ln7, prescricao, hrv_sinal, swc_inf,
+    swc_sup (estes dois variam por dia se modo_baseline='periodico').
     """
     _wc = wc_src.copy()
     _wc['Data'] = pd.to_datetime(_wc['Data'])
@@ -217,34 +234,92 @@ def calcular_javaloyes(wc_src, baseline_win=28):
     _wc = _wc.reindex(_full).rename_axis('Data').reset_index()
     _wc['LnrMSSD'] = np.where(_wc['hrv'].notna() & (_wc['hrv'] > 0), np.log(_wc['hrv']), np.nan)
     _wc['sem_medicao'] = _wc['LnrMSSD'].isna()
+    _wc['ln7'] = _wc['LnrMSSD'].rolling(7, min_periods=4).mean()
 
-    _ln_real = _wc[~_wc['sem_medicao']]['LnrMSSD'].dropna()
-    if len(_ln_real) < 7:
-        _wc['ln7'] = np.nan; _wc['prescricao'] = 'LOW'; _wc['hrv_sinal'] = '·'
+    _ln_real = _wc[~_wc['sem_medicao']]
+    if len(_ln_real) < bw_dias:
+        _wc['prescricao'] = 'LOW'; _wc['hrv_sinal'] = '·'
         _wc['swc_inf'] = np.nan; _wc['swc_sup'] = np.nan
         return _wc
-    _lnb = _ln_real.tail(baseline_win)
-    _swc_m = float(_lnb.mean()); _swc_s = float(_lnb.std())
-    swc_sup = _swc_m + 0.5 * _swc_s; swc_inf = _swc_m - 0.5 * _swc_s
-    _wc['ln7'] = _wc['LnrMSSD'].rolling(7, min_periods=4).mean()
+
+    if modo_baseline == 'rolling':
+        _lnb = _ln_real['LnrMSSD'].tail(bw_dias + tw_dias)
+        _swc_m = float(_lnb.mean()); _swc_s = float(_lnb.std())
+        _wc['swc_inf'] = _swc_m - 0.5 * _swc_s
+        _wc['swc_sup'] = _swc_m + 0.5 * _swc_s
+    else:
+        # BW (bw_dias) fixo → mantido durante TW (tw_dias) → recalcula.
+        # Ciclo = bw_dias + tw_dias, repetido a partir do 1º dia com HRV real.
+        _primeiro_dia = _ln_real['Data'].min()
+        _ciclo_len = bw_dias + tw_dias
+        _wc['_dias_desde_inicio'] = (_wc['Data'] - _primeiro_dia).dt.days
+        _wc['_ciclo_idx'] = (_wc['_dias_desde_inicio'] // _ciclo_len).clip(lower=0)
+
+        _swc_por_ciclo = {}
+        for _cidx in sorted(_wc['_ciclo_idx'].dropna().unique()):
+            _inicio_bw = _primeiro_dia + pd.Timedelta(days=int(_cidx) * _ciclo_len)
+            _fim_bw = _inicio_bw + pd.Timedelta(days=bw_dias)
+            _bw_vals = _wc.loc[(_wc['Data'] >= _inicio_bw) & (_wc['Data'] < _fim_bw)
+                               & (~_wc['sem_medicao']), 'LnrMSSD']
+            if len(_bw_vals) >= 3:
+                _swc_por_ciclo[int(_cidx)] = (float(_bw_vals.mean()), float(_bw_vals.std()))
+
+        # Preencher por dia — se o BW do ciclo actual ainda não tem dados
+        # suficientes (ex.: ainda a decorrer), usa o último ciclo disponível.
+        _swc_inf_lista, _swc_sup_lista = [], []
+        _ultimo_valido = None
+        for _cidx in _wc['_ciclo_idx']:
+            _cidx_i = int(_cidx) if pd.notna(_cidx) else None
+            if _cidx_i in _swc_por_ciclo:
+                _ultimo_valido = _swc_por_ciclo[_cidx_i]
+            if _ultimo_valido is not None:
+                _m, _s = _ultimo_valido
+                _swc_inf_lista.append(_m - 0.5 * _s)
+                _swc_sup_lista.append(_m + 0.5 * _s)
+            else:
+                _swc_inf_lista.append(np.nan)
+                _swc_sup_lista.append(np.nan)
+        _wc['swc_inf'] = _swc_inf_lista
+        _wc['swc_sup'] = _swc_sup_lista
+        _wc = _wc.drop(columns=['_dias_desde_inicio', '_ciclo_idx'])
+
+    _swc_inf_arr = _wc['swc_inf'].tolist()
+    _swc_sup_arr = _wc['swc_sup'].tolist()
 
     def _sig_jav(i, v, p, p2):
         if pd.isna(v): return '·'
-        return 'HRV+' if v >= swc_inf else 'HRV−'
+        _inf, _sup = _swc_inf_arr[i], _swc_sup_arr[i]
+        if pd.isna(_inf) or pd.isna(_sup): return '·'
+        # Banda COMPLETA (mean ± 0.5·SD) — fora dela, seja abaixo ou acima,
+        # não conta como recuperado.
+        return 'HRV+' if (_inf <= v <= _sup) else 'HRV−'
     _pj, _sj = state_machine(_wc['ln7'].tolist(), _sig_jav, max_high=2, max_train_days=None)
     _wc['prescricao'] = _pj; _wc['hrv_sinal'] = _sj
-    _wc['swc_inf'] = swc_inf; _wc['swc_sup'] = swc_sup
     return _wc
 
 
 # ── KIVINIEMI (HF power 10d, ref mean−1·SD, sem teto de 2, Rest após 9 dias) ────
 
-def calcular_kiviniemi(wc_src):
+def calcular_kiviniemi(wc_src, usar_log=True):
     """
     Prescrição Kiviniemi (HF power).
-      • Métrica = HF power (heurística ln se mediana>10, senão cru).
-      • Referência 10d = mean − 1·SD ; + tendência decrescente 2 dias (>0.1).
+      • Referência 10d = mean − 1·SD (fiel ao paper: "The standard deviation
+        of the 10-day HF power was subtracted from the 10-day average HF
+        power to be used as a daily reference value") + tendência decrescente
+        de 2 dias (>0.1, na escala já transformada — ver `usar_log`).
       • SEM teto de 2 HIGH ; Rest forçado após 9 dias de treino consecutivo.
+
+    usar_log : o artigo original NÃO descreve nenhuma transformação logarítmica
+        do HF power — trabalha directamente com o valor (mean − SD na escala
+        original). A versão anterior desta função tinha uma heurística
+        implícita ("se a mediana > 10, aplica log") para adivinhar a escala
+        dos dados, o que NÃO é a regra do artigo, só uma adaptação nossa não
+        documentada. Agora é um parâmetro explícito: por defeito True (HF
+        power em ms² costuma ter distribuição muito assimétrica à direita,
+        e é comum em HRV aplicar log antes de médias/desvios-padrão — mas
+        isto é uma escolha NOSSA, não do Kiviniemi et al. 2007). Passa
+        usar_log=False para trabalhar na escala bruta, fiel ao artigo.
+
     Devolve DataFrame com Data, hf_metric, hf_ref, prescricao_k, hf_sinal.
     Se não houver HF power suficiente, devolve None.
     """
@@ -259,8 +334,7 @@ def calcular_kiviniemi(wc_src):
         return None
 
     _hf = pd.to_numeric(_wc['hf_power'], errors='coerce').replace(0, np.nan)
-    _med = _hf.median()
-    _wc['hf_metric'] = np.log(_hf.where(_hf > 0)) if (_med and _med > 10) else _hf
+    _wc['hf_metric'] = np.log(_hf.where(_hf > 0)) if usar_log else _hf
     _wc['hf_mean10'] = _wc['hf_metric'].rolling(10, min_periods=5).mean()
     _wc['hf_sd10'] = _wc['hf_metric'].rolling(10, min_periods=5).std()
     _wc['hf_ref'] = _wc['hf_mean10'] - 1.0 * _wc['hf_sd10']
@@ -282,15 +356,7 @@ def calcular_kiviniemi(wc_src):
 
 def prescricao_hoje(wc_src, da_src=None):
     """
-    Devolve um dict resumo do estado de HOJE, consolidando os métodos:
-      {
-        'javaloyes': 'HIGH'|'LOW'|'REST'|None,
-        'javaloyes_label': '🟢 HIGH'|...,
-        'kiviniemi': 'HIGH'|'LOW'|'REST'|None,
-        'beta': float|None, 'beta_prescricao': str|None, 'beta_cor': str|None,
-        'hrv_hoje': float|None, 'dias_sem_medicao': int,
-      }
-    Uso típico na visão geral: puxar 1 linha sem recalcular nada à mão.
+    Devolve um dict resumo do estado de HOJE, consolidando os métodos.
     """
     out = {'javaloyes': None, 'javaloyes_label': None, 'javaloyes_cor': None,
            'kiviniemi': None, 'kiviniemi_label': None,
@@ -299,7 +365,6 @@ def prescricao_hoje(wc_src, da_src=None):
     if wc_src is None or len(wc_src) == 0 or 'hrv' not in wc_src.columns:
         return out
 
-    # Javaloyes
     try:
         _jav = calcular_javaloyes(wc_src)
         _jav_val = _jav[_jav['ln7'].notna()]
@@ -311,7 +376,6 @@ def prescricao_hoje(wc_src, da_src=None):
     except Exception:
         pass
 
-    # Kiviniemi
     try:
         _kiv = calcular_kiviniemi(wc_src)
         if _kiv is not None:
@@ -323,7 +387,6 @@ def prescricao_hoje(wc_src, da_src=None):
     except Exception:
         pass
 
-    # Modelo β
     try:
         _bdf = calcular_modelo_beta(wc_src, da_src=da_src, modo='hrv')
         if _bdf is not None and not _bdf.empty and not _bdf['beta'].isna().all():
@@ -333,7 +396,6 @@ def prescricao_hoje(wc_src, da_src=None):
             _presc, _cor, *_ = regra_convergencia(
                 _ub['beta'], _ub['beta_agudo'], _ub['beta_cronico'], _hrv_notna)
             out['beta_prescricao'] = _presc; out['beta_cor'] = _cor
-            # hrv hoje + dias sem medição
             _med = _bdf['LnrMSSD'].dropna()
             if not _med.empty:
                 _wc2 = wc_src.copy(); _wc2['Data'] = pd.to_datetime(_wc2['Data'])
