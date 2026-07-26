@@ -498,13 +498,17 @@ sobe) = cautela — investigar antes de carregar.
         #      (usar_log=True, documentado em hrv_guided.py como adaptação
         #      nossa, já que o paper original não descreve transformação
         #      nenhuma do HF power).
-        # modo_baseline='rolling' mantido aqui (janela móvel de 28 dias, como
-        # antes) para não alterar os gráficos de banda fixa abaixo — o modo
-        # 'periodico' (BW de 14d + TW de 28d, mais fiel ao desenho exacto do
-        # estudo) já existe em hrv_guided.py, mas precisa de um gráfico com
-        # banda variável no tempo para ser bem representado; fica para uma
-        # iteração futura se quiseres essa fidelidade extra.
-        _jav_res = calcular_javaloyes(dw, bw_dias=14, tw_dias=14, modo_baseline='rolling')
+        # modo_baseline='semanal_lag': a SWC de cada semana vem sempre das 2
+        # semanas imediatamente anteriores (nunca a semana avaliada), e
+        # actualiza-se semanalmente — resolve o facto de o estudo original
+        # ter tido um baseline de duração FIXA (com fim), enquanto o
+        # ATHELTICA acumula dados de forma contínua e sem fim definido.
+        # Isto ainda usa uma banda que varia por dia — o gráfico abaixo
+        # mostra o último valor conhecido (equivalente ao "estado actual"),
+        # mas se quiseres ver a banda a variar ao longo do tempo no gráfico
+        # é preciso adaptar o `add_hrect`/`add_hline` para uma forma em
+        # degraus (como já fizemos no painel Kiviniemi).
+        _jav_res = calcular_javaloyes(dw, bw_dias=14, modo_baseline='semanal_lag')
         _jav_res_map = _jav_res.set_index('Data')[['ln7', 'prescricao', 'hrv_sinal', 'swc_inf', 'swc_sup']]
         df_hg = df_hg.set_index('Data').drop(columns=['ln7'], errors='ignore').join(_jav_res_map).reset_index()
         _swc_inf_h = float(_jav_res['swc_inf'].dropna().iloc[-1]) if _jav_res['swc_inf'].notna().any() else np.nan
