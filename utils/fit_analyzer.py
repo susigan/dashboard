@@ -4649,34 +4649,67 @@ def _extrair_equivalentes_sessao(res):
     """
     Mapeia os resultados desta sessão (res, de analisar_completo) para as
     colunas do Intervals.icu que lhes correspondem fisiologicamente:
-        HRVT1  ≈ LT1 via SmO2 (breakpoint_smo2_lt1_lt2)
-        HRVT2  ≈ LT2 via SmO2, OU HRVT2 via DFA-α1 (o que houver, DFA-α1
-                 tem prioridade se fiável — é o método com base fisiológica
-                 mais directa para o limiar alto)
+        HRVT1   ≈ HRVT1c (ponto médio individual, DFA-α1 — já dá FC directa)
+        HRVT2   ≈ LT2 via SmO2, OU HRVT2 via DFA-α1 (o que houver, DFA-α1
+                  tem prioridade se fiável — é o método com base fisiológica
+                  mais directa para o limiar alto)
         HRVTMSS ≈ breakpoint SmO2 contínuo (MLSS)
 
-    Só inclui um valor quando a fonte está marcada como fiável (ou não tem
-    esse conceito, como o breakpoint contínuo). Devolve dict:
-        coluna -> (valor, unidade, fonte_descricao)
+    Cada breakpoint via SmO2 (LT1/LT2/MLSS) sai nativamente em WATTS (a
+    função escolhe potência como eixo de intensidade sempre que existe). O
+    HRVT1c/HRVT2-DFA-α1 saem nativamente em BPM (calculados directamente
+    sobre a FC). Para mostrar SEMPRE os dois — Watts e bpm, como aparece já
+    nas "Zonas de treino estimadas" — usa-se a relação potência↔FC desta
+    sessão (res['relacao_pot_fc']) para preencher a unidade que faltar,
+    quando o ajuste for razoável (R²≥0.5, n≥3 — o mesmo critério usado nas
+    Zonas de treino). Se a relação não existir ou for fraca, essa unidade
+    fica em falta (None) em vez de mostrar um valor pouco fiável.
+
+    Devolve dict: coluna -> {'w': valor|None, 'bpm': valor|None, 'fonte': str}
     """
     equiv = {}
     if not res:
         return equiv
 
+    rel = res.get('relacao_pot_fc')
+    rel_ok = bool(rel and rel.get('r2') is not None and rel['r2'] >= 0.5 and rel['n'] >= 3)
+
+    def _completar(valor, unidade_nativa, fonte):
+        """A partir de um valor numa unidade, devolve {'w':.., 'bpm':.., 'fonte':..},
+        preenchendo a unidade em falta via a relação potência↔FC (se fiável)."""
+        w = valor if unidade_nativa == 'W' else None
+        bpm = valor if unidade_nativa == 'bpm' else None
+        if rel_ok:
+            if unidade_nativa == 'W' and bpm is None:
+                bpm = pot_para_fc(valor, rel)
+            elif unidade_nativa == 'bpm' and w is None:
+                w = fc_para_pot(valor, rel)
+        return {'w': w, 'bpm': bpm, 'fonte': fonte}
+
     bp2 = res.get('bp_lt1_lt2')
     if bp2 and bp2.get('fiavel_lt2', True):
-        equiv['HRVT1'] = (bp2['breakpoint_lt1'], bp2['unidade'], 'LT1 via SmO₂ (esta sessão)')
-        equiv['HRVT2'] = (bp2['breakpoint_lt2'], bp2['unidade'], 'LT2 via SmO₂ (esta sessão)')
+        equiv['HRVT1'] = _completar(bp2['breakpoint_lt1'], bp2['unidade'],
+                                    'LT1 via SmO₂ (esta sessão)')
+        equiv['HRVT2'] = _completar(bp2['breakpoint_lt2'], bp2['unidade'],
+                                    'LT2 via SmO₂ (esta sessão)')
 
     bp1 = res.get('bp_continuo')
     if bp1:
-        equiv['HRVTMSS'] = (bp1['breakpoint'], bp1['unidade'], 'Breakpoint SmO₂/MLSS (esta sessão)')
+        equiv['HRVTMSS'] = _completar(bp1['breakpoint'], bp1['unidade'],
+                                      'Breakpoint SmO₂/MLSS (esta sessão)')
+
+    # HRVT1c e HRVT2-DFA-α1 são calculados directamente sobre a FC (mais
+    # directo do que converter um breakpoint em Watts) — sobrescrevem o
+    # fallback acima quando disponíveis e fiáveis.
+    h1c = res.get('hrvt1c')
+    if isinstance(h1c, dict) and 'erro' not in h1c and h1c.get('fc'):
+        equiv['HRVT1'] = _completar(h1c['fc'], 'bpm', 'HRVT1c (esta sessão)')
 
     h2 = res.get('hrvt2')
     if isinstance(h2, dict) and h2.get('fiavel') and h2.get('fc'):
         # DFA-α1 tem prioridade sobre o LT2-via-SmO2 quando ambos existem e
         # é fiável — é o método mais estabelecido dos dois (Murias 2023)
-        equiv['HRVT2'] = (h2['fc'], 'bpm', 'HRVT2 via DFA-α1 (esta sessão)')
+        equiv['HRVT2'] = _completar(h2['fc'], 'bpm', 'HRVT2 via DFA-α1 (esta sessão)')
 
     return equiv
 
