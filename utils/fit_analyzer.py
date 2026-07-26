@@ -4512,3 +4512,100 @@ def resumir_zonas(resultado):
         'relacao_pot_fc': rel,
         'coerente': coerente,
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 11. W' BALANCE (modelo dinâmico Skiba, a partir de UM ficheiro .fit)
+# ══════════════════════════════════════════════════════════════════════════════
+# Diferente do CP/W' ESTÁTICOS (aba CP Model, calculados de MMPs entre sessões):
+# isto rastreia como o W' (reserva anaeróbia) esgota e recupera MOMENTO A
+# MOMENTO ao longo de UMA sessão específica. Baseado em Skiba et al. 2012
+# ("Modeling the expenditure and reconstitution of work capacity above
+# critical power") — o mesmo princípio referido no repositório GitHub do
+# Evan Peikon (Modeling_time_to_exhaustion).
+#
+#   Quando Potência > CP: W'bal esgota — dW'bal/dt = -(P(t) - CP)
+#   Quando Potência ≤ CP: W'bal recupera em direção a W' — a taxa de
+#     recuperação abranda quanto mais perto de CP se está (recuperar logo
+#     abaixo de CP é lento; recuperar em repouso total é rápido). Skiba usa
+#     uma constante de tempo que depende do défice abaixo de CP:
+#         tau(t) = 546 * exp(-0.01 * (CP - P(t))) + 316   [segundos]
+#     dW'bal/dt = (W' - W'bal) / tau(t)
+
+def calcular_wbal(df, colunas, cp, wprime, tau_modo='skiba'):
+    """
+    Calcula o W' balance ao longo do tempo para UMA sessão, dado CP e W'
+    (já calculados noutro sítio — ex.: aba CP Model do dashboard principal,
+    ou introduzidos manualmente pelo utilizador).
+
+    Parâmetros:
+        df, colunas : dados da sessão (precisa da coluna de potência)
+        cp          : Critical Power (W), valor já conhecido/calculado
+        wprime      : W' (Joules), valor já conhecido/calculado
+        tau_modo    : 'skiba' (constante de tempo variável, Skiba 2012) ou
+                      'fixo' (constante de tempo fixa de 300s — mais simples,
+                      útil se não quiseres a fórmula exponencial completa)
+
+    Devolve dict com:
+        'serie'       : DataFrame com tempo_s, potencia, wbal_j, wbal_pct
+        'wbal_min'    : valor mínimo atingido (J) — quão perto chegou de "vazio"
+        'wbal_min_pct': idem, em % de W'
+        'n_vezes_zero': quantas vezes o W'bal chegou a ≤5% de W' (quase vazio)
+        'cp', 'wprime': ecoados, para referência
+    """
+    if 'power' not in colunas or colunas['power'] not in df.columns:
+        return None
+    if cp is None or wprime is None or cp <= 0 or wprime <= 0:
+        return None
+
+    d = df[['time_seconds', colunas['power']]].copy()
+    d.columns = ['t', 'p']
+    d['p'] = pd.to_numeric(d['p'], errors='coerce').fillna(0.0)
+    d = d.sort_values('t').reset_index(drop=True)
+    if len(d) < 2:
+        return None
+
+    t = d['t'].values.astype(float)
+    p = d['p'].values.astype(float)
+    dt = np.diff(t, prepend=t[0] - 1.0)
+    dt[0] = dt[1] if len(dt) > 1 else 1.0
+    dt = np.clip(dt, 0.1, 10.0)  # protege contra gaps grandes no ficheiro
+
+    wbal = np.empty(len(p))
+    wbal[0] = wprime  # começa cheio
+
+    for i in range(1, len(p)):
+        deficit = cp - p[i]
+        if deficit < 0:
+            # A trabalhar ACIMA de CP — esgota, proporcional ao excesso
+            dwbal = deficit * dt[i]  # deficit é negativo aqui, logo dwbal < 0
+        else:
+            # A trabalhar ABAIXO de CP — recupera em direção a W'
+            if tau_modo == 'fixo':
+                tau = 300.0
+            else:
+                tau = 546.0 * np.exp(-0.01 * deficit) + 316.0
+            dwbal = (wprime - wbal[i - 1]) / tau * dt[i]
+        wbal[i] = np.clip(wbal[i - 1] + dwbal, 0.0, wprime)
+
+    serie = pd.DataFrame({
+        'tempo_s': t, 'potencia': p,
+        'wbal_j': wbal, 'wbal_pct': wbal / wprime * 100.0,
+    })
+
+    wbal_min = float(wbal.min())
+    n_quase_vazio = int(np.sum(serie['wbal_pct'] <= 5))
+    # Conta "episódios" (não amostras) de quase-vazio, para não inflacionar
+    # com centenas de amostras seguidas do mesmo mergulho
+    _abaixo = serie['wbal_pct'] <= 5
+    n_episodios = int(((_abaixo.astype(int).diff() == 1).sum()) + (1 if _abaixo.iloc[0] else 0))
+
+    return {
+        'serie': serie,
+        'wbal_min': wbal_min,
+        'wbal_min_pct': wbal_min / wprime * 100.0,
+        'n_vezes_zero': n_episodios,
+        'cp': cp,
+        'wprime': wprime,
+        'tau_modo': tau_modo,
+    }
