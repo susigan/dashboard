@@ -30,7 +30,7 @@ warnings.filterwarnings('ignore')
 from utils.fit_analyzer import (
     preparar_fit, analisar_completo, resumir_para_historico, parse_intervalos,
     sugerir_offset, sugerir_offset_por_laps, NOMES_METRICAS,
-    DFA1_HRVT2, DFA1_HRVT1, LOA_LITERATURA, ler_fit,
+    DFA1_HRVT2, DFA1_HRVT1, LOA_LITERATURA, ler_fit, calcular_wbal,
 )
 
 # Cores por métrica (paleta Wong 2011, colorblind-safe)
@@ -643,6 +643,32 @@ def _grafico_limitador_tendencias(lap_stats):
     return fig
 
 
+def _grafico_wbal(wbal_res):
+    """W' balance ao longo da sessão — % de W' restante, com a potência por baixo."""
+    s = wbal_res['serie']
+    fig = make_subplots(specs=[[{'secondary_y': True}]])
+    fig.add_trace(go.Scatter(
+        x=s['tempo_s'] / 60.0, y=s['wbal_pct'], mode='lines', name="W′ balance (%)",
+        line=dict(color='#8E44AD', width=2),
+        hovertemplate="W′ restante: %{y:.0f}%<extra></extra>"), secondary_y=False)
+    fig.add_trace(go.Scatter(
+        x=s['tempo_s'] / 60.0, y=s['potencia'], mode='lines', name='Potência (W)',
+        line=dict(color=_CORES_METRICA['power'], width=1.2),
+        opacity=0.6, hovertemplate="Potência: %{y:.0f}W<extra></extra>"), secondary_y=True)
+    fig.add_hline(y=5, line_dash='dot', line_color='#E74C3C', secondary_y=False,
+                  annotation_text="quase vazio (≤5%)")
+    fig.update_layout(
+        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+        height=320, hovermode='x unified', margin=dict(t=30, b=45, l=55, r=55),
+        legend=dict(orientation='h', y=1.08), font=dict(size=11))
+    fig.update_xaxes(title_text='Tempo (min)', showgrid=True,
+                     gridcolor='rgba(128,128,128,0.2)')
+    fig.update_yaxes(title_text="W′ balance (%)", range=[0, 105], showgrid=True,
+                     gridcolor='rgba(128,128,128,0.2)', secondary_y=False)
+    fig.update_yaxes(title_text='Potência (W)', showgrid=False, secondary_y=True)
+    return fig
+
+
 def _grafico_limiares(limiares):
     """SmO2 médio por lap vs intensidade, com os limiares marcados."""
     p = limiares['pontos']
@@ -735,17 +761,34 @@ def _grafico_decoupling(dec):
 # TAB PRINCIPAL
 # ══════════════════════════════════════════════════════════════════════════════
 
-def tab_fit_analise():
+def tab_fit_analise(ac_full=None):
     st.header("🫁 Análise FIT — Fisiologia (MOXY / SmO₂ / DFA-α1 / Respiração)")
     st.caption(
         "Carrega um ficheiro .fit de uma sessão intervalada para analisar a resposta "
         "fisiológica: desoxigenação muscular (SmO₂/THb), complexidade autonómica (DFA-α1), "
         "respiração e cinética de recuperação entre intervalos.")
 
-    ficheiro = st.file_uploader(
-        "Ficheiro .fit", type=['fit'], key='fit_upload',
-        help="A sessão deve ter laps definidos (intervalos de trabalho e recuperação). "
-             "Métricas MOXY/DFA-α1 são detectadas automaticamente se existirem no ficheiro.")
+    _col_up, _col_mod = st.columns([3, 1])
+    with _col_up:
+        ficheiro = st.file_uploader(
+            "Ficheiro .fit", type=['fit'], key='fit_upload',
+            help="A sessão deve ter laps definidos (intervalos de trabalho e recuperação). "
+                 "Métricas MOXY/DFA-α1 são detectadas automaticamente se existirem no ficheiro.")
+    with _col_mod:
+        modalidade_fit = st.selectbox(
+            "Modalidade", ['Bike', 'Row', 'Ski', 'Run'], key='fit_modalidade',
+            help="Usada para a secção 'Comparação com histórico' — para saber que dados "
+                 "do Intervals.icu (HRVT1, HRVT2, PBP, etc.) procurar para esta modalidade.")
+
+    with st.expander("⚡ CP e W′ (para o W′ Balance) — opcional", expanded=False):
+        st.caption(
+            "Introduz o CP e W′ já calculados (ex.: aba CP Model do dashboard principal) "
+            "para veres como a reserva anaeróbia (W′) esgotou e recuperou ao longo desta "
+            "sessão. Deixa a 0 para não calcular esta secção.")
+        _cwc1, _cwc2 = st.columns(2)
+        cp_wbal = _cwc1.number_input("CP (W)", min_value=0, value=0, step=5, key='fit_cp_wbal')
+        wprime_wbal = _cwc2.number_input("W′ (Joules)", min_value=0, value=0, step=500,
+                                         key='fit_wprime_wbal')
 
     with st.expander("📖 Que protocolos são suportados e o que fazer em cada um",
                      expanded=False):
@@ -2280,6 +2323,129 @@ decoupling. Não há limiares a estimar.
             st.caption("Extrapolação da taxa de queda do SmO₂ até ao mínimo observado na sessão. "
                        "É uma estimativa grosseira — usa-a como ordem de grandeza, não valor exacto.")
             st.dataframe(tf, hide_index=True, use_container_width=True)
+
+    # ── W′ Balance (modelo dinâmico, se CP/W' foram introduzidos) ────────────
+    if cp_wbal and wprime_wbal:
+        _wbal_res = calcular_wbal(res['df'], colunas, cp=cp_wbal, wprime=wprime_wbal)
+        if _wbal_res is not None:
+            st.markdown("---")
+            st.markdown("### ⚡ W′ Balance")
+            st.caption(
+                "Modelo dinâmico (Skiba et al. 2012) — rastreia como a reserva anaeróbia "
+                "(W′) esgota quando a potência excede o CP, e recupera quando fica abaixo "
+                "(mais devagar quanto mais perto do CP). Diferente do CP/W′ estáticos da "
+                "aba CP Model — isto mostra a evolução MOMENTO A MOMENTO nesta sessão.")
+            _wc1, _wc2 = st.columns(2)
+            _wc1.metric("W′ mínimo atingido", f"{_wbal_res['wbal_min']:.0f} J",
+                       f"{_wbal_res['wbal_min_pct']:.0f}% de W′")
+            _wc2.metric("Vezes quase vazio (≤5%)", _wbal_res['n_vezes_zero'])
+            st.plotly_chart(_grafico_wbal(_wbal_res), use_container_width=True,
+                            config={'displayModeBar': False}, key=f'g_wbal_{_fid}')
+            if _wbal_res['wbal_min_pct'] < 5:
+                st.warning(
+                    "O W′ chegou a ficar praticamente esgotado nesta sessão — indica que "
+                    "pelo menos um esforço foi mantido bem acima do CP, ou que as "
+                    "recuperações entre esforços não foram suficientes para recarregar "
+                    "antes do seguinte.")
+        else:
+            st.caption("⚡ W′ Balance: sem coluna de potência neste ficheiro, ou "
+                      "CP/W′ inválidos.")
+
+    # ── Comparação com histórico (Intervals.icu, por modalidade e por ano) ───
+    if ac_full is not None and len(ac_full) > 0:
+        st.markdown("---")
+        st.markdown(f"### 📊 Comparação com histórico — {modalidade_fit}")
+        st.caption(
+            "Limiares calculados pelo Intervals.icu ao longo do tempo (custom fields), "
+            "para esta modalidade, separados por ano — para veres se o teu range muda "
+            "de ano para ano. Ao lado, os valores equivalentes que esta sessão encontrou.")
+
+        _col_mod_h = next((c for c in ['type', 'modality'] if c in ac_full.columns), None)
+        _col_dat_h = next((c for c in ['date', 'Data'] if c in ac_full.columns), None)
+
+        _THRESH_COLS_FIT = {
+            'HRVT1':     {'label': 'LT1 / AeT',          'unit': 'bpm'},
+            'HRVT1PLUS': {'label': 'LT1+ / Transição',   'unit': 'bpm'},
+            'HRVTMSS':   {'label': 'MLSS / Limiar est.', 'unit': 'bpm'},
+            'HRVT2':     {'label': 'LT2 / AnT',          'unit': 'bpm'},
+            'AeTHR':     {'label': 'AeT HR',             'unit': 'bpm'},
+            'HRVREC':    {'label': 'HRV Recuperação',    'unit': 'bpm'},
+            'Aet':       {'label': 'Aet',                'unit': 'bpm'},
+            'cPR':       {'label': 'cPR',                'unit': 'W'},
+            'PBP':       {'label': 'PBP (W)',            'unit': 'W'},
+            'Pvo2max':   {'label': 'Pvo2max (W)',        'unit': 'W'},
+        }
+
+        if not _col_mod_h or not _col_dat_h:
+            st.info("Não encontrei as colunas de modalidade/data no histórico — "
+                    "não é possível separar por modalidade/ano.")
+        else:
+            _ac_h = ac_full[ac_full[_col_mod_h] == modalidade_fit].copy()
+            _ac_h[_col_dat_h] = pd.to_datetime(_ac_h[_col_dat_h], errors='coerce')
+            _ac_h['_ano'] = _ac_h[_col_dat_h].dt.year
+            _anos = sorted(_ac_h['_ano'].dropna().unique().astype(int))
+            _cols_avail_h = [c for c in _THRESH_COLS_FIT if c in _ac_h.columns]
+
+            if not _cols_avail_h:
+                st.info(f"Nenhuma das colunas de limiares (HRVT1, HRVT2, PBP, etc.) "
+                        f"encontrada nas atividades de {modalidade_fit}. Verifica se os "
+                        "custom fields estão configurados no Intervals.icu.")
+            elif not _anos:
+                st.info(f"Sem datas válidas nas atividades de {modalidade_fit}.")
+            else:
+                def _clean_iqr_fit(series, factor=1.5):
+                    s = pd.to_numeric(series, errors='coerce').dropna()
+                    if len(s) < 4:
+                        return s
+                    q1, q3 = s.quantile(0.25), s.quantile(0.75)
+                    iqr = q3 - q1
+                    return s[(s >= q1 - factor * iqr) & (s <= q3 + factor * iqr)]
+
+                # Mapear os equivalentes desta sessão (do que já calculámos acima)
+                _bp2_hist = res.get('bp_lt1_lt2')
+                _bp_hist = res.get('bp_continuo')
+                _hrvt2_hist = res.get('hrvt2') or {}
+                _sessao_equiv = {}  # coluna -> (valor, unidade, fonte)
+                if _bp2_hist and _bp2_hist.get('fiavel_lt2', True):
+                    _sessao_equiv['HRVT1'] = (_bp2_hist['breakpoint_lt1'], _bp2_hist['unidade'], 'LT1 via SmO₂ (esta sessão)')
+                    _sessao_equiv['HRVT2'] = (_bp2_hist['breakpoint_lt2'], _bp2_hist['unidade'], 'LT2 via SmO₂ (esta sessão)')
+                if _bp_hist:
+                    _sessao_equiv['HRVTMSS'] = (_bp_hist['breakpoint'], _bp_hist['unidade'], 'Breakpoint SmO₂/MLSS (esta sessão)')
+                if isinstance(_hrvt2_hist, dict) and _hrvt2_hist.get('fiavel') and _hrvt2_hist.get('fc'):
+                    _sessao_equiv.setdefault('HRVT2', (_hrvt2_hist['fc'], 'bpm', 'HRVT2 via DFA-α1 (esta sessão)'))
+
+                _linhas_h = []
+                for _tc in _THRESH_COLS_FIT:
+                    if _tc not in _cols_avail_h:
+                        continue
+                    _cfg = _THRESH_COLS_FIT[_tc]
+                    _linha = {'Métrica': _cfg['label']}
+                    for _ano in _anos:
+                        _s = _clean_iqr_fit(_ac_h.loc[_ac_h['_ano'] == _ano, _tc])
+                        if len(_s) >= 2:
+                            _linha[str(_ano)] = (f"{_s.median():.0f} "
+                                                 f"[{_s.quantile(0.25):.0f}-{_s.quantile(0.75):.0f}] "
+                                                 f"(n={len(_s)})")
+                        else:
+                            _linha[str(_ano)] = "—"
+                    if _tc in _sessao_equiv:
+                        _v, _u, _fonte = _sessao_equiv[_tc]
+                        _linha['Esta sessão'] = f"{_v:.0f} {_u}"
+                    else:
+                        _linha['Esta sessão'] = "—"
+                    _linhas_h.append(_linha)
+
+                if _linhas_h:
+                    st.dataframe(pd.DataFrame(_linhas_h), hide_index=True,
+                                use_container_width=True)
+                    st.caption(
+                        "Cada célula: mediana [Q25-Q75] (n=nº de sessões), limpo por "
+                        "IQR×1.5. 'Esta sessão': equivalente mais próximo calculado pela "
+                        "Análise FIT (LT1/LT2 via SmO₂, breakpoint/MLSS, HRVT2 via DFA-α1) — "
+                        "compara-o com o range histórico da mesma linha para ver se está "
+                        "dentro do esperado para esta modalidade.")
+                else:
+                    st.info("Sem dados suficientes para nenhuma métrica nesta modalidade.")
 
     # ── Guardar no histórico ──────────────────────────────────────────────────
     st.markdown("---")
