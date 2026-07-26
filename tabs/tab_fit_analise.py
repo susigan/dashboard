@@ -31,6 +31,7 @@ from utils.fit_analyzer import (
     preparar_fit, analisar_completo, resumir_para_historico, parse_intervalos,
     sugerir_offset, sugerir_offset_por_laps, NOMES_METRICAS,
     DFA1_HRVT2, DFA1_HRVT1, LOA_LITERATURA, ler_fit, calcular_wbal,
+    comparar_com_historico,
 )
 
 # Cores por métrica (paleta Wong 2011, colorblind-safe)
@@ -2360,92 +2361,42 @@ decoupling. Não há limiares a estimar.
             "para esta modalidade, separados por ano — para veres se o teu range muda "
             "de ano para ano. Ao lado, os valores equivalentes que esta sessão encontrou.")
 
-        _col_mod_h = next((c for c in ['type', 'modality'] if c in ac_full.columns), None)
-        _col_dat_h = next((c for c in ['date', 'Data'] if c in ac_full.columns), None)
+        _cmp_hist = comparar_com_historico(ac_full, modalidade_fit, res=res)
 
-        _THRESH_COLS_FIT = {
-            'HRVT1':     {'label': 'LT1 / AeT',          'unit': 'bpm'},
-            'HRVT1PLUS': {'label': 'LT1+ / Transição',   'unit': 'bpm'},
-            'HRVTMSS':   {'label': 'MLSS / Limiar est.', 'unit': 'bpm'},
-            'HRVT2':     {'label': 'LT2 / AnT',          'unit': 'bpm'},
-            'AeTHR':     {'label': 'AeT HR',             'unit': 'bpm'},
-            'HRVREC':    {'label': 'HRV Recuperação',    'unit': 'bpm'},
-            'Aet':       {'label': 'Aet',                'unit': 'bpm'},
-            'cPR':       {'label': 'cPR',                'unit': 'W'},
-            'PBP':       {'label': 'PBP (W)',            'unit': 'W'},
-            'Pvo2max':   {'label': 'Pvo2max (W)',        'unit': 'W'},
-        }
-
-        if not _col_mod_h or not _col_dat_h:
-            st.info("Não encontrei as colunas de modalidade/data no histórico — "
-                    "não é possível separar por modalidade/ano.")
+        if 'erro' in _cmp_hist:
+            st.info(_cmp_hist['erro'])
+        elif not _cmp_hist['linhas']:
+            st.info("Sem dados suficientes para nenhuma métrica nesta modalidade.")
         else:
-            _ac_h = ac_full[ac_full[_col_mod_h] == modalidade_fit].copy()
-            _ac_h[_col_dat_h] = pd.to_datetime(_ac_h[_col_dat_h], errors='coerce')
-            _ac_h['_ano'] = _ac_h[_col_dat_h].dt.year
-            _anos = sorted(_ac_h['_ano'].dropna().unique().astype(int))
-            _cols_avail_h = [c for c in _THRESH_COLS_FIT if c in _ac_h.columns]
-
-            if not _cols_avail_h:
-                st.info(f"Nenhuma das colunas de limiares (HRVT1, HRVT2, PBP, etc.) "
-                        f"encontrada nas atividades de {modalidade_fit}. Verifica se os "
-                        "custom fields estão configurados no Intervals.icu.")
-            elif not _anos:
-                st.info(f"Sem datas válidas nas atividades de {modalidade_fit}.")
-            else:
-                def _clean_iqr_fit(series, factor=1.5):
-                    s = pd.to_numeric(series, errors='coerce').dropna()
-                    if len(s) < 4:
-                        return s
-                    q1, q3 = s.quantile(0.25), s.quantile(0.75)
-                    iqr = q3 - q1
-                    return s[(s >= q1 - factor * iqr) & (s <= q3 + factor * iqr)]
-
-                # Mapear os equivalentes desta sessão (do que já calculámos acima)
-                _bp2_hist = res.get('bp_lt1_lt2')
-                _bp_hist = res.get('bp_continuo')
-                _hrvt2_hist = res.get('hrvt2') or {}
-                _sessao_equiv = {}  # coluna -> (valor, unidade, fonte)
-                if _bp2_hist and _bp2_hist.get('fiavel_lt2', True):
-                    _sessao_equiv['HRVT1'] = (_bp2_hist['breakpoint_lt1'], _bp2_hist['unidade'], 'LT1 via SmO₂ (esta sessão)')
-                    _sessao_equiv['HRVT2'] = (_bp2_hist['breakpoint_lt2'], _bp2_hist['unidade'], 'LT2 via SmO₂ (esta sessão)')
-                if _bp_hist:
-                    _sessao_equiv['HRVTMSS'] = (_bp_hist['breakpoint'], _bp_hist['unidade'], 'Breakpoint SmO₂/MLSS (esta sessão)')
-                if isinstance(_hrvt2_hist, dict) and _hrvt2_hist.get('fiavel') and _hrvt2_hist.get('fc'):
-                    _sessao_equiv.setdefault('HRVT2', (_hrvt2_hist['fc'], 'bpm', 'HRVT2 via DFA-α1 (esta sessão)'))
-
-                _linhas_h = []
-                for _tc in _THRESH_COLS_FIT:
-                    if _tc not in _cols_avail_h:
-                        continue
-                    _cfg = _THRESH_COLS_FIT[_tc]
-                    _linha = {'Métrica': _cfg['label']}
-                    for _ano in _anos:
-                        _s = _clean_iqr_fit(_ac_h.loc[_ac_h['_ano'] == _ano, _tc])
-                        if len(_s) >= 2:
-                            _linha[str(_ano)] = (f"{_s.median():.0f} "
-                                                 f"[{_s.quantile(0.25):.0f}-{_s.quantile(0.75):.0f}] "
-                                                 f"(n={len(_s)})")
-                        else:
-                            _linha[str(_ano)] = "—"
-                    if _tc in _sessao_equiv:
-                        _v, _u, _fonte = _sessao_equiv[_tc]
-                        _linha['Esta sessão'] = f"{_v:.0f} {_u}"
-                    else:
-                        _linha['Esta sessão'] = "—"
-                    _linhas_h.append(_linha)
-
-                if _linhas_h:
-                    st.dataframe(pd.DataFrame(_linhas_h), hide_index=True,
-                                use_container_width=True)
-                    st.caption(
-                        "Cada célula: mediana [Q25-Q75] (n=nº de sessões), limpo por "
-                        "IQR×1.5. 'Esta sessão': equivalente mais próximo calculado pela "
-                        "Análise FIT (LT1/LT2 via SmO₂, breakpoint/MLSS, HRVT2 via DFA-α1) — "
-                        "compara-o com o range histórico da mesma linha para ver se está "
-                        "dentro do esperado para esta modalidade.")
+            _anos_h = _cmp_hist['anos']
+            _linhas_tabela = []
+            for _linha in _cmp_hist['linhas']:
+                _row = {'Métrica': _linha['label']}
+                for _ano in _anos_h:
+                    _pa = _linha['por_ano'].get(_ano)
+                    _row[str(_ano)] = (
+                        f"{_pa['mediana']:.0f} [{_pa['q25']:.0f}-{_pa['q75']:.0f}] (n={_pa['n']})"
+                        if _pa else "—")
+                _mp = _linha['muda_por_ano']
+                _row['Muda por ano?'] = ("⚠️ Sim" if _mp is True
+                                         else ("Não" if _mp is False else "—"))
+                if _linha['esta_sessao']:
+                    _v, _u, _fonte = _linha['esta_sessao']
+                    _row['Esta sessão'] = f"{_v:.0f} {_u}"
                 else:
-                    st.info("Sem dados suficientes para nenhuma métrica nesta modalidade.")
+                    _row['Esta sessão'] = "—"
+                _linhas_tabela.append(_row)
+
+            st.dataframe(pd.DataFrame(_linhas_tabela), hide_index=True,
+                        use_container_width=True)
+            st.caption(
+                "Cada célula: mediana [Q25-Q75] (n=nº de sessões), limpo por IQR×1.5. "
+                "'Muda por ano?': sinaliza quando a mediana varia mais de 10% (ou "
+                "mais de 5bpm/10W, o que for maior) entre o ano mais alto e o mais "
+                "baixo — vale a pena investigar se é evolução real ou mudança de "
+                "protocolo/sensor. 'Esta sessão': equivalente mais próximo calculado "
+                "pela Análise FIT (LT1/LT2 via SmO₂, breakpoint/MLSS, HRVT2 via DFA-α1) "
+                "— compara-o com o range histórico da mesma linha.")
 
     # ── Guardar no histórico ──────────────────────────────────────────────────
     st.markdown("---")
