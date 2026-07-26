@@ -196,7 +196,7 @@ def state_machine(vals, sig_fn, max_high=2, max_train_days=None):
 
 # ── JAVALOYES (LnRMSSD 7d, banda SWC ±0.5·SD) ──────────────────────────────────
 
-def calcular_javaloyes(wc_src, bw_dias=14, tw_dias=28, modo_baseline='periodico'):
+def calcular_javaloyes(wc_src, bw_dias=14, tw_dias=28, modo_baseline='semanal_lag'):
     """
     Prescrição Javaloyes (máquina de estados HIGH/LOW/REST).
       • LnRMSSD, rolling 7d.
@@ -209,23 +209,32 @@ def calcular_javaloyes(wc_src, bw_dias=14, tw_dias=28, modo_baseline='periodico'
       • Teto de 2 HIGH consecutivos (fiel ao paper).
 
     modo_baseline:
-      'periodico' (novo, default) — fiel ao desenho do estudo: Baseline
+      'semanal_lag' (novo, default) — a SWC de cada semana vem SEMPRE das
+        2 semanas (bw_dias=14) imediatamente ANTERIORES a essa semana, nunca
+        incluindo a semana actual. Actualiza-se uma vez por semana (não
+        continuamente dia-a-dia, não em ciclos fixos que se repetem). Isto
+        resolve o problema do artigo ter uma duração FIXA (um baseline, um
+        fim) enquanto o ATHELTICA é contínuo (sem fim definido) — em vez de
+        assumir que um ciclo BW→TW se repete para sempre (a aproximação
+        'periodico' abaixo), a baseline desliza semana a semana, sempre
+        referida às 2 semanas mais recentes já completas. Evita também
+        circularidade (a semana avaliada nunca contribui para a sua própria
+        baseline).
+      'periodico' — fiel ao desenho EXACTO do estudo original: Baseline
         Window (BW) de `bw_dias` (14 no artigo) define a SWC, mantida fixa
         durante a Training Window (TW) de `tw_dias` (28 no artigo — "4
-        semanas"), só depois recalculada com um novo BW. NÃO é uma janela
-        móvel dia-a-dia. RESSALVA: o artigo descreve explicitamente só UMA
-        actualização (após as primeiras 4 semanas de TW); não deixa claro
-        se o ciclo BW→TW se repete indefinidamente depois disso. Como o
-        ATHELTICA acumula meses/anos de dados (não é um estudo de duração
-        fixa), assumimos que sim — o ciclo repete-se a cada (bw_dias+tw_dias)
-        dias a partir do primeiro dia com HRV real. Se preferires a
-        aproximação anterior (janela móvel contínua), usa modo_baseline='rolling'.
-      'rolling' (comportamento anterior) — SWC recalculada todos os dias a
-        partir dos últimos `bw_dias+tw_dias` dias reais (janela móvel
-        contínua) — mais simples, mas não é o desenho exacto do artigo.
+        semanas"), só depois recalculada com um novo BW — ciclos de
+        (bw_dias+tw_dias) dias, repetidos indefinidamente a partir do 1º dia
+        com HRV real. RESSALVA: o artigo só descreve UMA actualização (após
+        as primeiras 4 semanas); assumir repetição indefinida é a nossa
+        extensão para uso contínuo, não algo descrito no artigo.
+      'rolling' — SWC recalculada todos os dias a partir dos últimos
+        `bw_dias+tw_dias` dias reais (janela móvel contínua, incluindo a
+        semana actual) — mais simples, mas mistura o período avaliado com
+        o período de referência.
 
     Devolve DataFrame com Data, LnrMSSD, ln7, prescricao, hrv_sinal, swc_inf,
-    swc_sup (estes dois variam por dia se modo_baseline='periodico').
+    swc_sup (estes dois variam por dia, excepto em modo_baseline='rolling').
     """
     _wc = wc_src.copy()
     _wc['Data'] = pd.to_datetime(_wc['Data'])
@@ -247,9 +256,45 @@ def calcular_javaloyes(wc_src, bw_dias=14, tw_dias=28, modo_baseline='periodico'
         _swc_m = float(_lnb.mean()); _swc_s = float(_lnb.std())
         _wc['swc_inf'] = _swc_m - 0.5 * _swc_s
         _wc['swc_sup'] = _swc_m + 0.5 * _swc_s
+
+    elif modo_baseline == 'semanal_lag':
+        # Para cada SEMANA (blocos de 7 dias a partir do 1º dia com HRV
+        # real), a SWC vem das `bw_dias` (14) imediatamente ANTERIORES ao
+        # início dessa semana — nunca inclui dados da própria semana.
+        _primeiro_dia = _ln_real['Data'].min()
+        _wc['_dias_desde_inicio'] = (_wc['Data'] - _primeiro_dia).dt.days
+        _wc['_semana_idx'] = (_wc['_dias_desde_inicio'] // 7).clip(lower=0)
+
+        _swc_por_semana = {}
+        for _semana in sorted(_wc['_semana_idx'].dropna().unique()):
+            _semana_i = int(_semana)
+            _fim_bw = _primeiro_dia + pd.Timedelta(days=_semana_i * 7)  # início desta semana
+            _inicio_bw = _fim_bw - pd.Timedelta(days=bw_dias)
+            _bw_vals = _wc.loc[(_wc['Data'] >= _inicio_bw) & (_wc['Data'] < _fim_bw)
+                               & (~_wc['sem_medicao']), 'LnrMSSD']
+            if len(_bw_vals) >= 3:
+                _swc_por_semana[_semana_i] = (float(_bw_vals.mean()), float(_bw_vals.std()))
+
+        _swc_inf_lista, _swc_sup_lista = [], []
+        for _semana in _wc['_semana_idx']:
+            _semana_i = int(_semana) if pd.notna(_semana) else None
+            if _semana_i in _swc_por_semana:
+                _m, _s = _swc_por_semana[_semana_i]
+                _swc_inf_lista.append(_m - 0.5 * _s)
+                _swc_sup_lista.append(_m + 0.5 * _s)
+            else:
+                # Ainda não há 2 semanas completas de dados anteriores
+                # (início da série) — sem baseline fiável para esta semana.
+                _swc_inf_lista.append(np.nan)
+                _swc_sup_lista.append(np.nan)
+        _wc['swc_inf'] = _swc_inf_lista
+        _wc['swc_sup'] = _swc_sup_lista
+        _wc = _wc.drop(columns=['_dias_desde_inicio', '_semana_idx'])
+
     else:
-        # BW (bw_dias) fixo → mantido durante TW (tw_dias) → recalcula.
-        # Ciclo = bw_dias + tw_dias, repetido a partir do 1º dia com HRV real.
+        # 'periodico': BW (bw_dias) fixo → mantido durante TW (tw_dias) →
+        # recalcula. Ciclo = bw_dias+tw_dias, repetido a partir do 1º dia
+        # com HRV real.
         _primeiro_dia = _ln_real['Data'].min()
         _ciclo_len = bw_dias + tw_dias
         _wc['_dias_desde_inicio'] = (_wc['Data'] - _primeiro_dia).dt.days
