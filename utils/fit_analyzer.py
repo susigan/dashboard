@@ -4609,3 +4609,185 @@ def calcular_wbal(df, colunas, cp, wprime, tau_modo='skiba'):
         'wprime': wprime,
         'tau_modo': tau_modo,
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 12. COMPARAÇÃO COM HISTÓRICO (Intervals.icu — por modalidade e por ano)
+# ══════════════════════════════════════════════════════════════════════════════
+# Limiares calculados pelo Intervals.icu ao longo do tempo (custom fields —
+# HRVT1, HRVT1PLUS, HRVTMSS, HRVT2, AeTHR, HRVREC, Aet, cPR, PBP, Pvo2max),
+# separados por modalidade e por ANO — para ver se o range muda de ano para
+# ano — comparados com o equivalente que ESTA sessão (res) encontrou.
+# Mesmo padrão de limpeza (IQR×1.5) já usado na tab_cp_model do dashboard
+# principal, agora reutilizável aqui e testável isoladamente.
+
+COLUNAS_LIMIARES_SHEET = {
+    'HRVT1':     {'label': 'LT1 / AeT',          'unidade': 'bpm'},
+    'HRVT1PLUS': {'label': 'LT1+ / Transição',   'unidade': 'bpm'},
+    'HRVTMSS':   {'label': 'MLSS / Limiar est.', 'unidade': 'bpm'},
+    'HRVT2':     {'label': 'LT2 / AnT',          'unidade': 'bpm'},
+    'AeTHR':     {'label': 'AeT HR',             'unidade': 'bpm'},
+    'HRVREC':    {'label': 'HRV Recuperação',    'unidade': 'bpm'},
+    'Aet':       {'label': 'Aet',                'unidade': 'bpm'},
+    'cPR':       {'label': 'cPR',                'unidade': 'W'},
+    'PBP':       {'label': 'PBP (W)',            'unidade': 'W'},
+    'Pvo2max':   {'label': 'Pvo2max (W)',        'unidade': 'W'},
+}
+
+
+def _limpar_iqr(series, factor=1.5):
+    """Remove outliers por IQR×factor. Devolve série limpa (pode ficar vazia)."""
+    s = pd.to_numeric(series, errors='coerce').dropna()
+    if len(s) < 4:
+        return s
+    q1, q3 = s.quantile(0.25), s.quantile(0.75)
+    iqr = q3 - q1
+    return s[(s >= q1 - factor * iqr) & (s <= q3 + factor * iqr)]
+
+
+def _extrair_equivalentes_sessao(res):
+    """
+    Mapeia os resultados desta sessão (res, de analisar_completo) para as
+    colunas do Intervals.icu que lhes correspondem fisiologicamente:
+        HRVT1  ≈ LT1 via SmO2 (breakpoint_smo2_lt1_lt2)
+        HRVT2  ≈ LT2 via SmO2, OU HRVT2 via DFA-α1 (o que houver, DFA-α1
+                 tem prioridade se fiável — é o método com base fisiológica
+                 mais directa para o limiar alto)
+        HRVTMSS ≈ breakpoint SmO2 contínuo (MLSS)
+
+    Só inclui um valor quando a fonte está marcada como fiável (ou não tem
+    esse conceito, como o breakpoint contínuo). Devolve dict:
+        coluna -> (valor, unidade, fonte_descricao)
+    """
+    equiv = {}
+    if not res:
+        return equiv
+
+    bp2 = res.get('bp_lt1_lt2')
+    if bp2 and bp2.get('fiavel_lt2', True):
+        equiv['HRVT1'] = (bp2['breakpoint_lt1'], bp2['unidade'], 'LT1 via SmO₂ (esta sessão)')
+        equiv['HRVT2'] = (bp2['breakpoint_lt2'], bp2['unidade'], 'LT2 via SmO₂ (esta sessão)')
+
+    bp1 = res.get('bp_continuo')
+    if bp1:
+        equiv['HRVTMSS'] = (bp1['breakpoint'], bp1['unidade'], 'Breakpoint SmO₂/MLSS (esta sessão)')
+
+    h2 = res.get('hrvt2')
+    if isinstance(h2, dict) and h2.get('fiavel') and h2.get('fc'):
+        # DFA-α1 tem prioridade sobre o LT2-via-SmO2 quando ambos existem e
+        # é fiável — é o método mais estabelecido dos dois (Murias 2023)
+        equiv['HRVT2'] = (h2['fc'], 'bpm', 'HRVT2 via DFA-α1 (esta sessão)')
+
+    return equiv
+
+
+def comparar_com_historico(ac_full, modalidade, res=None, fator_iqr=1.5,
+                           limiar_mudanca_pct=10.0, limiar_mudanca_abs=None):
+    """
+    Compara os limiares do Intervals.icu (COLUNAS_LIMIARES_SHEET) para uma
+    modalidade, separados por ANO, com os valores equivalentes encontrados
+    na análise desta sessão (res, opcional).
+
+    ac_full        : DataFrame de atividades (Intervals.icu), com colunas de
+                      modalidade ('type'/'modality'), data ('date'/'Data') e
+                      as colunas de limiares (as que existirem).
+    modalidade      : 'Bike'|'Row'|'Ski'|'Run' — filtra ac_full por isto.
+    res             : resultado de analisar_completo() desta sessão, para
+                      extrair os equivalentes (opcional — se None, a
+                      comparação sai só com o histórico, sem 'esta sessão').
+    fator_iqr       : factor de limpeza de outliers (Q1-f·IQR, Q3+f·IQR).
+    limiar_mudanca_pct : % de variação entre a mediana do ano mais alto e a
+                      do mais baixo (relativa à mediana geral) acima da qual
+                      'muda_por_ano' fica True.
+    limiar_mudanca_abs : diferença ABSOLUTA (na unidade da métrica) acima da
+                      qual também conta como mudança — necessário porque
+                      métricas em bpm têm baselines grandes (~150-200), o que
+                      torna uma mudança real de 10-15bpm pouco visível em
+                      termos percentuais (só ~5-8%). Se None, usa 5 (bpm) ou
+                      10 (W) consoante a unidade da métrica. 'muda_por_ano'
+                      fica True se QUALQUER um dos dois critérios disparar.
+
+    Devolve dict:
+        'linhas' : lista de dicts, um por métrica disponível:
+            {
+                'coluna': 'HRVT1', 'label': 'LT1 / AeT', 'unidade': 'bpm',
+                'por_ano': {2024: {'mediana':.., 'q25':.., 'q75':.., 'n':..}, ...},
+                'muda_por_ano': bool | None,   # None = anos insuficientes p/ avaliar
+                'variacao_pct': float | None,  # magnitude da variação (%)
+                'variacao_abs': float | None,  # magnitude da variação (unidade)
+                'esta_sessao': (valor, unidade, fonte) | None,
+            }
+        'anos'   : lista de anos encontrados (ordenada)
+        'erro'   : str, só presente se não foi possível fazer a comparação
+    """
+    if ac_full is None or len(ac_full) == 0:
+        return {'erro': 'Sem histórico de atividades disponível (ac_full vazio ou None).'}
+
+    col_mod = next((c for c in ['type', 'modality'] if c in ac_full.columns), None)
+    col_dat = next((c for c in ['date', 'Data'] if c in ac_full.columns), None)
+    if not col_mod or not col_dat:
+        return {'erro': "Não encontrei as colunas de modalidade/data no histórico "
+                        "(esperava 'type'/'modality' e 'date'/'Data')."}
+
+    ac_h = ac_full[ac_full[col_mod] == modalidade].copy()
+    ac_h[col_dat] = pd.to_datetime(ac_h[col_dat], errors='coerce')
+    ac_h['_ano'] = ac_h[col_dat].dt.year
+    anos = sorted(ac_h['_ano'].dropna().unique().astype(int).tolist())
+    cols_avail = [c for c in COLUNAS_LIMIARES_SHEET if c in ac_h.columns]
+
+    if not cols_avail:
+        return {'erro': f"Nenhuma das colunas de limiares "
+                        f"({', '.join(COLUNAS_LIMIARES_SHEET)}) encontrada nas "
+                        f"atividades de {modalidade}. Verifica se os custom fields "
+                        "estão configurados no Intervals.icu."}
+    if not anos:
+        return {'erro': f"Sem datas válidas nas atividades de {modalidade}."}
+
+    equiv_sessao = _extrair_equivalentes_sessao(res)
+
+    linhas = []
+    for col in COLUNAS_LIMIARES_SHEET:
+        if col not in cols_avail:
+            continue
+        cfg = COLUNAS_LIMIARES_SHEET[col]
+        por_ano = {}
+        medianas = []
+        for ano in anos:
+            s = _limpar_iqr(ac_h.loc[ac_h['_ano'] == ano, col], factor=fator_iqr)
+            if len(s) >= 2:
+                med = float(s.median())
+                por_ano[ano] = {
+                    'mediana': med,
+                    'q25': float(s.quantile(0.25)),
+                    'q75': float(s.quantile(0.75)),
+                    'n': int(len(s)),
+                }
+                medianas.append(med)
+            else:
+                por_ano[ano] = None
+
+        muda_por_ano = None
+        variacao_pct = None
+        variacao_abs = None
+        if len(medianas) >= 2:
+            geral = float(np.mean(medianas))
+            variacao_abs = float(max(medianas) - min(medianas))
+            variacao_pct = (variacao_abs / geral * 100.0) if geral > 0 else None
+            _limiar_abs = (limiar_mudanca_abs if limiar_mudanca_abs is not None
+                          else (5.0 if cfg['unidade'] == 'bpm' else 10.0))
+            _dispara_pct = variacao_pct is not None and variacao_pct > limiar_mudanca_pct
+            _dispara_abs = variacao_abs > _limiar_abs
+            muda_por_ano = bool(_dispara_pct or _dispara_abs)
+
+        linhas.append({
+            'coluna': col,
+            'label': cfg['label'],
+            'unidade': cfg['unidade'],
+            'por_ano': por_ano,
+            'muda_por_ano': muda_por_ano,
+            'variacao_pct': variacao_pct,
+            'variacao_abs': variacao_abs,
+            'esta_sessao': equiv_sessao.get(col),
+        })
+
+    return {'linhas': linhas, 'anos': anos}
