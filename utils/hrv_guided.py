@@ -196,7 +196,7 @@ def state_machine(vals, sig_fn, max_high=2, max_train_days=None):
 
 # ── JAVALOYES (LnRMSSD 7d, banda SWC ±0.5·SD) ──────────────────────────────────
 
-def calcular_javaloyes(wc_src, bw_dias=14, tw_dias=28, modo_baseline='semanal_lag'):
+def calcular_javaloyes(wc_src, bw_dias=60, tw_dias=28, modo_baseline='semanal_lag'):
     """
     Prescrição Javaloyes (máquina de estados HIGH/LOW/REST).
       • LnRMSSD, rolling 7d.
@@ -209,17 +209,23 @@ def calcular_javaloyes(wc_src, bw_dias=14, tw_dias=28, modo_baseline='semanal_la
       • Teto de 2 HIGH consecutivos (fiel ao paper).
 
     modo_baseline:
-      'semanal_lag' (novo, default) — a SWC de cada semana vem SEMPRE das
-        2 semanas (bw_dias=14) imediatamente ANTERIORES a essa semana, nunca
-        incluindo a semana actual. Actualiza-se uma vez por semana (não
-        continuamente dia-a-dia, não em ciclos fixos que se repetem). Isto
-        resolve o problema do artigo ter uma duração FIXA (um baseline, um
-        fim) enquanto o ATHELTICA é contínuo (sem fim definido) — em vez de
-        assumir que um ciclo BW→TW se repete para sempre (a aproximação
-        'periodico' abaixo), a baseline desliza semana a semana, sempre
-        referida às 2 semanas mais recentes já completas. Evita também
-        circularidade (a semana avaliada nunca contribui para a sua própria
-        baseline).
+      'semanal_lag' (novo, default) — a SWC de cada semana vem SEMPRE dos
+        últimos `bw_dias` (default 60 — 2 meses) imediatamente ANTERIORES a
+        essa semana, nunca incluindo a semana actual. Actualiza-se uma vez
+        por semana (não continuamente dia-a-dia, não em ciclos fixos que se
+        repetem). Isto resolve o problema do artigo ter uma duração FIXA (um
+        baseline, um fim) enquanto o ATHELTICA é contínuo (sem fim
+        definido) — em vez de assumir que um ciclo BW→TW se repete para
+        sempre (a aproximação 'periodico' abaixo), a baseline desliza semana
+        a semana, sempre referida ao período mais recente já completo. Evita
+        também circularidade (a semana avaliada nunca contribui para a sua
+        própria baseline).
+        NOTA sobre bw_dias=60 (não 14, o valor literal do artigo): com só
+        14 dias (2 semanas, como no paper original) o SD estimado tem muito
+        ruído de amostragem — testámos e a largura da banda variava ~3x mais
+        de semana para semana do que com 60 dias. 60 dias dá uma banda muito
+        mais estável, à custa de reagir mais devagar a mudanças recentes.
+        Ajustável — passa bw_dias=14 se quiseres o valor literal do artigo.
       'periodico' — fiel ao desenho EXACTO do estudo original: Baseline
         Window (BW) de `bw_dias` (14 no artigo) define a SWC, mantida fixa
         durante a Training Window (TW) de `tw_dias` (28 no artigo — "4
