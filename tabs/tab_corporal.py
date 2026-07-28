@@ -1247,10 +1247,15 @@ def tab_corporal(dc, da_full, wc=None):
 
     if _treino_semanal is not None and len(_treino_semanal) > 0 and 'Calorias' in combined.columns:
         # Juntar treino com dados corporais
-        combined_treino = combined.copy()
-        combined_treino['_w'] = combined_treino['Data'].dt.to_period('W').dt.to_timestamp()
+        # IMPORTANTE: combined tem Data no índice, não como coluna!
+        combined_treino = combined.reset_index().rename(columns={'index': 'Data'})
+        if 'Data' not in combined_treino.columns:
+            # Fallback se reset_index não adicionar Data
+            combined_treino['Data'] = combined_treino.index
+        
+        combined_treino['_w'] = pd.to_datetime(combined_treino['Data']).dt.to_period('W').dt.to_timestamp()
         combined_treino = combined_treino.merge(
-            _treino_semanal.reset_index().rename(columns={'Data': '_w'}),
+            _treino_semanal.reset_index().rename(columns={'index': '_w'}),
             on='_w', how='left'
         )
 
@@ -1307,8 +1312,13 @@ def tab_corporal(dc, da_full, wc=None):
     )
 
     if _has_macros and all(c in combined.columns for c in ['pct_Carb','pct_Fat','pct_Ptn','Calorias']):
-        _cols_cal_seg = ['Data','Calorias','Peso','BF','pct_Carb','pct_Fat','pct_Ptn']
-        _data_cal_seg = combined[[c for c in _cols_cal_seg if c in combined.columns]].dropna()
+        _cols_cal_seg = ['Calorias','Peso','BF','pct_Carb','pct_Fat','pct_Ptn']
+        # Converter índice (Data) em coluna temporária
+        combined_cal_seg = combined.reset_index().rename(columns={'index': 'Data'})
+        if 'Data' not in combined_cal_seg.columns:
+            combined_cal_seg['Data'] = combined_cal_seg.index
+        
+        _data_cal_seg = combined_cal_seg[[c for c in _cols_cal_seg if c in combined_cal_seg.columns]].dropna()
 
         if len(_data_cal_seg) >= 16:
             try:
