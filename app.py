@@ -360,7 +360,7 @@ def main():
     with tab3:  tab_volume(da_filt, dw)
     with tab4:  tab_eftp(da_filt, mods_sel, ac_full, wc_full=wc_full)
     with tab5:  tab_zones(da_filt, mods_sel)
-    with tab6:  tab_correlacoes(ac_full, wc)
+    with tab6:  tab_correlacoes(ac_full, wc_full)
     with tab7:  tab_recovery(dw, da, wc_full=wc_full, da_full=ac_full)
     with tab8:  tab_wellness(dw, wc_full=wc_full)
     with tab9:  tab_analises(ac_full, dw, dfs_annual, df_annual)
