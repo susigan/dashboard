@@ -1231,74 +1231,54 @@ def tab_corporal(dc, da_full, wc=None):
         "das calorias antes de correlacionar treino com composição corporal."
     )
 
-    # Agregar treino por semana (se disponível)
-    _treino_semanal = None
-    if da_full is not None and len(da_full) > 0:
-        _daf_t = da_full.copy()
-        _daf_t['Data'] = pd.to_datetime(_daf_t['Data'])
-        if 'icu_joules' in _daf_t.columns:
-            _daf_t['_kj'] = pd.to_numeric(_daf_t['icu_joules'], errors='coerce') / 1000
-        else:
-            _daf_t['_kj'] = np.nan
-        _daf_t['_w'] = _daf_t['Data'].dt.to_period('W')
-        _treino_semanal = _daf_t.groupby('_w')[['_kj']].sum()
-        _treino_semanal.columns = ['volume_kj']
-        _treino_semanal.index = _treino_semanal.index.to_timestamp()
+    # Usar KJ_sem que já está em combined (pré-agregado em train_agg)
+    if 'KJ_sem' in combined.columns and 'Calorias' in combined.columns:
+        # combined tem índice com Data, e colunas: Peso, BF, Calorias, KJ_sem, Horas_total, ...
+        combined_treino = combined[['Peso','BF','Calorias','KJ_sem']].dropna()
 
-    if _treino_semanal is not None and len(_treino_semanal) > 0 and 'Calorias' in combined.columns:
-        # Juntar treino com dados corporais
-        # IMPORTANTE: combined tem Data no índice, não como coluna!
-        combined_treino = combined.reset_index().rename(columns={'index': 'Data'})
-        if 'Data' not in combined_treino.columns:
-            # Fallback se reset_index não adicionar Data
-            combined_treino['Data'] = combined_treino.index
-        
-        combined_treino['_w'] = pd.to_datetime(combined_treino['Data']).dt.to_period('W').dt.to_timestamp()
-        combined_treino = combined_treino.merge(
-            _treino_semanal.reset_index().rename(columns={'index': '_w'}),
-            on='_w', how='left'
-        )
+        if len(combined_treino) >= 10:
+            # Correlação parcial: Volume Treino vs Peso/BF (controlando Calorias)
+            treino_rows = []
+            for tgt_t in ['BF', 'Peso']:
+                if tgt_t not in combined_treino.columns: continue
+                if 'Calorias' not in combined_treino.columns: continue
+                if 'KJ_sem' not in combined_treino.columns: continue
 
-        # Correlação parcial: Volume Treino vs Peso/BF (controlando Calorias)
-        treino_rows = []
-        for tgt_t in ['BF', 'Peso']:
-            if tgt_t not in combined_treino.columns: continue
-            if 'Calorias' not in combined_treino.columns: continue
-            if 'volume_kj' not in combined_treino.columns: continue
+                r_p, pv_p, n_p = _spearman_parcial(
+                    combined_treino['KJ_sem'], combined_treino[tgt_t], combined_treino['Calorias'])
 
-            r_p, pv_p, n_p = _spearman_parcial(
-                combined_treino['volume_kj'], combined_treino[tgt_t], combined_treino['Calorias'])
+                if r_p is None: continue
 
-            if r_p is None: continue
-
-            sig = '✅ p<0.05' if pv_p < 0.05 else '~ p<0.10' if pv_p < 0.10 else '✗ ns'
-            interp = ''
-            if pv_p < 0.10:
-                if tgt_t == 'BF':
-                    interp = (f"↗ mais treino → mais gordura (possivelmente músculo)"
-                              if r_p > 0 else
-                              f"↘ mais treino → menos gordura")
+                sig = '✅ p<0.05' if pv_p < 0.05 else '~ p<0.10' if pv_p < 0.10 else '✗ ns'
+                interp = ''
+                if pv_p < 0.10:
+                    if tgt_t == 'BF':
+                        interp = (f"↗ mais treino → mais gordura (possivelmente músculo)"
+                                  if r_p > 0 else
+                                  f"↘ mais treino → menos gordura")
+                    else:
+                        interp = (f"↗ mais treino → mais peso"
+                                  if r_p > 0 else
+                                  f"↘ mais treino → menos peso")
                 else:
-                    interp = (f"↗ mais treino → mais peso"
-                              if r_p > 0 else
-                              f"↘ mais treino → menos peso")
+                    interp = "→ sem efeito independente de calorias"
+
+                treino_rows.append({
+                    'Alvo': tgt_t,
+                    'N': n_p,
+                    'r parcial': f"{r_p:+.3f}",
+                    'Sig': sig,
+                    'Interpretação': interp,
+                })
+
+            if treino_rows:
+                st.dataframe(pd.DataFrame(treino_rows), hide_index=True, use_container_width=True)
             else:
-                interp = "→ sem efeito independente de calorias"
-
-            treino_rows.append({
-                'Alvo': tgt_t,
-                'N': n_p,
-                'r parcial': f"{r_p:+.3f}",
-                'Sig': sig,
-                'Interpretação': interp,
-            })
-
-        if treino_rows:
-            st.dataframe(pd.DataFrame(treino_rows), hide_index=True, use_container_width=True)
+                st.info("Dados insuficientes para análise de treino (mín. 10 semanas).")
         else:
-            st.info("Dados insuficientes para análise de treino (mín. 10 semanas).")
+            st.info(f"Dados insuficientes para análise de treino (N={len(combined_treino)}, mín. 10 semanas).")
     else:
-        st.info("Sem dados de volume de treino para análise.")
+        st.info("Sem dados de volume de treino (KJ_sem) para análise.")
 
     st.markdown("---")
 
@@ -1312,13 +1292,8 @@ def tab_corporal(dc, da_full, wc=None):
     )
 
     if _has_macros and all(c in combined.columns for c in ['pct_Carb','pct_Fat','pct_Ptn','Calorias']):
-        _cols_cal_seg = ['Calorias','Peso','BF','pct_Carb','pct_Fat','pct_Ptn']
-        # Converter índice (Data) em coluna temporária
-        combined_cal_seg = combined.reset_index().rename(columns={'index': 'Data'})
-        if 'Data' not in combined_cal_seg.columns:
-            combined_cal_seg['Data'] = combined_cal_seg.index
-        
-        _data_cal_seg = combined_cal_seg[[c for c in _cols_cal_seg if c in combined_cal_seg.columns]].dropna()
+        # combined já tem todos os dados; usar directamente
+        _data_cal_seg = combined[['Calorias','Peso','BF','pct_Carb','pct_Fat','pct_Ptn']].dropna()
 
         if len(_data_cal_seg) >= 16:
             try:
