@@ -1223,6 +1223,72 @@ def tab_corporal(dc, da_full, wc=None):
 
     st.markdown("---")
 
+    # ── MACROS EM GRAMAS: efeito independente das calorias ──────────────────────────
+    st.subheader("🥕 Macronutrientes em GRAMAS — efeito independente das calorias")
+    st.caption(
+        "Pergunta: **mais Carb/Gordura/Proteína em GRAMAS (quantidade absoluta) "
+        "afecta Peso/BF, independentemente do total de Calorias?** "
+        "Método: correlação parcial de Spearman controlando Calorias. "
+        "⚠️ Nota: 'Gordura' aqui refere-se a gordura DIETÁRIA (gramas), não BF% (gordura corporal)."
+    )
+
+    # Verificar colunas de macros em gramas
+    _macro_g_cols = ['Carb','Fat','Ptn']
+    if all(c in combined.columns for c in _macro_g_cols + ['Calorias']):
+        _data_grams = combined[['Peso','BF','Calorias'] + _macro_g_cols].dropna()
+        
+        if len(_data_grams) >= 10:
+            grams_rows = []
+            for tgt_g in ['BF', 'Peso']:
+                if tgt_g not in _data_grams.columns: continue
+                
+                for macro_col, macro_lbl in [('Carb', 'Carb (g)'),
+                                              ('Fat', 'Gord. dieta (g)'),
+                                              ('Ptn', 'Ptn (g)')]:
+                    if macro_col not in _data_grams.columns: continue
+                    
+                    r_p, pv_p, n_p = _spearman_parcial(
+                        _data_grams[macro_col], 
+                        _data_grams[tgt_g], 
+                        _data_grams['Calorias']
+                    )
+                    
+                    if r_p is None: continue
+                    
+                    sig = '✅ p<0.05' if pv_p < 0.05 else '~ p<0.10' if pv_p < 0.10 else '✗ ns'
+                    interp = ''
+                    if pv_p < 0.10:
+                        interp = (f"↗ mais {macro_lbl.lower()} → mais {tgt_g.lower()}"
+                                  if r_p > 0 else
+                                  f"↘ menos {macro_lbl.lower()} → menos {tgt_g.lower()}")
+                    else:
+                        interp = "→ sem efeito independente de calorias"
+                    
+                    grams_rows.append({
+                        'Alvo': tgt_g,
+                        'Macro (g)': macro_lbl,
+                        'N': n_p,
+                        'r parcial': f"{r_p:+.3f}",
+                        'Sig': sig,
+                        'Interpretação': interp,
+                    })
+            
+            if grams_rows:
+                st.dataframe(pd.DataFrame(grams_rows), hide_index=True, use_container_width=True)
+                st.caption(
+                    "⚠️ **Interpretação:** Mais Carb_gramas enquanto controla Calorias significa "
+                    "que você aumentou Carb E REDUZIU outro macro (Fat ou Ptn). "
+                    "Ex: r(Carb_g, Peso &#124; Cal) = -0.20 → 'aumentar Carb (reduzir Gordura) mantendo Cal → menos Peso'."
+                )
+            else:
+                st.info("Dados insuficientes para análise de macros em gramas.")
+        else:
+            st.info(f"Dados insuficientes (N={len(_data_grams)}, mín. 10 semanas).")
+    else:
+        st.info("Sem dados de macronutrientes em gramas (Carb, Fat, Ptn) para análise.")
+
+    st.markdown("---")
+
     # ── TREINO: Correlação parcial Volume de Treino vs Peso/BF (controlando Calorias) ─────
     st.subheader("🚴 Volume de Treino — efeito independente das calorias")
     st.caption(
