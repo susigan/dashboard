@@ -1,6 +1,7 @@
 from utils.config import *
 from utils.helpers import *
 from utils.data import *
+from utils.hrv_guided import calcular_javaloyes, calcular_kiviniemi
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -692,11 +693,31 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
         _wc['Data'] = pd.to_datetime(_wc['Data'])
         _wc = _wc.sort_values('Data')
         try:
-            _est = calcular_estados_hrv_guided(_wc)
-            hrv_jav = _est['javaloyes']
-            hrv_kiv = _est['kiviniemi']
+            # ── CHAMAR DIRECTAMENTE AS FUNÇÕES DE hrv_guided.py ────────────────
+            # (MESMOS PARÂMETROS QUE tab_recovery.py para garantir sicronia)
+            _dias_fam = 60
+            _jav_res = calcular_javaloyes(_wc, bw_dias=_dias_fam, modo_baseline='semanal_lag')
+            
+            # Extrair estado Javaloyes (última linha)
+            hrv_jav = None
+            if len(_jav_res) > 0 and 'prescricao' in _jav_res.columns:
+                _pres_jav = _jav_res['prescricao'].dropna()
+                if len(_pres_jav) > 0:
+                    hrv_jav = _pres_jav.iloc[-1]
+            
+            # Extrair estado Kiviniemi (se HF power disponível)
+            hrv_kiv = None
+            if 'hf_power' in _wc.columns and _wc['hf_power'].notna().sum() >= 5:
+                _kiv_res = calcular_kiviniemi(_wc, usar_log=True)
+                if _kiv_res is not None and len(_kiv_res) > 0 and 'prescricao_k' in _kiv_res.columns:
+                    _pres_kiv = _kiv_res['prescricao_k'].dropna()
+                    if len(_pres_kiv) > 0:
+                        hrv_kiv = _pres_kiv.iloc[-1]
+            
+            # HRV de hoje
             _wc_hrv = _wc[_wc['hrv'] > 0].dropna(subset=['hrv'])
             hrv_hoje = float(_wc_hrv.iloc[-1]['hrv']) if len(_wc_hrv) > 0 else None
+            
             # Mapear o estado Javaloyes para hrv_class (retrocompat com downstream)
             _MAP_CLASS = {'HIGH': 'HIIT', 'LOW': 'Moderada', 'REST': 'Recuperação'}
             _MAP_EMOJI = {'HIGH': '🟢', 'LOW': '🔵', 'REST': '🔴'}
