@@ -1424,11 +1424,20 @@ def tab_correlacoes(da, dw):
     )
 
     # ── Helper: calcular perfil para um período ───────────────────────────
-    def _perfil_periodo(da_src, dw_src, label):
-        """Retorna dict com métricas chave para o período."""
+    def _perfil_periodo(da_src, dw_src, label, data_min=None):
+        """Retorna dict com métricas chave para o período.
+        
+        CORRECÇÃO BUG: data_min é agora OBRIGATÓRIO — garante que as funções
+        _prep_merged_rpe, _prep_merged_rpe_modal e _prep_dw_clean usam o período
+        correto (não o default 2020-01-01 que tornava todos os períodos iguais).
+        """
+        if data_min is None:
+            # Fallback se não passar (evita silent failure)
+            data_min = pd.Timestamp.now().normalize() - pd.Timedelta(days=365)
+        
         out = {'periodo': label, 'n_dias': len(da_src)}
         # RPE → HRV+1
-        mr = _prep_merged_rpe(da_src, dw_in=dw_src)
+        mr = _prep_merged_rpe(da_src, data_min=data_min, dw_in=dw_src)
         if len(mr) >= 5:
             base = mr['hrv'].mean()
             for cat in ['Leve','Moderado','Pesado','Rest']:
@@ -1439,7 +1448,7 @@ def tab_correlacoes(da, dw):
             out['eta2_rpe'] = kw.get('hrv',{}).get('eta2', np.nan)
             out['sig_rpe']  = kw.get('hrv',{}).get('sig', '—')
         # Modalidade pesada → HRV+1
-        mm = _prep_merged_rpe_modal(da_src, dw_in=dw_src)
+        mm = _prep_merged_rpe_modal(da_src, data_min=data_min, dw_in=dw_src)
         if len(mm) >= 5:
             base_m = mm['hrv'].mean()
             for mod in CICLICOS_T:
@@ -1452,7 +1461,7 @@ def tab_correlacoes(da, dw):
             da_kj_p['_kj'] = pd.to_numeric(da_kj_p['icu_joules'], errors='coerce') / 1000
             kj_d = da_kj_p.groupby('Data')['_kj'].sum().reset_index()
             kj_d.columns = ['Data','kj']
-            dw2 = _prep_dw_clean(dw_src)[['Data','hrv']].copy()
+            dw2 = _prep_dw_clean(dw_src, data_min=data_min)[['Data','hrv']].copy()
             kjh = kj_d.merge(dw2, on='Data', how='inner').dropna(subset=['hrv','kj'])
             if len(kjh) >= 8:
                 from scipy.stats import pearsonr as _prkj
@@ -1470,12 +1479,13 @@ def tab_correlacoes(da, dw):
 
     for dias, lbl in [(90,'90 dias'),(180,'180 dias'),(365,'1 ano'),(730,'2 anos'),(1095,'3 anos')]:
         cutoff = _hoje_pf - pd.Timedelta(days=dias)
+        data_min_str = cutoff.strftime('%Y-%m-%d')  # CORRECÇÃO: passar data_min para cada período
         da_p = _da_full_pf[_da_full_pf['Data'] >= cutoff]
         dw_p = _dw_full_pf[_dw_full_pf['Data'] >= cutoff]
         if len(da_p) < 20 or len(dw_p) < 20:
             continue
         try:
-            _periodos.append(_perfil_periodo(da_p, dw_p, lbl))
+            _periodos.append(_perfil_periodo(da_p, dw_p, lbl, data_min=data_min_str))
         except Exception:
             pass
 
