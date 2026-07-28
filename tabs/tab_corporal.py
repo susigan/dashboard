@@ -1093,6 +1093,32 @@ def tab_corporal(dc, da_full, wc=None):
 
     st.markdown("---")
 
+    # ── Definir função auxiliar: Correlação Parcial (usada em múltiplas análises) ────────
+    from scipy.stats import spearmanr as _sp_m, rankdata as _rd
+    from scipy.stats import t as _t_dist
+
+    def _spearman_parcial(x, y, z):
+        """Correlação parcial de Spearman entre x e y controlando z."""
+        df_xyz = pd.DataFrame({'x': x, 'y': y, 'z': z}).dropna()
+        if len(df_xyz) < 10: return None, None, len(df_xyz)
+        # Rankar tudo
+        rx = _rd(df_xyz['x'].values).astype(float)
+        ry = _rd(df_xyz['y'].values).astype(float)
+        rz = _rd(df_xyz['z'].values).astype(float)
+        # Residualizar x e y em relação a z via OLS
+        from numpy.linalg import lstsq as _ls
+        X_z = np.column_stack([np.ones(len(rz)), rz])
+        res_rx = rx - X_z @ _ls(X_z, rx, rcond=None)[0]
+        res_ry = ry - X_z @ _ls(X_z, ry, rcond=None)[0]
+        # Correlação de Pearson nos resíduos
+        if np.std(res_rx) == 0 or np.std(res_ry) == 0: return None, None, len(df_xyz)
+        r_p = float(np.corrcoef(res_rx, res_ry)[0,1])
+        # p-value aproximado (Fisher z → t)
+        n = len(df_xyz)
+        t_stat = r_p * np.sqrt(n - 3) / np.sqrt(max(1 - r_p**2, 1e-10))
+        pv = float(2 * _t_dist.sf(abs(t_stat), df=n-3))
+        return round(r_p, 3), round(pv, 4), n
+
     # ── MACROS: efeito independente das calorias ──────────────────────────
     st.subheader("🥗 Distribuição de Macronutrientes — efeito independente das calorias")
     st.caption(
@@ -1103,36 +1129,12 @@ def tab_corporal(dc, da_full, wc=None):
 
     if _has_macros and all(c in combined.columns for c in ['pct_Carb','pct_Fat','pct_Ptn']):
         # ── Correlação parcial: macro% → Peso/BF controlando Calorias ────
-        from scipy.stats import spearmanr as _sp_m, rankdata as _rd
         st.markdown("**Correlação parcial: % Macro → Peso/BF (controlando Calorias totais)**")
         st.caption(
             "Correlação parcial de Spearman: remove o efeito das calorias totais antes de "
             "calcular a correlação entre distribuição de macros e composição corporal. "
             "r próximo de 0 = os macros não explicam variação de BF/Peso além das calorias."
         )
-
-        def _spearman_parcial(x, y, z):
-            """Correlação parcial de Spearman entre x e y controlando z."""
-            df_xyz = pd.DataFrame({'x': x, 'y': y, 'z': z}).dropna()
-            if len(df_xyz) < 10: return None, None, len(df_xyz)
-            # Rankar tudo
-            rx = _rd(df_xyz['x'].values).astype(float)
-            ry = _rd(df_xyz['y'].values).astype(float)
-            rz = _rd(df_xyz['z'].values).astype(float)
-            # Residualizar x e y em relação a z via OLS
-            from numpy.linalg import lstsq as _ls
-            X_z = np.column_stack([np.ones(len(rz)), rz])
-            res_rx = rx - X_z @ _ls(X_z, rx, rcond=None)[0]
-            res_ry = ry - X_z @ _ls(X_z, ry, rcond=None)[0]
-            # Correlação de Pearson nos resíduos
-            if np.std(res_rx) == 0 or np.std(res_ry) == 0: return None, None, len(df_xyz)
-            r_p = float(np.corrcoef(res_rx, res_ry)[0,1])
-            # p-value aproximado (Fisher z → t)
-            n = len(df_xyz)
-            t_stat = r_p * np.sqrt(n - 3) / np.sqrt(max(1 - r_p**2, 1e-10))
-            from scipy.stats import t as _t_dist
-            pv = float(2 * _t_dist.sf(abs(t_stat), df=n-3))
-            return round(r_p, 3), round(pv, 4), n
 
         parc_rows = []
         for tgt_m in ['BF','Peso']:
@@ -1218,6 +1220,178 @@ def tab_corporal(dc, da_full, wc=None):
             st.info(f"Dados insuficientes para análise de macros por quartil (N={len(_data_q)}, mín 16).")
     else:
         st.info("Sem dados de macronutrientes suficientes para análise de distribuição.")
+
+    st.markdown("---")
+
+    # ── TREINO: Correlação parcial Volume de Treino vs Peso/BF (controlando Calorias) ─────
+    st.subheader("🚴 Volume de Treino — efeito independente das calorias")
+    st.caption(
+        "Pergunta: **independentemente das calorias totais, o volume de treino (kJ/semana) "
+        "afecta peso/BF?** Método: correlação parcial de Spearman, removendo o efeito "
+        "das calorias antes de correlacionar treino com composição corporal."
+    )
+
+    # Agregar treino por semana (se disponível)
+    _treino_semanal = None
+    if da_full is not None and len(da_full) > 0:
+        _daf_t = da_full.copy()
+        _daf_t['Data'] = pd.to_datetime(_daf_t['Data'])
+        if 'icu_joules' in _daf_t.columns:
+            _daf_t['_kj'] = pd.to_numeric(_daf_t['icu_joules'], errors='coerce') / 1000
+        else:
+            _daf_t['_kj'] = np.nan
+        _daf_t['_w'] = _daf_t['Data'].dt.to_period('W')
+        _treino_semanal = _daf_t.groupby('_w')[['_kj']].sum()
+        _treino_semanal.columns = ['volume_kj']
+        _treino_semanal.index = _treino_semanal.index.to_timestamp()
+
+    if _treino_semanal is not None and len(_treino_semanal) > 0 and 'Calorias' in combined.columns:
+        # Juntar treino com dados corporais
+        combined_treino = combined.copy()
+        combined_treino['_w'] = combined_treino['Data'].dt.to_period('W').dt.to_timestamp()
+        combined_treino = combined_treino.merge(
+            _treino_semanal.reset_index().rename(columns={'Data': '_w'}),
+            on='_w', how='left'
+        )
+
+        # Correlação parcial: Volume Treino vs Peso/BF (controlando Calorias)
+        treino_rows = []
+        for tgt_t in ['BF', 'Peso']:
+            if tgt_t not in combined_treino.columns: continue
+            if 'Calorias' not in combined_treino.columns: continue
+            if 'volume_kj' not in combined_treino.columns: continue
+
+            r_p, pv_p, n_p = _spearman_parcial(
+                combined_treino['volume_kj'], combined_treino[tgt_t], combined_treino['Calorias'])
+
+            if r_p is None: continue
+
+            sig = '✅ p<0.05' if pv_p < 0.05 else '~ p<0.10' if pv_p < 0.10 else '✗ ns'
+            interp = ''
+            if pv_p < 0.10:
+                if tgt_t == 'BF':
+                    interp = (f"↗ mais treino → mais gordura (possivelmente músculo)"
+                              if r_p > 0 else
+                              f"↘ mais treino → menos gordura")
+                else:
+                    interp = (f"↗ mais treino → mais peso"
+                              if r_p > 0 else
+                              f"↘ mais treino → menos peso")
+            else:
+                interp = "→ sem efeito independente de calorias"
+
+            treino_rows.append({
+                'Alvo': tgt_t,
+                'N': n_p,
+                'r parcial': f"{r_p:+.3f}",
+                'Sig': sig,
+                'Interpretação': interp,
+            })
+
+        if treino_rows:
+            st.dataframe(pd.DataFrame(treino_rows), hide_index=True, use_container_width=True)
+        else:
+            st.info("Dados insuficientes para análise de treino (mín. 10 semanas).")
+    else:
+        st.info("Sem dados de volume de treino para análise.")
+
+    st.markdown("---")
+
+    # ── MACROS POR RANGE CALÓRICO ──────────────────────────────────────────────────────
+    st.subheader("🔍 Distribuição de Macros por Range de Calorias")
+    st.caption(
+        "Pergunta: **dentro de um range específico de calorias (ex: 2000-2400 kcal), "
+        "qual é o efeito independente de % Carb/Fat/Ptn no Peso/BF?** "
+        "Segmentação em Deficit (baixo)/Manutenção (médio)/Surplus (alto) + "
+        "correlação parcial dentro de cada segmento."
+    )
+
+    if _has_macros and all(c in combined.columns for c in ['pct_Carb','pct_Fat','pct_Ptn','Calorias']):
+        _cols_cal_seg = ['Data','Calorias','Peso','BF','pct_Carb','pct_Fat','pct_Ptn']
+        _data_cal_seg = combined[[c for c in _cols_cal_seg if c in combined.columns]].dropna()
+
+        if len(_data_cal_seg) >= 16:
+            try:
+                # Segmentar por Calorias (Deficit/Manutenção/Surplus)
+                _data_cal_seg = _data_cal_seg.copy()
+                _data_cal_seg['_cal_seg'] = pd.qcut(
+                    _data_cal_seg['Calorias'], q=3,
+                    labels=['Deficit (baixas cal)', 'Manutenção (cal médias)', 'Surplus (altas cal)'],
+                    duplicates='drop'
+                )
+
+                # Mostrar tabela resumida de cada segmento
+                st.markdown("**Resumo por segmento calórico:**")
+                seg_summary = []
+                for seg_lbl in ['Deficit (baixas cal)', 'Manutenção (cal médias)', 'Surplus (altas cal)']:
+                    g_seg = _data_cal_seg[_data_cal_seg['_cal_seg'] == seg_lbl]
+                    if len(g_seg) < 3: continue
+                    seg_summary.append({
+                        'Segmento': seg_lbl,
+                        'N semanas': len(g_seg),
+                        'Cal média': f"{g_seg['Calorias'].mean():.0f}",
+                        'Peso médio': f"{g_seg['Peso'].mean():.1f} kg",
+                        'BF médio': f"{g_seg['BF'].mean():.1f}%",
+                        '% Carb': f"{g_seg['pct_Carb'].mean():.0f}%",
+                        '% Gordura': f"{g_seg['pct_Fat'].mean():.0f}%",
+                        '% Proteína': f"{g_seg['pct_Ptn'].mean():.0f}%",
+                    })
+                if seg_summary:
+                    st.dataframe(pd.DataFrame(seg_summary), hide_index=True, use_container_width=True)
+
+                # Análise de macros dentro de cada segmento (correlação parcial)
+                st.markdown("**Correlação parcial de macros dentro de cada segmento:**")
+                st.caption(
+                    "Dentro de cada range de calorias, qual o efeito independente de % Carb/Fat/Ptn? "
+                    "(Correlação parcial, controlando apenas Calorias dentro do segmento)"
+                )
+
+                seg_macro_rows = []
+                for seg_lbl in ['Deficit (baixas cal)', 'Manutenção (cal médias)', 'Surplus (altas cal)']:
+                    g_seg = _data_cal_seg[_data_cal_seg['_cal_seg'] == seg_lbl]
+                    if len(g_seg) < 10: continue
+
+                    for tgt_m in ['BF', 'Peso']:
+                        if tgt_m not in g_seg.columns: continue
+                        for macro_pct, macro_lbl in [
+                            ('pct_Carb', 'Carb'),
+                            ('pct_Fat', 'Gordura'),
+                            ('pct_Ptn', 'Proteína'),
+                        ]:
+                            if macro_pct not in g_seg.columns: continue
+
+                            r_p, pv_p, n_p = _spearman_parcial(
+                                g_seg[macro_pct], g_seg[tgt_m], g_seg['Calorias']
+                            )
+                            if r_p is None: continue
+
+                            sig = '✅' if pv_p < 0.05 else '~' if pv_p < 0.10 else '✗'
+                            seg_macro_rows.append({
+                                'Segmento': seg_lbl,
+                                'Alvo': tgt_m,
+                                'Macro': macro_lbl,
+                                'N': n_p,
+                                'r parcial': f"{r_p:+.3f}",
+                                'Sig': sig,
+                            })
+
+                if seg_macro_rows:
+                    _df_seg_macro = pd.DataFrame(seg_macro_rows)
+                    st.dataframe(_df_seg_macro, hide_index=True, use_container_width=True)
+                    st.caption(
+                        "✅ p<0.05 | ~ p<0.10 | ✗ ns (não significativo). "
+                        "Sinal negativo = mais macro → menos BF/Peso; "
+                        "positivo = mais macro → mais BF/Peso."
+                    )
+                else:
+                    st.info("Dados insuficientes para análise de macros por segmento calórico.")
+
+            except Exception as e:
+                st.info(f"Erro na análise por range calórico: {str(e)[:100]}")
+        else:
+            st.info(f"Dados insuficientes para segmentação calórica (N={len(_data_cal_seg)}, mín 16).")
+    else:
+        st.info("Sem dados de macronutrientes ou calorias para análise por range calórico.")
 
     st.markdown("---")
 
