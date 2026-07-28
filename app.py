@@ -355,7 +355,7 @@ def main():
         "⚗️ CTL vs KJ",  "🏁 CP Model",    "📐 FMT Tensor", "🫀 HRV Analyzer",
     ])
 
-    with tab1:  tab_visao_geral(dw, da_filt, di, df_, da_full=ac_full, wc_full=wc, dc=dc)
+    with tab1:  tab_visao_geral(dw, da_filt, di, df_, da_full=ac_full, wc_full=wc_full, dc=dc)
     with tab2:  tab_pmc(ac_full, wc=wc_full)
     with tab3:  tab_volume(da_filt, dw)
     with tab4:  tab_eftp(da_filt, mods_sel, ac_full, wc_full=wc_full)
