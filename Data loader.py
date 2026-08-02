@@ -27,7 +27,7 @@ def get_gc():
 
 # ── Carregamento ──────────────────────────────────────────────────────────────
 
-@st.cache_data(ttl=3600, show_spinner="A carregar wellness...")
+@st.cache_data(ttl=7200, show_spinner=False)
 def carregar_wellness(days_back):
     gc = get_gc()
     if gc is None: return pd.DataFrame()
@@ -48,7 +48,7 @@ def carregar_wellness(days_back):
         st.error(f"Erro ao carregar wellness: {e}")
         return pd.DataFrame()
 
-@st.cache_data(ttl=3600, show_spinner="A carregar atividades...")
+@st.cache_data(ttl=7200, show_spinner=False)
 def carregar_atividades(days_back):
     gc = get_gc()
     if gc is None: return pd.DataFrame()
@@ -170,7 +170,7 @@ def filtrar_datas(df, di, df_):
     return df[(df['Data'].dt.date >= di) & (df['Data'].dt.date <= df_)].reset_index(drop=True)
 
 
-@st.cache_data(ttl=3600, show_spinner="A carregar dados anuais (Aquecimentos)...")
+@st.cache_data(ttl=7200, show_spinner=False)
 def carregar_annual():
     """
     Carrega AquecSki, AquecBike, AquecRow via gviz CSV.
