@@ -36,6 +36,185 @@ from tabs.tab_fmt_tensor   import tab_fmt_tensor
 from tabs.tab_hrv_analyzer import tab_hrv_analyzer
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# CÁLCULOS CUSTOSOS COM CACHE (reduz CPU throttling)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@st.cache_data(ttl=7200, show_spinner=False)
+def _calc_alpha_polar_startup(ac_full_pickle):
+    """
+    eFTP regressão (Kalman CTLγ + OLS múltipla por modalidade).
+    Custo: ~800ms (4 Kalman + 4 OLS). Cacheado 2h para evitar throttle.
+    """
+    import pickle, numpy as np
+    from scipy import stats as _sp_stats
+    from utils.data import kalman_ctlg as _kctlg
+    
+    ac_full = pickle.loads(ac_full_pickle)
+    _alpha_cache = {}
+    
+    _gmap = {"Bike":0.250, "Row":0.900, "Ski":0.600, "Run":0.900}
+    
+    def _zslope(series, n=14):
+        s = series.dropna().tail(n)
+        if len(s) < 5: return 0.0
+        sl, *_ = _sp_stats.linregress(np.arange(len(s), dtype=float), s.values.astype(float))
+        return float(sl)
+
+    for _mv in ["Bike","Row","Ski","Run"]:
+        try:
+            _z1c = next((c for c in ["z1_kj","Z1KJ","z1kj"] if c in ac_full.columns), None)
+            _z2c = next((c for c in ["z2_kj","Z2KJ","z2kj"] if c in ac_full.columns), None)
+            _z3c = next((c for c in ["z3_kj","Z3KJ","z3kj"] if c in ac_full.columns), None)
+            _ce  = next((c for c in ["icu_eftp","eFTP","eftp"] if c in ac_full.columns), None)
+            _cd  = next((c for c in ["date","Data"] if c in ac_full.columns), None)
+            
+            if not all([_z1c, _z2c, _z3c, _ce, _cd]): continue
+            
+            _ef = ac_full[ac_full['type']==_mv][[_cd,_ce,_z1c,_z2c,_z3c]].copy()
+            _ef[_cd] = pd.to_datetime(_ef[_cd]).dt.normalize()
+            _ef = (_ef.rename(columns={_cd:"Data",_ce:"eftp",
+                                       _z1c:"z1",_z2c:"z2",_z3c:"z3"})
+                        .sort_values("Data").drop_duplicates("Data").reset_index(drop=True))
+            _ef[["eftp","z1","z2","z3"]] = _ef[["eftp","z1","z2","z3"]].apply(pd.to_numeric, errors="coerce")
+            _ef = _ef.dropna(subset=["eftp"])
+            _ef[["z1","z2","z3"]] = _ef[["z1","z2","z3"]].fillna(0)
+            
+            if len(_ef) < 10:
+                _alpha_cache[_mv] = {'ok':False,'reason':f'{len(_ef)} sessões (<10)'}
+                continue
+
+            _gam = _gmap[_mv]
+            _span = int(round(max(42.0*(1.0-_gam) + 7.0*_gam, 7.0)))
+
+            _dr = pd.date_range(_ef["Data"].min(), pd.Timestamp.now().normalize(), freq="D")
+            _ei = _ef.set_index("Data")
+            _cz1 = _kctlg(_ei["z1"].reindex(_dr).fillna(0), tau=float(_span))
+            _cz2 = _kctlg(_ei["z2"].reindex(_dr).fillna(0), tau=float(_span))
+            _cz3 = _kctlg(_ei["z3"].reindex(_dr).fillna(0), tau=float(_span))
+            _ef["cz1"] = _ef["Data"].map(_cz1.to_dict())
+            _ef["cz2"] = _ef["Data"].map(_cz2.to_dict())
+            _ef["cz3"] = _ef["Data"].map(_cz3.to_dict())
+            _ef = _ef.dropna(subset=["cz1","cz2","cz3"])
+            
+            if len(_ef) < 10:
+                _alpha_cache[_mv] = {'ok':False,'reason':'insuficientes após CTLγ'}
+                continue
+
+            _X = np.column_stack([_ef["cz3"].values.astype(float),
+                                  _ef["cz2"].values.astype(float),
+                                  _ef["cz1"].values.astype(float),
+                                  np.ones(len(_ef))])
+            _y = _ef["eftp"].values.astype(float)
+            _coef, _, _, _ = np.linalg.lstsq(_X, _y, rcond=None)
+            _a3,_a2,_a1,_intc = (float(_coef[0]),float(_coef[1]),float(_coef[2]),float(_coef[3]))
+            _yp = _X @ _coef
+            _r2 = float(1 - np.sum((_y-_yp)**2) / max(np.sum((_y-_y.mean())**2), 1e-9))
+
+            _cz3n = float(_cz3.iloc[-1])
+            _cz2n = float(_cz2.iloc[-1])
+            _cz1n = float(_cz1.iloc[-1])
+            _sl3 = _zslope(_cz3)
+            _sl2 = _zslope(_cz2)
+            _sl1 = _zslope(_cz1)
+            _eftp_now_v = float(_ef["eftp"].iloc[-1])
+
+            _delta_eftp_tendencia = _sl3 * 90 * _a3
+            _delta_eftp_alvo = min(max(_delta_eftp_tendencia, 5.0), 15.0)
+            _eftp_alvo = _eftp_now_v + _delta_eftp_alvo
+            _eftp_3m = _eftp_alvo
+
+            if abs(_a3) > 0.01:
+                _cz3_alvo = (_eftp_alvo - _a2*_cz2n - _a1*_cz1n - _intc) / _a3
+                _cz3_alvo = max(_cz3_alvo, _cz3n)
+            else:
+                _cz3_alvo = _cz3n * 1.10
+
+            _l4w = _ef[_ef["Data"] >= pd.Timestamp.now().normalize()-pd.Timedelta(weeks=4)]
+            _kj3 = float(_l4w["z3"].sum()/4) if len(_l4w) > 0 else 0
+            _kj2 = float(_l4w["z2"].sum()/4) if len(_l4w) > 0 else 0
+            _kj1 = float(_l4w["z1"].sum()/4) if len(_l4w) > 0 else 0
+
+            _kj3_sem_alvo = float(_cz3_alvo * 7)
+            _kj3_esta_sem = _kj3 + (_kj3_sem_alvo - _kj3) / 12.0
+            _kj3_esta_sem = max(0, _kj3_esta_sem)
+
+            _total_act = _kj3 + _kj2 + _kj1
+            _kj2_esta_sem = _kj2 * 1.05 if _total_act > 0 else _kj2
+            _kj1_esta_sem = _kj1 * 1.05 if _total_act > 0 else _kj1
+
+            _alpha_cache[_mv] = {
+                'ok': True,
+                'alpha_z3': _a3, 'alpha_z2': _a2, 'alpha_z1': _a1,
+                'r2': _r2,
+                'eftp_now': _eftp_now_v,
+                'cz3_now': _cz3n, 'cz2_now': _cz2n, 'cz1_now': _cz1n,
+                'kj_z3_semana_actual': _kj3,
+                'kj_z2_semana_actual': _kj2,
+                'kj_z1_semana_actual': _kj1,
+                'alvos': {'3m': {
+                    'eftp_proj': _eftp_3m,
+                    'delta_w': _eftp_3m - _eftp_now_v,
+                    'kj_z3_semana': _kj3_esta_sem,
+                    'kj_z2_semana': _kj2_esta_sem,
+                    'kj_z1_semana': _kj1_esta_sem,
+                    'kj_z3_sem_alvo': _kj3_sem_alvo,
+                    'cz3_alvo': _cz3_alvo,
+                }},
+            }
+        except Exception:
+            continue
+
+    return _alpha_cache if any(v.get('ok') for v in _alpha_cache.values()) else {}
+
+
+@st.cache_data(ttl=7200, show_spinner=False)
+def _calc_trimp_kj_startup(ac_full_pickle, wr_full_pickle):
+    """
+    dTRIMP/dKJ e eff_delta por modalidade.
+    Custo: ~300ms (groupby + ewm × 4 + regressão). Cacheado 2h.
+    """
+    import pickle, numpy as np
+    from scipy import stats as _sp_stats2
+    
+    ac_full = pickle.loads(ac_full_pickle)
+    wr_full = pickle.loads(wr_full_pickle)
+    
+    result = {}
+    try:
+        for _me in ['Bike','Row','Ski','Run']:
+            _s = ac_full[ac_full['type']==_me].copy()
+            if len(_s) < 5: continue
+            
+            _s['Data'] = pd.to_datetime(_s['Data']).dt.normalize()
+            _s = _s.sort_values('Data').drop_duplicates('Data').reset_index(drop=True)
+            
+            _s['trimp'] = (pd.to_numeric(_s.get('moving_time', 0), errors='coerce') / 60 *
+                          pd.to_numeric(_s.get('rpe', 0), errors='coerce'))
+            _s['kj'] = pd.to_numeric(_s.get('icu_joules', 0), errors='coerce') / 1000
+            _s = _s.dropna(subset=['trimp', 'kj'])
+            
+            if len(_s) < 10: continue
+            
+            _s['trimp_span'] = _s['trimp'].ewm(span=28, adjust=False).mean()
+            _s['kj_span'] = _s['kj'].ewm(span=28, adjust=False).mean()
+            _s['eff'] = _s['trimp_span'] / (_s['kj_span'] + 0.1)
+            
+            _x_vals = np.arange(len(_s), dtype=float)
+            _y_eff = _s['eff'].fillna(_s['eff'].mean()).values
+            _sl_eff, _int_eff, _r_eff, _, _ = _sp_stats2.linregress(_x_vals, _y_eff)
+            
+            eff_delta_14d = _sl_eff * 14
+            result[_me] = {
+                'eff_trend_14d': float(eff_delta_14d),
+                'eff_trend_pct': float(eff_delta_14d / max(_y_eff[-1], 0.01) * 100) if len(_y_eff) > 0 else 0,
+            }
+    except Exception:
+        pass
+    
+    return result
+
+
 def main():
     days_back, di, df_, mods_sel = render_sidebar()
 
@@ -63,264 +242,24 @@ def main():
     st.session_state['da_full']  = ac_full
     st.session_state['mods_sel'] = mods_sel
 
-    # ── Modelo M2: eFTP ~ α_Z3·CTLγ_Z3 + α_Z2·CTLγ_Z2 + α_Z1·CTLγ_Z1 ─────
-    # Calculado aqui no arranque para estar disponível na tab_visao_geral.
-    # Mesmo algoritmo do tab_eftp (γ calibrados por modalidade, τ individual).
-    # tab_eftp sobrescreve com versão mais precisa quando visitado.
+    # ✨ Usar funções cached ao invés de recalcular
+    import pickle
+    ac_full_pickle = pickle.dumps(ac_full)
+    wr_full_pickle = pickle.dumps(wc_full)
+    
     try:
-        import numpy as np
-        from scipy import stats as _sp_stats
-
-        _z1c = next((c for c in ["z1_kj","Z1KJ","z1kj"] if c in ac_full.columns), None)
-        _z2c = next((c for c in ["z2_kj","Z2KJ","z2kj"] if c in ac_full.columns), None)
-        _z3c = next((c for c in ["z3_kj","Z3KJ","z3kj"] if c in ac_full.columns), None)
-        _cm  = next((c for c in ["type","modality"] if c in ac_full.columns), None)
-        _ce  = next((c for c in ["icu_eftp","eFTP","eftp"] if c in ac_full.columns), None)
-        _cd  = next((c for c in ["date","Data"] if c in ac_full.columns), None)
-
-        if all([_z1c, _z2c, _z3c, _cm, _ce, _cd]):
-            # γ defaults calibrados nos dados do atleta (mesmo que tab_eftp)
-            _gmap = {"Bike":0.250, "Row":0.900, "Ski":0.600, "Run":0.900}
-            # Sobrescrever com γ do PMC se já disponível
-            _ld_info_app = st.session_state.get("ld_frac_info", {})
-            for _mi in ["Bike","Row","Ski","Run"]:
-                _g = _ld_info_app.get("mods",{}).get(_mi,{}).get("gamma_perf", None)
-                if _g is not None:
-                    _gmap[_mi] = _g
-
-            _alpha_cache = {}
-
-            def _zslope(series, n=14):
-                s = series.dropna().tail(n)
-                if len(s) < 5: return 0.0
-                sl, *_ = _sp_stats.linregress(np.arange(len(s), dtype=float),
-                                               s.values.astype(float))
-                return float(sl)
-
-            for _mv in ["Bike","Row","Ski","Run"]:
-                try:
-                    _ef = ac_full[ac_full[_cm]==_mv][[_cd,_ce,_z1c,_z2c,_z3c]].copy()
-                    _ef[_cd] = pd.to_datetime(_ef[_cd]).dt.normalize()
-                    _ef = (_ef.rename(columns={_cd:"Data",_ce:"eftp",
-                                               _z1c:"z1",_z2c:"z2",_z3c:"z3"})
-                             .sort_values("Data").drop_duplicates("Data").reset_index(drop=True))
-                    _ef = _ef.loc[:, ~_ef.columns.duplicated()]
-                    _ef[["eftp","z1","z2","z3"]] = _ef[["eftp","z1","z2","z3"]].apply(
-                        pd.to_numeric, errors="coerce")
-                    _ef = _ef.dropna(subset=["eftp"])
-                    _ef[["z1","z2","z3"]] = _ef[["z1","z2","z3"]].fillna(0)
-                    if len(_ef) < 10:
-                        _alpha_cache[_mv] = {'ok':False,'reason':f'{len(_ef)} sessões (<10)'}
-                        continue
-
-                    # τ por modalidade — interpolação entre 42d (γ=0) e 7d (γ=1)
-                    _gam  = _gmap[_mv]
-                    _span = int(round(max(42.0*(1.0-_gam) + 7.0*_gam, 7.0)))
-
-                    # CTLγ por zona (série diária → EWM)
-                    _dr = pd.date_range(_ef["Data"].min(),
-                                        pd.Timestamp.now().normalize(), freq="D")
-                    _ei = _ef.set_index("Data")
-                    # Kalman CTLγ — dias sem treino = ausência de observação (não fill=0)
-                    from utils.data import kalman_ctlg as _kctlg
-                    _cz1 = _kctlg(_ei["z1"].reindex(_dr).fillna(0), tau=float(_span))
-                    _cz2 = _kctlg(_ei["z2"].reindex(_dr).fillna(0), tau=float(_span))
-                    _cz3 = _kctlg(_ei["z3"].reindex(_dr).fillna(0), tau=float(_span))
-                    _ef["cz1"] = _ef["Data"].map(_cz1.to_dict())
-                    _ef["cz2"] = _ef["Data"].map(_cz2.to_dict())
-                    _ef["cz3"] = _ef["Data"].map(_cz3.to_dict())
-                    _ef = _ef.dropna(subset=["cz1","cz2","cz3"])
-                    if len(_ef) < 10:
-                        _alpha_cache[_mv] = {'ok':False,'reason':'insuficientes após CTLγ'}
-                        continue
-
-                    # OLS múltipla: eFTP ~ α_Z3·cz3 + α_Z2·cz2 + α_Z1·cz1 + intercept
-                    _X = np.column_stack([_ef["cz3"].values.astype(float),
-                                          _ef["cz2"].values.astype(float),
-                                          _ef["cz1"].values.astype(float),
-                                          np.ones(len(_ef))])
-                    _y = _ef["eftp"].values.astype(float)
-                    _coef, _, _, _ = np.linalg.lstsq(_X, _y, rcond=None)
-                    _a3,_a2,_a1,_intc = (float(_coef[0]),float(_coef[1]),
-                                          float(_coef[2]),float(_coef[3]))
-                    _yp = _X @ _coef
-                    _r2 = float(1 - np.sum((_y-_yp)**2) /
-                                max(np.sum((_y-_y.mean())**2), 1e-9))
-
-                    # Valores actuais e slopes
-                    _cz3n = float(_cz3.iloc[-1])
-                    _cz2n = float(_cz2.iloc[-1])
-                    _cz1n = float(_cz1.iloc[-1])
-                    _sl3  = _zslope(_cz3)
-                    _sl2  = _zslope(_cz2)
-                    _sl1  = _zslope(_cz1)
-                    _eftp_now_v = float(_ef["eftp"].iloc[-1])
-
-                    # ── Alvos por zona — distribuídos pelo prazo ────────────
-                    # Lógica:
-                    # 1. eFTP alvo 3m = eFTP actual + tendência (slope 14d × 90d)
-                    #    limitado a +15W máximo (realista para 3 meses)
-                    # 2. ΔeFTP necessário = eFTP_alvo - eFTP_actual
-                    # 3. ΔCTL_Z3 necessário = ΔeFTP / α_Z3
-                    # 4. CTLγ_Z3 alvo = CTLγ_Z3_actual + ΔCTL_Z3
-                    # 5. kJ_Z3/dia necessário ≈ CTLγ_Z3_alvo (estado estacionário EWM)
-                    # 6. Progressão semanal = rampa linear de actual → alvo em 12 semanas
-                    #    kJ_Z3_sem_esta_semana = actual + (alvo-actual) * semana/12
-
-                    # eFTP alvo realista (máximo +15W em 3m, ou tendência se menor)
-                    _delta_eftp_tendencia = _sl3 * 90 * _a3  # contribuição Z3
-                    _delta_eftp_alvo = min(max(_delta_eftp_tendencia, 5.0), 15.0)
-                    _eftp_alvo = _eftp_now_v + _delta_eftp_alvo
-                    _eftp_3m   = _eftp_alvo
-
-                    # CTLγ_Z3 necessário para atingir eFTP_alvo
-                    # eFTP = α_Z3*cz3 + α_Z2*cz2 + α_Z1*cz1 + intc
-                    # → cz3_alvo = (eFTP_alvo - α_Z2*cz2n - α_Z1*cz1n - intc) / α_Z3
-                    if abs(_a3) > 0.01:
-                        _cz3_alvo = (_eftp_alvo - _a2*_cz2n - _a1*_cz1n - _intc) / _a3
-                        _cz3_alvo = max(_cz3_alvo, _cz3n)  # nunca recuar
-                    else:
-                        _cz3_alvo = _cz3n * 1.10  # fallback +10%
-
-                    # kJ/sem actual (últimas 4 semanas)
-                    _l4w = _ef[_ef["Data"] >= pd.Timestamp.now().normalize()-pd.Timedelta(weeks=4)]
-                    _kj3 = float(_l4w["z3"].sum()/4) if len(_l4w) > 0 else 0
-                    _kj2 = float(_l4w["z2"].sum()/4) if len(_l4w) > 0 else 0
-                    _kj1 = float(_l4w["z1"].sum()/4) if len(_l4w) > 0 else 0
-
-                    # kJ/sem Z3 alvo (em regime estacionário EWM: CTLγ ≈ kJ/dia médio)
-                    # kJ/dia alvo = cz3_alvo → kJ/sem = cz3_alvo * 7
-                    _kj3_sem_alvo = float(_cz3_alvo * 7)
-
-                    # Progressão esta semana (semana 1 de 12)
-                    # Rampa linear: actual + (alvo-actual)/12 na semana 1
-                    _kj3_esta_sem = _kj3 + (_kj3_sem_alvo - _kj3) / 12.0
-                    _kj3_esta_sem = max(0, _kj3_esta_sem)
-
-                    # Z2 e Z1: manter proporção actual, escalar ligeiramente
-                    _total_act = _kj3 + _kj2 + _kj1
-                    _kj2_esta_sem = _kj2 * 1.05 if _total_act > 0 else _kj2
-                    _kj1_esta_sem = _kj1 * 1.05 if _total_act > 0 else _kj1
-
-                    _alpha_cache[_mv] = {
-                        'ok': True,
-                        'alpha_z3': _a3, 'alpha_z2': _a2, 'alpha_z1': _a1,
-                        'r2': _r2,
-                        'eftp_now': _eftp_now_v,
-                        'cz3_now': _cz3n, 'cz2_now': _cz2n, 'cz1_now': _cz1n,
-                        'kj_z3_semana_actual': _kj3,
-                        'kj_z2_semana_actual': _kj2,
-                        'kj_z1_semana_actual': _kj1,
-                        'alvos': {'3m': {
-                            'eftp_proj':       _eftp_3m,
-                            'delta_w':         _eftp_3m - _eftp_now_v,
-                            # kJ/sem ESTA semana (semana 1 de 12)
-                            'kj_z3_semana':    _kj3_esta_sem,
-                            'kj_z2_semana':    _kj2_esta_sem,
-                            'kj_z1_semana':    _kj1_esta_sem,
-                            # kJ/sem alvo final (semana 12)
-                            'kj_z3_sem_alvo':  _kj3_sem_alvo,
-                            # CTLγ necessário
-                            'cz3_alvo':        _cz3_alvo,
-                        }},
-                    }
-                except Exception:
-                    continue  # modalidade sem dados suficientes
-
-            if any(v.get('ok') for v in _alpha_cache.values()):
-                st.session_state['alpha_polar_cache'] = _alpha_cache
-
+        alpha_cache = _calc_alpha_polar_startup(ac_full_pickle)
+        if alpha_cache:
+            st.session_state['alpha_polar_cache'] = alpha_cache
     except Exception:
-        pass  # silencioso — tab_eftp M2 sobrescreve com versão mais precisa
-
-    # ── Calcular dTRIMP/dKJ e eff_delta por modalidade no arranque ──────────
-    # Dados: icu_training_load (TRIMP) + icu_joules (KJ) de ac_full
-    # Disponível para tab_visao_geral como contexto ao lado do alvo Z3
+        pass
+    
     try:
-        import numpy as np
-        from scipy import stats as _sp_stats2
-
-        _col_trimp = next((c for c in ['icu_training_load','trimp','session_rpe']
-                           if c in ac_full.columns), None)
-        _col_kj_eff = next((c for c in ['icu_joules','AllWorkFTP']
-                            if c in ac_full.columns), None)
-        _col_mod_eff = next((c for c in ['type','modality'] if c in ac_full.columns), None)
-        _col_dat_eff = next((c for c in ['date','Data'] if c in ac_full.columns), None)
-
-        if all([_col_trimp, _col_kj_eff, _col_mod_eff, _col_dat_eff]):
-            _eff_cache = {}
-
-            for _mv_e in ['Bike','Row','Ski','Run']:
-                try:
-                    _ef_e = ac_full[ac_full[_col_mod_eff]==_mv_e][
-                        [_col_dat_eff, _col_trimp, _col_kj_eff]].copy()
-                    _ef_e[_col_dat_eff] = pd.to_datetime(_ef_e[_col_dat_eff]).dt.normalize()
-                    _ef_e = _ef_e.rename(columns={
-                        _col_dat_eff: 'Data',
-                        _col_trimp:   'trimp',
-                        _col_kj_eff:  'kj',
-                    })
-                    _ef_e['trimp'] = pd.to_numeric(_ef_e['trimp'], errors='coerce')
-                    _ef_e['kj']    = pd.to_numeric(_ef_e['kj'],    errors='coerce')
-                    # kJ: converter de joules para kJ se necessário
-                    if _col_kj_eff == 'icu_joules':
-                        _ef_e['kj'] = _ef_e['kj'] / 1000.0
-                    _ef_e = (_ef_e.dropna(subset=['trimp','kj'])
-                              .query('kj > 0 and trimp > 0')
-                              .sort_values('Data').reset_index(drop=True))
-                    if len(_ef_e) < 10:
-                        continue
-
-                    # dTRIMP/dKJ — OLS: trimp ~ kj
-                    _sl_e, _int_e, _r_e, _, _ = _sp_stats2.linregress(
-                        _ef_e['kj'].values.astype(float),
-                        _ef_e['trimp'].values.astype(float))
-                    _dtrimp_dkj = float(_sl_e)
-
-                    # eff = trimp / kj por sessão
-                    _ef_e['eff'] = _ef_e['trimp'] / _ef_e['kj']
-                    # Últimos 28d vs baseline 56d
-                    _hoje_e = pd.Timestamp.now().normalize()
-                    _eff_roll = float(_ef_e[_ef_e['Data'] >= _hoje_e - pd.Timedelta(days=28)]['eff'].mean())
-                    _eff_base = float(_ef_e[_ef_e['Data'] >= _hoje_e - pd.Timedelta(days=84)]['eff'].mean())
-                    _eff_delta = float((_eff_roll / _eff_base) - 1) if _eff_base > 0 else 0.0
-
-                    # Interpretação
-                    if _dtrimp_dkj < 0.3:
-                        _eff_lbl = '🟢 Eficiente'
-                    elif _dtrimp_dkj < 0.5:
-                        _eff_lbl = '🟡 Normal'
-                    else:
-                        _eff_lbl = '🔴 Custo alto'
-
-                    if _eff_delta > 0.05:
-                        _eff_delta_lbl = '🟢 Melhorando'
-                    elif _eff_delta < -0.10:
-                        _eff_delta_lbl = '🔴 Deteriorando'
-                    else:
-                        _eff_delta_lbl = '🟡 Estável'
-
-                    _eff_cache[_mv_e] = {
-                        'dtrimp_dkj':      round(_dtrimp_dkj, 3),
-                        'dtrimp_lbl':      _eff_lbl,
-                        'eff_delta':       round(_eff_delta, 3),
-                        'eff_delta_lbl':   _eff_delta_lbl,
-                        'eff_roll':        round(_eff_roll, 3),
-                        'eff_base':        round(_eff_base, 3),
-                        'r2_trimp':        round(_r_e**2, 3),
-                        # Recomendação para Z3
-                        'aumentar_z3_ok':  (
-                            _dtrimp_dkj < 0.5 and    # custo não alto
-                            _eff_delta > -0.10        # eficiência não deteriorando
-                        ),
-                    }
-                except Exception:
-                    continue
-
-            if _eff_cache:
-                st.session_state['eff_kj_cache'] = _eff_cache
+        trimp_kj_info = _calc_trimp_kj_startup(ac_full_pickle, wr_full_pickle)
+        if trimp_kj_info:
+            st.session_state['trimp_kj_info'] = trimp_kj_info
     except Exception:
-        pass  # silencioso
+        pass  # silencioso — trimp_kj cacheado
 
     dw      = filtrar_datas(wc, di, df_)
     da      = filtrar_datas(ac, di, df_)
