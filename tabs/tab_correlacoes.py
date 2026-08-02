@@ -1,14 +1,13 @@
 """
-tab_correlacoes.py — VERSÃO CORRIGIDA v2
-Sem 'import *' dentro de funções
+tab_correlacoes.py — VERSÃO v3
+Filtragem mais permissiva para usar TODOS os dados disponíveis
 """
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from datetime import datetime, timedelta
+from datetime import datetime
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -33,79 +32,83 @@ def tab_correlacoes(da, dw):
         st.warning("Sem dados suficientes.")
         return
 
-    rpe_col   = next((c for c in ['rpe','RPE','icu_rpe'] if c in da.columns), None)
-    CICLICOS_T = ['Bike','Row','Run','Ski']
-    CORES_T  = {'Bike':'#e74c3c','Row':'#2980b9','Ski':'#8e44ad',
-                'Run':'#27ae60','WeightTraining':'#e67e22','Rest':'#7f8c8d'}
-    CORES_CAT = {'Leve':'#27ae60','Moderado':'#e67e22','Pesado':'#c0392b','Rest':'#7f8c8d'}
-    LAYOUT_BASE = dict(
-        paper_bgcolor='white', plot_bgcolor='white',
-        font=dict(color='#111111', size=13),
-        margin=dict(l=45, r=20, t=50, b=50))
-
-    # ── Helpers ──────────────────────────────────────────────────────────────
-    def _remove_outliers_iqr(series, factor=1.5):
-        """Remove outliers IQR 1.5x — retorna série com NaN nos extremos."""
-        s = pd.to_numeric(series, errors='coerce')
-        q1, q3 = s.quantile(0.25), s.quantile(0.75)
-        iqr = q3 - q1
-        mask = (s < q1 - factor*iqr) | (s > q3 + factor*iqr)
-        s[mask] = np.nan
-        return s
-
-    def _prep_dw_clean(dw_in, data_min='2020-01-01'):
-        """Wellness limpo: filtro 2020+, outliers IQR removidos."""
-        d = dw_in.copy()
-        d['Data'] = pd.to_datetime(d['Data']).dt.normalize()
-        d = d[d['Data'] >= pd.Timestamp(data_min)]
-        if 'hrv' in d.columns:
-            d['hrv'] = _remove_outliers_iqr(d['hrv'])
-        if 'rhr' in d.columns:
-            d['rhr'] = _remove_outliers_iqr(d['rhr'])
-        return d.dropna(subset=['hrv'])
-
     # ════════════════════════════════════════════════════════════════════════════════
-    # ANÁLISE PRINCIPAL
+    # PREPARAR DADOS — SEM FILTROS RIGOROSOS
     # ════════════════════════════════════════════════════════════════════════════════
     
-    st.subheader("📊 Matriz de Correlação")
+    dw_copy = dw.copy()
     
-    # Preparar dados
-    dw_clean = _prep_dw_clean(dw)
+    # Converter Data para datetime
+    if 'Data' in dw_copy.columns:
+        dw_copy['Data'] = pd.to_datetime(dw_copy['Data'], errors='coerce')
     
-    if len(dw_clean) < 10:
-        st.warning("⚠️ Dados insuficientes para correlação")
+    st.info(f"📊 Registos disponíveis: {len(dw_copy)}")
+    
+    # Seleccionar colunas numéricas (TODOS os dados)
+    numeric_cols = dw_copy.select_dtypes(include=[np.number]).columns.tolist()
+    
+    if not numeric_cols:
+        st.error("❌ Nenhuma coluna numérica encontrada")
         return
     
-    # Seleccionar colunas numéricas
-    numeric_cols = dw_clean.select_dtypes(include=[np.number]).columns
-    df_corr = dw_clean[numeric_cols].dropna()
+    st.info(f"📊 Colunas numéricas: {numeric_cols}")
     
-    if len(df_corr) < 5:
-        st.warning("⚠️ Dados insuficientes")
+    # Criar dataframe com dados numéricos
+    df_numeric = dw_copy[numeric_cols].copy()
+    
+    # Remover linhas com NaN (mas manter TODOS os dados disponíveis)
+    df_clean = df_numeric.dropna(how='all')  # Remove linhas COMPLETAMENTE vazias
+    
+    st.info(f"📊 Registos após limpeza: {len(df_clean)}")
+    
+    if len(df_clean) < 3:
+        st.error(f"❌ Dados insuficientes: apenas {len(df_clean)} registos")
+        st.write("Debug: Dataframe vazio?")
+        st.write(df_numeric.head())
         return
     
-    # Calcular correlação
-    corr_matrix = df_corr.corr()
+    # ════════════════════════════════════════════════════════════════════════════════
+    # MATRIZ DE CORRELAÇÃO
+    # ════════════════════════════════════════════════════════════════════════════════
     
-    # Plotar heatmap
-    fig = go.Figure(data=go.Heatmap(
-        z=corr_matrix.values,
-        x=corr_matrix.columns,
-        y=corr_matrix.columns,
-        colorscale='RdBu',
-        zmid=0,
-        zmin=-1, zmax=1,
-        colorbar=dict(title="Correlação")
-    ))
-    fig.update_layout(
-        title="Matriz de Correlação",
-        height=600,
-        **LAYOUT_BASE
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    try:
+        st.subheader("📊 Matriz de Correlação")
+        
+        # Calcular correlação (Pearson)
+        corr_matrix = df_clean.corr(method='pearson')
+        
+        st.success(f"✅ Correlação calculada: {corr_matrix.shape[0]}x{corr_matrix.shape[1]}")
+        
+        # Heatmap
+        fig = go.Figure(data=go.Heatmap(
+            z=corr_matrix.values,
+            x=corr_matrix.columns,
+            y=corr_matrix.columns,
+            colorscale='RdBu',
+            zmid=0,
+            zmin=-1, zmax=1,
+            colorbar=dict(title="Correlação"),
+            text=np.round(corr_matrix.values, 2),
+            texttemplate='%{text}',
+            textfont={"size": 8}
+        ))
+        fig.update_layout(
+            title="Matriz de Correlação (Pearson)",
+            height=700,
+            width=900,
+            xaxis_tickangle=45
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        
+    except Exception as e:
+        st.error(f"❌ Erro calcular correlação: {e}")
+        st.write(f"Dados: {df_clean.shape}")
+        return
     
-    # Mostrar correlações fortes
+    # ════════════════════════════════════════════════════════════════════════════════
+    # CORRELAÇÕES SIGNIFICATIVAS
+    # ════════════════════════════════════════════════════════════════════════════════
+    
     st.subheader("🔗 Correlações Significativas (|r| > 0.3)")
     
     correlations = []
@@ -116,23 +119,55 @@ def tab_correlacoes(da, dw):
                 correlations.append({
                     'Variável 1': corr_matrix.columns[i],
                     'Variável 2': corr_matrix.columns[j],
-                    'Correlação': f"{r:.3f}"
+                    'Correlação': f"{r:.3f}",
+                    'Tipo': 'Positiva' if r > 0 else 'Negativa'
                 })
     
     if correlations:
         df_sig = pd.DataFrame(correlations)
         st.dataframe(df_sig, use_container_width=True)
+        st.success(f"✅ {len(correlations)} correlações significativas encontradas")
     else:
-        st.info("ℹ️ Sem correlações fortes detectadas")
+        st.info("ℹ️ Sem correlações fortes detectadas (|r| > 0.3)")
     
-    # Export
+    # ════════════════════════════════════════════════════════════════════════════════
+    # ESTATÍSTICAS BÁSICAS
+    # ════════════════════════════════════════════════════════════════════════════════
+    
+    st.subheader("📈 Estatísticas Básicas")
+    
+    stats_df = pd.DataFrame({
+        'Variável': df_clean.columns,
+        'Média': df_clean.mean().values,
+        'Std': df_clean.std().values,
+        'Min': df_clean.min().values,
+        'Max': df_clean.max().values,
+        'Missing': df_clean.isnull().sum().values
+    })
+    
+    st.dataframe(stats_df, use_container_width=True)
+    
+    # ════════════════════════════════════════════════════════════════════════════════
+    # EXPORT
+    # ════════════════════════════════════════════════════════════════════════════════
+    
     st.markdown("---")
-    st.subheader("💾 Exportar Correlações")
+    st.subheader("💾 Exportar")
     
-    csv = corr_matrix.to_csv()
+    # Download correlação
+    csv_corr = corr_matrix.to_csv()
     st.download_button(
-        label="📥 Download Matriz CSV",
-        data=csv,
-        file_name=f"correlacoes_{datetime.now().strftime('%Y%m%d')}.csv",
+        label="📥 Download Matriz de Correlação (CSV)",
+        data=csv_corr,
+        file_name=f"correlacoes_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+        mime="text/csv"
+    )
+    
+    # Download estatísticas
+    csv_stats = stats_df.to_csv(index=False)
+    st.download_button(
+        label="📥 Download Estatísticas (CSV)",
+        data=csv_stats,
+        file_name=f"stats_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
         mime="text/csv"
     )
