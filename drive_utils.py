@@ -1,158 +1,168 @@
 """
-Google Drive Utils — com Fallback (sem PyDrive)
-Funciona mesmo que PyDrive não esteja instalado
+Google Drive Utils — usando googleapiclient (como antes)
+Compatível com Streamlit Cloud
 """
 
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-
-# Tentar importar PyDrive, se não existir, usar fallback
-try:
-    from pydrive.auth import GoogleAuth
-    from pydrive.drive import GoogleDrive
-    PYDRIVE_AVAILABLE = True
-except ImportError:
-    PYDRIVE_AVAILABLE = False
-    st.warning("⚠️ PyDrive não disponível. Modo offline.")
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+import io
 
 # ════════════════════════════════════════════════════════════════════════════════
-# GOOGLE DRIVE CONNECTION (com fallback)
+# CONFIG
+# ════════════════════════════════════════════════════════════════════════════════
+
+_DRIVE_SCOPES = [
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.file",
+]
+
+_FOLDER_NAME = "SQLite"  # Procurar pasta por nome
+
+# ════════════════════════════════════════════════════════════════════════════════
+# GOOGLE DRIVE CONNECTION
 # ════════════════════════════════════════════════════════════════════════════════
 
 @st.cache_resource
 def get_drive_connection():
-    """Tenta conectar ao Google Drive. Retorna None se PyDrive não disponível."""
-    
-    if not PYDRIVE_AVAILABLE:
-        st.warning("⚠️ PyDrive não instalado. Drive storage desactivado.")
-        return None
-    
+    """Conecta ao Google Drive via googleapiclient."""
     try:
-        gauth = GoogleAuth()
-        
-        # Tentar usar credentials do Streamlit secrets
-        try:
-            creds_dict = dict(st.secrets["GOOGLE_SERVICE_ACCOUNT"])
-            gauth.auth_method = 'service_account'
-            gauth.credentials = creds_dict
-        except:
-            st.warning("⚠️ Google credentials não encontradas em secrets.")
-            return None
-        
-        drive = GoogleDrive(gauth)
+        creds = Credentials.from_service_account_info(
+            dict(st.secrets["gcp_service_account"]), 
+            scopes=_DRIVE_SCOPES
+        )
+        drive = build("drive", "v3", credentials=creds)
         st.success("✅ Google Drive conectado")
         return drive
-        
     except Exception as e:
         st.warning(f"⚠️ Erro Google Drive: {e}")
         return None
 
 # ════════════════════════════════════════════════════════════════════════════════
-# UPLOAD (com fallback)
+# FIND FOLDER BY NAME
+# ════════════════════════════════════════════════════════════════════════════════
+
+def _find_folder_id(drive, folder_name):
+    """Procura pasta por nome no Google Drive."""
+    try:
+        results = drive.files().list(
+            q=f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false",
+            fields="files(id)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+        ).execute()
+        
+        folders = results.get("files", [])
+        return folders[0]["id"] if folders else None
+    except Exception:
+        return None
+
+# ════════════════════════════════════════════════════════════════════════════════
+# UPLOAD (para CSV)
 # ════════════════════════════════════════════════════════════════════════════════
 
 def upload_resultado_drive(dataframe, filename, folder_name="SQLite"):
-    """Upload ficheiro para Google Drive. Retorna None se falhar."""
-    
-    if not PYDRIVE_AVAILABLE:
-        st.warning("⚠️ PyDrive não disponível. Ficheiro NÃO foi guardado no Drive.")
-        return None
-    
+    """Upload CSV para Google Drive."""
     try:
         drive = get_drive_connection()
         if drive is None:
             return None
         
         # Procurar pasta
-        folder_list = drive.ListFile({'q': f"title='{folder_name}' and trashed=false"}).GetList()
-        
-        if not folder_list:
-            st.error(f"❌ Pasta '{folder_name}' não encontrada no Drive")
+        folder_id = _find_folder_id(drive, folder_name)
+        if not folder_id:
+            st.error(f"❌ Pasta '{folder_name}' não encontrada")
             return None
         
-        folder_id = folder_list[0]['id']
+        # Guardar CSV em memória
+        csv_buffer = io.StringIO()
+        dataframe.to_csv(csv_buffer, index=False)
+        csv_bytes = csv_buffer.getvalue().encode('utf-8')
         
-        # Guardar CSV temporariamente
-        csv_path = f"/tmp/{filename}"
-        dataframe.to_csv(csv_path, index=False)
+        # Upload
+        media = MediaFileUpload(
+            io.BytesIO(csv_bytes),
+            mimetype="text/csv",
+            resumable=True
+        )
         
-        # Upload para Google Drive
-        file = drive.CreateFile({'title': filename, 'parents': [{'id': folder_id}]})
-        file.SetContentFile(csv_path)
-        file.Upload()
+        file_metadata = {
+            'name': filename,
+            'parents': [folder_id]
+        }
+        
+        file = drive.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id'
+        ).execute()
         
         st.success(f"✅ Guardado: {filename}")
-        return file['id']
+        return file.get('id')
         
     except Exception as e:
         st.warning(f"⚠️ Erro ao guardar: {e}")
         return None
 
 # ════════════════════════════════════════════════════════════════════════════════
-# LIST RESULTS (com fallback)
+# LIST RESULTS
 # ════════════════════════════════════════════════════════════════════════════════
 
 def list_results_drive(folder_name="SQLite"):
-    """Lista ficheiros no Drive. Retorna lista vazia se falhar."""
-    
-    if not PYDRIVE_AVAILABLE:
-        return []
-    
+    """Lista ficheiros CSV na pasta do Drive."""
     try:
         drive = get_drive_connection()
         if drive is None:
             return []
         
-        folder_list = drive.ListFile({'q': f"title='{folder_name}' and trashed=false"}).GetList()
-        
-        if not folder_list:
+        folder_id = _find_folder_id(drive, folder_name)
+        if not folder_id:
             return []
         
-        folder_id = folder_list[0]['id']
+        results = drive.files().list(
+            q=f"'{folder_id}' in parents and mimeType='text/csv' and trashed=false",
+            fields="files(id, name, createdTime)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+        ).execute()
         
-        # Listar ficheiros na pasta
-        file_list = drive.ListFile({'q': f"'{folder_id}' in parents and trashed=false"}).GetList()
-        
-        results = []
-        for file in file_list:
-            if file['title'].endswith('.csv'):
-                results.append({
-                    'id': file['id'],
-                    'title': file['title'],
-                    'createdDate': file['createdDate']
-                })
-        
-        return results
+        files = results.get("files", [])
+        return [
+            {
+                'id': f['id'],
+                'title': f['name'],
+                'createdDate': f.get('createdTime', '')
+            }
+            for f in files
+        ]
         
     except Exception as e:
         st.warning(f"⚠️ Erro ao listar: {e}")
         return []
 
 # ════════════════════════════════════════════════════════════════════════════════
-# DOWNLOAD (com fallback)
+# DOWNLOAD
 # ════════════════════════════════════════════════════════════════════════════════
 
 def download_resultado_drive(file_id):
-    """Download ficheiro do Drive. Retorna None se falhar."""
-    
-    if not PYDRIVE_AVAILABLE:
-        st.warning("⚠️ PyDrive não disponível.")
-        return None
-    
+    """Download ficheiro do Drive."""
     try:
         drive = get_drive_connection()
         if drive is None:
             return None
         
-        file = drive.CreateFile({'id': file_id})
-        file.FetchMetadata()
+        # Download para memória
+        request = drive.files().get_media(fileId=file_id)
+        file_content = request.execute()
         
-        file_path = f"/tmp/{file['title']}"
-        file.GetContentFile(file_path)
+        # Ler como DataFrame
+        csv_buffer = io.BytesIO(file_content)
+        df = pd.read_csv(csv_buffer)
         
-        df = pd.read_csv(file_path)
-        st.success(f"✅ Carregado: {file['title']}")
+        st.success(f"✅ Carregado ficheiro")
         return df
         
     except Exception as e:
@@ -160,36 +170,8 @@ def download_resultado_drive(file_id):
         return None
 
 # ════════════════════════════════════════════════════════════════════════════════
-# FALLBACK FUNCTIONS (se PyDrive não disponível)
-# ════════════════════════════════════════════════════════════════════════════════
-
-def get_drive_connection_offline():
-    """Versão offline (retorna None)"""
-    return None
-
-def upload_resultado_drive_offline(dataframe, filename, folder_name="SQLite"):
-    """Versão offline (retorna None)"""
-    st.info("ℹ️ Drive storage desactivado. Instala PyDrive para activar.")
-    return None
-
-def list_results_drive_offline(folder_name="SQLite"):
-    """Versão offline (retorna lista vazia)"""
-    return []
-
-def download_resultado_drive_offline(file_id):
-    """Versão offline (retorna None)"""
-    return None
-
-# ════════════════════════════════════════════════════════════════════════════════
 # EXPORTS
 # ════════════════════════════════════════════════════════════════════════════════
-
-if not PYDRIVE_AVAILABLE:
-    # Se PyDrive não está disponível, usar fallback
-    get_drive_connection = get_drive_connection_offline
-    upload_resultado_drive = upload_resultado_drive_offline
-    list_results_drive = list_results_drive_offline
-    download_resultado_drive = download_resultado_drive_offline
 
 __all__ = [
     'get_drive_connection',
