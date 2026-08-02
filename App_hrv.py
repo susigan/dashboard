@@ -10,7 +10,7 @@ from datetime import datetime
 import sys, os
 
 # ════════════════════════════════════════════════════════════════════════════════
-# IMPORTS
+# IMPORTS — paths corretos
 # ════════════════════════════════════════════════════════════════════════════════
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -18,8 +18,13 @@ if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 
 try:
+    # Imports da raiz
     from Data_loader import carregar_wellness, carregar_atividades
     from drive_utils import upload_resultado_drive, list_results_drive, download_resultado_drive
+    
+    # Imports de utils/
+    from utils.config import CORES, CORES_ATIV, TYPE_MAP, VALID_TYPES
+    from utils.data import preproc_wellness, preproc_ativ
     
     # Tentar importar tabs se existirem
     try:
@@ -38,6 +43,8 @@ except ImportError as e:
     Ficheiros esperados:
     - Data_loader.py (raiz)
     - drive_utils.py (raiz)
+    - utils/config.py
+    - utils/data.py
     """)
     st.stop()
 
