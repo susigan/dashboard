@@ -1881,23 +1881,29 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             df_prog = pd.DataFrame(_rows_prog_display)
 
             # ── Deload / Taper detector ───────────────────────────────────
-            # baseline = mediana últimas 3 semanas com dados (KJ ou Horas)
+            # baseline = MÉDIA últimas 8 semanas (alinhado com _ref_kj)
             _sem_ini_det  = hoje_pf - pd.Timedelta(weeks=1)
-            _sem3_ini_det = hoje_pf - pd.Timedelta(weeks=4)
+            _inicio_semana_atual_det = hoje_pf - pd.Timedelta(days=hoje_pf.weekday())  # segunda
+            _fim_8w_det = _inicio_semana_atual_det - pd.Timedelta(days=1)  # domingo semana anterior
+            _inicio_8w_det = _fim_8w_det - pd.Timedelta(weeks=8) + pd.Timedelta(days=1)  # segunda de 8 semanas atrás
+            
             _kj_total_cur = 0.0
-            _kj_total_b3  = []
+            _kj_total_b8  = []  # Últimas 8 semanas
             for _m3 in ['Bike','Row','Ski','Run']:
                 _s3 = _pf[_pf['type'].apply(norm_tipo)==_m3].copy()
                 if len(_s3) == 0: continue
                 _s3['_ksem'] = _s3['Data'].dt.to_period('W')
                 _agg3 = _s3.groupby('_ksem')['_kj'].sum()
-                # Últimas 3 semanas completas (antes da actual)
-                _prev3 = _agg3[_agg3.index < _s3['Data'].max().to_period('W')].tail(3)
-                _kj_total_b3.extend(_prev3.values)
+                
+                # Últimas 8 semanas completas (antes da semana actual)
+                _prev8 = _agg3[(_agg3.index >= _inicio_8w_det.to_period('W')) & 
+                               (_agg3.index <= _fim_8w_det.to_period('W'))]
+                _kj_total_b8.extend(_prev8.values)
+                
                 # Semana actual desta modalidade
                 _kj_total_cur += float(_s3[_s3['Data'] >= sem_ini_pf]['_kj'].sum())
 
-            _kj_b3_mean = float(np.mean(_kj_total_b3)) if _kj_total_b3 else 0.0
+            _kj_b3_mean = float(np.mean(_kj_total_b8)) if _kj_total_b8 else 0.0  # Renomeado mas agora é 8 semanas
 
             # ── Semana anterior KJ (para guard início de semana) ──────────
             _sem_ant_ini_det = sem_ini_pf - pd.Timedelta(weeks=1)
