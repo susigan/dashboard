@@ -55,7 +55,7 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("💾 Google Drive Storage")
 
 with st.sidebar.expander("📂 Histórico de resultados", expanded=False):
-    results = list_results_drive()
+    results = list_results_drive(folder_name="SQLite")
     if results:
         st.write(f"✅ {len(results)} resultados salvos")
         selected = st.selectbox(
@@ -101,7 +101,7 @@ with tabs[0]:
                 df_export = pd.DataFrame(results.get('runner_results', []))
                 
                 with st.spinner("A guardar no Drive..."):
-                    file_id = upload_resultado_drive(df_export, filename=filename)
+                    file_id = upload_resultado_drive(df_export, filename=filename, folder_name="SQLite")
                 
                 if file_id:
                     st.success(f"✅ Guardado: {filename}")
