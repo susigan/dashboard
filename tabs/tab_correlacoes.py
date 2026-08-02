@@ -1,32 +1,30 @@
 """
-tab_correlacoes.py — VERSÃO CORRIGIDA
-Imports movidos para DENTRO da função para evitar erro de carregamento
+tab_correlacoes.py — VERSÃO CORRIGIDA v2
+Sem 'import *' dentro de funções
 """
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from datetime import datetime, timedelta
+import warnings
+warnings.filterwarnings('ignore')
+
+# Imports utils — com try/except para evitar erro
+try:
+    from utils.config import CORES, CORES_ATIV, TYPE_MAP, VALID_TYPES
+except:
+    pass
+
+try:
+    from utils.data import preproc_wellness, preproc_ativ
+except:
+    pass
 
 def tab_correlacoes(da, dw):
     """Análise de correlações & impacto"""
-    
-    # Lazy imports — só carregam quando a função é chamada
-    import streamlit as st
-    import pandas as pd
-    import numpy as np
-    import plotly.graph_objects as go
-    from plotly.subplots import make_subplots
-    from datetime import datetime, timedelta
-    import warnings
-    warnings.filterwarnings('ignore')
-    
-    try:
-        from utils.config import *
-        from utils.helpers import *
-        from utils.data import *
-    except Exception as e:
-        st.error(f"❌ Erro imports utils: {e}")
-        return
-    
-    # ════════════════════════════════════════════════════════════════════════════════
-    # FUNÇÃO PRINCIPAL
-    # ════════════════════════════════════════════════════════════════════════════════
     
     st.header("🧠 Correlações & Impacto")
     st.caption("Análise sobre todo o histórico disponível — independente do filtro de período do sidebar.")
@@ -37,7 +35,6 @@ def tab_correlacoes(da, dw):
 
     rpe_col   = next((c for c in ['rpe','RPE','icu_rpe'] if c in da.columns), None)
     CICLICOS_T = ['Bike','Row','Run','Ski']
-    # Cores fortes para boa visibilidade mobile
     CORES_T  = {'Bike':'#e74c3c','Row':'#2980b9','Ski':'#8e44ad',
                 'Run':'#27ae60','WeightTraining':'#e67e22','Rest':'#7f8c8d'}
     CORES_CAT = {'Leve':'#27ae60','Moderado':'#e67e22','Pesado':'#c0392b','Rest':'#7f8c8d'}
@@ -127,3 +124,15 @@ def tab_correlacoes(da, dw):
         st.dataframe(df_sig, use_container_width=True)
     else:
         st.info("ℹ️ Sem correlações fortes detectadas")
+    
+    # Export
+    st.markdown("---")
+    st.subheader("💾 Exportar Correlações")
+    
+    csv = corr_matrix.to_csv()
+    st.download_button(
+        label="📥 Download Matriz CSV",
+        data=csv,
+        file_name=f"correlacoes_{datetime.now().strftime('%Y%m%d')}.csv",
+        mime="text/csv"
+    )
