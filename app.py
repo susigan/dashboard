@@ -23,7 +23,7 @@ from tabs.tab_pmc          import tab_pmc
 from tabs.tab_volume       import tab_volume
 from tabs.tab_eftp         import tab_eftp
 from tabs.tab_zones        import tab_zones
-from tabs.tab_correlacoes  import tab_correlacoes
+# ❌ REMOVIDO: tab_correlacoes agora em app_hrv.py (app independente)
 from tabs.tab_recovery     import tab_recovery
 from tabs.tab_wellness     import tab_wellness
 from tabs.tab_analises     import tab_analises
@@ -33,7 +33,7 @@ from tabs.tab_padrao       import tab_padrao
 from tabs.tab_ctl_kj       import tab_ctl_kj
 from tabs.tab_cp_model     import tab_cp_model
 from tabs.tab_fmt_tensor   import tab_fmt_tensor
-from tabs.tab_hrv_analyzer import tab_hrv_analyzer
+# ❌ REMOVIDO: tab_hrv_analyzer agora em app_hrv.py (app independente)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -286,30 +286,29 @@ def main():
                 st.dataframe(wr2[cw].sort_values('Data', ascending=False).head(5), hide_index=True)
 
     (tab1, tab2, tab3, tab4, tab5, tab6, tab7,
-     tab8, tab9, tab10, tab11, tab12, tab13, tab14,
-     tab15, tab16) = st.tabs([
+     tab8, tab9, tab10, tab11, tab12, tab13, tab14) = st.tabs([
         "📊 Visão Geral", "📈 PMC",        "📦 Volume",     "⚡ eFTP",
-        "❤️ HR & RPE",   "🧠 Correlações", "🔋 Recovery",   "🧘 Wellness",
+        "❤️ HR & RPE",   "🔋 Recovery",   "🧘 Wellness",
         "🔬 Análises",   "🌡️ Aquecimento", "🧬 Corporal",   "🔄 Padrão",
-        "⚗️ CTL vs KJ",  "🏁 CP Model",    "📐 FMT Tensor", "🫀 HRV Analyzer",
+        "⚗️ CTL vs KJ",  "🏁 CP Model",    "📐 FMT Tensor",
     ])
+    # ❌ REMOVIDAS: 🧠 Correlações, 🫀 HRV Analyzer (agora em app_hrv.py)
 
     with tab1:  tab_visao_geral(dw, da_filt, di, df_, da_full=ac_full, wc_full=wc_full, dc=dc)
     with tab2:  tab_pmc(ac_full, wc=wc_full)
     with tab3:  tab_volume(da_filt, dw)
     with tab4:  tab_eftp(da_filt, mods_sel, ac_full, wc_full=wc_full)
     with tab5:  tab_zones(da_filt, mods_sel)
-    with tab6:  tab_correlacoes(ac_full, wc_full)
-    with tab7:  tab_recovery(dw, da, wc_full=wc_full, da_full=ac_full)
-    with tab8:  tab_wellness(dw, wc_full=wc_full)
-    with tab9:  tab_analises(ac_full, dw, dfs_annual, df_annual)
-    with tab10: tab_aquecimento(dfs_annual, df_annual, di)
-    with tab11: tab_corporal(dc, ac_full, wc=wc_full)
-    with tab12: tab_padrao(ac_full, wc_full)
-    with tab13: tab_ctl_kj(ac_full)
-    with tab14: tab_cp_model(ac_full=ac_full)
-    with tab15: tab_fmt_tensor(ac_full, wc=wc_full)
-    with tab16: tab_hrv_analyzer(dw, da, wc_full=wc_full, da_full=ac_full)
+    with tab6:  tab_recovery(dw, da, wc_full=wc_full, da_full=ac_full)
+    with tab7:  tab_wellness(dw, wc_full=wc_full)
+    with tab8:  tab_analises(ac_full, dw, dfs_annual, df_annual)
+    with tab9:  tab_aquecimento(dfs_annual, df_annual, di)
+    with tab10: tab_corporal(dc, ac_full, wc=wc_full)
+    with tab11: tab_padrao(ac_full, wc_full)
+    with tab12: tab_ctl_kj(ac_full)
+    with tab13: tab_cp_model(ac_full=ac_full)
+    with tab14: tab_fmt_tensor(ac_full, wc=wc_full)
+    # ❌ REMOVIDAS: tab_correlacoes, tab_hrv_analyzer (agora em app_hrv.py)
 
 
 if __name__ == "__main__":
