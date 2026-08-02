@@ -8,10 +8,10 @@ from gspread_dataframe import get_as_dataframe
 from google.oauth2.service_account import Credentials
 from datetime import datetime, timedelta
 
-from config import (WELLNESS_URL, TRAINING_URL, SCOPES,
+from utils.config import (WELLNESS_URL, TRAINING_URL, SCOPES,
                     MAPA_WELLNESS, MAPA_TRAINING, VALID_TYPES, TYPE_MAP,
                     ANNUAL_SPREADSHEET_ID, ANNUAL_SHEETS)
-from utils.helpers import (detectar_col, br_float, parse_date, norm_tipo,
+from utils.data import (detectar_col, br_float, parse_date, norm_tipo,
                             remove_zscore, remove_zeros, fill_missing)
 
 def get_gc():
