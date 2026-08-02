@@ -1,0 +1,117 @@
+"""
+Google Drive Utils — Upload/Download resultados HRV
+"""
+import os
+import tempfile
+import json
+import pandas as pd
+import streamlit as st
+from pydrive.auth import GoogleAuth
+from pydrive.drive import GoogleDrive
+
+@st.cache_resource
+def get_drive_connection():
+    """Conexão autenticada ao Google Drive via service account"""
+    try:
+        creds_json = st.secrets.get("GOOGLE_SERVICE_ACCOUNT")
+        if not creds_json:
+            return None
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(creds_json, f)
+            temp_path = f.name
+        
+        gauth = GoogleAuth()
+        gauth.auth_method = 'service_account'
+        gauth.ServiceAccountLogin(temp_path)
+        drive = GoogleDrive(gauth)
+        os.unlink(temp_path)
+        return drive
+    except Exception as e:
+        st.error(f"❌ Erro conectando Drive: {e}")
+        return None
+
+def upload_resultado_drive(dataframe, filename, folder_name="ATHELTICA_HRV_Results"):
+    """Salva DataFrame em CSV no Google Drive"""
+    drive = get_drive_connection()
+    if not drive:
+        return None
+    
+    try:
+        # 1. Encontrar/criar pasta
+        folder_query = f"title='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+        folder_list = drive.ListFile({'q': folder_query}).GetList()
+        
+        if len(folder_list) > 0:
+            folder_id = folder_list[0]['id']
+        else:
+            folder_metadata = {'title': folder_name, 'mimeType': 'application/vnd.google-apps.folder'}
+            folder = drive.CreateFile(folder_metadata)
+            folder.Upload()
+            folder_id = folder['id']
+        
+        # 2. Salvar CSV temporário
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+            dataframe.to_csv(f.name, index=False, sep=';', decimal=',')
+            temp_csv = f.name
+        
+        # 3. Enviar para Drive
+        file_metadata = {
+            'title': filename,
+            'parents': [{'id': folder_id}],
+            'description': 'ATHELTICA HRV analysis result'
+        }
+        drive_file = drive.CreateFile(file_metadata)
+        drive_file.SetContentFile(temp_csv)
+        drive_file.Upload()
+        
+        file_id = drive_file['id']
+        os.unlink(temp_csv)
+        return file_id
+    
+    except Exception as e:
+        st.error(f"❌ Erro upload: {e}")
+        return None
+
+def list_results_drive(folder_name="ATHELTICA_HRV_Results"):
+    """Lista resultados salvos no Drive"""
+    drive = get_drive_connection()
+    if not drive:
+        return []
+    
+    try:
+        folder_query = f"title='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+        folder_list = drive.ListFile({'q': folder_query}).GetList()
+        
+        if len(folder_list) == 0:
+            return []
+        
+        folder_id = folder_list[0]['id']
+        file_query = f"'{folder_id}' in parents and trashed=false"
+        file_list = drive.ListFile({'q': file_query}).GetList()
+        
+        return sorted(file_list, key=lambda x: x['createdDate'], reverse=True)
+    
+    except Exception:
+        return []
+
+def download_resultado_drive(file_id):
+    """Baixa DataFrame do Drive"""
+    drive = get_drive_connection()
+    if not drive:
+        return None
+    
+    try:
+        with tempfile.NamedTemporaryFile(suffix='.csv', delete=False) as f:
+            temp_csv = f.name
+        
+        drive_file = drive.CreateFile({'id': file_id})
+        drive_file.GetContentFile(temp_csv)
+        
+        df = pd.read_csv(temp_csv, sep=';', decimal=',')
+        os.unlink(temp_csv)
+        return df
+    
+    except Exception as e:
+        st.error(f"❌ Erro download: {e}")
+        return None
