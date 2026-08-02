@@ -31,7 +31,7 @@ def get_drive_connection():
         st.error(f"❌ Erro conectando Drive: {e}")
         return None
 
-def upload_resultado_drive(dataframe, filename, folder_name="ATHELTICA_HRV_Results"):
+def upload_resultado_drive(dataframe, filename, folder_name="SQLite"):
     """Salva DataFrame em CSV no Google Drive"""
     drive = get_drive_connection()
     if not drive:
