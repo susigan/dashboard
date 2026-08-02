@@ -1192,7 +1192,7 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
                     structs = [f"Contínuo {round(d)}min"]
                 return "  /  ".join(structs)
 
-            # ── Histórico ─────────────────────────────────────────────────
+            # ── Histórico — BASELINE: últimas 8 semanas (média simples) ────────
             _ref_kj = _ref_dur = _ref_pwr = None
             _eff_delta = 0.0
             _kjh_ref = _kjh_baseline = None
@@ -1204,46 +1204,87 @@ def tab_visao_geral(dw, da, di, df_, da_full=None, wc_full=None, dc=None):
             if df_hist is not None and len(df_hist) >= 2:
                 _df_mod = df_hist[df_hist["type"].apply(norm_tipo) == mod].copy()
                 if len(_df_mod) > 0:
-                    _has_zona = "z3_kj" in _df_mod.columns and "z2_kj" in _df_mod.columns
-                    if _has_zona:
-                        _z3n = pd.to_numeric(_df_mod["z3_kj"], errors="coerce").fillna(0)
-                        _z2n = pd.to_numeric(_df_mod["z2_kj"], errors="coerce").fillna(0)
-                        _tot = pd.to_numeric(_df_mod["_kj"], errors="coerce").replace(0,np.nan).fillna(1)
-                        _df_mod["_zona_dom"] = "Z1"
-                        _df_mod.loc[_z2n/_tot > 0.30, "_zona_dom"] = "Z2"
-                        _df_mod.loc[_z3n/_tot > 0.20, "_zona_dom"] = "Z3"
-                        _df_mod.loc[(_z3n==0)&(_z2n==0), "_zona_dom"] = None
-                    else:
-                        _df_mod["_zona_dom"] = None
-                    _df_mod["_rpe_n_num"] = pd.to_numeric(_df_mod["_rpe_n"], errors="coerce")
-                    _df_mod["_match_rpe"]  = _df_mod["_rpe_n_num"].between(5,10).astype(float)
-                    _df_mod["_match_zona"] = (_df_mod["_zona_dom"]=="Z3").astype(float)*0.5
-                    _nt = len(_df_mod)
-                    _df_mod["_recency"] = (np.arange(_nt)/max(_nt-1,1))*0.2
-                    _df_mod["_score"]   = _df_mod["_match_rpe"]+_df_mod["_match_zona"]+_df_mod["_recency"]
-                    _pool = _df_mod[_df_mod["_match_rpe"] >= 1.0].copy()
-                    _dh   = _pool.sort_values("_score", ascending=False).head(5)
-                    if len(_dh) >= 2:
-                        _ref_kj  = float(_dh["_kj"].median())
-                        _ref_dur = float(_dh["_dur_min"].median())
-                        if "z3_pwr" in _dh.columns:
-                            _zp = pd.to_numeric(_dh["z3_pwr"], errors="coerce").replace(0,np.nan)
+                    # ── BASELINE: últimas 8 semanas ANTERIORES (sem semana actual) ────
+                    # Semana actual = segunda até hoje
+                    _hoje = pd.Timestamp.now().normalize()
+                    _inicio_semana_atual = _hoje - pd.Timedelta(days=_hoje.weekday())  # segunda-feira
+                    
+                    # 8 semanas anteriores: início = 8 semanas antes de segunda-feira desta semana
+                    _fim_8w = _inicio_semana_atual - pd.Timedelta(days=1)  # domingo da semana anterior
+                    _inicio_8w = _fim_8w - pd.Timedelta(weeks=8) + pd.Timedelta(days=1)  # segunda de 8 semanas atrás
+                    
+                    _df_8w = _df_mod[(_df_mod['Data'] >= _inicio_8w) & (_df_mod['Data'] <= _fim_8w)].copy()
+                    
+                    if len(_df_8w) > 0:
+                        # Agrupar por semana e somar KJ
+                        _df_8w['_week'] = _df_8w['Data'].dt.to_period('W')
+                        _weekly_kj = pd.to_numeric(_df_8w['_kj'], errors='coerce').fillna(0)
+                        _weekly_kj_byweek = _df_8w.groupby('_week')['_kj'].apply(
+                            lambda x: pd.to_numeric(x, errors='coerce').fillna(0).sum()
+                        )
+                        
+                        # MÉDIA simples das semanas com dados
+                        _weeks_com_dados = _weekly_kj_byweek[_weekly_kj_byweek > 0]
+                        if len(_weeks_com_dados) > 0:
+                            _ref_kj = float(_weeks_com_dados.mean())
+                        
+                        # Também calcular duração média (para referência de sessão)
+                        _dur_8w = pd.to_numeric(_df_8w['_dur_min'], errors='coerce').fillna(0)
+                        if _dur_8w.sum() > 0:
+                            _ref_dur = float(_dur_8w[_dur_8w > 0].mean())
+                        
+                        # Z3 power (se disponível)
+                        if "z3_pwr" in _df_8w.columns:
+                            _zp = pd.to_numeric(_df_8w['z3_pwr'], errors='coerce').replace(0, np.nan)
                             _ref_pwr = float(_zp.median()) if _zp.notna().any() else None
-                        _pool2 = _pool.copy()
-                        _kj_w  = pd.to_numeric(_pool2["_kj"], errors="coerce").replace(0,np.nan)
-                        _trimp = (pd.to_numeric(_pool2["_dur_min"], errors="coerce") *
-                                  pd.to_numeric(_pool2["_rpe_n"],   errors="coerce"))
-                        _pool2["_eff"] = _trimp / _kj_w
-                        _eff_bl  = float(_pool2["_eff"].median()) if _pool2["_eff"].notna().any() else None
-                        _cut8w   = pd.Timestamp.now() - pd.Timedelta(weeks=8)
-                        _prec    = _pool2[_pool2["Data"] >= _cut8w]
-                        _eff_rec = float(_prec["_eff"].median()) if (len(_prec)>=2 and _prec["_eff"].notna().any()) else None
-                        if _eff_bl and _eff_rec and _eff_bl > 0:
-                            _eff_delta = (_eff_rec/_eff_bl) - 1.0
-                        _pool2["_kjh"] = (pd.to_numeric(_pool2["_kj"], errors="coerce") /
-                                          (pd.to_numeric(_pool2["_dur_min"], errors="coerce")/60))
-                        _kjh_baseline = float(_pool2["_kjh"].median()) if _pool2["_kjh"].notna().any() else None
-                        _kjh_ref = (_ref_kj/(_ref_dur/60)) if (_ref_kj and _ref_dur and _ref_dur>0) else None
+                        
+                        # Eficiência (TRIMP/KJ)
+                        _kj_pool = pd.to_numeric(_df_8w['_kj'], errors='coerce').replace(0, np.nan)
+                        _trimp_pool = (pd.to_numeric(_df_8w['_dur_min'], errors='coerce') *
+                                      pd.to_numeric(_df_8w['_rpe_n'], errors='coerce'))
+                        _eff_baseline = (_trimp_pool / _kj_pool)
+                        _eff_bl = float(_eff_baseline[_eff_baseline.notna()].median()) if _eff_baseline.notna().any() else None
+                        
+                        # Eficiência recente (últimas 2 semanas dentro das 8)
+                        _cut_recent = _fim_8w - pd.Timedelta(weeks=2)
+                        _df_recent = _df_8w[_df_8w['Data'] >= _cut_recent]
+                        if len(_df_recent) > 0:
+                            _trimp_rec = (pd.to_numeric(_df_recent['_dur_min'], errors='coerce') *
+                                         pd.to_numeric(_df_recent['_rpe_n'], errors='coerce'))
+                            _kj_rec = pd.to_numeric(_df_recent['_kj'], errors='coerce').replace(0, np.nan)
+                            _eff_rec = (_trimp_rec / _kj_rec)
+                            _eff_rec_val = float(_eff_rec[_eff_rec.notna()].median()) if _eff_rec.notna().any() else None
+                            if _eff_bl and _eff_rec_val and _eff_bl > 0:
+                                _eff_delta = (_eff_rec_val / _eff_bl) - 1.0
+                        
+                        # KJ/hora baseline
+                        if _ref_kj and _ref_dur and _ref_dur > 0:
+                            _kjh_baseline = _ref_kj / (_ref_dur / 60)
+                            _kjh_ref = _ref_kj / (_ref_dur / 60)  # mesma coisa para sessão ref
+                    
+                    # Se sem dados nas 8 semanas, usar fallback com rato semanal
+                    if _ref_kj is None or _ref_kj == 0:
+                        _has_zona = "z3_kj" in _df_mod.columns and "z2_kj" in _df_mod.columns
+                        if _has_zona:
+                            _z3n = pd.to_numeric(_df_mod["z3_kj"], errors="coerce").fillna(0)
+                            _z2n = pd.to_numeric(_df_mod["z2_kj"], errors="coerce").fillna(0)
+                            _tot = pd.to_numeric(_df_mod["_kj"], errors="coerce").replace(0,np.nan).fillna(1)
+                            _df_mod["_zona_dom"] = "Z1"
+                            _df_mod.loc[_z2n/_tot > 0.30, "_zona_dom"] = "Z2"
+                            _df_mod.loc[_z3n/_tot > 0.20, "_zona_dom"] = "Z3"
+                            _df_mod.loc[(_z3n==0)&(_z2n==0), "_zona_dom"] = None
+                        else:
+                            _df_mod["_zona_dom"] = None
+                        
+                        # Fallback: últimas 5 sesssões (sem peso de recency)
+                        _df_mod_clean = _df_mod[_df_mod['_kj'].notna() & (_df_mod['_kj'] > 0)].copy()
+                        if len(_df_mod_clean) >= 2:
+                            _recent_5 = _df_mod_clean.nlargest(5, 'Data')  # Últimas 5 por data, não por score
+                            _ref_kj = float(_recent_5['_kj'].mean())  # MÉDIA, não mediana
+                            _ref_dur = float(_recent_5['_dur_min'].mean())
+                            if "z3_pwr" in _recent_5.columns:
+                                _zp = pd.to_numeric(_recent_5['z3_pwr'], errors='coerce').replace(0, np.nan)
+                                _ref_pwr = float(_zp.median()) if _zp.notna().any() else None
 
             # ── pwr_inc ────────────────────────────────────────────────────
             pwr_inc = pwr_inc_base
