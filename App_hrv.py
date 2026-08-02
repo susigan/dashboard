@@ -9,12 +9,60 @@ import pandas as pd
 from datetime import datetime
 import sys, os
 
-sys.path.insert(0, os.path.dirname(__file__))
+# ════════════════════════════════════════════════════════════════════════════════
+# IMPORTS — procurar ficheiros no diretório correto
+# ════════════════════════════════════════════════════════════════════════════════
 
-from Data_loader import carregar_wellness, carregar_atividades, carregar_annual
-from tab_hrv_analyzer import tab_hrv_analyzer
-from tab_correlacoes import tab_correlacoes
-from drive_utils import upload_resultado_drive, list_results_drive, download_resultado_drive
+# Adicionar o diretório atual ao path
+script_dir = os.path.dirname(os.path.abspath(__file__))
+if script_dir not in sys.path:
+    sys.path.insert(0, script_dir)
+
+# CRÍTICO: verificar se ficheiros necessários existem
+required_files = [
+    'Data_loader.py',
+    'data.py', 
+    'config.py',
+    'tabs/tab_hrv_analyzer.py',
+    'tabs/tab_correlacoes.py',
+    'drive_utils.py'
+]
+
+missing_files = [f for f in required_files if not os.path.exists(os.path.join(script_dir, f))]
+
+if missing_files:
+    st.error(f"""
+    ❌ **ERRO: Ficheiros ausentes!**
+    
+    Faltam os seguintes ficheiros no diretório:
+    {', '.join(missing_files)}
+    
+    **Solução:**
+    1. Copia todos os ficheiros originais de dashboard para aqui
+    2. Ou coloca-os na pasta correta
+    
+    Diretório esperado: {script_dir}
+    """)
+    st.stop()
+
+# Agora fazer os imports
+try:
+    from Data_loader import carregar_wellness, carregar_atividades, carregar_annual
+    from tabs.tab_hrv_analyzer import tab_hrv_analyzer
+    from tabs.tab_correlacoes import tab_correlacoes
+    from drive_utils import upload_resultado_drive, list_results_drive, download_resultado_drive
+except ImportError as e:
+    st.error(f"""
+    ❌ **ERRO DE IMPORT:**
+    
+    {str(e)}
+    
+    **Verificar:**
+    1. Todos os ficheiros estão no diretório?
+    2. Nomes dos ficheiros estão corretos?
+    3. Pasta 'tabs/' existe?
+    """)
+    st.stop()
 
 # ════════════════════════════════════════════════════════════════════════════════
 # CONFIG
