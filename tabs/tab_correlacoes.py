@@ -14,6 +14,18 @@ sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))
 
 warnings.filterwarnings('ignore')
 
+
+def _safe_polyfit_wrapper(x_vals, y_vals, deg):
+    """Polyfit seguro que retorna None se falhar"""
+    try:
+        x_clean = pd.to_numeric(x_vals, errors='coerce').dropna()
+        y_clean = pd.to_numeric(y_vals, errors='coerce').dropna()
+        if len(x_clean) < deg+1:
+            return None
+        return np.polyfit(x_clean, y_clean, deg)
+    except:
+        return None
+
 def tab_correlacoes(da, dw):
     st.header("🧠 Correlações & Impacto")
     st.caption("Análise sobre todo o histórico disponível — independente do filtro de período do sidebar.")
@@ -503,10 +515,10 @@ def tab_correlacoes(da, dw):
             if len(m_cl) >= 3:
                 r_val, _ = pearsonr(m_cl['rpe_avg'].astype(float),
                                     m_cl['hrv'].astype(float))
-                xr = np.linspace(float(m_cl['rpe_avg'].min()),
-                                 float(m_cl['rpe_avg'].max()), 50)
-                z  = np.polyfit(m_cl['rpe_avg'].astype(float),
-                                m_cl['hrv'].astype(float), 1)
+                xr = np.linspace(float(pd.to_numeric(m_cl['rpe_avg'], errors='coerce').min()),
+                                 float(pd.to_numeric(m_cl['rpe_avg'], errors='coerce').max()), 50)
+                z  = _safe_polyfit_wrapper(m_cl['rpe_avg'].astype(float), m_cl['hrv'].astype(float), 1)
+                if z is None: z = [0, 0]  # fallback
                 fig_sc1 = go.Figure()
                 fig_sc1.add_trace(go.Scatter(
                     x=m_cl['rpe_avg'].tolist(), y=m_cl['hrv'].tolist(),
@@ -530,8 +542,9 @@ def tab_correlacoes(da, dw):
             dw3 = dw[['hrv','rhr']].dropna()
             if len(dw3) >= 5:
                 r2   = float(dw3['hrv'].astype(float).corr(dw3['rhr'].astype(float)))
-                xr2  = np.linspace(float(dw3['hrv'].min()), float(dw3['hrv'].max()), 50)
-                z2   = np.polyfit(dw3['hrv'].astype(float), dw3['rhr'].astype(float), 1)
+                xr2  = np.linspace(float(pd.to_numeric(dw3['hrv'], errors='coerce').min()), float(pd.to_numeric(dw3['hrv'], errors='coerce').max()), 50)
+                z2   = _safe_polyfit_wrapper(dw3['hrv'].astype(float), dw3['rhr'].astype(float), 1)
+                if z2 is None: z2 = [0, 0]  # fallback
                 fig_sc2 = go.Figure()
                 fig_sc2.add_trace(go.Scatter(
                     x=dw3['hrv'].tolist(), y=dw3['rhr'].tolist(),
