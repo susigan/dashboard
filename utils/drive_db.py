@@ -9,6 +9,7 @@ import traceback
 from datetime import datetime
 from google.oauth2.service_account import Credentials
 import gspread
+import json
 from gspread.exceptions import WorksheetNotFound
 
 _SPREADSHEET_ID = "10pefcY6VI4Z45M8Y69D6JxIoqOkjzSlSpV1PMLXoYlI"
@@ -64,13 +65,13 @@ def _fmt_iqr(d: dict) -> str:
 
 def _get_gcp_credentials_db():
     """Carrega credenciais GCP com fallback (Streamlit → Railway)."""
+    import os
     try:
         if "gcp_service_account" in st.secrets:
             return dict(st.secrets["gcp_service_account"])
     except:
         pass
     try:
-        import os
         creds_json = os.getenv("GCP_SERVICE_ACCOUNT")
         if creds_json:
             return json.loads(creds_json)
