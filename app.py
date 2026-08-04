@@ -5,10 +5,6 @@
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import os
-import json
-
-credentials = json.loads(os.getenv("GCP_SERVICE_ACCOUNT"))
 
 
 import streamlit as st
