@@ -1,14 +1,13 @@
-# MODIFICAÇÃO SEGURA para drive_db.py
-# Adiciona suporte a Railway SEM quebrar Streamlit Cloud
+# FIX para drive_db.py - NameError: name 'st' is not defined
 
-# PASSO 1: Adiciona estes imports NO TOPO (após imports existentes):
+# PASSO 1: Verifica que streamlit está importado NO TOPO
+# import streamlit as st
 
-import json
+# PASSO 2: Adiciona esta função ANTES de _fresh_sh() (aproximadamente linha 64):
 
-# PASSO 2: Adiciona esta função ANTES da função _fresh_sh() (aproximadamente linha 64):
-
+# ✅ SEM decorator na função auxiliar!
 def _get_gcp_credentials_db():
-    """Carrega credenciais GCP com fallback (Streamlit → Railway)."""
+    """Carrega credenciais GCP com fallback."""
     try:
         if "gcp_service_account" in st.secrets:
             return dict(st.secrets["gcp_service_account"])
@@ -23,7 +22,8 @@ def _get_gcp_credentials_db():
         pass
     return None
 
-# PASSO 3: Substitui as linhas 71-73 em _fresh_sh() por:
+# PASSO 3: A função _fresh_sh() fica normal (sem mudanças no decorator):
+# Substitui APENAS as linhas da parte de autenticação (71-73):
 
 def _fresh_sh():
     """Sempre cria nova conexão — evita cache stale."""
