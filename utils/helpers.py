@@ -14,6 +14,9 @@ sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))
 # Importar com: from utils.helpers import *
 # ════════════════════════════════════════════════════════════════════════════════
 
+
+from utils.data import get_gc
+
 # ── Parsing e conversão ────────────────────────────────────────────────────────
 
 def detectar_col(df, lst):
@@ -1500,36 +1503,7 @@ def analisar_falta_estimulo(df_act_full, janela_dias=14, baseline_dias=90):
 
 # ── Autenticação ──────────────────────────────────────────────────────────────
 
-def _get_gcp_credentials_helpers():
-    """Carrega credenciais GCP com fallback (Streamlit → Railway)."""
-    try:
-        if "gcp_service_account" in st.secrets:
-            return dict(st.secrets["gcp_service_account"])
-    except:
-        pass
-    try:
-        import os
-        creds_json = os.getenv("GCP_SERVICE_ACCOUNT")
-        if creds_json:
-            return json.loads(creds_json)
-    except:
-        pass
-    return None
-
-@st.cache_resource
-def get_gc():
-    """Autentica Google Sheets com Service Account (Streamlit Cloud ou Railway)."""
-    try:
-        creds_dict = _get_gcp_credentials_helpers()
-        if creds_dict is None:
-            st.error("❌ Erro autenticação Google")
-            return None
-        creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-        return gspread.authorize(creds)
-    except Exception as e:
-        st.error(f"❌ Erro autenticação: {e}")
-        return None
-
+# ── Carregamento ──────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=7200, show_spinner=False)
 def carregar_wellness(days_back):
