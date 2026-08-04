@@ -1,7 +1,10 @@
-from utils.config import *
 import streamlit as st
+from utils.config import *
+import json
 import sys, os as _os
 sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+
+from utils.data import get_gc
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -13,9 +16,6 @@ sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))
 # Funções auxiliares reutilizáveis por todas as tabs.
 # Importar com: from utils.helpers import *
 # ════════════════════════════════════════════════════════════════════════════════
-
-
-from utils.data import get_gc
 
 # ── Parsing e conversão ────────────────────────────────────────────────────────
 
@@ -1502,8 +1502,6 @@ def analisar_falta_estimulo(df_act_full, janela_dias=14, baseline_dias=90):
 # ════════════════════════════════════════════════════════════════════════════════
 
 # ── Autenticação ──────────────────────────────────────────────────────────────
-
-# ── Carregamento ──────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=7200, show_spinner=False)
 def carregar_wellness(days_back):
